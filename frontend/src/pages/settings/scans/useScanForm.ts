@@ -1,6 +1,7 @@
-import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useEffect, useRef, useState } from 'react'
+import { type UseMutationResult, useMutation } from '@tanstack/react-query'
 import { scansApi } from '@/api/scans'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type {
   EventGroupRule,
   IntervalCode,
@@ -11,7 +12,14 @@ import type {
 } from '@/types'
 import { type UiEventGroupRule, stripUiIds, withUiIds } from './scanFormTypes'
 import { type ScanFormMode, formModeOf } from './scanMode'
-import { eligibleChunkIntervals, parseOptionalPositiveInt, parseOptionalShare } from './scanUtils'
+import {
+  eligibleChunkIntervals,
+  parseOptionalPositiveInt,
+  parseOptionalShare,
+  positiveIntError,
+  shareError,
+  splitFullJsonPath,
+} from './scanUtils'
 
 // Shape of the create/update payload shared by both API calls. Built once from
 // form state so the create page and the Configuration tab stay in sync.
@@ -63,7 +71,9 @@ export interface ScanFormState {
   metricBreakdownColumns: string[]
   metricBreakdownValuesLimit: string
   distributionDriftFields: string[]
-  cardinalityThreshold: number
+  // A string like every other numeric input: `Number('')` made a cleared field
+  // a 0 the backend rejects with a raw 422 (DATA-25).
+  cardinalityThreshold: string
   interval: string
   chunkInterval: string
   scanLookbackHours: string
@@ -94,7 +104,7 @@ function initialState(scanConfig: ScanConfig | null): ScanFormState {
       ? String(scanConfig.metric_breakdown_values_limit)
       : '',
     distributionDriftFields: scanConfig?.distribution_drift_fields ?? [],
-    cardinalityThreshold: scanConfig?.cardinality_threshold ?? 100,
+    cardinalityThreshold: String(scanConfig?.cardinality_threshold ?? 100),
     interval: scanConfig?.interval ?? '',
     chunkInterval: scanConfig?.replay_chunk_interval ?? '',
     // New scans default to a 24h lookback (matches the create-page mockup); when
@@ -136,9 +146,7 @@ export function toBackendPayload(state: ScanFormState): ScanFormPayload {
     json_value_paths: state.jsonValuePaths,
     event_group_rules: stripUiIds(state.eventGroupRules),
     metric_breakdown_columns: state.metricBreakdownColumns,
-    metric_breakdown_values_limit: state.metricBreakdownValuesLimit
-      ? Number(state.metricBreakdownValuesLimit)
-      : null,
+    metric_breakdown_values_limit: parseOptionalPositiveInt(state.metricBreakdownValuesLimit),
     distribution_drift_fields: state.distributionDriftFields,
     app_version_column: state.appVersionColumn || null,
     app_version_prerelease_pattern: state.appVersionColumn
@@ -148,7 +156,9 @@ export function toBackendPayload(state: ScanFormState): ScanFormPayload {
       ? parseOptionalShare(state.appVersionActiveShareMin)
       : null,
     platform_column: state.platformColumn || null,
-    cardinality_threshold: state.cardinalityThreshold,
+    // `scanFormBlocker` refuses anything but a whole number >= 1 before a save,
+    // so the fallback only ever reaches a dry run of a half-typed draft.
+    cardinality_threshold: parseOptionalPositiveInt(state.cardinalityThreshold) ?? 100,
     interval: monitoring ? state.interval || null : null,
     replay_chunk_interval: monitoring ? state.chunkInterval || null : null,
     scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
@@ -198,6 +208,39 @@ export const EVENT_NAMING_INCOMPLETE_TITLE =
 export const ESSENTIALS_INCOMPLETE_TITLE =
   'A scan needs a name, a data source and a base query.'
 
+/** The numeric fields the form validates, with the label each one is shown under. */
+export const SCAN_NUMERIC_FIELD_LABEL = {
+  cardinalityThreshold: 'Cardinality threshold',
+  metricBreakdownValuesLimit: 'Value limit',
+  appVersionActiveShareMin: 'Traffic share that counts as released',
+  scanLookbackHours: 'Lookback (hours)',
+  scanRowLimit: 'Row cap per run',
+  metricsRowLimit: 'Row cap per metrics run',
+} as const
+
+export type ScanNumericField = keyof typeof SCAN_NUMERIC_FIELD_LABEL
+
+/**
+ * Field-level messages for every numeric input holding a value the backend
+ * would refuse (`ge=1`, or a share in (0, 1)). The form renders each under its
+ * input, and {@link scanFormBlocker} refuses the save, so a bad value is neither
+ * coerced into a different one nor answered by a raw 422 (DATA-25).
+ */
+export function scanFieldErrors(state: ScanFormState): Partial<Record<ScanNumericField, string>> {
+  const errors: Partial<Record<ScanNumericField, string>> = {}
+  const check = (field: ScanNumericField, error: string | null) => {
+    if (error) errors[field] = error
+  }
+  check('cardinalityThreshold', positiveIntError(state.cardinalityThreshold, { required: true }))
+  check('metricBreakdownValuesLimit', positiveIntError(state.metricBreakdownValuesLimit))
+  // Not sent without a version column, so not a reason to refuse the save.
+  if (state.appVersionColumn) check('appVersionActiveShareMin', shareError(state.appVersionActiveShareMin))
+  check('scanLookbackHours', positiveIntError(state.scanLookbackHours))
+  check('scanRowLimit', positiveIntError(state.scanRowLimit))
+  check('metricsRowLimit', positiveIntError(state.metricsRowLimit))
+  return errors
+}
+
 /**
  * Whether the config says how its events are named — an event type for every
  * row, or the column each row's event name is read from.
@@ -227,7 +270,33 @@ export function scanFormBlocker(state: ScanFormState): string | null {
   if (state.mode === 'monitoring' && !(state.timeColumn && state.interval)) {
     return MONITORING_INCOMPLETE_TITLE
   }
+  // Named by its label, so the hover text says which input to look at.
+  const invalid = Object.keys(scanFieldErrors(state))[0] as ScanNumericField | undefined
+  if (invalid) return `Fix ${SCAN_NUMERIC_FIELD_LABEL[invalid]}.`
   return null
+}
+
+/**
+ * What a preview's columns depend on: the source and the query.
+ *
+ * Each loaded preview is stamped with the draft it was requested for, the way a
+ * dry run is, so an answer that arrives after the user moved on can never land
+ * on the newer draft (DATA-2). The time column and lookback are left out on
+ * purpose: they bound which rows come back, not which columns, and they are
+ * picked FROM a loaded preview — keying on them would throw away a reload the
+ * moment the user chose a time column while it was in flight.
+ */
+export function previewDraftKey(state: Pick<ScanFormState, 'dataSourceId' | 'baseQuery'>): string {
+  return JSON.stringify({ dataSourceId: state.dataSourceId, baseQuery: state.baseQuery })
+}
+
+type PreviewRequest = Parameters<typeof scansApi.preview>[1]
+
+/** A preview or JSON-discovery request, and the draft it was asked for. */
+export interface PreviewVariables {
+  key: string
+  request: PreviewRequest
+  signal: AbortSignal
 }
 
 /** Save gate shared by create and edit. */
@@ -238,8 +307,8 @@ export function canSubmitScanForm(state: ScanFormState): boolean {
 export interface UseScanFormResult {
   state: ScanFormState
   set: <K extends keyof ScanFormState>(key: K, value: ScanFormState[K]) => void
+  /** The loaded preview, or null when none was loaded for the draft as it stands. */
   preview: ScanConfigPreview | null
-  setPreview: (preview: ScanConfigPreview | null) => void
   /** "What this scan would create", or null before the first check. */
   dryRun: ScanDryRunResponse | null
   /**
@@ -250,11 +319,15 @@ export interface UseScanFormResult {
    */
   dryRunStale: boolean
   // Preview/discovery mutations (real warehouse-backed jobs).
-  previewMut: ReturnType<typeof useMutation<ScanConfigPreview, unknown, void>>
-  discoverJsonMut: ReturnType<typeof useMutation<ScanConfigPreview, unknown, void>>
-  dryRunMut: ReturnType<typeof useMutation<ScanDryRunResponse, unknown, ScanDryRunRequest>>
+  previewMut: UseMutationResult<ScanConfigPreview, unknown, PreviewVariables>
+  discoverJsonMut: UseMutationResult<ScanConfigPreview, unknown, PreviewVariables>
+  dryRunMut: UseMutationResult<ScanDryRunResponse, unknown, ScanDryRunRequest>
   /** Load the sample rows and the dry run together — one button, one answer. */
   loadPreview: () => void
+  /** Ask the warehouse for the nested JSON keys of the loaded preview's columns. */
+  discoverJsonPaths: () => void
+  /** Field-level messages for numeric inputs the backend would refuse. */
+  fieldErrors: Partial<Record<ScanNumericField, string>>
   /** Re-answer "what would this scan create?" for the draft as it stands now. */
   runDryRun: () => void
   // Field-aware handlers that drop now-invalid column references.
@@ -279,13 +352,40 @@ export function useScanForm(
   scanConfig: ScanConfig | null,
 ): UseScanFormResult {
   const [state, setState] = useState<ScanFormState>(() => initialState(scanConfig))
-  const [preview, setPreview] = useState<ScanConfigPreview | null>(null)
+  // The preview AND the draft it was loaded for (see `previewDraftKey`). Shown
+  // only while the draft still matches, so a query edit hides it without
+  // anything having to remember to clear it.
+  const [previewResult, setPreviewResult] = useState<
+    { preview: ScanConfigPreview; requestKey: string } | null
+  >(null)
   // The answer AND the draft it answers for, so staleness is a fact rather than
   // a guess. Serializing the request is enough: it is exactly the set of inputs
   // the backend planner reads.
   const [dryRunResult, setDryRunResult] = useState<
     { answer: ScanDryRunResponse; requestKey: string } | null
   >(null)
+  // The draft the newest preview was asked for. An older request that answers
+  // later is dropped rather than replacing a newer preview (DATA-2).
+  const latestPreviewKeyRef = useRef<string | null>(null)
+  // Aborted when the draft changes source or query, and on unmount, so a
+  // warehouse job's poll loop stops once nobody is waiting for its answer. The
+  // job itself keeps running on the worker; only the wait stops.
+  const inFlightRef = useRef<AbortController | null>(null)
+  const draftSignal = () => {
+    inFlightRef.current ??= new AbortController()
+    return inFlightRef.current.signal
+  }
+  const abortInFlight = () => {
+    inFlightRef.current?.abort()
+    inFlightRef.current = null
+  }
+  useEffect(() => {
+    const inFlight = inFlightRef
+    return () => inFlight.current?.abort()
+  }, [])
+
+  const preview =
+    previewResult && previewResult.requestKey === previewDraftKey(state) ? previewResult.preview : null
 
   const set = <K extends keyof ScanFormState>(key: K, value: ScanFormState[K]) =>
     setState(current => ({ ...current, [key]: value }))
@@ -293,19 +393,25 @@ export function useScanForm(
   const setMany = (patch: Partial<ScanFormState>) =>
     setState(current => ({ ...current, ...patch }))
 
-  const previewMut = useMutation<ScanConfigPreview, unknown, void>({
-    mutationFn: () =>
-      scansApi.preview(slug, {
-        data_source_id: state.dataSourceId,
-        base_query: state.baseQuery,
-        limit: 10,
-        time_column: state.timeColumn || null,
-        scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
-      }),
-    onSuccess: data => {
-      setPreview(data)
+  const previewRequest = (): PreviewRequest => ({
+    data_source_id: state.dataSourceId,
+    base_query: state.baseQuery,
+    time_column: state.timeColumn || null,
+    scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
+  })
+
+  const previewMut = useMutation<ScanConfigPreview, unknown, PreviewVariables>({
+    // Rendered inline as "Preview failed".
+    meta: SILENT_ERROR_META,
+    mutationFn: ({ request, signal }) => scansApi.preview(slug, request, signal),
+    onSuccess: (data, { key }) => {
+      if (key !== latestPreviewKeyRef.current) return
+      setPreviewResult({ preview: data, requestKey: key })
       const has = (name: string) => data.columns.some(column => column.name === name)
       setState(current => {
+        // Columns of a query the user has since edited say nothing about the
+        // one on screen, so they prune nothing.
+        if (previewDraftKey(current) !== key) return current
         const eventTypeColumn = has(current.eventTypeColumn) ? current.eventTypeColumn : ''
         const timeColumn = has(current.timeColumn) ? current.timeColumn : ''
         const appVersionColumn = has(current.appVersionColumn) ? current.appVersionColumn : ''
@@ -327,6 +433,11 @@ export function useScanForm(
           distributionDriftFields: current.distributionDriftFields.filter(
             field => has(field) && !reserved.has(field),
           ),
+          // A path lives under a column; it goes only once its column has.
+          jsonValuePaths: current.jsonValuePaths.filter(path => {
+            const parsed = splitFullJsonPath(path)
+            return !parsed || has(parsed.column)
+          }),
         }
       })
     },
@@ -337,7 +448,9 @@ export function useScanForm(
   // request would stamp an in-flight answer with a draft it was not computed
   // from — and silently call a stale answer fresh.
   const dryRunMut = useMutation<ScanDryRunResponse, unknown, ScanDryRunRequest>({
-    mutationFn: request => scansApi.dryRun(slug, request),
+    // Rendered inline by ScanPreviewPanel.
+    meta: SILENT_ERROR_META,
+    mutationFn: request => scansApi.dryRun(slug, request, draftSignal()),
     onSuccess: (answer, request) =>
       setDryRunResult({ answer, requestKey: JSON.stringify(request) }),
   })
@@ -355,29 +468,46 @@ export function useScanForm(
     dryRunMut.mutate(toDryRunRequest(state))
   }
 
-  const discoverJsonMut = useMutation<ScanConfigPreview, unknown, void>({
-    mutationFn: () =>
-      scansApi.preview(slug, {
-        data_source_id: state.dataSourceId,
-        base_query: state.baseQuery,
-        json_value_paths: state.jsonValuePaths,
-        time_column: state.timeColumn || null,
-        scan_lookback_hours: parseOptionalPositiveInt(state.scanLookbackHours),
-        include_json_paths: true,
-      }),
-    onSuccess: data => {
-      // Merge into the loaded preview; discard if the preview was reset mid-flight.
-      setPreview(current => (current ? { ...current, json_columns: data.json_columns } : current))
+  const discoverJsonMut = useMutation<ScanConfigPreview, unknown, PreviewVariables>({
+    // Rendered inline by JsonValuePathsPicker.
+    meta: SILENT_ERROR_META,
+    mutationFn: ({ request, signal }) => scansApi.preview(slug, request, signal),
+    onSuccess: (data, { key }) => {
+      // Merge into the preview it was asked about; a preview loaded for another
+      // draft since then keeps its own keys.
+      setPreviewResult(current =>
+        current && current.requestKey === key
+          ? { ...current, preview: { ...current.preview, json_columns: data.json_columns } }
+          : current,
+      )
     },
   })
 
+  const discoverJsonPaths = () =>
+    discoverJsonMut.mutate({
+      key: previewDraftKey(state),
+      request: { ...previewRequest(), json_value_paths: state.jsonValuePaths, include_json_paths: true },
+      signal: draftSignal(),
+    })
+
+  /**
+   * A new source or a new query: every warehouse answer on screen now describes
+   * a draft that no longer exists.
+   *
+   * Only the ANSWERS go. The user's own selections — JSON value paths, drift
+   * fields — stay, and the next preview prunes the ones its columns no longer
+   * carry. Clearing them here meant one space typed into a saved scan's query
+   * (or its Format button) wiped every saved path and drift field behind a
+   * preview gate the user could not see past, and the next Save sent the empty
+   * lists (DATA-1).
+   */
   const resetPreviewDerived = () => {
-    setPreview(null)
-    setMany({ distributionDriftFields: [] })
+    abortInFlight()
+    latestPreviewKeyRef.current = null
+    previewMut.reset()
     discoverJsonMut.reset()
-    // A new source or a new query invalidates the answer outright — not merely
-    // stales it. Keeping it on screen would attribute events to a query that no
-    // longer exists.
+    // Not merely stale: keeping it on screen would attribute events to a query
+    // that no longer exists.
     setDryRunResult(null)
     dryRunMut.reset()
   }
@@ -395,17 +525,21 @@ export function useScanForm(
    */
   const loadPreview = () => {
     discoverJsonMut.reset()
-    previewMut.mutate()
+    const key = previewDraftKey(state)
+    latestPreviewKeyRef.current = key
+    previewMut.mutate({ key, request: { ...previewRequest(), limit: 10 }, signal: draftSignal() })
     runDryRun()
   }
 
   const setBaseQuery = (value: string) => {
-    setMany({ baseQuery: value, jsonValuePaths: [] })
+    if (value === state.baseQuery) return
+    setMany({ baseQuery: value })
     resetPreviewDerived()
   }
 
   const setDataSourceId = (value: string) => {
-    setMany({ dataSourceId: value, jsonValuePaths: [] })
+    if (value === state.dataSourceId) return
+    setMany({ dataSourceId: value })
     resetPreviewDerived()
   }
 
@@ -482,13 +616,14 @@ export function useScanForm(
     state,
     set,
     preview,
-    setPreview,
     dryRun: dryRunResult?.answer ?? null,
     dryRunStale: dryRunResult != null && dryRunResult.requestKey !== JSON.stringify(toDryRunRequest(state)),
     previewMut,
     discoverJsonMut,
     dryRunMut,
     loadPreview,
+    discoverJsonPaths,
+    fieldErrors: scanFieldErrors(state),
     runDryRun,
     setBaseQuery,
     setDataSourceId,

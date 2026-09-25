@@ -341,12 +341,84 @@ describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
     // Typed after the request left, before it answered.
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Typed during save' } })
     answerSave(mockJsonResponse({ ...saveable, name: 'Sent name' }))
-    expect((await screen.findAllByText('Saved.')).length).toBeGreaterThan(0)
+    // The save answered, but the form no longer holds what it sent: "Saved."
+    // would be a claim about text that is not on screen (DATA-14).
+    expect(await screen.findByText('Unsaved changes.')).toBeInTheDocument()
+    expect(screen.queryByText('Saved.')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('tab', { name: 'Overview' }))
     expect(
       await screen.findByRole('alertdialog', { name: 'Discard unsaved changes?' }),
     ).toBeInTheDocument()
+  })
+
+  it('has one Save for the whole form, and says Saved. only until the next edit (DATA-14)', async () => {
+    const saveable = { ...scanConfig, event_type_column: 'event_name' }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith('/projects/demo/scans/scan-1') && method === 'PATCH') {
+        return mockJsonResponse({ ...saveable, name: 'Renamed' })
+      }
+      if (url.endsWith('/projects/demo/scans')) return mockJsonResponse([saveable])
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/data-sources')) return mockJsonResponse([])
+      if (url.includes('event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
+
+    const name = await screen.findByLabelText('Name')
+    // Nothing to save yet.
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+
+    fireEvent.change(name, { target: { value: 'Renamed' } })
+    expect(screen.getAllByRole('button', { name: 'Save' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Saved.')).toBeInTheDocument()
+
+    fireEvent.change(name, { target: { value: 'Renamed again' } })
+    expect(screen.queryByText('Saved.')).not.toBeInTheDocument()
+    expect(screen.getByText('Unsaved changes.')).toBeInTheDocument()
+  })
+
+  it('takes a deleted scan out of the cached list before leaving (DATA-4)', async () => {
+    let deleted = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.endsWith('/projects/demo/scans/scan-1') && method === 'DELETE') {
+        deleted = true
+        return new Response(null, { status: 204 })
+      }
+      if (url.endsWith('/projects/demo/scans')) return mockJsonResponse(deleted ? [] : [scanConfig])
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/data-sources')) return mockJsonResponse([])
+      if (url.includes('event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${method} ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={owner}>
+          <MemoryRouter initialEntries={[`/p/${SLUG}/scans/scan-1?tab=configuration`]}>
+            <DemoScenarioProvider project={demoProject({ is_demo: false })} pollIntervalMs={10}>
+              <ScanConfigDetail slug={SLUG} scanConfigId="scan-1" />
+            </DemoScenarioProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    const confirm = await screen.findByRole('alertdialog')
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(deleted).toBe(true))
+    await waitFor(() =>
+      expect(queryClient.getQueryData<ScanConfig[]>(['scans', SLUG])?.map(sc => sc.id)).toEqual([]),
+    )
+    expect(queryClient.getQueryData(['scanJobs', SLUG, 'scan-1'])).toBeUndefined()
   })
 
   it('switches tabs at once while nothing is edited', async () => {

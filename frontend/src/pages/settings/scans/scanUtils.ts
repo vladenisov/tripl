@@ -200,21 +200,50 @@ export function eligibleChunkIntervals(interval: string): IntervalCode[] {
   return INTERVAL_ORDER.slice(idx)
 }
 
+/**
+ * A blank field (the backend default) or a whole number of at least 1, else null.
+ *
+ * Every numeric scan limit is `ge=1` on the backend. Truncating `0`, `-3` or
+ * `2.5` into a number used to send it anyway and come back as a raw 422; an
+ * invalid value now never reaches the wire, and {@link positiveIntError} is what
+ * tells the user why the form will not save it (DATA-25).
+ */
 export function parseOptionalPositiveInt(value: string): number | null {
   const trimmed = value.trim()
   if (!trimmed) return null
   const parsed = Number(trimmed)
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : null
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : null
 }
 
-// Activation traffic share is a fraction in (0, 1). Blank / out-of-range values
-// map to null so the backend keeps its default (0.05).
+/** Why a numeric limit cannot be saved, or null when it can. */
+export function positiveIntError(value: string, { required = false } = {}): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return required ? 'Enter a whole number of 1 or more.' : null
+  if (parseOptionalPositiveInt(trimmed) !== null) return null
+  return required
+    ? 'Enter a whole number of 1 or more.'
+    : 'Enter a whole number of 1 or more, or leave it empty for the default.'
+}
+
+// Activation traffic share is a fraction in (0, 1). Blank maps to null so the
+// backend keeps its default (0.05); an out-of-range value maps to null too, but
+// {@link shareError} blocks the save first, so it is never silently dropped.
 export function parseOptionalShare(value: string): number | null {
   const trimmed = value.trim()
   if (!trimmed) return null
   const parsed = Number(trimmed)
   if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 1) return null
   return parsed
+}
+
+/**
+ * Why a traffic share cannot be saved, or null when it can. `5` meaning 5% used
+ * to become null and save as the 0.05 default, so the value the user typed just
+ * disappeared (DATA-25).
+ */
+export function shareError(value: string): string | null {
+  if (!value.trim() || parseOptionalShare(value) !== null) return null
+  return 'Enter a share between 0 and 1, e.g. 0.05 for 5%, or leave it empty for the default.'
 }
 
 export function isJsonPreviewType(typeName: string) {

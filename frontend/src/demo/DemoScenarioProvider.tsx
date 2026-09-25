@@ -174,10 +174,16 @@ export function DemoScenarioProvider({
         if (terminal) {
           const listKey = ['scanJobs', slug, scanTarget.scanConfigId] as const
           queryClient.setQueryData<ScanJob[]>(listKey, current => syncWatchedJob(current, job))
+          // The Scans list caches a capped history under the same prefix
+          // (`[...listKey, { limit }]`); its Recent runs row is the one the
+          // watch-scan coach points at, so it gets the same answer.
+          queryClient.setQueriesData<ScanJob[]>({ queryKey: listKey }, current =>
+            current ? syncWatchedJob(current, job) : current,
+          )
           // Populate an absent cache immediately, then refresh the complete list
           // from the now-committed backend state. This also cancels any older
           // in-flight snapshot that could otherwise land as Running afterwards.
-          void queryClient.invalidateQueries({ queryKey: listKey, exact: true })
+          void queryClient.invalidateQueries({ queryKey: listKey })
         }
         if (job.status === 'completed') dispatch({ type: 'scanSettled', outcome: 'completed' })
         else if (job.status === 'failed') dispatch({ type: 'scanSettled', outcome: 'failed' })

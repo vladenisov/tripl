@@ -2,7 +2,9 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { MonitoringSignal, ScanJob, ScanJobResultSummary } from '@/types'
+import type { MonitoringSignal, Role, ScanJob, ScanJobResultSummary } from '@/types'
+import { AuthContext } from '@/components/auth-context'
+import { authAs } from '@/test/auth'
 import { JobDetails } from './JobDetails'
 import type { ScanMode } from './scanMode'
 
@@ -196,5 +198,39 @@ describe('JobDetails', () => {
     // No summary means no report and no disclosure — not an empty shell of both.
     expect(screen.queryByText('What this run did')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Show raw counters' })).toBeNull()
+  })
+})
+
+describe('JobDetails — the raw error behind "Scan failed." (DATA-19)', () => {
+  const RAW = 'HTTPSConnectionPool(host=ch.internal, port=8443): Read timed out'
+
+  function renderFailed(role: Role) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const failed = { ...job(null), status: 'failed' as const, error_message: RAW }
+    return render(
+      <AuthContext.Provider value={authAs(role)}>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <JobDetails job={failed} slug="demo" scanConfigId="scan-1" mode="monitoring" />
+          </MemoryRouter>
+        </QueryClientProvider>
+      </AuthContext.Provider>,
+    )
+  }
+
+  it('lets an owner open the technical details the safe message replaced', () => {
+    renderFailed('owner')
+
+    expect(screen.getByText('Scan failed: the data source did not respond in time.')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('View technical details'))
+    expect(screen.getByText(RAW)).toBeVisible()
+  })
+
+  it('never shows the raw text to anyone else', () => {
+    renderFailed('editor')
+
+    expect(screen.getByText('Scan failed: the data source did not respond in time.')).toBeInTheDocument()
+    expect(screen.queryByText('View technical details')).not.toBeInTheDocument()
+    expect(screen.queryByText(RAW)).not.toBeInTheDocument()
   })
 })

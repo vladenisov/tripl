@@ -2,8 +2,11 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { fieldsApi } from '@/api/fields'
 import type { EventType, ScanConfigPreview } from '@/types'
 import { Button } from '@/components/ui/button'
+import { ErrorState } from '@/components/error-state'
 import { isJsonPreviewType } from './scanUtils'
 import { projectEventTypesKey } from '@/lib/queryKeys'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { countOf } from '@/lib/plural'
 
 /**
  * Declares the columns a run would skip as fields on the scan's event type.
@@ -32,6 +35,7 @@ export function CreateMissingFieldsButton({
   preview,
   unmappedColumns,
   branchId,
+  onCreated,
 }: {
   slug: string
   eventType: EventType | undefined
@@ -39,15 +43,37 @@ export function CreateMissingFieldsButton({
   /** `ScanDryRunResponse['unmapped_columns']` — the one source of truth. */
   unmappedColumns: string[]
   branchId: string | null
+  /** Called once the fields exist, so the caller can re-ask what is still unmapped. */
+  onCreated?: () => void
 }) {
   const qc = useQueryClient()
   const mutation = useMutation({
+    // Rendered inline below.
+    meta: SILENT_ERROR_META,
     mutationFn: (fields: { name: string; display_name: string; field_type: string }[]) =>
       fieldsApi.bulkCreate(slug, eventType!.id, fields, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) }),
+    onSuccess: () => {
+      onCreated?.()
+      return qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
+    },
   })
 
-  if (!eventType || !preview || unmappedColumns.length === 0) return null
+  if (!eventType || !preview) return null
+
+  // The list is the answer the dry run gave BEFORE the fields existed, and it
+  // stays on screen until the re-check lands. Offering the same columns again
+  // is how one click became duplicate fields or a conflict (DATA-27), so what
+  // was just created is taken off the offer straight away.
+  const created = mutation.isSuccess ? new Set(mutation.variables.map(field => field.name)) : null
+  const remaining = created ? unmappedColumns.filter(column => !created.has(column)) : unmappedColumns
+
+  const createdNote = created && (
+    <p role="status" className="text-xs" style={{ color: 'var(--success)' }}>
+      Created {countOf(created.size, 'field', 'fields')} on "{eventType.display_name}".
+    </p>
+  )
+
+  if (remaining.length === 0) return createdNote || null
 
   // The panel above has already said these columns are skipped, so this block is
   // only the offer to stop skipping them. `json` vs `string` is the entire type
@@ -57,31 +83,37 @@ export function CreateMissingFieldsButton({
     const previewColumn = preview.columns.find(candidate => candidate.name === column)
     return previewColumn && isJsonPreviewType(previewColumn.type_name) ? 'json' : 'string'
   }
-  const plural = unmappedColumns.length === 1 ? '' : 's'
+  const plural = remaining.length === 1 ? '' : 's'
 
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-dashed bg-muted/10 px-3 py-2">
-      <p className="text-xs text-muted-foreground">
-        Add {unmappedColumns.length === 1 ? 'it' : 'them'} to
-        {' '}"{eventType.display_name}" and runs will collect {unmappedColumns.length === 1 ? 'it' : 'them'} instead.
-      </p>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        disabled={mutation.isPending}
-        onClick={() =>
-          mutation.mutate(
-            unmappedColumns.map(column => ({
-              name: column,
-              display_name: column,
-              field_type: typeOf(column),
-            })),
-          )
-        }
-      >
-        {mutation.isPending ? 'Creating…' : `Create ${unmappedColumns.length} field${plural}`}
-      </Button>
+    <div className="space-y-2">
+      {createdNote}
+      <div className="flex items-center justify-between gap-3 rounded-md border border-dashed bg-muted/10 px-3 py-2">
+        <p className="text-xs text-muted-foreground">
+          Add {remaining.length === 1 ? 'it' : 'them'} to
+          {' '}"{eventType.display_name}" and runs will collect {remaining.length === 1 ? 'it' : 'them'} instead.
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={mutation.isPending}
+          onClick={() =>
+            mutation.mutate(
+              remaining.map(column => ({
+                name: column,
+                display_name: column,
+                field_type: typeOf(column),
+              })),
+            )
+          }
+        >
+          {mutation.isPending ? 'Creating…' : `Create ${remaining.length} field${plural}`}
+        </Button>
+      </div>
+      {mutation.isError && (
+        <ErrorState compact title="Could not create the fields" error={mutation.error} />
+      )}
     </div>
   )
 }

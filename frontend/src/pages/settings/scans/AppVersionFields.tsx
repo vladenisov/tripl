@@ -13,6 +13,7 @@ export function AppVersionFields({
   onPrereleasePatternChange,
   onActiveShareMinChange,
   onPlatformColumnChange,
+  activeShareMinError,
 }: {
   columns: ScanConfigPreview['columns'] | null
   appVersionColumn: string
@@ -23,6 +24,8 @@ export function AppVersionFields({
   onPrereleasePatternChange: (value: string) => void
   onActiveShareMinChange: (value: string) => void
   onPlatformColumnChange: (column: string) => void
+  /** Why the share above cannot be saved (DATA-25). */
+  activeShareMinError?: string
 }) {
   const availableColumns = columns?.filter(column => !isJsonPreviewType(column.type_name)) ?? []
   const hasSelectedColumn = Boolean(appVersionColumn)
@@ -100,7 +103,14 @@ export function AppVersionFields({
             onChange={e => onActiveShareMinChange(e.target.value)}
             disabled={!appVersionColumn}
             placeholder={appVersionColumn ? 'Default 0.05' : 'Select version column'}
+            aria-invalid={activeShareMinError ? true : undefined}
+            aria-describedby={activeShareMinError ? 'app-version-active-share-error' : undefined}
           />
+          {activeShareMinError && (
+            <p id="app-version-active-share-error" className="text-xs" style={{ color: 'var(--danger)' }}>
+              {activeShareMinError}
+            </p>
+          )}
           <p className="text-xs text-muted-foreground">
             A version counts as released once it carries this share of traffic. Default 0.05 (5%).
           </p>

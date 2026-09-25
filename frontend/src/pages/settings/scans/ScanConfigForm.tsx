@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, RotateCcw, Trash2 } from 'lucide-react'
-import { dataSourcesApi } from '@/api/dataSources'
 import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
-import type { DataSource, EventType, ScanConfig } from '@/types'
+import { useProjectDataSources } from '@/hooks/useProjectDataSources'
+import type { EventType, ScanConfig } from '@/types'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/error-state'
 import { ReplayDialog } from './ReplayDialog'
@@ -20,12 +20,12 @@ import {
   ScanEssentialsSection,
 } from './ScanFormSections'
 import { scanFormBlocker, useScanForm, type ScanFormPayload } from './useScanForm'
-import { dataSourcesKey, eventTypesKey } from '@/lib/queryKeys'
+import { eventTypesKey } from '@/lib/queryKeys'
 import { ownerOnlyReason, useIsOwner } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
-// ─── Configuration tab (page-style edit, each SCard has its own Save footer) ───
+// ─── Configuration tab (page-style edit, one Save for the whole form) ───
 export function ScanConfigurationTab({
   slug,
   scanConfig,
@@ -51,10 +51,7 @@ export function ScanConfigurationTab({
   // the configuration with every control disabled and no Save (DATA-6).
   const canEdit = useIsOwner()
 
-  const { data: dataSources = [] } = useQuery({
-    queryKey: dataSourcesKey(),
-    queryFn: () => dataSourcesApi.list(),
-  })
+  const { data: dataSources = [] } = useProjectDataSources()
   const { data: eventTypes = [] } = useQuery({
     queryKey: eventTypesKey(slug, null),
     queryFn: () => eventTypesApi.list(slug, null),
@@ -83,8 +80,21 @@ export function ScanConfigurationTab({
   })
 
   const deleteMut = useMutation({
+    // Rendered inline in the Danger zone, next to the button that failed.
+    meta: SILENT_ERROR_META,
     mutationFn: () => scansApi.del(slug, scanConfig.id),
-    onSuccess: onDeleted,
+    onSuccess: () => {
+      // The list mounts from cache (staleTime 60s), so without this the deleted
+      // scan was still listed there with a Run now that 404s (DATA-4). Drop it
+      // from the cache now, then refetch for anything else that changed.
+      qc.setQueryData<ScanConfig[]>(['scans', slug], current =>
+        current?.filter(config => config.id !== scanConfig.id),
+      )
+      qc.removeQueries({ queryKey: ['scanJobs', slug, scanConfig.id] })
+      qc.removeQueries({ queryKey: ['platformPresence', slug, scanConfig.id] })
+      void qc.invalidateQueries({ queryKey: ['scans', slug] })
+      onDeleted()
+    },
   })
 
   const handleDelete = async () => {
@@ -103,31 +113,23 @@ export function ScanConfigurationTab({
   // user ends up believing the form is broken.
   const saveBlocker = scanFormBlocker(form.state)
 
-  const footerFor = () => (
-    <>
-      <span role="status" className="flex-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
-        {updateMut.isError ? '' : updateMut.isSuccess ? 'Saved.' : ''}
-      </span>
-      <Button
-        type="button"
-        size="sm"
-        onClick={() => updateMut.mutate(form.toBackendPayload())}
-        disabled={updateMut.isPending || saveBlocker !== null}
-        title={saveBlocker ?? undefined}
-      >
-        {updateMut.isPending ? 'Saving…' : 'Save'}
-      </Button>
-    </>
-  )
+  // "Saved." only while the form still holds what was saved: it used to stay up
+  // after further edits, under every card at once (DATA-14).
+  const saveStatus = updateMut.isPending
+    ? ''
+    : dirty
+      ? 'Unsaved changes.'
+      : updateMut.isSuccess
+        ? 'Saved.'
+        : ''
 
   const sectionProps = {
     form,
     slug,
     branchId,
-    dataSources: dataSources as DataSource[],
+    dataSources,
     eventTypes: eventTypes as EventType[],
     sourceLocked: true,
-    footerFor: canEdit ? footerFor : undefined,
     readOnly: !canEdit,
   }
 
@@ -153,6 +155,30 @@ export function ScanConfigurationTab({
         <MetricsDriftSection {...sectionProps} />
         <LimitsSection {...sectionProps} />
       </fieldset>
+
+      {/* One Save for the whole form. Every card used to carry its own, which
+          read as "save this card" while each one sent the entire form — so
+          Save under Limits also committed a half-edited query two cards up
+          (DATA-14). Sticky, so it is in reach from whichever card was edited. */}
+      {canEdit && (
+        <div
+          className="sticky bottom-0 z-10 mb-5 flex items-center gap-2.5 rounded-xl border px-[18px] py-3"
+          style={{ borderColor: 'var(--border)', background: 'var(--bg-sunken)' }}
+        >
+          <span role="status" className="flex-1 text-xs" style={{ color: 'var(--fg-subtle)' }}>
+            {saveStatus}
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => updateMut.mutate(form.toBackendPayload())}
+            disabled={updateMut.isPending || !dirty || saveBlocker !== null}
+            title={saveBlocker ?? undefined}
+          >
+            {updateMut.isPending ? 'Saving…' : 'Save'}
+          </Button>
+        </div>
+      )}
 
       {canEdit && (
         <SCard title="Danger zone" tone="danger">
@@ -202,9 +228,14 @@ export function ScanConfigurationTab({
               onClick={handleDelete}
             >
               <Trash2 className="size-3" />
-              Delete
+              {deleteMut.isPending ? 'Deleting…' : 'Delete'}
             </Button>
           </div>
+          {deleteMut.isError && (
+            <div className="px-[18px] pb-3.5">
+              <ErrorState compact title="Could not delete scan" error={deleteMut.error} />
+            </div>
+          )}
         </SCard>
       )}
     </div>
@@ -230,10 +261,7 @@ export function ScanCreatePage({
   const [initialSnapshot] = useState(() => JSON.stringify(form.state))
   const unsaved = useUnsavedChangesGuard(JSON.stringify(form.state) !== initialSnapshot)
 
-  const { data: dataSources = [] } = useQuery({
-    queryKey: dataSourcesKey(),
-    queryFn: () => dataSourcesApi.list(),
-  })
+  const { data: dataSources = [] } = useProjectDataSources()
   const { data: eventTypes = [] } = useQuery({
     queryKey: eventTypesKey(slug, null),
     queryFn: () => eventTypesApi.list(slug, null),
@@ -261,10 +289,9 @@ export function ScanCreatePage({
     form,
     slug,
     branchId,
-    dataSources: dataSources as DataSource[],
+    dataSources,
     eventTypes: eventTypes as EventType[],
     sourceLocked: false,
-    footerFor: undefined,
   }
 
   return (

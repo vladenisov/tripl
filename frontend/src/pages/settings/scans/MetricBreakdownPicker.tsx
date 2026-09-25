@@ -15,6 +15,7 @@ export function MetricBreakdownPicker({
   valuesLimit,
   onToggleColumn,
   onValuesLimitChange,
+  valuesLimitError,
 }: {
   columns: ScanConfigPreview['columns']
   selectedColumns: string[]
@@ -25,6 +26,8 @@ export function MetricBreakdownPicker({
   valuesLimit: string
   onToggleColumn: (column: string) => void
   onValuesLimitChange: (value: string) => void
+  /** Why the limit above cannot be saved (DATA-25). */
+  valuesLimitError?: string
 }) {
   const availableColumns = columns.filter(column => !isJsonPreviewType(column.type_name))
   const reservedColumns = new Set(
@@ -50,7 +53,14 @@ export function MetricBreakdownPicker({
             onChange={e => onValuesLimitChange(e.target.value)}
             placeholder="Unlimited"
             className="h-8"
+            aria-invalid={valuesLimitError ? true : undefined}
+            aria-describedby={valuesLimitError ? 'breakdown-value-limit-error' : undefined}
           />
+          {valuesLimitError && (
+            <p id="breakdown-value-limit-error" className="text-xs" style={{ color: 'var(--danger)' }}>
+              {valuesLimitError}
+            </p>
+          )}
         </div>
       </div>
       {selectedColumns.length > 0 && !valuesLimit && (

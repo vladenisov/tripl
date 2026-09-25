@@ -1421,7 +1421,14 @@ section that already holds a non-default value.
 | **Limits** | Caps on how much warehouse data each run reads. Leave them alone unless runs are slow or expensive. | Replay chunk size *(Catalog + monitoring only)* · Lookback (hours) *(needs a time column — with none, the section says each run reads the whole base query instead of offering the field)* · Row cap per run · Row cap per metrics run *(Catalog + monitoring only — a Catalog only scan has no metrics runs to cap; a cap set while monitoring is kept, not cleared, and returns if you switch back)* |
 
 Sections that need your query's columns stay empty until a preview is loaded and
-say so. The shared number of releases to retain lives under **Settings → Project
+say so. Editing the base query (or pressing its Format button) keeps the JSON
+value paths and drift fields you already chose; the next preview drops only the
+ones whose column the new query no longer returns. A numeric limit the backend
+would refuse — zero, a negative or a fraction, or a traffic share outside 0–1 —
+is flagged under its field, and **Save** says which field to fix instead of
+sending it. On a saved scan's **Configuration** tab there is one **Save** for
+the whole form, at the foot of the sections; it is enabled once something has
+changed. The shared number of releases to retain lives under **Settings → Project
 → General**. The platform column powers the platform-presence matrix. Reserved
 role columns (event type, time, version, platform) cannot simultaneously be
 selected as scalar breakdown/drift fields. The **Event name format** is the
