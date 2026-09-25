@@ -1,4 +1,4 @@
-import { Fragment, memo } from 'react'
+import { Fragment, memo, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useSortable } from '@dnd-kit/sortable'
@@ -32,9 +32,8 @@ import { EventName } from '@/components/event-name'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenario } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
-import { EventDriftBadge } from './EventDriftBadge'
 import { EventWindowMetricsCell } from './EventWindowMetricsCell'
-import { PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
+import { PINNED_EVENT_CONTENT_MAX_WIDTH, PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
 import {
   computeWindowDelta,
   describeWindowDelta,
@@ -43,13 +42,8 @@ import {
 } from './utils'
 import { useCanWriteProject } from '@/lib/permissions'
 
-export type RowAction =
-  | 'edit'
-  | 'move-up'
-  | 'move-down'
-  | 'set-status-archived'
-  | 'set-status-draft'
-  | 'delete'
+/** The one action a row dispatches; the table has no per-row menu. */
+export type RowAction = 'edit'
 
 function renderTemplateValue(value: string, variables?: Variable[]): ReactNode {
   const parts = splitTemplateValue(value, variables)
@@ -112,6 +106,15 @@ export type EventRowProps = {
   onToggleSelected: (id: string, checked: boolean) => void
   onToggleExpanded: (cellKey: string | null) => void
   onRowAction: (action: RowAction, ev: EventListItem) => void
+  /**
+   * The rows are in catalog order, so dragging one means something. False
+   * under "Busiest first", where a drag would renumber the catalog into volume
+   * order (EVT-3); the handle is not offered then.
+   */
+  reorderable?: boolean
+  /** Virtualizer hooks: measure this row's real height at this index. */
+  measureRef?: (el: HTMLTableRowElement | null) => void
+  virtualIndex?: number
 }
 
 export const EventRow = memo(function EventRow({
@@ -141,6 +144,9 @@ export const EventRow = memo(function EventRow({
   onToggleSelected,
   onToggleExpanded,
   onRowAction,
+  reorderable = true,
+  measureRef,
+  virtualIndex,
 }: EventRowProps) {
   // Reorder, select-for-bulk and edit are all editor actions; a viewer gets
   // the row without them (the cells stay, so the columns line up).
@@ -152,7 +158,14 @@ export const EventRow = memo(function EventRow({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: ev.id, disabled: !canWrite })
+  } = useSortable({ id: ev.id, disabled: !canWrite || !reorderable })
+  const rowRef = useCallback(
+    (el: HTMLTableRowElement | null) => {
+      setNodeRef(el)
+      measureRef?.(el)
+    },
+    [setNodeRef, measureRef],
+  )
   const dragStyle: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -206,16 +219,19 @@ export const EventRow = memo(function EventRow({
 
   return (
     <TableRow
-      ref={setNodeRef}
+      ref={rowRef}
+      data-index={virtualIndex}
       style={dragStyle}
       data-state={selected ? 'selected' : undefined}
       className="group/row"
     >
       <TableCell className="w-8 px-1">
-        {canWrite && (
+        {canWrite && reorderable && (
+          // Hover-revealed only where the pointer can hover: on a touch screen
+          // an invisible handle cannot be found at all (EVT-21).
           <button
             type="button"
-            className="flex h-6 w-6 cursor-grab touch-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 active:cursor-grabbing"
+            className="flex h-6 w-6 cursor-grab touch-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 active:cursor-grabbing"
             aria-label={`Drag to reorder ${nameLabel}`}
             {...attributes}
             {...listeners}
@@ -237,7 +253,15 @@ export const EventRow = memo(function EventRow({
         className="tripl-pin-l border-r font-medium"
         style={{ ...PINNED_EVENT_CELL_STYLE, borderColor: 'var(--border-subtle)' }}
       >
-        <div className="inline-flex max-w-full items-center gap-2 align-middle">
+        {/* Capped, so the name, title and badges truncate. Cells never wrap
+            and auto table layout sizes a cell to its content, so a 120-char
+            scan-generated name made the sticky cluster wider than a phone and
+            every other column scrolled underneath it (EVT-7). The cap sits on
+            this box, not the cell: browsers ignore max-width on table cells. */}
+        <div
+          className="flex items-center gap-2 align-middle"
+          style={{ maxWidth: PINNED_EVENT_CONTENT_MAX_WIDTH }}
+        >
           <Dot tone={statusTone} pulse={false} size={6} />
           <Tooltip>
             <TooltipTrigger asChild>
@@ -249,7 +273,7 @@ export const EventRow = memo(function EventRow({
               <Link
                 to={detailLink.to}
                 onClick={detailLink.onClick}
-                className="mono truncate text-left text-[12.5px] hover:underline underline-offset-4"
+                className="mono min-w-0 truncate text-left text-[12.5px] hover:underline underline-offset-4"
                 // Native title only when there's no description to show in the
                 // richer tooltip — avoids a double (native + Radix) popover.
                 title={ev.description ? undefined : nameLabel}
@@ -290,25 +314,13 @@ export const EventRow = memo(function EventRow({
               ?{ev.open_question_count}
             </span>
           )}
-          {ev.drift_count > 0 && (
-            <ScenarioCoachMark
-              step="reconcile/review-drift"
-              when={ev.name === SCENARIO_SEEDED.schemaDriftEventName}
-            >
-              {/* A span, not the badge itself: the badge's own root is a Radix
-                  PopoverTrigger slot, which must keep its ref. */}
-              <span className="inline-flex">
-                <EventDriftBadge slug={slug} eventTypeId={ev.event_type_id} count={ev.drift_count} />
-              </span>
-            </ScenarioCoachMark>
-          )}
           {canWrite && (
             <ScenarioCoachMark step="edit-event/open-editor" when={coachEdit}>
               <button
                 type="button"
                 onClick={() => onRowAction('edit', ev)}
                 aria-label={`Edit ${nameLabel}`}
-                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 ${
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 ${
                   coachEdit ? 'opacity-100' : 'opacity-0'
                 }`}
               >

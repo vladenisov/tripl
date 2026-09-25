@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
-import type { Event as TEvent, EventListItem } from '@/types'
+import type { EventListItem } from '@/types'
 
 /**
  * Route state for the events surface. Pass `lockType` (an event type name) to
@@ -17,17 +17,9 @@ export function useEventsRouteState(lockType?: string) {
   const activeTab = lockType || urlTab || 'all'
   const openEventId = urlEventId || null
   const [showForm, setShowForm] = useState(false)
-  const [editingEvent, setEditingEvent] = useState<TEvent | null>(null)
 
   const openEvent = useCallback((ev: EventListItem) => {
     navigate(`/p/${slug}/events/${activeTab}/${ev.id}${searchParams.toString() ? `?${searchParams}` : ''}`)
-  }, [slug, activeTab, navigate, searchParams])
-
-  const closeEvent = useCallback(() => {
-    const path = activeTab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${activeTab}`
-    navigate(path + (searchParams.toString() ? `?${searchParams}` : ''), { replace: true })
-    setShowForm(false)
-    setEditingEvent(null)
   }, [slug, activeTab, navigate, searchParams])
 
   const openNewEvent = useCallback(() => {
@@ -35,14 +27,11 @@ export function useEventsRouteState(lockType?: string) {
       const path = activeTab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${activeTab}`
       navigate(path + (searchParams.toString() ? `?${searchParams}` : ''), { replace: true })
     }
-    setEditingEvent(null)
     setShowForm(v => !v)
   }, [activeTab, navigate, openEventId, searchParams, slug])
 
   return {
     activeTab,
-    closeEvent,
-    editingEvent,
     navigate,
     openEvent,
     openEventId,

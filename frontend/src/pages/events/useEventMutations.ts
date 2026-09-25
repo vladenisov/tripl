@@ -19,16 +19,64 @@ type Snapshot = readonly [QueryKey, EventsQueryData | undefined]
 
 export type EventMutations = ReturnType<typeof useEventMutations>
 
+/** The fields a bulk update can set, as the table's bar sends them. */
+export type BulkUpdatePatch = {
+  status?: EventStatus
+  sunset_at?: string | null
+  reviewed?: boolean
+  owner_id?: string | null
+}
+
+type BulkUpdateVars = { eventIds: string[] } & BulkUpdatePatch
+
+type PreviousValues = Map<string, Pick<EventListItem, 'status' | 'sunset_at' | 'reviewed' | 'owner_id'>>
+
+/**
+ * The bulk updates that put `eventIds` back the way they were before `patch`,
+ * grouped by previous value (the endpoint sets one value across its ids). Null
+ * when any id's previous value is unknown — a "select all N matching" sweep
+ * covers rows that were never loaded, and a partial undo would be worse than
+ * none.
+ */
+export function buildBulkUndo(
+  eventIds: string[],
+  patch: BulkUpdatePatch,
+  previous: PreviousValues,
+): BulkUpdateVars[] | null {
+  const keys = (Object.keys(patch) as (keyof BulkUpdatePatch)[])
+    .filter(key => patch[key] !== undefined)
+  if (keys.length === 0 || eventIds.length === 0) return null
+  const groups = new Map<string, BulkUpdateVars>()
+  for (const id of eventIds) {
+    const prev = previous.get(id)
+    if (!prev) return null
+    const restore: BulkUpdatePatch = {}
+    for (const key of keys) {
+      Object.assign(restore, { [key]: prev[key] ?? (key === 'reviewed' ? false : null) })
+    }
+    const groupKey = JSON.stringify(restore)
+    const group = groups.get(groupKey)
+    if (group) group.eventIds.push(id)
+    else groups.set(groupKey, { eventIds: [id], ...restore })
+  }
+  return [...groups.values()]
+}
+
 export function useEventMutations({
   slug,
   branchId,
-  onBulkDeleteOptimistic,
-  onBulkUpdateOptimistic,
+  onBulkDeleteSuccess,
+  onBulkUpdateSuccess,
 }: {
   slug: string | undefined
   branchId: string | null
-  onBulkDeleteOptimistic?: () => void
-  onBulkUpdateOptimistic?: () => void
+  /**
+   * Run on SUCCESS, not in `onMutate`: clearing the selection optimistically
+   * lost it on a 4xx/5xx, so a "select all 2,400" sweep had to be redone before
+   * it could be retried (EVT-11).
+   */
+  onBulkDeleteSuccess?: () => void
+  onBulkUpdateSuccess?: () => void
 }) {
   const qc = useQueryClient()
   // Mutations and cache patches scope to `['events', slug, branchId]` so editing
@@ -60,16 +108,18 @@ export function useEventMutations({
     }
   }, [qc])
 
-  const deleteMut = useMutation({
-    mutationFn: (id: string) => eventsApi.del(slug!, id, branchId),
-    onMutate: async (id) => {
-      await qc.cancelQueries({ queryKey: eventsKey })
-      const snapshots = applyToEventsCaches((items) => items.filter((e) => e.id !== id))
-      return { snapshots }
-    },
-    onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
-    onSettled: () => qc.invalidateQueries({ queryKey: eventsKey }),
-  })
+  // Reconcile with the server after a mutation. Invalidating an infinite query
+  // re-requests EVERY loaded page, one after another, so after scrolling 12
+  // pages each bulk action fired 12 sequential 200-row requests (EVT-12). The
+  // list is cut back to its first page first; the rest refill on demand as the
+  // table scrolls to them, exactly as they loaded the first time.
+  const refreshEventsCaches = useCallback(() => {
+    qc.setQueriesData<EventsQueryData>({ queryKey: eventsKey }, (data) => {
+      if (!data || !('pages' in data) || data.pages.length <= 1) return data
+      return { pages: data.pages.slice(0, 1), pageParams: data.pageParams.slice(0, 1) }
+    })
+    return qc.invalidateQueries({ queryKey: eventsKey })
+  }, [qc, eventsKey])
 
   const bulkDeleteMut = useMutation({
     mutationFn: (eventIds: string[]) => eventsApi.bulkDelete(slug!, eventIds, branchId),
@@ -77,65 +127,40 @@ export function useEventMutations({
       await qc.cancelQueries({ queryKey: eventsKey })
       const idSet = new Set(eventIds)
       const snapshots = applyToEventsCaches((items) => items.filter((e) => !idSet.has(e.id)))
-      onBulkDeleteOptimistic?.()
       return { snapshots }
     },
+    onSuccess: () => onBulkDeleteSuccess?.(),
     onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
-    onSettled: () => qc.invalidateQueries({ queryKey: eventsKey }),
+    onSettled: () => refreshEventsCaches(),
   })
 
   const bulkUpdateMut = useMutation({
-    mutationFn: ({
-      eventIds,
-      ...patch
-    }: {
-      eventIds: string[]
-      status?: EventStatus
-      sunset_at?: string | null
-      reviewed?: boolean
-      owner_id?: string | null
-    }) => eventsApi.bulkUpdate(slug!, eventIds, patch, branchId),
+    mutationFn: ({ eventIds, ...patch }: BulkUpdateVars) =>
+      eventsApi.bulkUpdate(slug!, eventIds, patch, branchId),
     onMutate: async ({ eventIds, ...patch }) => {
       await qc.cancelQueries({ queryKey: eventsKey })
       const idSet = new Set(eventIds)
+      // What each row held before, for the success toast's Undo.
+      const previous: PreviousValues = new Map()
       const snapshots = applyToEventsCaches((items) =>
-        items.map((e) => (idSet.has(e.id) ? { ...e, ...patch } : e)),
+        items.map((e) => {
+          if (!idSet.has(e.id)) return e
+          if (!previous.has(e.id)) {
+            previous.set(e.id, {
+              status: e.status,
+              sunset_at: e.sunset_at,
+              reviewed: e.reviewed,
+              owner_id: e.owner_id,
+            })
+          }
+          return { ...e, ...patch }
+        }),
       )
-      onBulkUpdateOptimistic?.()
-      return { snapshots }
+      return { snapshots, undo: buildBulkUndo(eventIds, patch, previous) }
     },
+    onSuccess: () => onBulkUpdateSuccess?.(),
     onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
-    onSettled: () => qc.invalidateQueries({ queryKey: eventsKey }),
-  })
-
-  // Status mutation: optimistic patch with no on-success refetch. Status
-  // transitions are self-consistent so the cache stays correct after the
-  // server confirms; skipping invalidate avoids a 200×N-row refetch on every
-  // status chip click. Filter-driven exits reconcile on the next natural refetch.
-  const setStatusMut = useMutation({
-    mutationFn: ({ id, status, sunset_at }: { id: string; status: EventStatus; sunset_at?: string | null }) =>
-      eventsApi.update(slug!, id, { status, sunset_at }, branchId),
-    onMutate: async ({ id, status, sunset_at }) => {
-      await qc.cancelQueries({ queryKey: eventsKey })
-      const snapshots = applyToEventsCaches((items) =>
-        items.map((e) => (e.id === id ? { ...e, status, ...(sunset_at !== undefined ? { sunset_at } : {}) } : e)),
-      )
-      return { snapshots }
-    },
-    onError: (_e, _v, ctx) => rollbackEventsCaches(ctx?.snapshots),
-  })
-
-  const moveEventMut = useMutation({
-    mutationFn: ({
-      id,
-      direction,
-      visibleEventIds,
-    }: {
-      id: string
-      direction: 'up' | 'down'
-      visibleEventIds: string[]
-    }) => eventsApi.move(slug!, id, { direction, visible_event_ids: visibleEventIds }, branchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: eventsKey }),
+    onSettled: () => refreshEventsCaches(),
   })
 
   const reorderEventsMut = useMutation({
@@ -166,16 +191,19 @@ export function useEventMutations({
       })
       return { snapshots }
     },
-    onError: (_error, _vars, ctx) => rollbackEventsCaches(ctx?.snapshots),
-    onSettled: () => qc.invalidateQueries({ queryKey: eventsKey }),
+    // The optimistic permutation is exactly what the server applies (it hands
+    // the same rows' existing order slots out in the order sent), so success
+    // only marks the lists stale; nothing is re-requested for a drag.
+    onSuccess: () => qc.invalidateQueries({ queryKey: eventsKey, refetchType: 'none' }),
+    onError: (_error, _vars, ctx) => {
+      rollbackEventsCaches(ctx?.snapshots)
+      void refreshEventsCaches()
+    },
   })
 
   return {
-    deleteMut,
     bulkDeleteMut,
     bulkUpdateMut,
-    setStatusMut,
-    moveEventMut,
     reorderEventsMut,
   }
 }

@@ -70,6 +70,19 @@ export function metaFieldLinkExample(template: string | null | undefined): strin
   return template.replaceAll(META_FIELD_LINK_PLACEHOLDER, META_FIELD_LINK_EXAMPLE_KEY)
 }
 
+/** Schemes a meta value may link to. `data:`, `blob:` and the like are text. */
+const SAFE_LINK = /^(https?:\/\/|mailto:)/i
+
+/**
+ * A key as it goes into a link template: URL-encoded, so a key with a space,
+ * `#`, `?` or `&` cannot end the path early or start a fragment. `/` stays as
+ * it is: templates such as `https://github.com/${value}` take `org/repo` keys
+ * whose slashes are meant as path separators.
+ */
+function encodeTemplateValue(value: string): string {
+  return encodeURIComponent(value).replaceAll('%2F', '/')
+}
+
 export function resolveMetaFieldHref(
   metaField: Pick<MetaFieldDefinition, 'field_type' | 'link_template'>,
   value: string,
@@ -77,17 +90,25 @@ export function resolveMetaFieldHref(
   if (!value) {
     return null
   }
+  let href: string
   if (metaField.link_template) {
     // A value that already is a link — pasted whole, or stored before the
     // server began stripping — must not be wrapped in the template a second
     // time (tripl-kjhi.5).
     if (ABSOLUTE_URL.test(value) || stripLinkTemplate(metaField.link_template, value) !== value) {
-      return value
+      href = value
+    } else {
+      href = metaField.link_template.replaceAll(
+        META_FIELD_LINK_PLACEHOLDER,
+        encodeTemplateValue(value),
+      )
     }
-    return metaField.link_template.replaceAll(META_FIELD_LINK_PLACEHOLDER, value)
+  } else if (metaField.field_type === 'url') {
+    href = value.trim()
+  } else {
+    return null
   }
-  if (metaField.field_type === 'url') {
-    return value
-  }
-  return null
+  // A stored value is user input: only web and mail links become anchors, so
+  // a `data:` or other scheme renders as plain text (EVT-43).
+  return SAFE_LINK.test(href) ? href : null
 }

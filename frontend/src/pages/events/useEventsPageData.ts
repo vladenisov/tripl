@@ -16,11 +16,9 @@ import {
 
 export function useEventsPageData({
   slug,
-  openEventId,
   branchId,
 }: {
   slug: string | undefined
-  openEventId: string | null
   branchId: string | null
 }) {
   const eventTypesQuery = useQuery({
@@ -51,47 +49,34 @@ export function useEventsPageData({
     queryFn: () => eventsApi.list(slug!, { status: ['in_review'], limit: 1 }, branchId),
     enabled: !!slug,
   })
-  const urlEventQuery = useQuery({
-    queryKey: ['event', slug, branchId, openEventId],
-    queryFn: () => eventsApi.get(slug!, openEventId!, branchId),
-    enabled: !!slug && !!openEventId,
-  })
 
-  const refetchPageData = useCallback(() => {
-    const refetches: Promise<unknown>[] = [
-      eventTypesQuery.refetch(),
-      metaFieldsQuery.refetch(),
-      variablesQuery.refetch(),
-      allTagsQuery.refetch(),
-      inReviewCountQuery.refetch(),
-    ]
-    if (openEventId) {
-      refetches.push(urlEventQuery.refetch())
-    }
-    return refetches
-  }, [
+  const refetchPageData = useCallback((): Promise<unknown>[] => [
+    eventTypesQuery.refetch(),
+    metaFieldsQuery.refetch(),
+    variablesQuery.refetch(),
+    allTagsQuery.refetch(),
+    inReviewCountQuery.refetch(),
+  ], [
     allTagsQuery,
     eventTypesQuery,
     metaFieldsQuery,
-    openEventId,
     inReviewCountQuery,
-    urlEventQuery,
     variablesQuery,
   ])
 
   return {
     eventTypes: eventTypesQuery.data ?? EMPTY_EVENT_TYPES,
+    /** The type list has arrived, so a type tab that matches none is unknown. */
+    eventTypesLoaded: eventTypesQuery.isSuccess,
     metaFields: metaFieldsQuery.data ?? EMPTY_META_FIELDS,
     variables: variablesQuery.data ?? EMPTY_VARIABLES,
     allTags: allTagsQuery.data ?? EMPTY_TAGS,
     inReviewCount: inReviewCountQuery.data?.total ?? 0,
-    urlEvent: urlEventQuery.data,
     dataError:
       eventTypesQuery.error ??
       metaFieldsQuery.error ??
       variablesQuery.error ??
-      allTagsQuery.error ??
-      urlEventQuery.error,
+      allTagsQuery.error,
     refetchPageData,
   }
 }

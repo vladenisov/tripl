@@ -1,5 +1,5 @@
-import { useMemo } from 'react'
-import { useQueries } from '@tanstack/react-query'
+import { useEffect, useMemo, useRef } from 'react'
+import { useQueries, useQueryClient } from '@tanstack/react-query'
 import type { VirtualItem } from '@tanstack/react-virtual'
 
 import { metricsApi } from '@/api/metrics'
@@ -90,6 +90,22 @@ export function useEventRowMetrics({
   )
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
+  // The window is NOT part of the key. It steps every few minutes, and with it
+  // in the key every bucket went back to `data: undefined` on each step, so the
+  // 48h cell, Δ and the derived Signal chips all blanked until the refetch
+  // landed, which reads as "no data" or "signal cleared" (EVT-18).
+  // `placeholderData` cannot bridge that inside `useQueries`: a new key gets a
+  // new observer with no previous data. So the key stays per bucket, the query
+  // function reads the current window, and a step invalidates the buckets —
+  // they refetch in the background and keep showing the last answer meanwhile.
+  const qc = useQueryClient()
+  const previousRangeRef = useRef(rowMetricsRange)
+  useEffect(() => {
+    if (previousRangeRef.current === rowMetricsRange) return
+    previousRangeRef.current = rowMetricsRange
+    void qc.invalidateQueries({ queryKey: ['eventWindowMetrics', slug] })
+  }, [qc, rowMetricsRange, slug])
+
   // `combine` runs on every render and isn't memoized by React Query, so it only
   // flattens (structural sharing keeps the array stable when data is unchanged);
   // the id→metric Map is built in a downstream useMemo keyed on that array.
@@ -99,8 +115,6 @@ export function useEventRowMetrics({
         'eventWindowMetrics',
         slug,
         bucketIds.join(','),
-        rowMetricsRange.time_from,
-        rowMetricsRange.time_to,
       ],
       queryFn: () => metricsApi.getEventsWindowMetrics(slug!, {
         event_ids: bucketIds,

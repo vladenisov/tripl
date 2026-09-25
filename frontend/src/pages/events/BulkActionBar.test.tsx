@@ -29,6 +29,24 @@ describe('BulkActionBar select-all-matching (tripl-7l83.11)', () => {
     expect(onSelectAllMatching).toHaveBeenCalledTimes(1)
   })
 
+  it('offers "all matching" without a count when the count is not known (EVT-2)', () => {
+    // A client-side column filter narrows rows the server total still counts,
+    // so "Select all 5000" over 12 visible rows was the wrong number.
+    const onSelectAllMatching = vi.fn()
+    renderBar({ selectedCount: 5, matchingTotal: null, onSelectAllMatching })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select all matching' }))
+    expect(onSelectAllMatching).toHaveBeenCalledTimes(1)
+  })
+
+  it('formats a large match count', () => {
+    renderBar({ selectedCount: 5, matchingTotal: 12000, onSelectAllMatching: vi.fn() })
+
+    expect(
+      screen.getByRole('button', { name: `Select all ${(12000).toLocaleString()}` }),
+    ).toBeInTheDocument()
+  })
+
   it('hides the affordance once the whole matching set is selected', () => {
     renderBar({ selectedCount: 499, matchingTotal: 499, onSelectAllMatching: vi.fn() })
     expect(screen.queryByRole('button', { name: /Select all/ })).toBeNull()

@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { EventListItem, EventListResponse } from '@/types'
+import type { EventListItem, EventListResponse, EventType } from '@/types'
 import { useEventsQuery } from './useEventsQuery'
 
 vi.mock('@/api/events', () => ({
@@ -32,9 +32,16 @@ function wrapper({ children }: { children: ReactNode }) {
   )
 }
 
-function renderEventsQuery() {
+function renderEventsQuery(
+  {
+    activeTab = 'all',
+    eventTypes = [],
+    eventTypesLoaded = true,
+  }: { activeTab?: string; eventTypes?: EventType[]; eventTypesLoaded?: boolean } = {},
+) {
   return renderHook(
-    () => useEventsQuery({ slug: SLUG, activeTab: 'all', eventTypes: [], branchId: null }),
+    () =>
+      useEventsQuery({ slug: SLUG, activeTab, eventTypes, eventTypesLoaded, branchId: null }),
     { wrapper },
   )
 }
@@ -118,6 +125,42 @@ describe('useEventsQuery.fetchAllMatchingIds', () => {
     const ids = await result.current.fetchAllMatchingIds()
 
     expect(ids).toEqual([])
+    expect(eventsApi.list).not.toHaveBeenCalled()
+  })
+})
+
+describe('useEventsQuery on a type tab (EVT-13)', () => {
+  const PAGE_VIEW = { id: 'et-pv', name: 'pv', display_name: 'Page View' } as unknown as EventType
+
+  it('sends nothing until the types have loaded, then only the scoped request', async () => {
+    const { result, rerender } = renderHook(
+      ({ eventTypes, eventTypesLoaded }: { eventTypes: EventType[]; eventTypesLoaded: boolean }) =>
+        useEventsQuery({
+          slug: SLUG,
+          activeTab: 'pv',
+          eventTypes,
+          eventTypesLoaded,
+          branchId: null,
+        }),
+      { wrapper, initialProps: { eventTypes: [], eventTypesLoaded: false } },
+    )
+
+    // An unscoped first request listed every type under the "Page View" heading.
+    expect(eventsApi.list).not.toHaveBeenCalled()
+    expect(result.current.isUnknownTab).toBe(false)
+
+    rerender({ eventTypes: [PAGE_VIEW], eventTypesLoaded: true })
+
+    await waitFor(() => expect(result.current.eventsQuery.isSuccess).toBe(true))
+    expect(
+      vi.mocked(eventsApi.list).mock.calls.every(([, params]) => params?.event_type_id === 'et-pv'),
+    ).toBe(true)
+  })
+
+  it('reports a tab that names no type instead of listing every event', async () => {
+    const { result } = renderEventsQuery({ activeTab: 'deleted-type', eventTypes: [PAGE_VIEW] })
+
+    expect(result.current.isUnknownTab).toBe(true)
     expect(eventsApi.list).not.toHaveBeenCalled()
   })
 })

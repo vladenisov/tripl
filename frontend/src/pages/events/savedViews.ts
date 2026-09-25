@@ -5,6 +5,42 @@ export type EventsSavedView = {
   updated_at: string
 }
 
+/** The URL keys that describe the list itself, and so belong in a view. */
+const VIEW_PARAM_KEYS = new Set(['q', 'status', 'tag', 'silent_days', 'reviewed', 'questions', 'sort'])
+
+function isViewParam(key: string): boolean {
+  return VIEW_PARAM_KEYS.has(key) || key.startsWith('f.') || key.startsWith('m.')
+}
+
+/**
+ * The part of a query string a saved view keeps: the filter, search and sort
+ * keys, sorted so two orders of the same filters compare equal. Everything else
+ * stays out, `?branch=` above all: a view saved on a branch reopened that
+ * branch after it had merged (EVT-36).
+ */
+export function viewParamsOf(params: URLSearchParams | string): string {
+  const source = typeof params === 'string' ? new URLSearchParams(params) : params
+  const pairs: [string, string][] = []
+  source.forEach((value, key) => {
+    if (isViewParam(key)) pairs.push([key, value])
+  })
+  pairs.sort(([ak, av], [bk, bv]) => (ak === bk ? av.localeCompare(bv) : ak.localeCompare(bk)))
+  return new URLSearchParams(pairs).toString()
+}
+
+/**
+ * `current` with its view keys replaced by `view`'s: whatever else the URL
+ * carries (the branch, for one) is left as it is.
+ */
+export function applyViewParams(current: URLSearchParams, view: string): URLSearchParams {
+  const next = new URLSearchParams()
+  current.forEach((value, key) => {
+    if (!isViewParam(key)) next.append(key, value)
+  })
+  new URLSearchParams(viewParamsOf(view)).forEach((value, key) => next.append(key, value))
+  return next
+}
+
 type StoredEventsSavedViews = Record<string, Record<string, Omit<EventsSavedView, 'name'>>>
 
 const STORAGE_KEY = 'tripl.eventsSavedViews'

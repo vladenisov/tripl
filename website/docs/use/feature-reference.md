@@ -54,9 +54,10 @@ branches, Coverage, Scans, and Audit log carry no count.
 **Where:** Plan › Events (the default project landing surface).
 
 The catalog is a table of plan **events**, split into one tab per **event type**
-(plus an "all" view). Each row shows the event name, status, tags, recent volume,
-its latest anomaly **signal** state, and a **schema-drift badge** when the event
-type has open drift. Controls include free-text search, status and tag filters, a
+(plus an "all" view). Each row shows the event name, status, tags, recent volume
+and its latest anomaly **signal** state. An event type with open drift gets one
+**schema-drift badge** beside the page heading, once per type rather than on
+every row of it. Controls include free-text search, status and tag filters, a
 "silent since N days" filter, a **Reviewed** filter (Any / Reviewed / Not
 reviewed, carried in the URL as `?reviewed=true|false`), per-column field-value
 and meta-value filters,
@@ -64,6 +65,13 @@ saved views, column visibility, bulk actions, and a per-tab aggregate metrics
 chart. The review queue can sort **Busiest first**, collapse similar-name
 clusters for group selection, and expand the selection from loaded rows to
 **Select all N** matching events before a bulk status/owner/review/delete action.
+Per-column field and meta filters count as part of "matching" too, so under one
+the button reads **Select all matching**. The selection is cleared when you
+switch tab, branch or server filter; a bulk change that reaches rows off screen,
+covers more than 50 events or archives asks first, and a finished status, owner
+or reviewed change offers **Undo** in its toast when every changed row was
+loaded. Drag-to-reorder is off while the list is sorted **Busiest first**,
+because the rows are not in catalog order then.
 The **Reviewed** column is hidden by default in the column picker but is forced
 visible on the review tab (`/events/review`).
 
@@ -397,7 +405,7 @@ same way, for the same reason.
 ### Schema drift
 
 Drift is detected when incoming data diverges from an event type's declared
-schema and is surfaced as the **schema-drift badge** on event rows in the
+schema and is surfaced as the **schema-drift badge** beside the heading of the
 catalog. Drift kinds are `new_field`, `missing_field`, `type_changed`,
 `enum_violation`, `required_null_violation`, `regex_violation`, and
 `range_violation`. Per drift you can **accept**, **snooze** (defaults to 7 days,

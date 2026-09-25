@@ -334,7 +334,9 @@ describe('EventsPage', () => {
     expect(screen.getByText('48h')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '7d' })).toBeInTheDocument()
     expect(screen.getByText('Hours')).toBeInTheDocument()
-    const metricsButton = await screen.findByRole('button', { name: /Homepage View metrics: 1K events in last 48 hours/ })
+    // An image, not a button: pressing it did nothing, so it was a dead tab
+    // stop on every row (EVT-46).
+    const metricsButton = await screen.findByRole('img', { name: /Homepage View metrics: 1K events in last 48 hours/ })
     expect(metricsButton).toBeInTheDocument()
     // The row exposes no inline action buttons — Edit/Metrics/Archive/Delete and
     // move/status now live on the event detail page, not on the row.
@@ -1020,5 +1022,207 @@ describe('EventsPage CSV export', () => {
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Could not export CSV')),
     )
+  })
+})
+
+const SCREEN_FIELD = {
+  id: 'fd-screen',
+  event_type_id: 'type-1',
+  name: 'screen',
+  display_name: 'Screen',
+  field_type: 'string',
+  is_required: false,
+  enum_options: null,
+  order: 0,
+}
+
+/**
+ * One fetch stub for the catalog tests below: a single event type with a
+ * `screen` field, the list answering with `events`, and every side query the
+ * page makes answered with a valid empty payload. Records the list URLs and
+ * the bulk request bodies it sees.
+ */
+function mockCatalogFetch({
+  events,
+  listGate,
+}: {
+  events: ReturnType<typeof makeEvent>[]
+  listGate?: Promise<void>
+}) {
+  const listUrls: string[] = []
+  const bulkDeleteBodies: unknown[] = []
+  const bulkUpdateBodies: unknown[] = []
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input)
+    if (url.endsWith('/api/v1/projects/demo/event-types')) {
+      return mockJsonResponse([
+        {
+          id: 'type-1',
+          project_id: 'project-1',
+          name: 'page',
+          display_name: 'Page',
+          description: '',
+          color: '#0ea5e9',
+          order: 0,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          field_definitions: [SCREEN_FIELD],
+        },
+      ])
+    }
+    if (url.endsWith('/api/v1/projects/demo/meta-fields')) return mockJsonResponse([])
+    if (url.includes('/api/v1/projects/demo/variables')) return mockJsonResponse({ items: [], total: 0 })
+    if (url.endsWith('/api/v1/projects/demo/events/tags')) return mockJsonResponse([])
+    if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
+    if (url.endsWith('/api/v1/projects/demo/events/window-metrics') && init?.method === 'POST') {
+      return mockJsonResponse([])
+    }
+    if (url.includes('/api/v1/projects/demo/events-metrics')) {
+      return mockJsonResponse({
+        scope: 'events_total',
+        scan_config_id: null,
+        event_id: null,
+        event_type_id: null,
+        interval: '1h',
+        latest_signal: null,
+        data: [],
+      })
+    }
+    if (url.includes('/api/v1/projects/demo/anomalies/signals')) return mockJsonResponse([])
+    if (url.endsWith('/api/v1/projects/demo/events/bulk-delete') && init?.method === 'POST') {
+      bulkDeleteBodies.push(JSON.parse(String(init.body)))
+      return new Response(null, { status: 204 })
+    }
+    if (url.endsWith('/api/v1/projects/demo/events/bulk-update') && init?.method === 'POST') {
+      bulkUpdateBodies.push(JSON.parse(String(init.body)))
+      return new Response(null, { status: 204 })
+    }
+    if (url.includes('/api/v1/projects/demo/events') && url.includes('status=in_review') && url.includes('limit=1')) {
+      return mockJsonResponse({ items: [], total: 0 })
+    }
+    if (url.includes('/api/v1/projects/demo/events')) {
+      listUrls.push(url)
+      if (listGate) await listGate
+      return mockJsonResponse({ items: events, total: events.length })
+    }
+    return mockJsonResponse({})
+  })
+  return { listUrls, bulkDeleteBodies, bulkUpdateBodies }
+}
+
+function screenEvent(id: string, name: string, screen: string) {
+  return makeEvent({
+    id,
+    name,
+    drift_count: 0,
+    field_values: [{ id: `fv-${id}`, field_definition_id: SCREEN_FIELD.id, value: screen }],
+  })
+}
+
+describe('EventsPage current view', () => {
+  it('selects only the rows a column filter leaves when selecting all matching (EVT-2)', async () => {
+    // The column filter showed 12 rows; "Select all" took the server's 5,000
+    // and "Delete selected" deleted them all.
+    const { bulkDeleteBodies } = mockCatalogFetch({
+      events: [
+        screenEvent('event-1', 'checkout_view', 'checkout'),
+        screenEvent('event-2', 'home_view', 'home'),
+        screenEvent('event-3', 'cart_view', 'cart'),
+      ],
+    })
+
+    renderEventsPage(['/p/demo/events?f.screen=checkout'])
+
+    expect(await screen.findByText('checkout_view')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('home_view')).not.toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('Select checkout_view'))
+    fireEvent.click(screen.getByRole('button', { name: 'Select all matching' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Selecting…' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => expect(bulkDeleteBodies).toEqual([{ event_ids: ['event-1'] }]))
+  })
+
+  it('offers no drag-reorder while sorted busiest first (EVT-3)', async () => {
+    mockCatalogFetch({ events: [screenEvent('event-1', 'checkout_view', 'checkout')] })
+
+    renderEventsPage(['/p/demo/events?sort=volume'])
+
+    expect(await screen.findByText('checkout_view')).toBeInTheDocument()
+    expect(screen.getByLabelText('Select checkout_view')).toBeInTheDocument()
+    expectAbsent('button', 'Drag to reorder checkout_view')
+  })
+
+  it('says it is loading, not "No events yet", during the cold load (EVT-14)', async () => {
+    let releaseList = () => {}
+    const listGate = new Promise<void>((resolve) => {
+      releaseList = resolve
+    })
+    mockCatalogFetch({ events: [screenEvent('event-1', 'checkout_view', 'checkout')], listGate })
+
+    renderEventsPage()
+
+    expect(await screen.findByText('Loading events…')).toBeInTheDocument()
+    expect(screen.queryByText('No events yet')).not.toBeInTheDocument()
+
+    releaseList()
+    expect(await screen.findByText('checkout_view')).toBeInTheDocument()
+  })
+
+  it('keeps the full toolbar on an empty Review tab (EVT-15)', async () => {
+    mockCatalogFetch({ events: [] })
+
+    renderEventsPage(['/p/demo/events/review'])
+
+    expect(await screen.findByText('Nothing waiting for review')).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Sort order' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'More actions' })).toBeInTheDocument()
+  })
+
+  it('redirects an event link to the editor without loading the list first (EVT-50)', async () => {
+    const { listUrls } = mockCatalogFetch({ events: [] })
+
+    renderEventsPage(['/p/demo/events/all/ev-1'])
+
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/p/demo/events/all/ev-1/edit'),
+    )
+    expect(listUrls.filter((url) => url.includes('limit=200'))).toEqual([])
+  })
+
+  it('reports a bulk status change and offers to undo it (EVT-11)', async () => {
+    vi.mocked(toast.success).mockClear()
+    const { bulkUpdateBodies } = mockCatalogFetch({
+      events: [
+        screenEvent('event-1', 'checkout_view', 'checkout'),
+        { ...screenEvent('event-2', 'home_view', 'home'), status: 'draft' },
+      ],
+    })
+
+    renderEventsPage()
+
+    expect(await screen.findByText('checkout_view')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Select checkout_view'))
+    fireEvent.click(screen.getByLabelText('Select home_view'))
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Set status' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('option', { name: 'Implemented' }))
+
+    await waitFor(() =>
+      expect(bulkUpdateBodies).toEqual([
+        { event_ids: ['event-1', 'event-2'], status: 'implemented' },
+      ]),
+    )
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        'Set 2 events to Implemented',
+        expect.objectContaining({ action: expect.objectContaining({ label: 'Undo' }) }),
+      ),
+    )
+    // Success, not the optimistic moment, clears the selection.
+    expect(screen.queryByRole('combobox', { name: 'Set status' })).not.toBeInTheDocument()
   })
 })

@@ -1,6 +1,7 @@
 import { Info } from 'lucide-react'
 
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
+import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import {
   Tooltip,
   TooltipContent,
@@ -8,6 +9,17 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import type { EventType, MonitoringSignal } from '@/types'
+
+import { EventDriftBadge } from './EventDriftBadge'
+
+/** One event type with open schema drift, as the header shows it. */
+export type EventTypeDrift = {
+  eventTypeId: string
+  label: string
+  count: number
+  /** The coached demo step points at this badge (reconcile/review-drift). */
+  coach?: boolean
+}
 
 // One-line clarifier for the header stat, which reads confusingly next to the
 // sidebar "Anomalies" badge on the same screen. The two counts are NOT nested:
@@ -63,7 +75,10 @@ export function EventsHeader({
   projectTotalSignal,
   eventTypeSignals,
   activeType = null,
+  slug,
+  typeDrifts = [],
 }: {
+  /** Events the current tab and filters match; formatted like the table footer. */
   total: number
   /**
    * Events whose STATUS is `in_review` — not the count of unreviewed events.
@@ -78,6 +93,14 @@ export function EventsHeader({
   // When a type tab is active (e.g. /events/pv) the heading reflects it
   // ("Page View events") instead of the generic "Events".
   activeType?: EventType | null
+  slug?: string
+  /**
+   * Open schema drift, once per event type. Drift belongs to the type, and the
+   * backend copies the type's count onto every event of it, so a badge per row
+   * repeated the same number down hundreds of rows and read as a per-event
+   * count (EVT-33).
+   */
+  typeDrifts?: EventTypeDrift[]
 }) {
   const liveSignalCount = eventTypeSignals.size + (projectTotalSignal ? 1 : 0)
   const hasLiveSignal = eventTypeSignals.size > 0 || !!projectTotalSignal
@@ -88,13 +111,33 @@ export function EventsHeader({
         <h1 className="m-0 text-[20px] font-semibold tracking-[-0.01em]">
           {activeType ? `${activeType.display_name} events` : 'Events'}
         </h1>
-        <span className="mono text-[13px]" style={{ color: 'var(--fg-subtle)' }}>{total}</span>
+        {slug && typeDrifts.length > 0 && (
+          <span className="inline-flex flex-wrap items-center gap-1.5 self-center">
+            {typeDrifts.map(drift => (
+              <ScenarioCoachMark key={drift.eventTypeId} step="reconcile/review-drift" when={!!drift.coach}>
+                {/* A span, not the badge itself: the badge's own root is a
+                    Radix PopoverTrigger slot, which must keep its ref. */}
+                <span className="inline-flex">
+                  <EventDriftBadge
+                    slug={slug}
+                    eventTypeId={drift.eventTypeId}
+                    count={drift.count}
+                    typeLabel={activeType ? undefined : drift.label}
+                  />
+                </span>
+              </ScenarioCoachMark>
+            ))}
+          </span>
+        )}
       </div>
       {/* Wraps rather than overflows: the scoped "In review · project" caption
           is the widest label in the row, and on a phone-width viewport the
           three stats no longer fit the line the heading leaves them. */}
       <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
-        <MiniStat label="Total" value={String(total)} />
+        {/* The one place the count appears in the header: the heading used to
+            repeat it beside the h1, unformatted, while the footer formatted
+            the same number (EVT-16). */}
+        <MiniStat label="Total" value={total.toLocaleString()} />
         <MiniStatDivider />
         <div className="inline-flex items-center gap-1">
           <MiniStat

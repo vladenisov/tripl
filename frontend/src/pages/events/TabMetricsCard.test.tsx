@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { TabMetricsCard } from './TabMetricsCard'
+import { unappliedChartFilters } from './utils'
 
 vi.mock('@/components/ui/chart-lazy', () => ({
   MetricsChart: ({ sigmaThreshold }: { sigmaThreshold?: number }) => (
@@ -43,7 +44,10 @@ function installFetch() {
   })
 }
 
-function renderCard(branchId: string | null) {
+function renderCard(
+  branchId: string | null,
+  { isOpen = true, unappliedFilters }: { isOpen?: boolean; unappliedFilters?: string[] } = {},
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
@@ -53,9 +57,10 @@ function renderCard(branchId: string | null) {
           activeEt={null}
           activeTabLabel="All events"
           activeTabSignal={null}
-          isOpen
+          isOpen={isOpen}
           onOpenChange={() => {}}
           branchId={branchId}
+          unappliedFilters={unappliedFilters}
           filters={{
             filterEtId: undefined,
             debouncedSearch: '',
@@ -102,5 +107,43 @@ describe('TabMetricsCard', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
     const url = new URL(String(fetchSpy.mock.calls[0][0]), 'http://localhost')
     expect(url.searchParams.has('branch')).toBe(false)
+  })
+
+  it('neither fetches nor polls while the chart is collapsed (EVT-20)', async () => {
+    const fetchSpy = installFetch()
+    renderCard(null, { isOpen: false })
+
+    expect(await screen.findByRole('button', { name: /Show chart/ })).toBeInTheDocument()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('names the table filters its series does not apply (EVT-20)', async () => {
+    installFetch()
+    renderCard(null, { unappliedFilters: ['activity', 'column filters'] })
+
+    expect(
+      await screen.findByText(/Not narrowed by activity, column filters\./),
+    ).toBeInTheDocument()
+  })
+})
+
+describe('unappliedChartFilters', () => {
+  it('lists only the active filters the metrics endpoint cannot take', () => {
+    expect(
+      unappliedChartFilters({
+        filterSilentDays: undefined,
+        filterReviewed: undefined,
+        filterOpenQuestions: undefined,
+        hasColumnFilters: false,
+      }),
+    ).toEqual([])
+    expect(
+      unappliedChartFilters({
+        filterSilentDays: 7,
+        filterReviewed: false,
+        filterOpenQuestions: true,
+        hasColumnFilters: true,
+      }),
+    ).toEqual(['activity', 'reviewed', 'questions', 'column filters'])
   })
 })

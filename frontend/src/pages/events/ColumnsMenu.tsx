@@ -61,7 +61,7 @@ export function ColumnsMenu({
       <PopoverTrigger asChild>
         <Button variant="outline" size="sm" className="h-8 text-xs">
           <LayoutGrid className="h-3 w-3" />
-          Columns
+          <span className="max-sm:sr-only">Columns</span>
           {badge && (
             <span
               className="ml-1 text-[10.5px]"

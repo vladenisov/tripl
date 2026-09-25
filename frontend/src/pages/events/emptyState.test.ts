@@ -51,4 +51,14 @@ describe('eventsEmptyCopy', () => {
 
     expect(copy.title).toBe('No events in checkout')
   })
+
+  it('names the type by its display name, not the internal key (EVT-39)', () => {
+    const copy = eventsEmptyCopy({ ...base, activeTab: 'se', typeLabel: 'Structured Event' })
+
+    expect(copy.title).toBe('No events in Structured Event')
+    // The table renders the "New event" action for a first run; the copy no
+    // longer promises one in words.
+    expect(copy.isFirstRun).toBe(true)
+    expect(copy.description).not.toMatch(/Add one/)
+  })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeVirtualRowCount } from './useEventsTableVirtualization'
+import { computeVirtualRowCount, shouldFetchNextPage } from './useEventsTableVirtualization'
 
 describe('computeVirtualRowCount', () => {
   it('sizes the spacer to the server total, not the loaded page', () => {
@@ -46,5 +46,34 @@ describe('computeVirtualRowCount', () => {
         total: 20,
       }),
     ).toBe(0)
+  })
+})
+
+describe('shouldFetchNextPage', () => {
+  const base = {
+    hasNextPage: true,
+    isFetchingNextPage: false,
+    virtualize: false,
+    isClientFiltered: false,
+    loadedCount: 40,
+    lastVisibleIndex: undefined,
+  }
+
+  it('keeps paging under a column filter whose first page matched nothing (EVT-4)', () => {
+    // Stopping at an empty page showed "No events match" over a catalog whose
+    // later pages held matches.
+    expect(shouldFetchNextPage({ ...base, isClientFiltered: true, loadedCount: 0 })).toBe(true)
+  })
+
+  it('does not page an empty unfiltered list, or while a page is in flight', () => {
+    expect(shouldFetchNextPage({ ...base, loadedCount: 0 })).toBe(false)
+    expect(shouldFetchNextPage({ ...base, isFetchingNextPage: true })).toBe(false)
+    expect(shouldFetchNextPage({ ...base, hasNextPage: false })).toBe(false)
+  })
+
+  it('pages a virtualized list only as the viewport nears the loaded end', () => {
+    const virtual = { ...base, virtualize: true, loadedCount: 400 }
+    expect(shouldFetchNextPage({ ...virtual, lastVisibleIndex: 100 })).toBe(false)
+    expect(shouldFetchNextPage({ ...virtual, lastVisibleIndex: 360 })).toBe(true)
   })
 })
