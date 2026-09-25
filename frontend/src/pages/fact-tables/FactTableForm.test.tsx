@@ -51,7 +51,6 @@ const { useDataSourceSchemaMock } = vi.hoisted(() => ({
 }))
 vi.mock('@/hooks/useDataSourceSchema', () => ({
   useDataSourceSchema: useDataSourceSchemaMock,
-  toSQLNamespace: () => ({}),
 }))
 
 import { factTablesApi } from '@/api/factTablesApi'

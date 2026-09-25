@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { ApiError } from '@/api/client'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import type { MetricDefinitionDetailResponse } from '@/types'
 
@@ -12,6 +13,12 @@ const DEFAULT_POLL_INTERVAL_MS = 3000
  * informational toast instead of spinning indefinitely.
  */
 const WATCH_TIMEOUT_MS = 5 * 60_000
+/**
+ * Consecutive failed polls (5xx, network) after which the watch gives up. A
+ * failing poll used to error the query, which kept refetching on the interval
+ * — a global error toast every 3 s and a collect spinner that never stopped.
+ */
+const MAX_POLL_FAILURES = 3
 
 /** `MetricDefinition.last_collection_status` markers stamped by the backend. */
 const STATUS_RUNNING = 'running'
@@ -39,6 +46,9 @@ export interface MetricWatchRequest<TContext> {
 interface WatchTarget<TContext> extends MetricWatchRequest<TContext> {
   startedAt: number
 }
+
+/** How a watch ended without the run reaching a terminal status. */
+type WatchAbandoned = 'timeout' | 'missing' | 'unreachable'
 
 export interface MetricCollectionWatcherOptions {
   /** Poll cadence override — tests only. */
@@ -94,20 +104,34 @@ export function useMetricCollectionWatcher<TContext = void>(
   // Guards double-reporting if a poll resolves right as the watch is torn down.
   const reportedRef = useRef<number | null>(null)
 
+  // Consecutive failed polls for the current watch (reset by a good poll).
+  const failuresRef = useRef(0)
+
   const settle = (
     watched: WatchTarget<TContext>,
-    definition: MetricDefinitionDetailResponse | null,
+    outcome: MetricDefinitionDetailResponse | WatchAbandoned,
   ): void => {
     if (reportedRef.current === watched.startedAt) return
     reportedRef.current = watched.startedAt
     setTarget(null)
-    if (definition === null) {
-      // Watch timeout — the run may legitimately still be going.
+    if (outcome === 'timeout') {
+      // The run may legitimately still be going.
       toast.info(
         `"${watched.displayName}" is still collecting — the chart will update when it finishes.`,
       )
       return
     }
+    if (outcome === 'missing') {
+      toast.error(`"${watched.displayName}" no longer exists — it was deleted while collecting.`)
+      return
+    }
+    if (outcome === 'unreachable') {
+      toast.info(
+        `Lost track of "${watched.displayName}" — the server stopped answering. Reload the page to see whether it finished.`,
+      )
+      return
+    }
+    const definition = outcome
     if (definition.last_collection_status === STATUS_ERROR) {
       toast.error(
         definition.last_collection_error
@@ -135,21 +159,42 @@ export function useMetricCollectionWatcher<TContext = void>(
     // Terminal-state detection lives in the poll itself (an async callback, not
     // an effect): each fetch inspects the persisted status and settles the watch
     // as soon as it leaves "running".
+    //
+    // The poll never throws: every failure is counted and settled here, so no
+    // error reaches the query (and its global toast) on each interval.
     queryFn: async () => {
       if (!target) return null
-      const definition = await metricsCatalogApi.get(target.slug, target.metricId)
-      const status = definition.last_collection_status
-      if (status === STATUS_RUNNING || status === null) {
-        if (Date.now() - target.startedAt >= WATCH_TIMEOUT_MS) settle(target, null)
-        return definition
+      // Checked before fetching, so the watch ends on time even while every
+      // poll is failing.
+      if (Date.now() - target.startedAt >= WATCH_TIMEOUT_MS) {
+        settle(target, 'timeout')
+        return null
       }
+      let definition: MetricDefinitionDetailResponse
+      try {
+        definition = await metricsCatalogApi.get(target.slug, target.metricId)
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          settle(target, 'missing')
+        } else {
+          failuresRef.current += 1
+          if (failuresRef.current >= MAX_POLL_FAILURES) settle(target, 'unreachable')
+        }
+        return null
+      }
+      failuresRef.current = 0
+      const status = definition.last_collection_status
+      if (status === STATUS_RUNNING || status === null) return definition
       settle(target, definition)
       return definition
     },
   })
 
   return {
-    watch: (request) => setTarget({ ...request, startedAt: Date.now() }),
+    watch: (request) => {
+      failuresRef.current = 0
+      setTarget({ ...request, startedAt: Date.now() })
+    },
     isWatching: target !== null,
     watchingMetricId: target?.metricId ?? null,
   }

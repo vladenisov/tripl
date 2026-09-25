@@ -14,7 +14,14 @@
 
 import type { QueryClient, QueryKey } from '@tanstack/react-query'
 import { refreshEventsLists } from '@/lib/eventsListCache'
-import { projectEventTypesKey } from '@/lib/queryKeys'
+import {
+  alertDeliveriesAnyKey,
+  alertInboxGroupKey,
+  alertInboxKey,
+  projectEventTypesKey,
+  projectKey,
+  projectsKey,
+} from '@/lib/queryKeys'
 
 export const PROJECT_EVENT_TYPES = [
   'scan_job.updated',
@@ -28,6 +35,16 @@ export type ProjectEventType = (typeof PROJECT_EVENT_TYPES)[number]
 
 export function isProjectEventType(value: string): value is ProjectEventType {
   return (PROJECT_EVENT_TYPES as readonly string[]).includes(value)
+}
+
+/**
+ * The alert inbox: the incident queue, one incident's deliveries, and the
+ * "has this project ever delivered" probe. The inbox does not poll while the
+ * stream is live, so without these a new incident never appeared in an open
+ * Inbox until a reload (#194 SHELL-29).
+ */
+function alertInboxKeys(slug: string): QueryKey[] {
+  return [alertInboxKey(slug), alertInboxGroupKey(slug), alertDeliveriesAnyKey(slug)]
 }
 
 /** Activity rail keys — project feed + the workspace ('workspace' fallback) feed. */
@@ -47,7 +64,6 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['scanJobs', slug],
         ['events', slug],
         projectEventTypesKey(slug),
-        ['eventsMetrics', slug],
         ['overview'],
         ...activityKeys(slug),
       ]
@@ -61,7 +77,6 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['eventMetricBreakdowns', slug],
         ['eventHistory', slug],
         ['event', slug],
-        ['eventsMetrics', slug],
         ['eventWindowMetrics', slug],
         ['appVersionAdoption', slug],
         ['distributionDrifts', slug],
@@ -93,15 +108,17 @@ export function invalidationKeysFor(type: ProjectEventType, slug: string): Query
         ['topbarNotifications', slug],
         ['overview'],
         ...activityKeys(slug),
+        ...alertInboxKeys(slug),
       ]
     case 'activity.created':
       return [
         ...activityKeys(slug),
         ['topbarNotifications', slug],
         ['alertDeliveries', slug],
+        ...alertInboxKeys(slug),
       ]
     case 'project_summary.updated':
-      return [['projects'], ['project', slug], ['overview']]
+      return [projectsKey(), projectKey(slug), ['overview']]
   }
 }
 

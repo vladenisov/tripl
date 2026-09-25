@@ -4,6 +4,7 @@
  * component (react-refresh) and so these pure functions can be unit-tested.
  */
 
+import { uid } from '@/lib/uid'
 import type { FactTableColumn } from '@/types/factTables'
 import {
   factColumnValueKind,
@@ -54,10 +55,10 @@ export type FactFilter =
 export type FactConditionFilter = Extract<FactFilter, { kind: 'condition' }>
 
 export function makeNamedFilter(name = ''): FactFilter {
-  return { id: crypto.randomUUID(), kind: 'named', name }
+  return { id: uid(), kind: 'named', name }
 }
 export function makeSqlFilter(sql = ''): FactFilter {
-  return { id: crypto.randomUUID(), kind: 'sql', sql }
+  return { id: uid(), kind: 'sql', sql }
 }
 export function makeConditionFilter(
   column = '',
@@ -65,8 +66,8 @@ export function makeConditionFilter(
   value: string | string[] = '',
 ): FactFilter {
   return Array.isArray(value)
-    ? { id: crypto.randomUUID(), kind: 'condition', column, operator, value: '', values: value }
-    : { id: crypto.randomUUID(), kind: 'condition', column, operator, value, values: [] }
+    ? { id: uid(), kind: 'condition', column, operator, value: '', values: value }
+    : { id: uid(), kind: 'condition', column, operator, value, values: [] }
 }
 
 /**
@@ -388,7 +389,7 @@ export function filtersFromConfig(
   const out: FactFilter[] = config.rowFilters.map(name => makeNamedFilter(name))
   for (const condition of config.conditions) {
     out.push({
-      id: crypto.randomUUID(),
+      id: uid(),
       kind: 'condition',
       ...conditionRowFields(condition),
       stored: condition,

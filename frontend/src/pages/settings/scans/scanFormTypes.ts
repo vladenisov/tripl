@@ -1,4 +1,5 @@
 import type { EventGroupRule } from '@/types'
+import { uid } from '@/lib/uid'
 
 // Client-only UI state: each rule/condition carries a stable `_uid` so React keys
 // don't reattach controlled-input state to the wrong row when a middle item is
@@ -10,7 +11,7 @@ export type UiEventGroupRule = Omit<EventGroupRule, 'conditions'> & {
 }
 
 function newUid(): string {
-  return crypto.randomUUID()
+  return uid()
 }
 
 export function emptyGroupCondition(): UiEventGroupCondition {

@@ -9,7 +9,7 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { factTablesApi } from '@/api/factTablesApi'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
 import { Chip } from '@/components/primitives/chip'
-import { SqlEditor } from '@/components/sql-editor'
+import { LazySqlEditor } from '@/components/sql-editor-lazy'
 import { Card, CardContent } from '@/components/ui/card'
 import { formatDateTime } from '@/lib/datetime'
 import { factColumnValueKind } from '@/lib/factColumnValueKind'
@@ -288,7 +288,7 @@ function SqlExpression({ config }: { config: Record<string, unknown> }) {
             Show SQL
           </summary>
           <div className="border-t p-2">
-            <SqlEditor
+            <LazySqlEditor
               value={metricSql}
               onChange={() => undefined}
               ariaLabel="Metric SQL"
@@ -487,7 +487,7 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
                 {' · '}{item.metric_ids.length} metric{item.metric_ids.length === 1 ? '' : 's'}
                 {' · '}{formatDateTime(item.window_from)} → {formatDateTime(item.window_to)}
               </p>
-              <SqlEditor
+              <LazySqlEditor
                 value={item.sql}
                 onChange={() => undefined}
                 ariaLabel={editorLabel}

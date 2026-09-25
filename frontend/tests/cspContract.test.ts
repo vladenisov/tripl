@@ -6,7 +6,8 @@ const EXPECTED_CSP =
   "default-src 'self'; script-src 'self'; " +
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
   "img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; " +
-  "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+  "connect-src 'self'; frame-src https://www.figma.com https://embed.figma.com; " +
+  "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 
 function readFrontendFile(path: string): string {
   return readFileSync(resolve(process.cwd(), path), 'utf8')
@@ -33,5 +34,30 @@ describe('production CSP contract', () => {
 
     expect(indexHtml).toContain('https://fonts.googleapis.com/css2')
     expect(nginxCsp).toBe(EXPECTED_CSP)
+  })
+
+  // Two deploy shapes serve the SPA: the API's own static handler and the
+  // standalone nginx image. They drifted once — nginx had no frame-src, so the
+  // Figma embed was blocked there only (#194 SHELL-37).
+  it('matches the backend default CSP exactly', () => {
+    const backend = readFrontendFile('../backend/src/tripl/middleware/security_headers.py')
+    const block = backend.match(/_DEFAULT_SPA_CSP = \(([\s\S]*?)\n\)/)?.[1]
+    expect(block).toBeDefined()
+    const backendCsp = [...block!.matchAll(/"([^"]*)"/g)].map((m) => m[1]).join('')
+    expect(backendCsp).toBe(EXPECTED_CSP)
+  })
+
+  it('lets the API accept an event photo as large as the backend allows', () => {
+    const nginxConfig = readFrontendFile('nginx.conf')
+    const apiBlock = nginxConfig.match(/location \/api\/ \{([\s\S]*?)\n {8}\}/)?.[1] ?? ''
+    // photo_max_size_mb = 10 in backend/src/tripl/config.py; nginx defaults to 1m.
+    const limit = apiBlock.match(/client_max_body_size (\d+)m;/)?.[1]
+    expect(Number(limit)).toBeGreaterThanOrEqual(10)
+  })
+
+  it('sends nosniff on hashed assets too, not only on the document', () => {
+    const nginxConfig = readFrontendFile('nginx.conf')
+    const assetsBlock = nginxConfig.match(/location \/assets\/ \{([\s\S]*?)\n {8}\}/)?.[1] ?? ''
+    expect(assetsBlock).toContain('add_header X-Content-Type-Options "nosniff" always;')
   })
 })

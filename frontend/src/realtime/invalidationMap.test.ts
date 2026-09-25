@@ -23,6 +23,16 @@ describe('isProjectEventType', () => {
 })
 
 describe('invalidationKeysFor', () => {
+  it.each(['activity.created', 'signals.updated'] as const)(
+    '%s refreshes the alert inbox, which does not poll while the stream is live',
+    (type) => {
+      const keys = invalidationKeysFor(type, SLUG)
+      expect(hasKey(keys, ['alertInbox', SLUG])).toBe(true)
+      expect(hasKey(keys, ['alertInboxGroup', SLUG])).toBe(true)
+      expect(hasKey(keys, ['alertDeliveriesAny', SLUG])).toBe(true)
+    },
+  )
+
   it('returns a non-empty, slug-scoped key set for every event type', () => {
     for (const type of PROJECT_EVENT_TYPES) {
       const keys = invalidationKeysFor(type, SLUG)
@@ -43,7 +53,8 @@ describe('invalidationKeysFor', () => {
     const keys = invalidationKeysFor('metric_collection.updated', SLUG)
     expect(hasKey(keys, ['metrics-catalog', SLUG])).toBe(true)
     expect(hasKey(keys, ['monitoringMetrics', SLUG])).toBe(true)
-    expect(hasKey(keys, ['eventsMetrics', SLUG])).toBe(true)
+    // A key no query uses: it matched nothing and read as coverage.
+    expect(hasKey(keys, ['eventsMetrics', SLUG])).toBe(false)
     expect(hasKey(keys, ['eventWindowMetrics', SLUG])).toBe(true)
     expect(hasKey(keys, ['reconciliation'])).toBe(true)
     expect(hasKey(keys, ['overview'])).toBe(true)

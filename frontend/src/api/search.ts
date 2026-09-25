@@ -11,7 +11,12 @@ type SearchParams = {
 }
 
 export const searchApi = {
-  search: (slug: string, params: SearchParams, branchId?: string | null) => {
+  search: (
+    slug: string,
+    params: SearchParams,
+    branchId?: string | null,
+    signal?: AbortSignal,
+  ) => {
     const sp = new URLSearchParams()
     sp.set('q', params.q)
     params.types?.forEach(type => sp.append('types', type))
@@ -22,6 +27,7 @@ export const searchApi = {
     if (params.semantic !== undefined) sp.set('semantic', String(params.semantic))
     return api.get<SearchResponse>(
       withBranch(`/projects/${slug}/search?${sp.toString()}`, branchId),
+      signal,
     )
   },
   reindex: (slug: string, branchId?: string | null) =>

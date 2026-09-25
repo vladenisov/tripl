@@ -5,10 +5,20 @@
  * each named event, invalidates the mapped React-Query keys (see
  * {@link ./invalidationMap}). One-way: server → client only.
  *
- * Reconnect: manual with exponential backoff, carrying the `Last-Event-ID`
- * cursor as `?last_event_id=` so the server can replay missed events. Duplicate
- * delivery (replay, StrictMode remount) is harmless — invalidation is
- * idempotent — and additionally de-duplicated by monotonic event id.
+ * Reconnect: manual with jittered exponential backoff, carrying the
+ * `Last-Event-ID` cursor as `?last_event_id=` so the server can replay missed
+ * events. Coming back online or to a visible tab reconnects at once instead of
+ * waiting out the timer. Duplicate delivery (replay, StrictMode remount) is
+ * harmless — invalidation is idempotent — and additionally de-duplicated by
+ * monotonic event id.
+ *
+ * Resync: the server's replay ring is small, and a Redis restart without
+ * persistence starts the per-project sequence again at 1. So the first `hello`
+ * after a reconnect refreshes every project cache the stream feeds, once, and
+ * forgets the de-dupe high-water mark; an id far below that mark is read as a
+ * sequence reset rather than as a stale duplicate. Without this, a reset left
+ * every surface silently stale while the status still read `live`, which also
+ * switches polling off.
  *
  * Status: `connecting` until the server's `hello` event, then `live` (Redis pub/
  * sub delivering) or `degraded` (Redis off — clients keep polling); `closed`
@@ -25,7 +35,21 @@ import { PROJECT_EVENT_TYPES, invalidateForEvent, isProjectEventType } from './i
 
 const BASE_BACKOFF_MS = 1000
 const MAX_BACKOFF_MS = 30_000
+/** ±30%, so clients dropped together by a deploy do not reconnect in lockstep. */
+const BACKOFF_JITTER = 0.3
 const HELLO_EVENT = 'hello'
+/**
+ * An id this far below the last one processed cannot be a replay — the
+ * server's replay ring (backend/src/tripl/realtime.py `BUFFER_SIZE`) holds 50 —
+ * so the sequence was reset.
+ */
+const SEQUENCE_RESET_GAP = 50
+
+/** Backoff for the given attempt: exponential, capped, jittered. */
+export function reconnectDelay(attempt: number, random: () => number = Math.random): number {
+  const base = Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_BACKOFF_MS)
+  return Math.round(base * (1 - BACKOFF_JITTER + random() * 2 * BACKOFF_JITTER))
+}
 
 interface HelloPayload {
   backend?: string
@@ -64,6 +88,9 @@ export function useProjectEventStream(slug: string | undefined): StreamStatus {
   const attemptsRef = useRef(0)
   const lastEventIdRef = useRef<string | null>(null)
   const lastProcessedIdRef = useRef(0)
+  // A `hello` was seen on this slug's stream before, so the next one follows a
+  // reconnect and has to resync.
+  const helloSeenRef = useRef(false)
 
   useEffect(() => {
     // Redis sequences are scoped per project. Carrying a previous project's
@@ -72,6 +99,7 @@ export function useProjectEventStream(slug: string | undefined): StreamStatus {
     attemptsRef.current = 0
     lastEventIdRef.current = null
     lastProcessedIdRef.current = 0
+    helloSeenRef.current = false
     if (!slug) return
 
     let disposed = false
@@ -85,7 +113,7 @@ export function useProjectEventStream(slug: string | undefined): StreamStatus {
 
     const scheduleReconnect = () => {
       if (disposed) return
-      const delay = Math.min(BASE_BACKOFF_MS * 2 ** attemptsRef.current, MAX_BACKOFF_MS)
+      const delay = reconnectDelay(attemptsRef.current)
       attemptsRef.current += 1
       clearReconnect()
       reconnectTimerRef.current = setTimeout(connect, delay)
@@ -97,7 +125,9 @@ export function useProjectEventStream(slug: string | undefined): StreamStatus {
       // De-dupe by monotonic id so a reconnect replay never double-invalidates.
       const id = Number(event.lastEventId)
       if (Number.isFinite(id) && id > 0) {
-        if (id <= lastProcessedIdRef.current) return
+        const last = lastProcessedIdRef.current
+        const sequenceReset = last - id > SEQUENCE_RESET_GAP
+        if (id <= last && !sequenceReset) return
         lastProcessedIdRef.current = id
       }
       if (isProjectEventType(event.type)) {
@@ -115,6 +145,13 @@ export function useProjectEventStream(slug: string | undefined): StreamStatus {
         backend = undefined
       }
       setStatus(backend === 'redis' ? 'live' : 'degraded')
+      if (helloSeenRef.current) {
+        // Back after a disconnect: whatever the replay cannot cover is
+        // refetched, and events numbered from a restarted sequence count again.
+        lastProcessedIdRef.current = 0
+        for (const type of PROJECT_EVENT_TYPES) invalidateForEvent(queryClient, type, slug)
+      }
+      helloSeenRef.current = true
     }
 
     function connect() {
@@ -141,10 +178,24 @@ export function useProjectEventStream(slug: string | undefined): StreamStatus {
       }
     }
 
+    // Waiting out a backoff timer after the laptop wakes or the network returns
+    // could take 30 s; the browser says so directly, so reconnect right away.
+    const reconnectNow = () => {
+      if (disposed || sourceRef.current !== null) return
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      clearReconnect()
+      attemptsRef.current = 0
+      connect()
+    }
+    window.addEventListener('online', reconnectNow)
+    document.addEventListener('visibilitychange', reconnectNow)
+
     connect()
 
     return () => {
       disposed = true
+      window.removeEventListener('online', reconnectNow)
+      document.removeEventListener('visibilitychange', reconnectNow)
       clearReconnect()
       if (sourceRef.current !== null) {
         sourceRef.current.close()

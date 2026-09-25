@@ -1,4 +1,5 @@
 import {
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -8,22 +9,34 @@ import {
 } from 'react'
 import { Outlet, useLocation, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { projectsApi } from '@/api/projects'
+import { ApiError } from '@/api/client'
 import { ActivityPanel } from '@/components/activity-panel'
 import { AppSidebar } from '@/components/app-sidebar'
 import { BranchProvider } from '@/components/branch-context'
 import { CommandPaletteProvider } from '@/components/command-palette'
 import { ActiveProjectContext } from '@/components/active-project-context'
+import { RouteErrorBoundary } from '@/components/error-boundary'
 import { ErrorState } from '@/components/error-state'
 import { MAIN_CONTENT_ID } from '@/components/landmarks'
 import { TopBar } from '@/components/top-bar'
 import { TweaksPanelProvider } from '@/components/tweaks-panel'
-import { DemoBanner } from '@/demo/DemoBanner'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
-import { DemoScenarioStrip } from '@/demo/DemoScenarioStrip'
-import { NotFoundState } from '@/pages/NotFoundPage'
+import { NotFoundState } from '@/components/not-found-state'
 import { ProjectEventStreamProvider } from '@/realtime/ProjectEventStreamProvider'
 import { resolveNavLocation } from '@/lib/navigation'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { projectQueryOptions, projectsQueryOptions } from '@/lib/queryKeys'
+import { lazyWithReload } from '@/lib/lazyWithReload'
+
+// Demo-only chrome, rendered for a demo project alone. Loaded on demand so the
+// product tour, chapter picker and reset dialog stay out of every other
+// user's first load (#194 SHELL-4).
+const DemoBanner = lazyWithReload(() =>
+  import('@/demo/DemoBanner').then((m) => ({ default: m.DemoBanner })),
+)
+const DemoScenarioStrip = lazyWithReload(() =>
+  import('@/demo/DemoScenarioStrip').then((m) => ({ default: m.DemoScenarioStrip })),
+)
 
 const ACTIVITY_STORAGE_KEY = 'tripl-activity-open'
 
@@ -214,34 +227,43 @@ export default function Layout() {
     if (isWideActivity && activityDrawerOpen) setActivityDrawerOpen(false)
   }
 
-  const projectsQuery = useQuery({
-    queryKey: ['projects'],
-    queryFn: projectsApi.list,
-  })
+  const projectsQuery = useQuery(projectsQueryOptions())
   const projects = projectsQuery.data ?? []
   const activeProject = projects.find((p) => p.slug === slug)
 
-  // A slug missing from `GET /projects` is a suspicion, not a verdict: the list
-  // hides demos that are still seeding, and it can lag a project created moments
-  // ago. Confirm it against the project endpoint before declaring not-found —
-  // one request, only for a slug the list does not know, and it shares the
-  // `['project', slug]` key the project pages already use, so a real project
-  // pays nothing extra.
-  const slugUnlisted = !!slug && projectsQuery.isSuccess && !activeProject
+  // The project endpoint, asked IN PARALLEL with the list rather than after it.
+  // The list carries per-project summary counts and is the slowest request the
+  // shell makes; a deep link used to wait for all of it before anything —
+  // sidebar, top bar or the page's own queries — could start. Whichever answer
+  // names the project first releases the shell. It also settles a slug the list
+  // does not know: the list hides demos that are still seeding and can lag a
+  // project created moments ago. The key is the one the project pages already
+  // read, so they pay nothing extra.
   const confirmProject = useQuery({
-    queryKey: ['project', slug],
-    queryFn: () => projectsApi.get(slug as string),
-    enabled: slugUnlisted,
+    ...projectQueryOptions(slug),
+    enabled: !!slug,
     retry: false,
+    // Rendered below as not-found or a retryable error; no toast on top.
+    meta: SILENT_ERROR_META,
   })
+  const projectKnown = !!activeProject || confirmProject.isSuccess
 
   // Deciding this HERE, before the shell mounts, is what stops an invented slug
   // rendering a complete, working-looking project behind a dozen 404ing requests
   // (tripl-jfm3.2) — the sidebar, activity rail, event stream and the routed page
   // all fan out from this component.
-  const projectMissing = slugUnlisted && confirmProject.isError
-  const projectResolving =
-    !!slug && (projectsQuery.isPending || (slugUnlisted && confirmProject.isPending))
+  //
+  // Only a 404/403 means "no such project". Anything else — a 5xx, the network —
+  // says nothing about the slug and is offered as a retry, not as a 404 page
+  // (#194 SHELL-46). Both wait for the list, which may still name the project.
+  const confirmError = confirmProject.error
+  const confirmSaysMissing =
+    confirmError instanceof ApiError && (confirmError.status === 404 || confirmError.status === 403)
+  const listSettled = !projectsQuery.isPending
+  const projectMissing = !!slug && !projectKnown && listSettled && confirmSaysMissing
+  const projectLookupFailed =
+    !!slug && !projectKnown && listSettled && confirmProject.isError && !confirmSaysMissing
+  const projectResolving = !!slug && !projectKnown && !projectMissing && !projectLookupFailed
 
   const { crumbs, title } = useMemo(
     () => resolveCrumbs(location.pathname, slug, activeProject?.name ?? slug),
@@ -252,7 +274,28 @@ export default function Layout() {
   // project-scoped requests the moment it mounts, so rendering optimistically is
   // what produced the doomed fan-out in the first place.
   if (projectResolving) {
-    return <ShellFallback>Loading project…</ShellFallback>
+    return (
+      <ShellFallback>
+        <span role="status" aria-live="polite">Loading project…</span>
+      </ShellFallback>
+    )
+  }
+  if (projectLookupFailed) {
+    return (
+      <ShellFallback>
+        <div className="w-full max-w-lg">
+          <ErrorState
+            title="Could not open this project"
+            description="The server did not answer whether this project exists. This is usually temporary."
+            error={confirmProject.error}
+            onRetry={() => {
+              void confirmProject.refetch()
+              if (projectsQuery.isError) void projectsQuery.refetch()
+            }}
+          />
+        </div>
+      </ShellFallback>
+    )
   }
   if (projectMissing) {
     return (
@@ -324,10 +367,15 @@ export default function Layout() {
                   {/* Persistent demo marker across every surface of a demo
                       project — synthetic/local data, recipe version, freshness,
                       and creator/owner reset + delete controls. */}
-                  {activeProject?.is_demo && <DemoBanner project={activeProject} />}
-                  {/* The coached scenario. Gated with the banner, but it decides
-                      for itself whether there is anything left to coach. */}
-                  {activeProject?.is_demo && <DemoScenarioStrip />}
+                  {activeProject?.is_demo && (
+                    <Suspense fallback={null}>
+                      <DemoBanner project={activeProject} />
+                      {/* The coached scenario. Gated with the banner, but it
+                          decides for itself whether there is anything left to
+                          coach. */}
+                      <DemoScenarioStrip />
+                    </Suspense>
+                  )}
                   {/* The skip link's landmark — and it starts HERE, below the
                       demo chrome, not around it. Both blocks above are shell
                       furniture, and on a demo project they put six controls
@@ -368,7 +416,11 @@ export default function Layout() {
                         />
                       </div>
                     )}
-                    <Outlet />
+                    {/* A page that throws is replaced by an error card here;
+                        the sidebar, top bar and toasts stay alive. */}
+                    <RouteErrorBoundary>
+                      <Outlet />
+                    </RouteErrorBoundary>
                   </div>
                 </div>
               </div>

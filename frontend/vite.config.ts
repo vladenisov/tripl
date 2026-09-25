@@ -10,11 +10,11 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    // Pre-compress JS/CSS/SVG/JSON to .br files served via nginx brotli_static.
-    // We don't ship gzip — nginx falls back to identity if a client doesn't
-    // accept brotli, which is rare in practice (all evergreen browsers do).
+    // Pre-compress JS/CSS/SVG/JSON to .br and .gz files served via nginx
+    // brotli_static / gzip_static. Both: browsers only offer brotli over HTTPS,
+    // so a plain-HTTP self-hosted install is served the gzip copy.
     compression({
-      // [algorithm, options] — build-time, so max brotli quality is fine.
+      // [algorithm, options] — build-time, so max quality is fine.
       algorithms: [
         [
           'brotliCompress',
@@ -24,6 +24,7 @@ export default defineConfig({
             },
           },
         ],
+        ['gzip', { level: 9 }],
       ],
       include: [/\.(js|mjs|css|html|svg|json|wasm)$/],
       threshold: 1024,
@@ -44,23 +45,37 @@ export default defineConfig({
     },
   },
   build: {
-    // Split vendor chunks so initial load doesn't ship recharts to pages that
-    // don't use it, and so upgrading a single dep doesn't bust the whole cache.
-    rollupOptions: {
+    // Split vendor chunks so that only the pages drawing charts pay for
+    // recharts, and so upgrading a single dep doesn't bust the whole cache.
+    //
+    // Explicit rolldown groups, not `manualChunks`: rolldown turns a
+    // `manualChunks` function into groups that also pull in every captured
+    // module's dependencies, first match wins. The recharts rule therefore
+    // claimed React, clsx and the rest of what recharts shares with the shell,
+    // every chunk imported React from `charts-vendor`, and index.html
+    // modulepreloaded all of recharts on every page, /auth included (#194).
+    // Priorities make the shell's own libraries win: React first, then the
+    // other named vendors, then ANY dependency on the initial graph, and only
+    // what is left over — recharts and the d3/redux code nothing else uses —
+    // lands in `charts-vendor`. scripts/check-bundle-budget.mjs fails the build
+    // if that chunk returns to the critical path.
+    rolldownOptions: {
       output: {
-        manualChunks: (id) => {
-          if (!id.includes('node_modules')) return
-          if (id.includes('/recharts/')) return 'charts-vendor'
-          if (id.includes('/@tanstack/')) return 'tanstack-vendor'
-          if (id.includes('/@radix-ui/')) return 'radix-vendor'
-          if (
-            id.includes('/react/') ||
-            id.includes('/react-dom/') ||
-            id.includes('/react-router') ||
-            id.includes('/scheduler/')
-          ) {
-            return 'react-vendor'
-          }
+        codeSplitting: {
+          groups: [
+            {
+              name: 'react-vendor',
+              test: /node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/,
+              priority: 40,
+            },
+            { name: 'tanstack-vendor', test: /node_modules[\\/]@tanstack[\\/]/, priority: 30 },
+            { name: 'radix-vendor', test: /node_modules[\\/]@radix-ui[\\/]/, priority: 20 },
+            // Everything else the first render already needs (clsx, lucide,
+            // sonner…). Tagged `$initial`, so nothing only a lazy page imports
+            // is dragged onto the critical path through this group.
+            { name: 'vendor', test: /node_modules[\\/]/, tags: ['$initial'], priority: 10 },
+            { name: 'charts-vendor', test: /node_modules[\\/]recharts[\\/]/, priority: 1 },
+          ],
         },
       },
     },

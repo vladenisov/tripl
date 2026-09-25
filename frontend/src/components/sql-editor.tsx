@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import CodeMirror, { type EditorView } from '@uiw/react-codemirror'
 import { sql, type SQLNamespace } from '@codemirror/lang-sql'
-import { format } from 'sql-formatter'
 import { Button } from '@/components/ui/button'
 import type { DbType } from '@/types/dataSources'
 import type { TableSchema } from '@/types/dataSourceSchema'
@@ -137,10 +136,21 @@ export function SqlEditor({
     applyContentAria(viewRef.current)
   }, [applyContentAria])
 
+  // The formatter is its own chunk, fetched on the first click (see
+  // sql-format.ts). If the text changed while it loaded, the stale result is
+  // dropped rather than overwriting what was typed meanwhile.
+  const latestValueRef = useRef(value)
+  useEffect(() => {
+    latestValueRef.current = value
+  }, [value])
   const handleFormat = useCallback(() => {
-    try {
-      onChange(format(value, { language: formatLanguage(dialect) }))
-    } catch { /* keep as is */ }
+    const source = value
+    void import('@/components/sql-format')
+      .then(({ formatSql }) => {
+        if (latestValueRef.current !== source) return
+        onChange(formatSql(source, formatLanguage(dialect)))
+      })
+      .catch(() => { /* unparseable SQL or a failed chunk: keep the text as is */ })
   }, [value, onChange, dialect])
 
   // Insert a table/column name at the cursor (replacing any selection). Adds a

@@ -1,7 +1,8 @@
-import { lazy, Suspense } from 'react'
+import { Suspense } from 'react'
+import { lazyWithReload } from '@/lib/lazyWithReload'
 import { SHeader } from '@/components/settings/kit'
 
-const UsersPage = lazy(() => import('@/pages/UsersPage'))
+const UsersPage = lazyWithReload(() => import('@/pages/UsersPage'))
 
 /**
  * Workspace · Members. Reuses the existing UsersPage wiring (it self-fetches the

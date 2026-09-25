@@ -13,7 +13,7 @@ import { JsonValuePathsPicker } from './JsonValuePathsPicker'
 import { MetricBreakdownPicker } from './MetricBreakdownPicker'
 import { ScanCausalNote } from './ScanCausalNote'
 import { ScanPreviewPanel } from './ScanPreviewPanel'
-import { SqlEditor } from '@/components/sql-editor'
+import { LazySqlEditor } from '@/components/sql-editor-lazy'
 import { Field, SCard } from './scanLayout'
 import type { ScanFormMode } from './scanMode'
 import { CHUNK_LABELS, SELECT_CLASS, eligibleChunkIntervals } from './scanUtils'
@@ -297,7 +297,7 @@ export function ScanEssentialsSection({
       {/* id={false}: SqlEditor is a CodeMirror contenteditable, not a labelable
           element — it names itself with ariaLabel below. */}
       <Field label="Base query" id={false} hint="Used as a subquery. tripl wraps it to scan windows.">
-        <SqlEditor
+        <LazySqlEditor
           ariaLabel="SQL base query"
           value={state.baseQuery}
           onChange={setBaseQuery}

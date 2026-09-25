@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { alertingApi } from '@/api/alerting'
 import { metricsApi } from '@/api/metrics'
 import { projectsApi } from '@/api/projects'
+import { ApiError } from '@/api/client'
+import type { Project } from '@/types'
 import Layout from './Layout'
 import { expectNoAxeViolations } from '@/test/axe'
 
@@ -65,6 +67,39 @@ interface RenderLayoutOptions {
   isDemo?: boolean
   /** Route element, when the test needs the page to own a control. */
   page?: ReactNode
+  /** Overrides the default API mocks, applied before the first render. */
+  mocks?: () => void
+}
+
+function makeProject(isDemo = false): Project {
+  return {
+    id: 'project-1',
+    name: 'Demo',
+    slug: 'demo',
+    is_demo: isDemo,
+    description: '',
+    app_version_keep_releases: 5,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    summary: {
+      event_type_count: 0,
+      event_count: 0,
+      active_event_count: 0,
+      implemented_event_count: 0,
+      review_pending_event_count: 0,
+      archived_event_count: 0,
+      variable_count: 0,
+      scan_count: 0,
+      firing_monitor_count: 0,
+      open_incident_count: 0,
+      alert_destination_count: 0,
+      alert_rule_count: 0,
+      monitoring_signal_count: 0,
+      failing_scan_config_count: 0,
+      latest_scan_job: null,
+      latest_signal: null,
+    },
+  }
 }
 
 function renderLayout(
@@ -73,39 +108,11 @@ function renderLayout(
   pageLabel = 'Monitoring detail',
   options: RenderLayoutOptions = {},
 ) {
-  vi.mocked(projectsApi.list).mockResolvedValue([
-    {
-      id: 'project-1',
-      name: 'Demo',
-      slug: 'demo',
-      is_demo: options.isDemo ?? false,
-      description: '',
-      app_version_keep_releases: 5,
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-01T00:00:00Z',
-      summary: {
-        event_type_count: 0,
-        event_count: 0,
-        active_event_count: 0,
-        implemented_event_count: 0,
-        review_pending_event_count: 0,
-        archived_event_count: 0,
-        variable_count: 0,
-        scan_count: 0,
-        firing_monitor_count: 0,
-        open_incident_count: 0,
-        alert_destination_count: 0,
-        alert_rule_count: 0,
-        monitoring_signal_count: 0,
-        failing_scan_config_count: 0,
-        latest_scan_job: null,
-        latest_signal: null,
-      },
-    },
-  ])
-  vi.mocked(projectsApi.get).mockRejectedValue(new Error('Not found'))
+  vi.mocked(projectsApi.list).mockResolvedValue([makeProject(options.isDemo)])
+  vi.mocked(projectsApi.get).mockRejectedValue(new ApiError('Not found', 404))
   vi.mocked(metricsApi.getActiveSignals).mockResolvedValue([])
   vi.mocked(alertingApi.listDeliveries).mockResolvedValue({ items: [], total: 0 })
+  options.mocks?.()
 
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -209,8 +216,9 @@ describe('Layout bypass block', () => {
     // the page, but INSIDE the skip target they made the user Tab through the
     // demo's own controls — the DESTRUCTIVE Delete among them — before reaching
     // the page they had asked to be taken to.
-    const deleteButton = screen.getByRole('button', { name: 'Delete' })
-    const dismissButton = screen.getByRole('button', { name: 'Dismiss' })
+    // The demo chrome is a lazy chunk, so it can land after the page.
+    const deleteButton = await screen.findByRole('button', { name: 'Delete' })
+    const dismissButton = await screen.findByRole('button', { name: 'Dismiss' })
     expect(target.contains(deleteButton)).toBe(false)
     expect(target.contains(dismissButton)).toBe(false)
 
@@ -267,6 +275,36 @@ describe('Layout unknown project (tripl-jfm3.2)', () => {
     expect(screen.queryByRole('button', { name: 'Toggle activity panel' })).toBeNull()
     // The invented slug is not echoed back as if it named a workspace.
     expect(screen.getByText(/no project with the address/i)).toBeInTheDocument()
+  })
+
+  it('offers a retry, not a 404, when the server cannot confirm the slug (SHELL-46)', async () => {
+    renderLayout('/p/seeding-demo/overview', '/p/:slug/overview', 'Live activity body', {
+      // A 503 says nothing about whether the project exists.
+      mocks: () =>
+        vi.mocked(projectsApi.get).mockRejectedValue(new ApiError('Backend is unavailable.', 503)),
+    })
+
+    expect(
+      await screen.findByRole('heading', { name: 'Could not open this project' }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Project not found')).toBeNull()
+
+    vi.mocked(projectsApi.get).mockResolvedValue({ ...makeProject(), slug: 'seeding-demo' })
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+
+    expect(await screen.findByText('Live activity body')).toBeInTheDocument()
+  })
+
+  it('renders the shell from the project endpoint without waiting for the list (SHELL-41)', async () => {
+    renderLayout('/p/demo/overview', '/p/:slug/overview', 'Live activity body', {
+      mocks: () => {
+        // The list (with its summaries) never answers; the project endpoint does.
+        vi.mocked(projectsApi.list).mockReturnValue(new Promise(() => {}))
+        vi.mocked(projectsApi.get).mockResolvedValue(makeProject())
+      },
+    })
+
+    expect(await screen.findByText('Live activity body')).toBeInTheDocument()
   })
 
   it('renders the full shell once the slug is confirmed to exist', async () => {
@@ -336,6 +374,8 @@ describe('Layout accessibility', () => {
   it('has no axe violations with the demo banner and scenario strip', async () => {
     renderLayout('/p/demo/events', '/p/:slug/events', 'Events body', { isDemo: true })
     await screen.findByText('Events body')
+    // The axe pass is "with the demo chrome": wait for its lazy chunk.
+    await screen.findByRole('button', { name: 'Dismiss' })
     await expectNoAxeViolations(document.body, { page: true })
   })
 })
