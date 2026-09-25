@@ -27,11 +27,11 @@ export interface RowCounts {
 /**
  * The badge counts per branch id.
  *
- * The backend's `ahead` is the raw entry tally, in which a rename is still a
- * removal plus an addition. The selected branch's diff is on screen already, so
+ * The backend's `ahead` is already the reviewable total with each rename
+ * counted once (plan_branch_service pairs them before counting), so every row
+ * can show the list's number. The selected branch's diff is on screen anyway, so
  * its row counts through the same paired view as the strip and the Changes
- * panel — the three numbers the reviewer can compare must agree (tripl-amnn).
- * Other rows show the list's count until the backend pairs renames itself.
+ * panel: the numbers a reviewer can compare are computed one way (tripl-amnn).
  */
 export function rowBadgeCounts(
   items: PlanBranchListItem[],

@@ -8,7 +8,7 @@ import { scansApi } from '@/api/scans'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
-import { scanJobsHaveActiveWork } from './scans/scanUtils'
+import { scanActivityKey, scanJobsHaveActiveWork } from './scans/scanUtils'
 import type { DataSource, ScanConfig, ScanJob } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Dot } from '@/components/primitives/dot'
@@ -101,6 +101,9 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
       // a demo project (tripl-2su6.21.5).
       notifyScanRunStarted(job)
       qc.invalidateQueries({ queryKey: ['scanJobs', slug, scanConfigId] })
+      // The Scans list's activity row sits under ['scanJobs', slug] but not
+      // under this scan's id, so the key above does not reach it.
+      qc.invalidateQueries({ queryKey: scanActivityKey(slug) })
     },
   })
 

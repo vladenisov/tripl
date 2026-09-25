@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   ChevronDown,
@@ -88,31 +88,35 @@ export function EventTypesTab({ slug }: { slug: string }) {
   })
   const eventTypes = typesQuery.data ?? []
 
-  // Per-type owners drive the list's Owner column and the derived merge Status
-  // (no owners ⇒ anyone can merge ⇒ "ungated"; owners present ⇒ "gated").
-  // Owners are a main-plan fact keyed by MAIN's type ids. A branch lists its
-  // own deep-copied ids, so asking for their owners was one 404 per type on
-  // every visit in branch context, for a column the page then hid anyway
+  // Owners drive the list's Owner column and the derived merge Status (no
+  // owners ⇒ anyone can merge ⇒ "ungated"; owners present ⇒ "gated"). Owners
+  // are a main-plan fact keyed by MAIN's type ids. A branch lists its own
+  // deep-copied ids, so asking for their owners was one 404 per type on every
+  // visit in branch context, for a column the page then hid anyway
   // (tripl-kjhi.11). The editor for owners is likewise main-only.
   //
-  // Still one request per type on main: the list response carries no owners
-  // and there is no batched owners endpoint yet (PLAN-42 needs one).
+  // One request for the whole project, grouped here: the list used to fire one
+  // /owners request per type on every visit (PLAN-42). The key is a prefix of
+  // each type's own owners key, so an owner change invalidates both.
   const onMain = branchId === null
-  const ownerQueries = useQueries({
-    queries: eventTypes.map((et) => ({
-      queryKey: ['eventTypeOwners', slug, et.id],
-      queryFn: () => eventTypeOwnersApi.list(slug, et.id),
-      enabled: onMain,
-      // An unanswered owners request makes the Status cell say "—" rather
-      // than guess, so a toast per type would only repeat it.
-      meta: SILENT_ERROR_META,
-    })),
+  const ownersQuery = useQuery({
+    queryKey: ['eventTypeOwners', slug],
+    queryFn: () => eventTypeOwnersApi.listForProject(slug),
+    enabled: onMain,
+    // An unanswered owners request makes the Status cell say "—" rather than
+    // guess, so a toast would only repeat it.
+    meta: SILENT_ERROR_META,
   })
   // `undefined` = not known (still loading, or the request failed), which is
-  // NOT the same as "no owners" and must not be rendered as "ungated".
+  // NOT the same as "no owners" and must not be rendered as "ungated". Once the
+  // project's owners have answered, a type with no rows has none: [].
   const ownersByType = new Map<string, EventTypeOwner[] | undefined>()
-  eventTypes.forEach((et, i) => {
-    ownersByType.set(et.id, ownerQueries[i]?.data)
+  const projectOwners = ownersQuery.data
+  eventTypes.forEach((et) => {
+    ownersByType.set(
+      et.id,
+      projectOwners === undefined ? undefined : projectOwners.filter((o) => o.event_type_id === et.id),
+    )
   })
 
   if (creating) {
@@ -1084,7 +1088,9 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
     meta: SILENT_ERROR_META,
     mutationFn: (userId: string) => eventTypeOwnersApi.add(slug, eventType.id, userId),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug, eventType.id] })
+      // The project prefix: this type's owners AND the list's project-wide
+      // owners, which the Status column reads.
+      qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug] })
       setSelectedUserId('')
     },
   })
@@ -1092,7 +1098,7 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
   const removeMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: (ownerId: string) => eventTypeOwnersApi.remove(slug, eventType.id, ownerId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug, eventType.id] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['eventTypeOwners', slug] }),
   })
 
   // Removing an owner changes who has to approve a merge, and the X sits 12px

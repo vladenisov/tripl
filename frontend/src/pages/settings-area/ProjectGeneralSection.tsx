@@ -24,7 +24,7 @@ import {
   TextArea,
   TextInput,
 } from '@/components/settings/kit'
-import { canManageProject, canWrite, isOwner } from '@/lib/permissions'
+import { canManageProject, canWrite, canWriteProject, isOwner } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
@@ -422,10 +422,12 @@ function ProjectGeneralBody({ slug }: { slug: string }) {
   // owner (`_require_project_manager`); an editor on someone else's project
   // gets the same read-only form a viewer does, with a line saying why.
   const canEdit = canManageProject(user, projectQuery.data)
-  // Reindex only needs project mutation access, which the backend also grants
-  // editors on shared projects — so it stays on the plain write gate and the
-  // rarer refusal (another editor's own project) is reported inline.
-  const canReindex = canWrite(user?.role)
+  // Reindex needs project mutation access, not project management: the backend
+  // grants it to editors on shared projects too. The project now says whether
+  // this user may mutate it (`can_mutate`), which canWriteProject reads — so a
+  // demo that belongs to someone else shows the button disabled instead of
+  // offering a click that can only be refused.
+  const canReindex = canWriteProject(user, projectQuery.data)
   const canDelete = isOwner(user?.role)
   const appVersionKeepReleasesNumber = Number(appVersionKeepReleases)
   const versionPolicyInvalid =

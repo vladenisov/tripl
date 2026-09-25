@@ -158,7 +158,7 @@ describe('EventTypesTab list', () => {
       async (input) => {
         const url = String(input)
         if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
-        if (url.endsWith('/owners')) return mockJsonResponse([])
+        if (url.endsWith('/api/v1/projects/demo/event-type-owners')) return mockJsonResponse([])
         throw new Error(`Unhandled fetch: ${url}`)
       },
       VIEWER,
@@ -173,7 +173,7 @@ describe('EventTypesTab list', () => {
     renderWithRoutes('/p/demo/settings/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
-      if (url.endsWith('/api/v1/projects/demo/event-types/type-1/owners'))
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners'))
         return mockJsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -199,7 +199,7 @@ describe('EventTypesTab list', () => {
     renderWithRoutes('/p/demo/settings/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
-      if (url.endsWith('/api/v1/projects/demo/event-types/type-1/owners'))
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners'))
         return mockJsonResponse([owner])
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -212,7 +212,7 @@ describe('EventTypesTab list', () => {
     renderWithRoutes('/p/demo/settings/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
-      if (url.endsWith('/api/v1/projects/demo/event-types/type-1/owners'))
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners'))
         return mockJsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -512,7 +512,7 @@ describe('EventTypesTab list states and rows (PLAN-39 / PLAN-41)', () => {
     renderWithRoutes('/p/demo/settings/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
-      if (url.endsWith('/owners')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners')) return mockJsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)
     })
 
@@ -895,11 +895,42 @@ describe('review 204 follow-ups', () => {
     renderWithRoutes('/p/demo/settings/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
-      if (url.endsWith('/owners')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners')) return mockJsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)
     })
 
     const table = await screen.findByRole('table', { name: 'Event types' })
     expect(table).toHaveAttribute('data-slot', 'table')
+  })
+})
+
+describe('EventTypesTab owners in one request (PLAN-42)', () => {
+  it('asks once for the project, and reads a type without rows as ungated', async () => {
+    const SIGNUP = eventType({ id: 'type-2', name: 'signup', display_name: 'Signup', order: 1 })
+    const owner = {
+      id: 'o-1',
+      event_type_id: 'type-1',
+      user_id: 'u-1',
+      user_email: 'ada@x.io',
+      user_name: 'Ada',
+      granted_by: null,
+      created_at: '2026-01-01T00:00:00Z',
+    }
+    const asked: string[] = []
+    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+      const url = String(input)
+      asked.push(url)
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT, SIGNUP])
+      if (url.endsWith('/api/v1/projects/demo/event-type-owners')) return mockJsonResponse([owner])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const checkout = (await screen.findByText('Checkout')).closest('tr') as HTMLElement
+    const signup = screen.getByText('Signup').closest('tr') as HTMLElement
+    expect(await within(checkout).findByText('gated')).toBeInTheDocument()
+    expect(within(signup).getByText('ungated')).toBeInTheDocument()
+    expect(asked.filter((url) => url.includes('owners'))).toEqual([
+      expect.stringMatching(/\/event-type-owners$/),
+    ])
   })
 })

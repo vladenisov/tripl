@@ -46,239 +46,6 @@ const ACTION_TONE_RULES: { pattern: RegExp; tone: string }[] = [
   },
 ]
 
-/**
- * Grouped action vocabulary for the filter — every action the backend records
- * *with a project scope*, and nothing else.
- *
- * This list has to be exactly the project-scoped half of the backend's
- * vocabulary, because the query it feeds is always narrowed by `projectSlug`
- * (see `queryParams` below):
- *
- *  - An offered action the backend never scopes to a project returns zero rows
- *    no matter what the project did. `data_source.*` used to sit here under
- *    "Data sources & scans" and could never match: `api/v1/data_sources.py`
- *    records those entries with no `project`/`project_slug`, because a data
- *    source is an instance-level resource. Selecting one read as "nothing ever
- *    happened" rather than "wrong place to look" (tripl-jfm3.79).
- *  - An action the backend *does* record but the list omits is unfilterable —
- *    it shows up in the unfiltered feed but can't be isolated. The list had
- *    drifted a long way behind: branches, metrics, fact tables, inbox and
- *    drift triage, scan cancellation, bulk variable edits and the project-level
- *    resets were all missing.
- *
- * Sourced from every `audit_service.record(...)` call that passes `project=` or
- * `project_slug=`. The `*.<verb>` families spelled out below come from typed
- * literals on the backend: `BranchTransitionAction` (schemas/plan_branch.py),
- * `SchemaDriftAction` (schemas/schema_drift.py) and `AlertInboxAction`
- * (schemas/alerting.py).
- *
- * Deliberately excluded because they are recorded WITHOUT a project and so can
- * never appear here: `data_source.*`, `user.role_update`, `api_key.revoke`.
- */
-const ACTION_GROUPS: { label: string; actions: string[] }[] = [
-  {
-    // First because the event is the central object of the product — and it was
-    // the one object the log had no rows for at all until tripl-wkwv.10. All six
-    // are recorded with `project_slug`, so all six can be filtered here.
-    // Reordering an event is deliberately not recorded: it permutes display
-    // order only, and drag-to-reorder would file a row per drag.
-    label: 'Events',
-    actions: [
-      'event.create',
-      'event.bulk_create',
-      'event.update',
-      'event.bulk_update',
-      'event.delete',
-      'event.bulk_delete',
-    ],
-  },
-  {
-    label: 'Schema',
-    actions: [
-      'event_type.create',
-      'event_type.update',
-      'event_type.delete',
-      'event_type.add_owner',
-      'event_type.remove_owner',
-      'field.create',
-      'field.update',
-      'field.delete',
-      'meta_field.create',
-      'meta_field.update',
-      'meta_field.delete',
-      'relation.create',
-      'relation.delete',
-      'schema_drift.accept',
-      'schema_drift.snooze',
-      'schema_drift.false_positive',
-      'schema_drift.reopen',
-    ],
-  },
-  {
-    label: 'Variables',
-    actions: [
-      'variable.create',
-      'variable.update',
-      'variable.delete',
-      'variable.bulk_update',
-      'variable.bulk_delete',
-      'variable.override_set',
-      'variable.override_delete',
-      'variable.drift_action',
-    ],
-  },
-  {
-    label: 'Versioning',
-    actions: [
-      'plan_revision.create',
-      'plan_branch.create',
-      'plan_branch.delete',
-      'plan_branch.submit',
-      'plan_branch.request_changes',
-      'plan_branch.approve',
-      'plan_branch.reopen',
-      'plan_branch.close',
-      'plan_branch.merge',
-      'plan_branch.revert',
-      'plan_branch.add_reviewer',
-      'plan_branch.remove_reviewer',
-      'plan_branch_settings.update',
-    ],
-  },
-  {
-    label: 'Scans & reconciliation',
-    // Data sources are an instance-level resource: their audit entries carry no
-    // project, so they are filtered on the workspace surface, not here.
-    actions: [
-      'scan_config.create',
-      'scan_config.update',
-      'scan_config.delete',
-      'scan_config.event_groups.apply',
-      'scan_job.cancel',
-      // Dismissing a shadow-event candidate writes observed traffic off for
-      // everyone, and cannot be undone through the API. Accepting one is NOT
-      // listed here on purpose: it creates a catalog event, so it files
-      // `event.create` under Events — filtering "which events did people
-      // create?" has to find it (tripl-wkwv.13).
-      'shadow_event.dismiss',
-    ],
-  },
-  {
-    label: 'Metrics & fact tables',
-    actions: [
-      'metric_definition.create',
-      'metric_definition.update',
-      'metric_definition.delete',
-      'metric_definition.collect',
-      'fact_table.create',
-      'fact_table.update',
-      'fact_table.delete',
-      // The three SQL-executing previews. They create nothing, so unlike an
-      // accepted shadow candidate they get their own actions rather than
-      // filing someone else's — but they DO run an editor's SQL against a
-      // warehouse credential, and they are the only such surfaces that leave
-      // no stored object behind. An owner asking "who ran what against our
-      // warehouse?" has to be able to find them (tripl-0zpq.75).
-      'fact_table.preview',
-      'metric.preview',
-      'metric.fact_preview',
-    ],
-  },
-  {
-    label: 'Alerting',
-    actions: [
-      'alert_destination.create',
-      'alert_destination.update',
-      'alert_destination.delete',
-      // Recorded with a project slug (api/v1/alerting.py) and missing here, so
-      // "who sent a test to prod Slack, and did it work" was in the feed but
-      // not isolatable — the exact gap the doctrine above forbids.
-      'alert_destination.test',
-      'alert_rule.create',
-      'alert_rule.update',
-      'alert_rule.delete',
-      'alert_rule.mute',
-      'alert_rule.unmute',
-      'alert_delivery.retry',
-      'alert_inbox.acknowledge',
-      'alert_inbox.resolve',
-      'alert_inbox.mute',
-      'alert_inbox.reopen',
-      'alert_inbox.false_positive',
-      // Recorded like its five siblings — the router files
-      // `alert_inbox.{action}` for every member of the AlertInboxAction literal
-      // — and missing from this list until tripl-wkwv.17, so leaving a note on an
-      // incident showed up in the feed and could not be isolated.
-      'alert_inbox.note',
-      // Undoing a false-positive ratchet re-sensitises a scope, so it belongs
-      // in the same filter as the click that tightened it.
-      'anomaly_scope_override.delete',
-    ],
-  },
-  {
-    label: 'Project',
-    actions: [
-      // The project's own life, minus its end. `project.delete` is NOT here: it
-      // is written after its subject is gone, so it carries no project id, and
-      // this list is now filtered by the project a slug RESOLVES TO
-      // (tripl-wkwv.18) — the entry could never match. It is offered in the
-      // workspace list instead, which is also the only place it can be read
-      // from: this tab lives at /p/:slug/..., and a deleted project has no page.
-      'project.create',
-      'project.update',
-      // Only a demo can be reset; it re-seeds in place and clears the trail that
-      // came before, which is what this row explains.
-      'project.reset',
-      'project_tracker_config.update',
-      'project.reset_anomalies',
-      'project.reset_drifts',
-      // A bulk plan write — it retires variables — but grouped by its prefix
-      // like every other action here, because that is the string a reader is
-      // scanning for. Also missing until now.
-      'project.retire_unused_variables',
-      // Only recorded with a project when the key is scoped to one; a
-      // workspace-wide key carries no project and never lands here.
-      'api_key.create',
-    ],
-  },
-]
-
-/**
- * The other half of the vocabulary: actions the backend records with NO project,
- * because their subject belongs to the workspace rather than to one project.
- *
- * They are excluded from ACTION_GROUPS above — a project-scoped query can never
- * match them — and until tripl-wkwv.17 they were offered nowhere at all: written
- * faithfully and readable on no screen, which is the worst possible place for
- * "who connected this warehouse" and "who made that person an editor" to live.
- * The workspace view offers this list ON TOP of the project one rather than
- * instead of it, because that view is the unfiltered feed and every action can
- * match there.
- *
- * `api_key.create` is deliberately absent: it is already offered under Project,
- * where it lands whenever the key is scoped to one, and one action must appear
- * in the select exactly once.
- */
-const WORKSPACE_ACTION_GROUPS: { label: string; actions: string[] }[] = [
-  {
-    label: 'Workspace',
-    actions: [
-      'data_source.create',
-      'data_source.update',
-      'data_source.delete',
-      'user.invite',
-      'user.invite_revoke',
-      'user.role_update',
-      'api_key.revoke',
-      // Written after its subject is gone, so it carries no project id and the
-      // project tab — which filters by the project a slug resolves to — cannot
-      // match it. This is the only place a deleted workspace can be accounted
-      // for at all (tripl-wkwv.19).
-      'project.delete',
-    ],
-  },
-]
-
 // One page of audit entries. It used to be 200 — the endpoint's own ceiling —
 // and the page sent no offset, so the most recent 200 rows were the ONLY rows a
 // reader could reach: past that the card said "narrow the filter to drill into
@@ -406,7 +173,26 @@ function AuditLog({ slug }: { slug?: string }) {
   // Additive, not alternative: the workspace feed is unfiltered, so a project
   // action can match there too and hiding it would make the filter narrower than
   // the list it filters.
-  const offeredGroups = workspace ? [...ACTION_GROUPS, ...WORKSPACE_ACTION_GROUPS] : ACTION_GROUPS
+  //
+  // The vocabulary is the backend's (GET /audit/actions), grouped where the
+  // actions are recorded. It used to be a hand-kept list of ~100 strings here
+  // that drifted behind the backend again and again (PLAN-49). `project` holds
+  // the actions recorded with a project, the only ones a project-scoped query
+  // can match; `workspace` the ones recorded with none. Until it answers the
+  // select offers "All actions" alone.
+  const isOwner = useIsOwner()
+  const actionsQuery = useQuery({
+    queryKey: ['auditActions'],
+    queryFn: auditApi.actions,
+    staleTime: Infinity,
+    enabled: isOwner,
+  })
+  const catalog = actionsQuery.data
+  const offeredGroups = catalog
+    ? workspace
+      ? [...catalog.project, ...catalog.workspace]
+      : catalog.project
+    : []
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [action, setAction] = useState('')
   const [emailInput, setEmailInput] = useState('')

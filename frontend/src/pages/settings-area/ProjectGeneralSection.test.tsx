@@ -267,6 +267,20 @@ describe('ProjectGeneralSection', () => {
     expect(screen.getByRole('button', { name: 'Rebuild index' })).toBeEnabled()
   })
 
+  it('disables Rebuild index when the project says this user may not mutate it', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) {
+        return jsonResponse({ ...PROJECT, created_by_user_id: 'someone-else', can_mutate: false })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection(authValue('editor'))
+
+    await screen.findByLabelText('Name')
+    expect(screen.getByRole('button', { name: 'Rebuild index' })).toBeDisabled()
+  })
+
   it('tells a viewer once why the form is read-only', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)

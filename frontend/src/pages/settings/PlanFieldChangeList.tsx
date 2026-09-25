@@ -1,5 +1,5 @@
 import type { PlanDiffKind, PlanFieldChange, PlanValueChange } from '@/types'
-import { DiffValue } from './DiffValue'
+import { DiffPair, DiffValue } from './DiffValue'
 import { KIND_META } from './branches/branchMeta'
 
 /**
@@ -9,9 +9,9 @@ import { KIND_META } from './branches/branchMeta'
  *
  * The same presentation the branch review gives a changed entry, read-only,
  * so a revision diff says what changed and not only which fields did
- * (PLAN-51). Kinds wear the branch review's own labels and tones, and the
- * visually hidden words it carries for a screen reader (PLAN-19) are carried
- * here too: the two sides and the gutter symbols differ only by colour.
+ * (PLAN-51). Kinds wear the branch review's own labels and tones, and a pair
+ * renders through the review's own `DiffPair`, so a revision diff gets the
+ * same word diff and the same visually hidden "before:"/"after:" (PLAN-19).
  */
 export function PlanFieldChangeList({ changes }: { changes: PlanFieldChange[] }) {
   return (
@@ -35,7 +35,7 @@ export function PlanFieldChangeList({ changes }: { changes: PlanFieldChange[] })
             </div>
           ) : (
             <div className="flex flex-wrap items-start gap-1.5">
-              <BeforeAfter before={change.before} after={change.after} />
+              <DiffPair before={change.before} after={change.after} />
             </div>
           )}
         </div>
@@ -49,20 +49,6 @@ const MEMBER_KIND_WORD: Record<PlanDiffKind, string> = {
   added: 'added',
   changed: 'changed',
   removed: 'removed',
-}
-
-function BeforeAfter({ before, after }: { before: unknown; after: unknown }) {
-  return (
-    <>
-      <span className="sr-only">before:</span>
-      <DiffValue value={before} tone="danger" />
-      <span className="text-[12px]" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
-        →
-      </span>
-      <span className="sr-only">after:</span>
-      <DiffValue value={after} tone="success" />
-    </>
-  )
 }
 
 /** One member of a changed collection: `~ currency  USD → EUR`. */
@@ -82,7 +68,7 @@ function PlanValueChangeRow({ item }: { item: PlanValueChange }) {
         {item.key}
       </span>
       {item.kind === 'changed' ? (
-        <BeforeAfter before={item.before} after={item.after} />
+        <DiffPair before={item.before} after={item.after} />
       ) : (
         <DiffValue value={item.kind === 'added' ? item.after : item.before} tone={meta.tone} />
       )}

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { AuditEntry, AuditEntryDetail, AuditListResponse } from '@/types'
+import type { AuditActionCatalog, AuditEntry, AuditEntryDetail, AuditListResponse } from '@/types'
 import { ApiError } from '@/api/client'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import { authAs } from '@/test/auth'
@@ -10,18 +10,35 @@ import { authAs } from '@/test/auth'
 // The audit endpoints are stubbed so the tab renders without firing a real
 // request; each test decides what the page it asks for contains, and what the
 // one-entry payload read behind an expanded row answers.
-const { listMock, getMock } = vi.hoisted(() => ({ listMock: vi.fn(), getMock: vi.fn() }))
+const { listMock, getMock, actionsMock } = vi.hoisted(() => ({
+  listMock: vi.fn(),
+  getMock: vi.fn(),
+  actionsMock: vi.fn(),
+}))
 
 vi.mock('@/api/audit', () => ({
-  auditApi: { list: listMock, get: getMock },
+  auditApi: { list: listMock, get: getMock, actions: actionsMock },
 }))
 
 import { AuditTab, WorkspaceAuditLog } from './AuditTab'
+
+// What GET /audit/actions answers. The vocabulary is the backend's now (PLAN-49):
+// which actions carry a project is decided where they are recorded, so these
+// tests pin how the page USES the two halves, not what is in them.
+const CATALOG: AuditActionCatalog = {
+  project: [
+    { label: 'Events', actions: ['event.create', 'event.delete'] },
+    { label: 'Project', actions: ['project.create', 'api_key.create'] },
+  ],
+  workspace: [{ label: 'Workspace', actions: ['data_source.create', 'project.delete'] }],
+}
 
 beforeEach(() => {
   listMock.mockReset()
   listMock.mockResolvedValue({ items: [], total: 0 })
   getMock.mockReset()
+  actionsMock.mockReset()
+  actionsMock.mockResolvedValue(CATALOG)
 })
 
 // `/audit` is owner-only, and the tab now says so to anyone else instead of
@@ -78,105 +95,11 @@ function offeredActions(): string[] {
     .filter((value) => value !== '')
 }
 
-describe('AuditTab — action filter vocabulary (tripl-jfm3.79)', () => {
-  // The list query is ALWAYS narrowed by projectSlug, so an offered action the
-  // backend records without a project scope can never match anything — the
-  // filter just reports "no entries" for a project that did the thing.
-  it('does not offer actions the backend never scopes to a project', () => {
-    renderTab()
-
-    const actions = offeredActions()
-
-    // api/v1/data_sources.py records these with no project/project_slug — a
-    // data source is instance-level — so they were dead options here.
-    expect(actions).not.toContain('data_source.create')
-    expect(actions).not.toContain('data_source.update')
-    expect(actions).not.toContain('data_source.delete')
-    // api/v1/users.py and the workspace half of api/v1/api_keys.py likewise.
-    expect(actions).not.toContain('user.role_update')
-    expect(actions).not.toContain('api_key.revoke')
-  })
-
-  it('offers the project-scoped actions the backend actually records', () => {
-    renderTab()
-
-    const actions = offeredActions()
-
-    // Families that the backend has recorded per-project all along but the
-    // filter had no entry for, so they could never be isolated.
-    for (const action of [
-      'plan_branch.create',
-      'plan_branch.merge',
-      'plan_branch.approve',
-      'scan_job.cancel',
-      'scan_config.event_groups.apply',
-      'metric_definition.create',
-      'fact_table.create',
-      'variable.bulk_update',
-      'variable.override_set',
-      'event_type.add_owner',
-      'schema_drift.accept',
-      'alert_inbox.acknowledge',
-      'alert_rule.mute',
-      'alert_delivery.retry',
-      'project.reset_anomalies',
-      'project_tracker_config.update',
-      // Both recorded with a project all along and both absent from the list
-      // until tripl-wkwv.13 — found while auditing the list for one new
-      // action, which is the failure mode this doctrine exists to catch.
-      'alert_destination.test',
-      'project.retire_unused_variables',
-    ]) {
-      expect(actions).toContain(action)
-    }
-  })
-
-  it('lists each action once', () => {
-    renderTab()
-
-    const actions = offeredActions()
-    expect(actions).toHaveLength(new Set(actions).size)
-  })
-})
-
 describe('AuditTab — events in the log (tripl-wkwv.10)', () => {
   // api/v1/events.py called audit_service.record zero times, so the central
   // object of the product was the one object this filter had nothing to offer
   // for. Per-event history is not a substitute: it never records creation or
   // deletion and CASCADEs away with the event it documents.
-  it('offers every event action the backend now records', () => {
-    renderTab()
-
-    const actions = offeredActions()
-
-    for (const action of [
-      'event.create',
-      'event.bulk_create',
-      'event.update',
-      'event.bulk_update',
-      'event.delete',
-      'event.bulk_delete',
-    ]) {
-      expect(actions).toContain(action)
-    }
-    // Reordering permutes Event.order only and is deliberately not recorded —
-    // offering it here would be an action that can never match a row.
-    expect(actions).not.toContain('event.reorder')
-    expect(actions).not.toContain('event.move')
-  })
-
-  it('groups them under their own Events optgroup', () => {
-    renderTab()
-
-    const select = screen.getByLabelText('Action') as HTMLSelectElement
-    const group = Array.from(select.querySelectorAll('optgroup')).find(
-      (candidate) => candidate.label === 'Events',
-    )
-    expect(group).toBeDefined()
-    const grouped = Array.from(group!.querySelectorAll('option')).map((o) => o.value)
-    expect(grouped).toContain('event.delete')
-  })
-
   it('describes a log that covers events and outlives the event it records', () => {
     renderTab()
 
@@ -201,7 +124,9 @@ describe('WorkspaceAuditLog — the instance-wide feed (tripl-wkwv.17)', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <WorkspaceAuditLog />
+        <AuthContext.Provider value={authAs('owner')}>
+          <WorkspaceAuditLog />
+        </AuthContext.Provider>
       </QueryClientProvider>,
     )
   }
@@ -214,34 +139,6 @@ describe('WorkspaceAuditLog — the instance-wide feed (tripl-wkwv.17)', () => {
     // project_slug as a filter rather than a scope, so omitting it is what makes
     // this the whole instance.
     expect(listMock.mock.calls[0][0].projectSlug).toBeUndefined()
-  })
-
-  it('offers the actions that carry no project, which the project tab cannot', async () => {
-    renderWorkspace()
-    await waitFor(() => expect(listMock).toHaveBeenCalled())
-
-    const actions = offeredActions()
-
-    // Recorded by the backend and displayed nowhere before this view.
-    // `project.delete` is here for the same reason as the rest: it is written
-    // once its subject is gone, so it carries no project either.
-    for (const action of [
-      'data_source.create',
-      'data_source.update',
-      'data_source.delete',
-      'user.invite',
-      'user.invite_revoke',
-      'user.role_update',
-      'api_key.revoke',
-      'project.delete',
-    ]) {
-      expect(actions).toContain(action)
-    }
-    // Additive, not alternative: this feed is unfiltered, so a project action
-    // matches here too and a filter narrower than its own list would lie.
-    expect(actions).toContain('event.create')
-    // Still exactly once each — `api_key.create` belongs to both halves.
-    expect(actions).toHaveLength(new Set(actions).size)
   })
 
   it('names the project each row belongs to, since rows from all of them sit together', async () => {
@@ -259,58 +156,6 @@ describe('WorkspaceAuditLog — the instance-wide feed (tripl-wkwv.17)', () => {
     // Every row on that page belongs to the project whose page it is, so the
     // chip would restate the heading on every line.
     expect(screen.queryByTitle('demo')).toBeNull()
-  })
-})
-
-describe('AuditTab — the project itself (tripl-wkwv.19)', () => {
-  it('offers the lifecycle actions a project can still answer for', () => {
-    renderTab()
-
-    const actions = offeredActions()
-
-    for (const action of ['project.create', 'project.update', 'project.reset']) {
-      expect(actions).toContain(action)
-    }
-  })
-
-  it('does not offer the one entry a live project can never match', () => {
-    renderTab()
-
-    // `project.delete` is written after its subject is gone, so it carries no
-    // project id — and this list is filtered by the project a slug resolves to
-    // (tripl-wkwv.18). Offering it here would be an option that can only ever
-    // answer "no entries", which is what the doctrine at the top of the module
-    // forbids. It belongs to the workspace view, tested above.
-    expect(offeredActions()).not.toContain('project.delete')
-  })
-
-  it('groups the rest with the other project actions', () => {
-    renderTab()
-
-    const select = screen.getByLabelText('Action') as HTMLSelectElement
-    const group = Array.from(select.querySelectorAll('optgroup')).find(
-      (candidate) => candidate.label === 'Project',
-    )
-    expect(group).toBeDefined()
-    const grouped = Array.from(group!.querySelectorAll('option')).map((o) => o.value)
-    expect(grouped).toContain('project.create')
-  })
-})
-
-describe('AuditTab — reconciliation resolutions (tripl-wkwv.13)', () => {
-  it('offers the dismissal, and files an acceptance under the create action', () => {
-    renderTab()
-
-    const actions = offeredActions()
-
-    // Dismissing writes observed traffic off for everyone and is terminal
-    // through the API; without an entry here it lands in the unfiltered feed
-    // and can never be isolated.
-    expect(actions).toContain('shadow_event.dismiss')
-    // Accepting deliberately has NO action of its own: a catalog event now
-    // exists, so it files `event.create`. An action of its own would split
-    // "which events did people create?" into two answers, each looking whole.
-    expect(actions).not.toContain('shadow_event.accept')
   })
 })
 
@@ -378,13 +223,15 @@ describe('AuditTab — paging (tripl-5ydt)', () => {
     // The offset indexes INTO the filtered set, so narrowing 254 entries to a
     // handful while parked on page 2 would land on a blank page of a list that
     // has rows — which reads as "nothing matches".
+    // An option the select holds only once the vocabulary has arrived.
+    await screen.findByRole('option', { name: 'event.delete' })
     fireEvent.change(screen.getByLabelText('Action'), {
-      target: { value: 'alert_inbox.mute' },
+      target: { value: 'event.delete' },
     })
 
     await waitFor(() =>
       expect(listMock).toHaveBeenLastCalledWith(
-        expect.objectContaining({ action: 'alert_inbox.mute', offset: 0 }),
+        expect.objectContaining({ action: 'event.delete', offset: 0 }),
       ),
     )
   })
@@ -598,5 +445,43 @@ describe('AuditTab — rows and filters (PLAN-48 / PLAN-49)', () => {
     await waitFor(() =>
       expect(listMock).toHaveBeenLastCalledWith(expect.objectContaining({ userEmail: 'alice' })),
     )
+  })
+})
+
+describe('AuditTab — the action vocabulary comes from the backend (PLAN-49)', () => {
+  it('offers the project half, grouped, in a project', async () => {
+    renderTab()
+
+    await waitFor(() => expect(offeredActions()).toEqual([
+      'event.create',
+      'event.delete',
+      'project.create',
+      'api_key.create',
+    ]))
+    const select = screen.getByLabelText('Action') as HTMLSelectElement
+    const labels = Array.from(select.querySelectorAll('optgroup')).map((group) => group.label)
+    expect(labels).toEqual(['Events', 'Project'])
+  })
+
+  it('offers both halves in the workspace feed', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={authAs('owner')}>
+          <WorkspaceAuditLog />
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => expect(offeredActions()).toContain('project.delete'))
+    expect(offeredActions()).toContain('event.create')
+  })
+
+  it('offers only "All actions" until the vocabulary has loaded', () => {
+    actionsMock.mockReturnValue(new Promise(() => {}))
+    renderTab()
+
+    const select = screen.getByLabelText('Action') as HTMLSelectElement
+    expect(Array.from(select.querySelectorAll('option')).map((o) => o.textContent)).toEqual(['All actions'])
   })
 })
