@@ -17,7 +17,12 @@ const DIST = path.resolve(import.meta.dirname, '..', 'dist')
 // Bytes on disk before compression, measured 2026-09-25 plus ~5% headroom —
 // after #194 took recharts, the demo chrome, the command palette dialog and the
 // settings surfaces off the first load (entry 132 732, critical path 694 876).
-const ENTRY_BUDGET = 140_000
+// Raised for #195: the shell now carries the session-expiry sign-in dialog
+// (eager on purpose — it exists to keep an unsaved page alive, so it must not
+// depend on fetching a chunk after a deploy), the URL-synced branch context and
+// the collapsed rail's controls (entry 145 128; the Appearance panel moved to
+// its own chunk to pay for part of it).
+const ENTRY_BUDGET = 152_000
 const CRITICAL_PATH_BUDGET = 730_000
 
 // Chunks that are split out so that only the pages using them pay for them:

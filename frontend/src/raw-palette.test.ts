@@ -51,12 +51,6 @@ const PALETTE_CLASS = new RegExp(
  */
 const ALLOWED = new Map<string, string>([
   [
-    'pages/AuthPage.tsx',
-    'The signed-out hero is a fixed dark composition — its own slate/teal palette '
-      + 'over a gradient, identical in both themes. It never reads the surface '
-      + 'tokens, so tone tokens would not describe it.',
-  ],
-  [
     'components/event-photos-section.tsx',
     'One decorative multi-hue gradient standing in for the Figma mark. It carries '
       + 'no text and no status meaning.',
