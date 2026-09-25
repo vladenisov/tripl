@@ -22,8 +22,11 @@ const DIST = path.resolve(import.meta.dirname, '..', 'dist')
 // depend on fetching a chunk after a deploy), the URL-synced branch context and
 // the collapsed rail's controls (entry 145 128; the Appearance panel moved to
 // its own chunk to pay for part of it).
+// Critical path raised for React 19.3: react-dom's client build alone grew by
+// ~31 KB minified, all of it in react-vendor, which every page needs (critical
+// path 742 953 with the entry unchanged).
 const ENTRY_BUDGET = 152_000
-const CRITICAL_PATH_BUDGET = 730_000
+const CRITICAL_PATH_BUDGET = 780_000
 
 // Chunks that are split out so that only the pages using them pay for them:
 // the SQL editor, its formatter (fetched on the first Format click) and
