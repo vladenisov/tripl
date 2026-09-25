@@ -885,6 +885,336 @@ describe('DataSourcesPage', () => {
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   })
 
+  // DATA-35: a stale "healthy" check renders amber on its card, so the header
+  // must not read "Warnings 0" above it.
+  it('counts stale health checks as warnings', async () => {
+    const staleSource: DataSource = {
+      ...DATA_SOURCE,
+      last_test_status: 'success',
+      last_test_message: 'Connection successful',
+      last_test_at: new Date(Date.now() - 60 * DAY_MS).toISOString(),
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([staleSource]))
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    expect(await screen.findByText('Warehouse')).toBeInTheDocument()
+    const warnings = screen.getByText('Warnings').closest('dl')
+    expect(warnings).toHaveTextContent('Warnings1')
+    const healthy = screen.getByText('Healthy').closest('dl')
+    expect(healthy).toHaveTextContent('Healthy0')
+    expect(screen.getByRole('button', { name: 'Add connection' })).toBeInTheDocument()
+  })
+
+  // LIVE-36: one health indicator and one type marker per card.
+  it('shows one health marker and one type marker per card', async () => {
+    const freshSynthetic: DataSource = {
+      ...SYNTHETIC_SOURCE,
+      last_test_status: 'success',
+      last_test_message: 'Synthetic warehouse (demo)',
+      last_test_at: new Date(Date.now() - 60 * 1000).toISOString(),
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([freshSynthetic]))
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    expect(await screen.findByText('Demo source')).toBeInTheDocument()
+    expect(screen.getAllByText('healthy')).toHaveLength(1)
+    expect(screen.getByText('Synthetic')).toBeInTheDocument()
+    expect(screen.queryByText('synthetic')).not.toBeInTheDocument()
+  })
+
+  it('still names the health of a source that was never tested', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([DATA_SOURCE]))
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    expect(await screen.findByText('Warehouse')).toBeInTheDocument()
+    expect(screen.getByText('untested')).toBeInTheDocument()
+    expect(screen.getByText('clickhouse')).toBeInTheDocument()
+  })
+
+  // DATA-28 / DATA-29: the dialog must not read as a login form, and no secret
+  // may go through the browser's spell checker.
+  it('keeps browsers from autofilling or spell-checking the credentials', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([DATA_SOURCE]))
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add connection' }))
+    const username = await screen.findByLabelText('Username')
+    const password = screen.getByLabelText('Password')
+    expect(username).toHaveAttribute('autocomplete', 'off')
+    expect(password).toHaveAttribute('autocomplete', 'new-password')
+    expect(password).toHaveAttribute('data-1p-ignore')
+    expect(password).toHaveAttribute('data-lpignore', 'true')
+
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'postgres' } })
+    for (const label of ['CA certificate', 'Client certificate', 'Client private key']) {
+      expect(screen.getByLabelText(label)).toHaveAttribute('spellcheck', 'false')
+    }
+
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'bigquery' } })
+    const key = screen.getByLabelText('Service account JSON')
+    expect(key).toHaveAttribute('spellcheck', 'false')
+    expect(key).toHaveAttribute('autocomplete', 'off')
+  })
+
+  it('rejects a malformed service-account key inline instead of saving it', async () => {
+    let posted = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources') && init?.method === 'POST') {
+        posted = true
+        return Promise.resolve(jsonResponse(DATA_SOURCE))
+      }
+      if (url.endsWith('/api/v1/data-sources')) return Promise.resolve(jsonResponse([DATA_SOURCE]))
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add connection' }))
+    fireEvent.change(await screen.findByLabelText('Type'), { target: { value: 'bigquery' } })
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'BQ' } })
+    fireEvent.change(screen.getByLabelText('Project ID'), { target: { value: 'gcp-proj' } })
+    fireEvent.change(screen.getByLabelText('Default dataset'), { target: { value: 'analytics' } })
+    const key = screen.getByLabelText('Service account JSON')
+
+    // A partial paste.
+    fireEvent.change(key, { target: { value: '{"type":"service_account","private' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/not valid JSON/)
+    expect(key).toHaveAttribute('aria-invalid', 'true')
+
+    // Valid JSON, but not a service-account key.
+    fireEvent.change(key, { target: { value: '{"type":"authorized_user"}' } })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/service_account/)
+    expect(posted).toBe(false)
+  })
+
+  it('rejects a PEM field that holds a path instead of the certificate', async () => {
+    let posted = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources') && init?.method === 'POST') {
+        posted = true
+        return Promise.resolve(jsonResponse(DATA_SOURCE))
+      }
+      if (url.endsWith('/api/v1/data-sources')) return Promise.resolve(jsonResponse([DATA_SOURCE]))
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add connection' }))
+    fireEvent.change(await screen.findByLabelText('Type'), { target: { value: 'postgres' } })
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'PG' } })
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'pg.example.com' } })
+    fireEvent.change(screen.getByLabelText('Database'), { target: { value: 'analytics' } })
+    fireEvent.change(screen.getByLabelText('CA certificate'), {
+      target: { value: '/etc/ssl/certs/ca.pem' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/BEGIN CERTIFICATE/)
+    expect(screen.getByLabelText('CA certificate')).toHaveAttribute('aria-invalid', 'true')
+    expect(posted).toBe(false)
+  })
+
+  // DATA-30: there is no test-before-save endpoint, so a new source is tested
+  // the moment it is saved instead of sitting "untested".
+  it('tests a new connection as soon as it is created', async () => {
+    const created: DataSource = { ...DATA_SOURCE, id: 'ds-new', name: 'Prod CH' }
+    let sources: DataSource[] = [DATA_SOURCE]
+    const tested: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources') && init?.method === 'POST') {
+        sources = [DATA_SOURCE, created]
+        return Promise.resolve(jsonResponse(created))
+      }
+      if (url.endsWith('/api/v1/data-sources')) return Promise.resolve(jsonResponse(sources))
+      const test = /\/data-sources\/([^/]+)\/test$/.exec(url)
+      if (test?.[1] && init?.method === 'POST') {
+        tested.push(test[1])
+        const result: DataSource = {
+          ...created,
+          last_test_status: 'failed',
+          last_test_message: 'Host not found',
+          last_test_at: new Date().toISOString(),
+        }
+        return Promise.resolve(
+          jsonResponse({
+            success: false,
+            message: 'Host not found',
+            tested_at: result.last_test_at,
+            data_source: result,
+          }),
+        )
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add connection' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Prod CH' } })
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'ch.exmaple.com' } })
+    fireEvent.change(screen.getByLabelText('Database'), { target: { value: 'analytics' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(tested).toEqual(['ds-new']))
+    expect(await screen.findByText('Host not found')).toBeInTheDocument()
+  })
+
+  it('re-tests an edited source only when its connection changed', async () => {
+    const tested: string[] = []
+    const patchFetch = editFetchMock(DATA_SOURCE, () => {})
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources/ds-1/test') && init?.method === 'POST') {
+        tested.push('ds-1')
+        return Promise.resolve(
+          jsonResponse({
+            success: true,
+            message: 'Connection successful',
+            tested_at: new Date().toISOString(),
+            data_source: DATA_SOURCE,
+          }),
+        )
+      }
+      return patchFetch(input, init)
+    })
+
+    renderDataSourcesPage()
+
+    // A rename alone is not a connection change.
+    expect(await screen.findByRole('dialog', { name: 'Edit data source' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit data source' })).not.toBeInTheDocument(),
+    )
+    expect(tested).toEqual([])
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    fireEvent.change(await screen.findByLabelText('Host'), { target: { value: 'ch2.example.com' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(tested).toEqual(['ds-1']))
+  })
+
+  // DATA-32: resetForm/closeEdit never reset the mutations, so a reopened
+  // dialog greeted the user with the previous attempt's error.
+  it('does not show a stale create error when the dialog is reopened', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources') && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ detail: 'Host is unreachable' }, 400))
+      }
+      if (url.endsWith('/api/v1/data-sources')) return Promise.resolve(jsonResponse([DATA_SOURCE]))
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add connection' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Prod CH' } })
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'ch.example.com' } })
+    fireEvent.change(screen.getByLabelText('Database'), { target: { value: 'analytics' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(await screen.findByText('Host is unreachable')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'New data source' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add connection' }))
+    expect(await screen.findByRole('dialog', { name: 'New data source' })).toBeInTheDocument()
+    expect(screen.queryByText('Host is unreachable')).not.toBeInTheDocument()
+  })
+
+  // DATA-33: the edit name had no `required`; clearing it came back as a raw 422.
+  it('stops an edit with a blank name inline, without a request', async () => {
+    let patched = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      editFetchMock(DATA_SOURCE, () => { patched = true }),
+    )
+
+    renderDataSourcesPage()
+
+    expect(await screen.findByRole('dialog', { name: 'Edit data source' })).toBeInTheDocument()
+    const nameInput = screen.getByLabelText('Name')
+    expect(nameInput).toBeRequired()
+    fireEvent.change(nameInput, { target: { value: '   ' } })
+    fireEvent.submit(nameInput.closest('form') as HTMLFormElement)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter a name.')
+    expect(nameInput).toHaveAttribute('aria-invalid', 'true')
+    expect(patched).toBe(false)
+  })
+
+  // DATA-34: one shared `testingId` re-enabled A's button when B started, and
+  // A's finish re-enabled B's while B was still running.
+  it('tracks each running connection test separately', async () => {
+    const second: DataSource = { ...DATA_SOURCE, id: 'ds-2', name: 'Replica' }
+    const pending = new Map<string, (response: Response) => void>()
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources') && !init?.method) {
+        return Promise.resolve(jsonResponse([DATA_SOURCE, second]))
+      }
+      const test = /\/data-sources\/([^/]+)\/test$/.exec(url)
+      if (test?.[1]) {
+        const id = test[1]
+        return new Promise<Response>((resolve) => pending.set(id, resolve))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    expect(await screen.findByText('Replica')).toBeInTheDocument()
+    const [testA, testB] = screen.getAllByRole('button', { name: 'Test' })
+    fireEvent.click(testA as HTMLElement)
+    fireEvent.click(testB as HTMLElement)
+
+    await waitFor(() => expect(pending.size).toBe(2))
+    expect(screen.getAllByRole('button', { name: 'Testing…' })).toHaveLength(2)
+
+    const done = (source: DataSource) =>
+      jsonResponse({
+        success: true,
+        message: 'Connection successful',
+        tested_at: new Date().toISOString(),
+        data_source: {
+          ...source,
+          last_test_status: 'success',
+          last_test_message: 'Connection successful',
+          last_test_at: new Date().toISOString(),
+        },
+      })
+    await act(async () => {
+      pending.get('ds-1')?.(done(DATA_SOURCE))
+    })
+
+    // A finished; B is still running and stays disabled.
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Testing…' })).toHaveLength(1))
+    expect(screen.getByRole('button', { name: 'Testing…' })).toBeDisabled()
+
+    await act(async () => {
+      pending.get('ds-2')?.(done(second))
+    })
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Testing…' })).not.toBeInTheDocument(),
+    )
+  })
+
   describe('inside the settings takeover', () => {
     // A DATA router and the real shell: browser Back is only interceptable by
     // the shell's blocker, which is what the edit dialog registers with.

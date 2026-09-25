@@ -15,6 +15,7 @@ import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { useConfirm } from '@/hooks/useConfirm'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { countOf } from '@/lib/plural'
 import { MUTE_PRESETS, muteChoiceName, muteName, muteUntilIso, unmuteName } from '@/lib/mutePresets'
@@ -27,14 +28,17 @@ import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDestination, AlertRule, EventType, MonitorSummaryItem, ScanConfig } from '@/types'
 
 import { invalidateAlertingConfig } from './alertingCache'
+import { toastAlertingWriteError } from './writeErrorToast'
 import {
   defaultRuleForm,
   directionSummary,
   formatCooldown,
   isDefaultMessageTemplate,
+  messageFormatForDestination,
   ruleFormToPayload,
   ruleToForm,
   scopeSummary,
+  withMessageFormat,
   type RuleFormState,
 } from './constants'
 import { describeDeletionImpact } from './deletionImpact'
@@ -99,6 +103,14 @@ interface MonitorsSectionProps {
   rules: RuleWithDestination[]
   eventTypes: EventType[]
   scans: ScanConfig[]
+  /**
+   * Whether `scans` has answered. Until it has, a scan-bound rule's scan is
+   * UNKNOWN rather than missing, and must not read "unknown scan" — the words
+   * for a scan that was deleted (ALR-47). Optional: absent means loaded.
+   */
+  scansLoaded?: boolean
+  /** The scan list failed to load: a bound scan's name is unavailable, not pending. */
+  scansFailed?: boolean
   canWrite: boolean
   /**
    * Guided setup's step 3 (tripl-oxkt.15): open the rule form prefilled for the
@@ -133,6 +145,8 @@ export function MonitorsSection({
   rules,
   eventTypes,
   scans,
+  scansLoaded = true,
+  scansFailed = false,
   canWrite,
   autoOpenRuleForDestinationId,
   onAutoOpenRuleConsumed,
@@ -179,7 +193,8 @@ export function MonitorsSection({
     setRuleDialogOpen(true)
   }
 
-  const closeRuleDialog = () => {
+  /** Close the rule form and hand the guided-setup instruction back as spent. */
+  const dismissRuleDialog = () => {
     setRuleDialogOpen(false)
     setEditingRule(null)
     onAutoOpenRuleConsumed()
@@ -187,12 +202,14 @@ export function MonitorsSection({
 
   // Every write goes through the one shared invalidation: a rule write also
   // moves the Inbox, the delivery log and this section's own summary
-  // (tripl-oxkt.14).
+  // (tripl-oxkt.14). Create and update render their error inside the dialog,
+  // so they keep the global toast out of it.
   const createRuleMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => alertingApi.createRule(slug, formDestinationId, ruleFormToPayload(ruleForm)),
     onSuccess: () => {
       invalidateAlertingConfig(qc, slug)
-      closeRuleDialog()
+      dismissRuleDialog()
       setRuleForm(defaultRuleForm())
       // A created rule lands the alerting chapter's step — inert outside the
       // demo scenario (the reducer drops every other step).
@@ -201,6 +218,7 @@ export function MonitorsSection({
   })
 
   const updateRuleMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: () => {
       if (!editingRule) throw new Error('Missing rule')
       return alertingApi.updateRule(
@@ -212,15 +230,23 @@ export function MonitorsSection({
     },
     onSuccess: () => {
       invalidateAlertingConfig(qc, slug)
-      closeRuleDialog()
+      dismissRuleDialog()
       setRuleForm(defaultRuleForm())
     },
   })
 
+  // The row-level writes below have no dialog to report in, and each used to
+  // fail with nothing on screen: the switch snapped back, the bin did nothing
+  // (ALR-6). They say why in a toast that keeps the global backstop's 401
+  // silence, request reference and dedupe (see writeErrorToast.ts).
+  const reportRowWriteError = toastAlertingWriteError
+
   const deleteRuleMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (rule: RuleWithDestination) =>
       alertingApi.deleteRule(slug, rule.destination_id, rule.id),
     onSuccess: () => invalidateAlertingConfig(qc, slug),
+    onError: reportRowWriteError,
   })
 
   // `checked` is the server's value, never local state, so a rejected write
@@ -228,23 +254,56 @@ export function MonitorsSection({
   // scoped to the ONE rule being written: a shared flag disables the neighbours
   // for the duration of somebody else's request (tripl-oxkt.18).
   const toggleRuleMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: ({ rule, enabled }: { rule: RuleWithDestination; enabled: boolean }) =>
       alertingApi.updateRule(slug, rule.destination_id, rule.id, { enabled }),
     onSuccess: () => invalidateAlertingConfig(qc, slug),
+    onError: reportRowWriteError,
   })
 
   // Mute moved off the standalone monitor page onto the row. It writes the same
   // `muted_until` the destination card reads, so the two cannot disagree — they
   // are now the same screen.
   const muteMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: ({ rule, mutedUntil }: { rule: RuleWithDestination; mutedUntil: string | null }) =>
       mutedUntil === null
         ? alertingApi.unmuteMonitor(slug, rule.id)
         : alertingApi.muteMonitor(slug, rule.id, mutedUntil),
     onSuccess: () => invalidateAlertingConfig(qc, slug),
+    onError: reportRowWriteError,
   })
 
+  // The dialog's error is the previous attempt's; a fresh opening must not
+  // show it (ALR-7). Reset on every close and every open, since the
+  // guided-setup auto-open above cannot reset during render.
+  const resetRuleMutations = () => {
+    createRuleMut.reset()
+    updateRuleMut.reset()
+  }
+
+  const closeRuleDialog = () => {
+    dismissRuleDialog()
+    resetRuleMutations()
+  }
+
+  // Picking another destination keeps the message format only when that
+  // channel supports it. `slack_mrkdwn` carried over to a Telegram destination
+  // was a 422 on Create, over a format Select that rendered blank (ALR-4).
+  const changeFormDestination = (destinationId: string) => {
+    setFormDestinationId(destinationId)
+    const type = destinations.find(destination => destination.id === destinationId)?.type
+    if (!type) return
+    setRuleForm(current => {
+      const messageFormat = messageFormatForDestination(current.message_format, type)
+      return messageFormat === current.message_format
+        ? current
+        : withMessageFormat(current, messageFormat)
+    })
+  }
+
   const openNewRule = () => {
+    resetRuleMutations()
     setEditingRule(null)
     setRuleForm(defaultRuleForm())
     // Prefill only when there is no choice to make. With several destinations
@@ -255,6 +314,7 @@ export function MonitorsSection({
   }
 
   const openEditRule = (rule: RuleWithDestination) => {
+    resetRuleMutations()
     setEditingRule(rule)
     setRuleForm(ruleToForm(rule))
     setFormDestinationId(rule.destination_id)
@@ -268,7 +328,9 @@ export function MonitorsSection({
       confirmLabel: 'Delete',
       variant: 'danger',
     })
-    if (ok) deleteRuleMut.mutate(rule)
+    // Not while a delete is already in flight: a second confirm used to fire a
+    // second DELETE for the same rule.
+    if (ok && !deleteRuleMut.isPending) deleteRuleMut.mutate(rule)
   }
 
   const ruleMutation = editingRule ? updateRuleMut : createRuleMut
@@ -397,6 +459,8 @@ export function MonitorsSection({
                     rule={rule}
                     state={stateByRule.get(rule.id)}
                     scans={scans}
+                    scansLoaded={scansLoaded}
+                    scansFailed={scansFailed}
                     expanded={expandedRuleId === rule.id}
                     onToggleExpanded={() =>
                       setExpandedRuleId(current => (current === rule.id ? null : rule.id))
@@ -406,6 +470,7 @@ export function MonitorsSection({
                       toggleRuleMut.isPending && toggleRuleMut.variables?.rule.id === rule.id
                     }
                     isMutePending={muteMut.isPending && muteMut.variables?.rule.id === rule.id}
+                    isDeletePending={deleteRuleMut.isPending && deleteRuleMut.variables?.id === rule.id}
                     onToggle={enabled => toggleRuleMut.mutate({ rule, enabled })}
                     onMute={mutedUntil => muteMut.mutate({ rule, mutedUntil })}
                     onReplay={() => setReplayingRule(rule)}
@@ -428,12 +493,19 @@ export function MonitorsSection({
         slug={slug}
         destinations={destinations}
         destinationId={formDestinationId}
-        onDestinationIdChange={setFormDestinationId}
+        onDestinationIdChange={changeFormDestination}
         isEditing={!!editingRule}
         ruleForm={ruleForm}
         setRuleForm={setRuleForm}
         eventTypes={eventTypes}
         scans={scans}
+        scansLoaded={scansLoaded}
+        scansFailed={scansFailed}
+        // Replays the SAVED rule, from inside its editor (ALR-12). The draft
+        // itself cannot be replayed until the simulate endpoint accepts a rule
+        // body; until then this is the honest half — what the rule on file
+        // would have sent — one click from the form, instead of close-and-find.
+        onReplaySaved={editingRule ? () => setReplayingRule(editingRule) : undefined}
         // Rides the monitors-summary response this section already polls, so the
         // editor gains the fact without a second request. Undefined until that
         // request answers, which the dialog reads as "say nothing yet".
@@ -463,11 +535,14 @@ interface RuleRowProps {
   rule: RuleWithDestination
   state: MonitorSummaryItem | undefined
   scans: ScanConfig[]
+  scansLoaded: boolean
+  scansFailed: boolean
   expanded: boolean
   onToggleExpanded: () => void
   canWrite: boolean
   isTogglePending: boolean
   isMutePending: boolean
+  isDeletePending: boolean
   onToggle: (enabled: boolean) => void
   onMute: (mutedUntil: string | null) => void
   onReplay: () => void
@@ -480,11 +555,14 @@ function RuleRow({
   rule,
   state,
   scans,
+  scansLoaded,
+  scansFailed,
   expanded,
   onToggleExpanded,
   canWrite,
   isTogglePending,
   isMutePending,
+  isDeletePending,
   onToggle,
   onMute,
   onReplay,
@@ -492,6 +570,7 @@ function RuleRow({
   onDelete,
 }: RuleRowProps) {
   const tone = state ? STATUS_TONE[state.status] : 'neutral'
+  const settingsId = `rule-settings-${rule.id}`
   // Built from the rule itself, not from the summary: the condition is
   // configuration, so it renders correctly while the state request is still in
   // flight.
@@ -533,6 +612,9 @@ function RuleRow({
             type="button"
             onClick={onToggleExpanded}
             aria-expanded={expanded}
+            // Only while the row it names is in the document: an
+            // aria-controls pointing at nothing is a broken reference (ALR-46).
+            aria-controls={expanded ? settingsId : undefined}
             aria-label={`${expanded ? 'Hide' : 'Show'} settings for ${rule.name}`}
             className="shrink-0 rounded p-0.5 transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-faint)' }}
@@ -694,7 +776,11 @@ function RuleRow({
               size="icon"
               className="h-8 w-8 text-muted-foreground hover:text-destructive"
               aria-label={`Delete rule ${rule.name}`}
-              title={`Deletes the rule, ${rule.total_deliveries} deliveries and ${rule.incident_count} incidents`}
+              // The shared cascade sentence, so the control and its confirm
+              // count the same way — and "1 delivery", not "1 deliveries"
+              // (ALR-45).
+              title={`Deletes the rule. ${describeDeletionImpact(rule.total_deliveries, rule.incident_count)}`}
+              disabled={isDeletePending}
               onClick={onDelete}
             >
               <Trash2 aria-hidden="true" className="h-4 w-4" />
@@ -707,18 +793,25 @@ function RuleRow({
     {expanded && (
       <div
         role="row"
+        id={settingsId}
+        aria-label={`Settings for ${rule.name}`}
         className="border-b px-4 py-3 last:border-0"
         style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
       >
         {/* Every setting labelled, because the whole block used to be a single
             wrapped run of unlabelled spans in which no individual value could be
-            found without reading all of them (tripl-oxkt.18). */}
-        <dl role="cell" className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 lg:grid-cols-4">
+            found without reading all of them (tripl-oxkt.18).
+
+            One cell spanning all six columns, and a wrapper around the list
+            rather than `role="cell"` ON the <dl>: that role replaced the list's
+            own, which left every <dt>/<dd> without the parent they require,
+            and a one-cell row in a six-column table was announced as sitting
+            under "Rule" alone (ALR-46). */}
+        <div role="cell" aria-colspan={6}>
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 lg:grid-cols-4">
           <RuleSetting
             label="Scan"
-            value={rule.scan_config_id
-              ? scans.find(scan => scan.id === rule.scan_config_id)?.name ?? 'unknown scan'
-              : 'all scans'}
+            value={scanSettingLabel(rule.scan_config_id, scans, scansLoaded, scansFailed)}
           />
           <RuleSetting label="Scopes" value={scopeSummary(rule) || 'none'} />
           <RuleSetting label="Direction" value={directionSummary(rule) || 'none'} />
@@ -739,10 +832,32 @@ function RuleRow({
             />
           )}
         </dl>
+        </div>
       </div>
     )}
     </>
   )
+}
+
+/**
+ * The scan a rule is bound to, as the settings row names it.
+ *
+ * Three states, not two: while the scan list is still loading the name is not
+ * known YET, and printing "unknown scan" then was indistinguishable from the
+ * scan having been deleted (ALR-47).
+ */
+function scanSettingLabel(
+  scanConfigId: string | null,
+  scans: ScanConfig[],
+  scansLoaded: boolean,
+  scansFailed: boolean,
+): string {
+  if (!scanConfigId) return 'all scans'
+  const name = scans.find(scan => scan.id === scanConfigId)?.name
+  if (name !== undefined) return name
+  if (scansLoaded) return 'unknown scan'
+  // A failed list will not answer on its own; "…" would read as loading forever.
+  return scansFailed ? 'scan unavailable' : '…'
 }
 
 /** One rule setting, labelled. */

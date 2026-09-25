@@ -18,6 +18,12 @@ interface DestinationsSectionProps {
   onCreateDestination: (channel: DestinationChannel) => void
   onEditDestination: (destination: AlertDestination) => void
   onDeleteDestination: (destination: AlertDestination) => void
+  /**
+   * The destination whose delete is in flight, if any. Its control is inert
+   * until the request settles, so a second confirm cannot fire a second DELETE
+   * (ALR-6). Optional: absent means nothing is being deleted.
+   */
+  deletingDestinationId?: string | null
 }
 
 /**
@@ -40,6 +46,7 @@ export function DestinationsSection({
   onCreateDestination,
   onEditDestination,
   onDeleteDestination,
+  deletingDestinationId = null,
 }: DestinationsSectionProps) {
   // A demo's local sink has no entry in CHANNEL_META (it is not a channel anyone
   // can add), so it fell straight through the per-channel grouping below and its
@@ -110,7 +117,7 @@ export function DestinationsSection({
             </div>
             <h3 className="text-sm font-semibold text-foreground">No alert destinations</h3>
             <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-              Create a Slack webhook, Telegram bot, or generic webhook destination, then attach rules to it.
+              Connect Slack, Telegram, email, a webhook, Jira or Linear, then attach rules to it.
             </p>
             {isDemo ? (
               <div className="mt-4 max-w-sm">{demoChannelNotice}</div>
@@ -179,10 +186,11 @@ export function DestinationsSection({
                         size="sm"
                         className="text-muted-foreground hover:text-destructive"
                         title={`Deletes "${destination.name}", its rules, and their history. ${describeDeletionImpact(destination.delivery_count, destination.incident_count)}`}
+                        disabled={deletingDestinationId === destination.id}
                         onClick={() => onDeleteDestination(destination)}
                       >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete destination
+                        <Trash2 aria-hidden="true" className="mr-2 h-4 w-4" />
+                        {deletingDestinationId === destination.id ? 'Deleting…' : 'Delete destination'}
                       </Button>
                     </div>
                   )}

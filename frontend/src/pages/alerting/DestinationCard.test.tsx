@@ -1,7 +1,14 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+/** The toaster, stubbed: a refused switch says why in one (ALR-6). */
+const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }))
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: toastError },
+  Toaster: () => null,
+}))
 
 import { alertingApi } from '@/api/alerting'
 import type { AlertDestination, AlertRule } from '@/types'
@@ -87,18 +94,24 @@ function renderCard(destination: AlertDestination = makeDestination(), canWrite 
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
-  return render(
+  const tree = (current: AlertDestination) => (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <DestinationCard
           slug="windy-ios"
-          destination={destination}
+          destination={current}
           canWrite={canWrite}
           onEditDestination={() => {}}
         />
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
+  const result = render(tree(destination))
+  return {
+    ...result,
+    /** Re-render the same card with the destination as a refetch would return it. */
+    update: (next: AlertDestination) => result.rerender(tree(next)),
+  }
 }
 
 afterEach(() => {
@@ -204,3 +217,75 @@ describe('DestinationCard viewer gating (tripl-oxkt.9)', () => {
     expect(screen.getByText('chat -1002233445566')).toBeInTheDocument()
   })
 })
+
+describe('DestinationCard after an edit (ALR-40)', () => {
+  it('drops a refusal that described the credentials stored before the edit', async () => {
+    vi.spyOn(alertingApi, 'testDestination').mockResolvedValue({
+      ok: false,
+      error: 'Unauthorized',
+      sent_at: null,
+    })
+    const { update } = renderCard()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send a test message through TG' }))
+    expect(await screen.findByText(/The channel refused the test message: Unauthorized/)).toBeInTheDocument()
+
+    update(makeDestination({ chat_id: '-100999', updated_at: '2026-08-13T00:00:00Z' }))
+
+    expect(screen.queryByText(/The channel refused the test message/)).toBeNull()
+  })
+
+  it('drops the result when the editor is opened, since it can replace a secret', async () => {
+    vi.spyOn(alertingApi, 'testDestination').mockResolvedValue({ ok: false, error: 'Unauthorized', sent_at: null })
+    renderCard()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send a test message through TG' }))
+    expect(await screen.findByText(/The channel refused the test message: Unauthorized/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit destination TG' }))
+
+    expect(screen.queryByText(/The channel refused the test message/)).toBeNull()
+  })
+
+  it('keeps the result across a write that does not touch the channel settings', async () => {
+    vi.spyOn(alertingApi, 'testDestination').mockResolvedValue({ ok: false, error: 'Unauthorized', sent_at: null })
+    const { update } = renderCard()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send a test message through TG' }))
+    expect(await screen.findByText(/The channel refused the test message: Unauthorized/)).toBeInTheDocument()
+
+    // The digest flusher's `last_flushed_at` tick and the Enabled switch both
+    // move `updated_at` without changing what the test was a test of.
+    update(makeDestination({ enabled: false, updated_at: '2026-08-13T00:00:00Z' }))
+
+    expect(screen.getByText(/The channel refused the test message: Unauthorized/)).toBeInTheDocument()
+  })
+
+  it('can be dismissed', async () => {
+    vi.spyOn(alertingApi, 'testDestination').mockResolvedValue({ ok: true, error: null, sent_at: null })
+    renderCard()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send a test message through TG' }))
+    expect(await screen.findByText('Test message reached the channel.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss the test result for TG' }))
+
+    expect(screen.queryByText('Test message reached the channel.')).toBeNull()
+  })
+})
+
+describe('DestinationCard enable switch (ALR-6)', () => {
+  it('says why when the server refuses the write', async () => {
+    vi.spyOn(alertingApi, 'updateDestination').mockRejectedValue(
+      new Error('Value error, A demo destination cannot be enabled'),
+    )
+    renderCard()
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Toggle TG' }))
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith('A demo destination cannot be enabled', expect.anything()),
+    )
+  })
+})
+

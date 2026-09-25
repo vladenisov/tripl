@@ -123,7 +123,14 @@ configured breakdown column — plus any other warehouse column typed in by hand
 JSON fields are excluded); **Field values**
 (per the event type's schema — boolean/enum selects, a JSON editor for `json`
 fields that validates and saves canonical JSON while preserving complete
-`${variable}` values, variable-aware text inputs); and **Meta fields** values.
+`${variable}` values, variable-aware text inputs; a `number` field takes a
+number or a `${variable}` token, and Save stays disabled while it holds
+anything else); and **Meta fields** values. A tag or breakdown column still
+sitting in its input when you leave the box or save is added, as if you had
+pressed Enter. The **Sunset date** is entered and shown in your local time and
+stored as that instant. Changing the event type on a new event keeps the values
+of fields the new type has under the same name, and asks first when some values
+have nowhere to go.
 For a series of similar events, **Save and add another** creates the current
 event, says what it created, and keeps the entered form values in place for the
 next one — change what differs and save again.
@@ -222,10 +229,13 @@ one event name.
 
 Below the box, every line is listed with the event it would create and whether
 it can be: `will be created`, `missing <column>`, `repeated above`, or `already
-in the catalog`. Only the first kind is sent. The check against the catalog
-reads a bounded page of existing events and says so when there were more than it
-read — the server refuses a taken identity regardless, so an unchecked line
-costs a rejected submit rather than a duplicate.
+in the catalog`. Only the first kind is sent. Each name is looked up in the
+catalog once the paste settles; until every lookup has answered, lines read
+`checking…` and **Create** waits. A name whose lookup failed, or matched more
+existing events than one lookup reads, or lies past the first 100 names, reads
+`will be created, not checked`, and the list says how many there are — the
+server refuses a taken identity regardless, so an unchecked line costs a
+rejected submit rather than a duplicate.
 
 Two event types cannot be filled this way and say so instead: one whose name
 format reads a value *inside* a JSON field, and one with a required field the
@@ -293,7 +303,8 @@ count per value.
 ### Event discussion
 
 **Where:** under the form on an event's edit page (Plan › Events → open an
-event → **Edit**), and under the **New event** form as a single box. A comment
+event → **Edit**), and on the **New event** form as a single box above the
+**Create event** button. A comment
 needs an event to hang on, so the thread itself starts once the event exists —
 but the question does not wait for it. A note written while authoring is posted
 as the first comment the moment **Create event** succeeds. If that post fails
@@ -309,7 +320,8 @@ question written there arrives as if it were part of the specification. Nothing
 written in the discussion goes to any of those places.
 
 Every comment shows who wrote it and when, and replies nest under the comment
-they answer. The same thread powers the notes on an individual attachment and
+they answer. The **Delete** button is shown to the comment's author and to owners, and asks for a
+confirmation that says how many replies go with it. The same thread powers the notes on an individual attachment and
 the review comments on a branch, so all three read and behave alike.
 
 An event has **one** discussion. Open the event on a branch and you see and add
@@ -370,8 +382,15 @@ state; only the event discussion does.
 (Plan › Events → open an event, or click an event's signal on Observe ›
 Anomalies). It is shown for the `event` scope only.
 
-You can upload images (JPEG, PNG, GIF, or WebP) by drag-and-drop or the **Upload
-image** button (stored on the configured backend — local disk or GCS), attach a
+You can upload images (JPEG, PNG, GIF, or WebP by default, up to 10 MB each by default —
+both are instance settings) by
+drag-and-drop or the **Upload image** button (stored on the configured backend —
+local disk or GCS). Several files upload side by side, each with its own
+progress; a file that fails is named with the reason while the others still
+land, and a file that is not an image is listed as not uploaded rather than dropped
+silently. A file larger than the default 10 MB still uploads, with a note that the
+server refuses it if the instance keeps that limit; a type or size the instance does
+not allow comes back as a failed upload with the server's reason. You can also attach a
 **Figma spec** by URL with an optional title (rendered as an embedded frame with
 an "Open in Figma" link), delete a photo or detach a spec, and hold a **threaded
 comment** discussion (top-level comments plus one level of replies) per
@@ -1196,13 +1215,21 @@ delivery log rather than a permanently empty one.
 ### Reconciliation
 
 **Where:** Govern › Reconciliation. **Data match** shows the share of planned
-events actually seen in your data over a fixed 14-day window (the date control is
-non-interactive). The headline percentage carries an inline tooltip spelling out
+events actually seen in your data over a fixed 14-day window (named by the
+"Last 14 days" label on the panel). The per-day bars sit on a fixed 0–100% scale;
+a day with no data is drawn as an empty dashed outline rather than as 0%, and a
+match that never changes is stated in words ("Stable: 94% on each of the last 14
+days") instead of as a flat line. Screen readers get a summary (lowest, highest,
+latest, days without data) and a per-day table. The headline percentage carries an inline tooltip spelling out
 that it measures data match — not the Coverage page's plan coverage — so the two
 governance numbers are not read as contradictory. The **shadow events inbox** (tabs: `new` / `accepted` /
 `dismissed`) lists events seen in data but missing from the plan — **Accept**
 creates the event on the active branch (you pick an event type when none is
-inferred), or **Dismiss** it. A scan reads `main`'s plan, so the event type it
+inferred), or **Dismiss** it. The inbox loads 100 rows at a time and says how
+many it is showing ("Showing 100 of 812", with **Show more** up to 500); the
+`new` tab carries the count of new events. Tick rows (or the select-all box) to
+**Accept** or **Dismiss** them in bulk; bulk accept only takes rows that
+already have an event type, and rows without one are accepted individually. A scan reads `main`'s plan, so the event type it
 inferred is `main`'s; accepting on a working branch writes the branch's own copy
 of that type, matched by name. If the branch deleted the type, the accept is
 refused and says so — accept on `main`, or pick a type the branch still has.
@@ -1221,8 +1248,12 @@ the name *is* built from coincide. Naming the **Event type column** in the
 them — but it is not a guarantee, because an event group rule that rewrites both
 names to one folds them back together anyway.
 **Dead events** (in plan, no data in the last
-30 days) can be selected and archived; archiving targets the project's
-`main` branch.
+30 days) can be selected and archived; archiving asks for confirmation with the
+count and reports how many events it archived. Dead events are computed on the
+project's `main` branch and archiving writes to `main`, so on a working branch
+the panel is labelled "main branch" and does not offer **Archive** — switch to
+`main` to archive. Long lists show 200 rows at a time. Accepting or archiving
+refreshes Coverage, the event lists and the data match straight away.
 
 **Archiving puts an event away for good.** An archived event is inert: scans stop
 refreshing its field values, group rules can neither rewrite nor delete it, and
@@ -1957,9 +1988,15 @@ documents indexed and whether embeddings were queued.
 **Where:** Workspace settings › Data sources (owner only). Supported types and
 default ports: **ClickHouse** (8123), **PostgreSQL** (5432, **version 14+
 required**), and **BigQuery** (project/dataset based). Create, edit, and delete
-sources; **Test connection**; browse the schema (tables/columns) for the scan
+sources; **Test connection** (a new source is tested as soon as it is created,
+and an edited one when its host, credentials or TLS settings change — there is
+no test before saving); browse the schema (tables/columns) for the scan
 query builder; and view ingestion stats. Health is shown as healthy / stale /
-failing / untested.
+failing / untested. The dialog checks secrets before saving: a BigQuery key must
+be valid JSON with `"type": "service_account"` (paste it or **load the key
+file**), and PostgreSQL certificates and keys must be PEM blocks
+(`-----BEGIN …-----` to `-----END …-----`), not file paths. Credential fields
+are excluded from browser autofill, password managers and spell check.
 
 **Runtime controls.** Every source takes a **query timeout** (default 300s),
 applied to the connect handshake and to the query itself. Per-warehouse

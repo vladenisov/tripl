@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -10,6 +10,14 @@ import type {
 } from '@/api/reconciliation'
 import { DEAD_EVENT_DAYS } from '@/lib/coverage'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import { BranchContext } from '@/components/branch-context-internal'
+import {
+  projectEventTypesKey,
+  projectKey,
+  projectShadowEventsKey,
+  reconciliationCoverageKey,
+  reconciliationRootKey,
+} from '@/lib/queryKeys'
 import ReconciliationPage from './ReconciliationPage'
 import { at } from '@/test/at'
 
@@ -106,19 +114,32 @@ function mockFetch(): void {
   })
 }
 
-function renderPage(auth: AuthContextValue | null = null) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function renderPage(
+  auth: AuthContextValue | null = null,
+  {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+    branchId = null,
+  }: { queryClient?: QueryClient; branchId?: string | null } = {},
+) {
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={auth}>
-        <MemoryRouter initialEntries={['/p/demo/reconciliation']}>
-          <Routes>
-            <Route path="/p/:slug/reconciliation" element={<ReconciliationPage />} />
-          </Routes>
-        </MemoryRouter>
+        <BranchContext.Provider value={{ branchId, setBranchId: () => {}, slug: 'demo' }}>
+          <MemoryRouter initialEntries={['/p/demo/reconciliation']}>
+            <Routes>
+              <Route path="/p/:slug/reconciliation" element={<ReconciliationPage />} />
+            </Routes>
+          </MemoryRouter>
+        </BranchContext.Provider>
       </AuthContext.Provider>
     </QueryClientProvider>,
   )
+}
+
+/** Confirms the archive dialog that now sits in front of every archive (DATA-40). */
+async function confirmArchive(): Promise<void> {
+  const confirmDialog = await screen.findByRole('alertdialog')
+  fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Archive' }))
 }
 
 afterEach(() => {
@@ -559,6 +580,7 @@ describe('ReconciliationPage', () => {
       await screen.findByRole('checkbox', { name: 'Select legacy_banner_shown' }),
     )
     fireEvent.click(screen.getByRole('button', { name: 'Archive 1 selected' }))
+    await confirmArchive()
 
     await waitFor(() => expect(archiveCalls).toHaveLength(1))
     expect(at(archiveCalls, 0).url).toContain('/reconciliation/dead-events/archive')
@@ -592,10 +614,317 @@ describe('ReconciliationPage', () => {
       await screen.findByRole('checkbox', { name: 'Select legacy_banner_shown' }),
     )
     fireEvent.click(screen.getByRole('button', { name: 'Archive 1 selected' }))
+    await confirmArchive()
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Event not found on branch')
     // The row and its selection persist so the user can retry.
     expect(screen.getByText('legacy_banner_shown')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Archive 1 selected' })).toBeInTheDocument()
+  })
+
+  // DATA-40: select-all plus one click used to archive the whole list with no
+  // confirmation and no word afterwards.
+  it('asks before archiving, sends nothing on cancel, and reports what it archived', async () => {
+    const archiveCalls: string[][] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events/archive')) {
+        const body = JSON.parse(String(init?.body)) as { event_ids: string[]; status: string }
+        archiveCalls.push(body.event_ids)
+        return jsonResponse({
+          event_ids: body.event_ids,
+          status: body.status,
+          archived_count: body.event_ids.length,
+        })
+      }
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select all dead events' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Archive 2 selected' }))
+
+    const confirmDialog = await screen.findByRole('alertdialog')
+    expect(confirmDialog).toHaveTextContent('Archive 2 planned events?')
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    expect(archiveCalls).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive 2 selected' }))
+    await confirmArchive()
+
+    await waitFor(() => expect(archiveCalls).toEqual([['d1', 'd2']]))
+    expect(await screen.findByRole('status')).toHaveTextContent('2 events archived.')
+  })
+
+  // DATA-41: accept and archive change the plan, so Coverage's project summary,
+  // the event types and the data match must refetch too — not only the list
+  // the action came from.
+  it('refreshes Coverage, event types and the data match after an archive', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events/archive')) {
+        const body = JSON.parse(String(init?.body)) as { event_ids: string[]; status: string }
+        return jsonResponse({
+          event_ids: body.event_ids,
+          status: body.status,
+          archived_count: body.event_ids.length,
+        })
+      }
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    renderPage(null, { queryClient })
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select legacy_banner_shown' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Archive 1 selected' }))
+    await confirmArchive()
+
+    await waitFor(() => {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: projectKey('demo') })
+    })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: projectEventTypesKey('demo') })
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: reconciliationCoverageKey('demo', 14),
+    })
+  })
+
+  // DATA-42: dead events are resolved on main, and archive writes to main. On a
+  // feature branch the panel says so and does not offer the write.
+  it('labels dead events as main-branch and withholds archive on a feature branch', async () => {
+    mockFetch()
+    renderPage(null, { branchId: 'branch-1' })
+
+    expect(await screen.findByText('legacy_banner_shown')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        `Implemented events with no data in the last ${DEAD_EVENT_DAYS} days · main branch`,
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/Switch to main to archive them/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Archive/ })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('checkbox', { name: 'Select legacy_banner_shown' }),
+    ).not.toBeInTheDocument()
+    // Shadow triage is branch-scoped and stays available.
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeInTheDocument()
+    expect(
+      vi
+        .mocked(globalThis.fetch)
+        .mock.calls.some(([input]) => String(input).includes('/dead-events/archive')),
+    ).toBe(false)
+  })
+
+  // DATA-47: a selected id that a refetch dropped must not ride along into the
+  // atomic archive request, which would 404 the whole batch.
+  it('drops selected dead events that disappear on refetch', async () => {
+    let deadPayload: DeadEventsResponse = dead
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(deadPayload)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    renderPage(null, { queryClient })
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select all dead events' }))
+    expect(screen.getByRole('button', { name: 'Archive 2 selected' })).toBeEnabled()
+
+    deadPayload = { ...dead, total: 1, items: dead.items.slice(1) }
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: reconciliationRootKey() })
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText('legacy_banner_shown')).not.toBeInTheDocument()
+    })
+    expect(screen.getByRole('button', { name: 'Archive 1 selected' })).toBeInTheDocument()
+  })
+
+  // DATA-43: the histogram had no accessible name, per-day values only in
+  // `title`, and a day without data drew as a 2%-high danger-red bar.
+  it('summarises the data-match histogram and marks empty days as no data', async () => {
+    const withGap: CoverageResponse = {
+      ...coverage,
+      items: [...coverage.items, { bucket: '2026-06-04', total_count: 0, matched_count: 0 }],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(withGap)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(emptyShadow)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    const chart = await screen.findByRole('img', { name: /Data match per day/ })
+    expect(chart).toHaveAccessibleName(
+      'Data match per day over 4 days; lowest 50%; highest 95%; latest 50% on 2026-06-03; 1 day without data',
+    )
+    expect(screen.getByTitle('2026-06-04: no data')).toBeInTheDocument()
+    // The per-day values are reachable without hovering.
+    const table = screen.getByRole('table', { name: 'Data match per day' })
+    expect(within(table).getByRole('row', { name: '2026-06-04 no data' })).toBeInTheDocument()
+    expect(within(table).getByRole('row', { name: '2026-06-01 95%' })).toBeInTheDocument()
+  })
+
+  // DATA-39: the inbox stopped at 100 rows without saying so, and triage was one
+  // request per click.
+  it('says how much of the inbox is shown and loads more on request', async () => {
+    const shadowUrls: string[] = []
+    const bigInbox: ShadowEventsResponse = { ...shadowNew, total: 250, new_count: 250 }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) {
+        shadowUrls.push(url)
+        return jsonResponse(bigInbox)
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    expect(await screen.findByText('Showing 1 of 250')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'new 250' })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }))
+
+    await waitFor(() => expect(shadowUrls.some((url) => url.includes('limit=200'))).toBe(true))
+  })
+
+  it('dismisses selected shadow events in bulk, one request each', async () => {
+    const typed: ShadowEventsResponse = {
+      total: 2,
+      new_count: 2,
+      items: [
+        { ...at(shadowNew.items, 0), id: 'sh1', event_type_id: 'et-1', event_type_name: 'screen' },
+        { ...at(shadowNew.items, 0), id: 'sh2', event_name: 'promo_banner_closed' },
+      ],
+    }
+    const dismissed: string[] = []
+    const accepted: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      const dismiss = /shadow-events\/([^/]+)\/dismiss/.exec(url)
+      if (dismiss?.[1]) {
+        dismissed.push(dismiss[1])
+        return jsonResponse({ candidate_id: dismiss[1], status: 'dismissed' })
+      }
+      const accept = /shadow-events\/([^/]+)\/accept/.exec(url)
+      if (accept?.[1]) {
+        accepted.push(accept[1])
+        return jsonResponse({ candidate_id: accept[1], event_id: 'ev', status: 'accepted' })
+      }
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(typed)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: 'Select all new shadow events' }),
+    )
+    // Only the typed row can be accepted without choosing a type first.
+    expect(screen.getByRole('button', { name: 'Accept 1 selected' })).toBeEnabled()
+    expect(screen.getByText('Rows without an event type are accepted one at a time.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss 2 selected' }))
+
+    await waitFor(() => expect(dismissed).toEqual(['sh1', 'sh2']))
+    expect(await screen.findByText('2 events dismissed.')).toBeInTheDocument()
+    expect(accepted).toEqual([])
+  })
+
+  // Dismiss only flips a candidate's status: it refreshes the inbox, not the
+  // project summary, events and the 14-day data match an accept moves.
+  it('refreshes only the inbox after a single dismiss', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      const dismiss = /shadow-events\/([^/]+)\/dismiss/.exec(url)
+      if (dismiss?.[1]) return jsonResponse({ candidate_id: dismiss[1], status: 'dismissed' })
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(shadowNew)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    renderPage(null, { queryClient })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }))
+
+    await waitFor(() => {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: projectShadowEventsKey('demo') })
+    })
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: projectKey('demo') })
+    expect(invalidate).not.toHaveBeenCalledWith({
+      queryKey: reconciliationCoverageKey('demo', 14),
+    })
+  })
+
+  // A tab switch mid-run cleared the selection and landed the run's notice in
+  // the other tab; the row checkboxes unmounted for the run and shifted rows.
+  it('locks the tabs and keeps disabled row checkboxes during a bulk run', async () => {
+    const typed: ShadowEventsResponse = {
+      total: 2,
+      new_count: 2,
+      items: [
+        { ...at(shadowNew.items, 0), id: 'sh1' },
+        { ...at(shadowNew.items, 0), id: 'sh2', event_name: 'promo_banner_closed' },
+      ],
+    }
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      const dismiss = /shadow-events\/([^/]+)\/dismiss/.exec(url)
+      if (dismiss?.[1]) {
+        await gate
+        return jsonResponse({ candidate_id: dismiss[1], status: 'dismissed' })
+      }
+      if (url.includes('/reconciliation/shadow-events')) return jsonResponse(typed)
+      if (url.includes('/event-types')) return jsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: 'Select all new shadow events' }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss 2 selected' }))
+
+    expect(await screen.findByText('Dismissing 0 of 2…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'accepted' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'dismissed' })).toBeDisabled()
+    const rowCheckbox = screen.getByRole('checkbox', { name: 'Select variant_color_selected' })
+    expect(rowCheckbox).toBeDisabled()
+
+    await act(async () => {
+      release()
+    })
+    expect(await screen.findByText('2 events dismissed.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'accepted' })).toBeEnabled()
   })
 })

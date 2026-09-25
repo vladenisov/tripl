@@ -70,6 +70,11 @@ post a message; **Webhook** POSTs a JSON payload. **MarkdownV2** falls back to
 plain text automatically if a message can't be rendered safely.
 :::
 
+Credentials are write-only. When you edit a destination, a secret box left empty
+keeps the stored value. The webhook's custom header is a pair: a new header name
+needs its value. To stop sending a stored header, use **Remove secret header**
+in the edit dialog.
+
 ### Delivery schedule — send now, or collect into a digest {#delivery-schedule}
 
 By default a destination delivers **immediately**: the moment a metrics
@@ -232,6 +237,10 @@ The reply is `{ "ok": …, "error": …, "sent_at": … }`, and:
   zero-egress. The exception is the local demo sink, which answers `ok: true`,
   because rendering and recording locally is exactly what a real delivery through
   it does. Test sends use the same demo egress guard as queued deliveries.
+- **The result stays on the card until the channel's settings change.** Changing
+  a stored setting or opening the destination's editor clears it, because the
+  editor can replace a secret. Writes that leave the channel as it was keep it:
+  toggling **Enabled**, or a digest being sent. **Dismiss** clears it by hand.
 
 Whoever reads that channel did not ask for the message, so it says on its own
 line that nothing is wrong and that someone pressed Test. Use rule replay to
@@ -623,6 +632,9 @@ Alerting tab until you re-aim and re-enable it.
 **Filters** narrow further by `event_type`, `event`, or `direction`, with
 operators `eq` / `ne` / `in` / `not_in`. Multiple filters are ANDed; a signal
 that doesn't carry the filtered field passes through.
+A filter row with no value picked is refused when you save the rule. Pick at
+least one value or remove the row. An empty row is never dropped quietly,
+because the rule would then save broader than the form showed.
 
 An `event_type` filter narrows **any** signal that carries an event type. For
 most of them the type is stored on the signal's own row; for the ones anchored to
@@ -707,6 +719,9 @@ written back nowhere:
 Each comes back as a `*_used` / `*_saved` pair (`min_percent_delta_used`,
 `min_percent_delta_saved`, and so on), so the result can show *tried* beside
 *stored* without a second request. Omit an override and `used` equals `saved`.
+In the replay dialog a blank box means "use the saved value". A box holding
+something outside the bounds, such as a negative number, is marked invalid and
+blocks **Replay**. It is not read as blank.
 
 Each firing also reports its scan. The preview table shows that scan's name,
 or **Project-wide** when the anomaly has no scan, so similarly named scopes

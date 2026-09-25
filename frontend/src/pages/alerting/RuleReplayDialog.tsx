@@ -53,6 +53,11 @@ const MESSAGE_FORMAT_LABEL: Record<AlertMessageFormat, string> = {
 // failing.
 const SIGMA_MIN_EXCLUSIVE = 0
 const SIGMA_MAX = 10
+// The same treatment for the cooldown override, which the route declares as
+// `int, ge=0, le=10080` (a week). `parseOverride` accepted 1.5 or 20000 and the
+// replay came back as "Replay failed: cooldown_minutes_override: Input should be
+// a valid integer…" (ALR-13).
+const COOLDOWN_OVERRIDE_MAX = 10080
 
 /** Thresholds to try WITHOUT saving them to the rule. */
 interface ReplayOverrides {
@@ -62,22 +67,44 @@ interface ReplayOverrides {
   sigmaThreshold?: number
 }
 
+/** Everything a run was asked for — what a result is only valid for. */
+interface ReplayRequest {
+  n: number
+  overrides: ReplayOverrides | null
+}
+
 type ReplayResult = {
   saved: AlertRuleSimulateResponse
   override: AlertRuleSimulateResponse | null
+  /** The request that produced it, to tell when the inputs have moved on. */
+  request: ReplayRequest
+}
+
+function sameRequest(a: ReplayRequest, b: ReplayRequest): boolean {
+  return a.n === b.n && JSON.stringify(a.overrides ?? {}) === JSON.stringify(b.overrides ?? {})
 }
 
 /**
  * A blank box means "leave this one alone", which is a different instruction
  * from 0 — `Number('')` is 0, so parsing without this guard would silently
  * replay every empty field as the most permissive threshold there is.
+ *
+ * Text that is there but is not a usable value (negative, not finite) comes
+ * back as NaN, NOT as blank: reading "-5" as "no override" ran the replay on
+ * the saved value while the box still showed -5 (ALR-13). Every caller treats
+ * NaN as invalid.
  */
 function parseOverride(text: string): number | null {
   const trimmed = text.trim()
   if (trimmed === '') return null
   const value = Number(trimmed)
-  if (!Number.isFinite(value) || value < 0) return null
+  if (!Number.isFinite(value) || value < 0) return Number.NaN
   return value
+}
+
+/** Present but unusable: the box gets an inline error and Replay is blocked. */
+function isInvalidOverride(value: number | null): boolean {
+  return value !== null && Number.isNaN(value)
 }
 
 function ThresholdRow({
@@ -155,42 +182,52 @@ export function RuleReplayDialog({
   // request and label the result "Override" when nothing was overridden.
   const requestedOverrides: ReplayOverrides = {}
   const cooldown = parseOverride(cooldownText)
-  if (cooldown !== null && cooldown !== rule.cooldown_minutes) {
+  const cooldownInvalid =
+    cooldown !== null && (!Number.isInteger(cooldown) || cooldown > COOLDOWN_OVERRIDE_MAX)
+  if (cooldown !== null && !cooldownInvalid && cooldown !== rule.cooldown_minutes) {
     requestedOverrides.cooldownMinutes = cooldown
   }
   const minPercent = parseOverride(minPercentText)
-  if (minPercent !== null && minPercent !== rule.min_percent_delta) {
+  const minPercentInvalid = isInvalidOverride(minPercent)
+  if (minPercent !== null && !minPercentInvalid && minPercent !== rule.min_percent_delta) {
     requestedOverrides.minPercentDelta = minPercent
   }
   const minExpected = parseOverride(minExpectedText)
-  if (minExpected !== null && minExpected !== rule.min_expected_count) {
+  const minExpectedInvalid = isInvalidOverride(minExpected)
+  if (minExpected !== null && !minExpectedInvalid && minExpected !== rule.min_expected_count) {
     requestedOverrides.minExpectedCount = minExpected
   }
   // Sigma has no rule-level column to compare against — the detector's own
   // default is the baseline — so anything typed here is a change by definition.
   const sigma = parseOverride(sigmaText)
   const sigmaOutOfRange =
-    sigma !== null && (sigma <= SIGMA_MIN_EXCLUSIVE || sigma > SIGMA_MAX)
+    sigma !== null
+    && (isInvalidOverride(sigma) || sigma <= SIGMA_MIN_EXCLUSIVE || sigma > SIGMA_MAX)
   if (sigma !== null && !sigmaOutOfRange) {
     requestedOverrides.sigmaThreshold = sigma
   }
   const hasOverrides = Object.keys(requestedOverrides).length > 0
+  const currentRequest: ReplayRequest = {
+    n: days,
+    overrides: hasOverrides ? requestedOverrides : null,
+  }
 
   const simulateMut = useMutation({
-    mutationFn: async ({ n, overrides }: { n: number; overrides: ReplayOverrides | null }) => {
+    mutationFn: async (request: ReplayRequest): Promise<ReplayResult> => {
+      const { n, overrides } = request
       // Two runs, always: `*_used`/`*_saved` name the thresholds a single run
       // applied, but only a second run over the SAME window says how many
       // firings the change would actually have removed.
       const savedPromise = alertingApi.simulateRule(slug, destinationId, rule.id, n)
       if (!overrides) {
         const saved = await savedPromise
-        return { saved, override: null } satisfies ReplayResult
+        return { saved, override: null, request }
       }
       const [saved, overrideResp] = await Promise.all([
         savedPromise,
         alertingApi.simulateRule(slug, destinationId, rule.id, n, overrides),
       ])
-      return { saved, override: overrideResp } satisfies ReplayResult
+      return { saved, override: overrideResp, request }
     },
     onSuccess: (data) => {
       setResult(data)
@@ -213,6 +250,11 @@ export function RuleReplayDialog({
   }
 
   const displayResult = result?.override ?? result?.saved ?? null
+  // A result answers the window and overrides it was run with. Changing either
+  // afterwards used to leave "Considered N", the firings and the preview on
+  // screen as if they answered the new inputs (ALR-12). They stay — a
+  // comparison is often the point — but dimmed, and say so.
+  const resultIsStale = result !== null && !sameRequest(result.request, currentRequest)
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -255,11 +297,19 @@ export function RuleReplayDialog({
                 aria-label="Cooldown override in minutes"
                 type="number"
                 min={0}
+                max={COOLDOWN_OVERRIDE_MAX}
+                step={1}
+                aria-invalid={cooldownInvalid || undefined}
                 placeholder={`saved: ${rule.cooldown_minutes}`}
                 value={cooldownText}
                 onChange={(e) => setCooldownText(e.target.value)}
                 className="h-8 w-32 text-xs"
               />
+              {cooldownInvalid && (
+                <p role="alert" className="text-[10.5px] text-destructive">
+                  Whole minutes from 0 to {COOLDOWN_OVERRIDE_MAX}, or blank for the saved value.
+                </p>
+              )}
             </div>
             <div className="space-y-1">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
@@ -270,11 +320,17 @@ export function RuleReplayDialog({
                 type="number"
                 min={0}
                 step="0.1"
+                aria-invalid={minPercentInvalid || undefined}
                 placeholder={`saved: ${rule.min_percent_delta}`}
                 value={minPercentText}
                 onChange={(e) => setMinPercentText(e.target.value)}
                 className="h-8 w-28 text-xs"
               />
+              {minPercentInvalid && (
+                <p role="alert" className="text-[10.5px] text-destructive">
+                  0 or more, or blank for the saved value.
+                </p>
+              )}
             </div>
             <div className="space-y-1">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
@@ -285,11 +341,17 @@ export function RuleReplayDialog({
                 type="number"
                 min={0}
                 step="0.1"
+                aria-invalid={minExpectedInvalid || undefined}
                 placeholder={`saved: ${rule.min_expected_count}`}
                 value={minExpectedText}
                 onChange={(e) => setMinExpectedText(e.target.value)}
                 className="h-8 w-28 text-xs"
               />
+              {minExpectedInvalid && (
+                <p role="alert" className="text-[10.5px] text-destructive">
+                  0 or more, or blank for the saved value.
+                </p>
+              )}
             </div>
             <div className="space-y-1">
               <div className="text-[11px] uppercase tracking-wide text-muted-foreground" aria-hidden="true">
@@ -315,20 +377,22 @@ export function RuleReplayDialog({
             </div>
             <Button
               size="sm"
-              onClick={() =>
-                simulateMut.mutate({
-                  n: days,
-                  overrides: hasOverrides ? requestedOverrides : null,
-                })
+              onClick={() => simulateMut.mutate(currentRequest)}
+              // Blocked on any invalid override rather than sent
+              // and 422'd: the replay would fail for a reason the dialog never
+              // showed.
+              disabled={
+                simulateMut.isPending
+                || sigmaOutOfRange
+                || cooldownInvalid
+                || minPercentInvalid
+                || minExpectedInvalid
               }
-              // Blocked on an out-of-range sigma rather than sent and 422'd:
-              // the replay would fail for a reason the dialog never showed.
-              disabled={simulateMut.isPending || sigmaOutOfRange}
             >
               {simulateMut.isPending ? 'Replaying…' : 'Replay'}
             </Button>
             {displayResult && (
-              <div className="ml-auto text-right text-xs text-muted-foreground">
+              <div className={`ml-auto text-right text-xs text-muted-foreground ${resultIsStale ? 'opacity-50' : ''}`}>
                 <div>
                   Considered{' '}
                   <span className="font-medium text-foreground">
@@ -353,8 +417,14 @@ export function RuleReplayDialog({
             </div>
           )}
 
+          {resultIsStale && (
+            <p role="status" className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+              Settings changed since this replay — press Replay again to see results for them.
+            </p>
+          )}
+
           {result && (
-            <>
+            <div className={resultIsStale ? 'space-y-3 opacity-50' : 'space-y-3'}>
               <div className="flex flex-wrap items-center gap-3 text-sm">
                 <FiringsCountBadge
                   label="Saved thresholds"
@@ -533,7 +603,7 @@ export function RuleReplayDialog({
                   </pre>
                 </div>
               )}
-            </>
+            </div>
           )}
         </div>
 

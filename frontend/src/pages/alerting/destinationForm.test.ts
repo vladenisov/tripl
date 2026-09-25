@@ -1,0 +1,207 @@
+import { describe, expect, it } from 'vitest'
+
+import type { AlertDestination } from '@/types'
+
+import { defaultDestinationForm, type DestinationChannel, type DestinationFormState } from './constants'
+import {
+  destinationFormProblems,
+  destinationFormToPayload,
+  destinationToForm,
+} from './destinationForm'
+
+function makeDestination(overrides: Partial<AlertDestination> = {}): AlertDestination {
+  return {
+    id: 'dest-1',
+    project_id: 'proj-1',
+    type: 'webhook',
+    name: 'Hook',
+    held_count: 0,
+    enabled: true,
+    webhook_set: false,
+    bot_token_set: false,
+    chat_id: null,
+    target_url_set: true,
+    webhook_header_name: 'Authorization',
+    email_recipients: null,
+    email_from_address: null,
+    email_subject_template: null,
+    jira_base_url: null,
+    jira_auth_email: null,
+    jira_api_token_set: false,
+    jira_project_key: null,
+    jira_issue_type: null,
+    linear_api_key_set: false,
+    linear_team_id: null,
+    linear_state_id: null,
+    linear_label_ids: null,
+    is_local: false,
+    delivery_count: 0,
+    incident_count: 0,
+    rules: [],
+    created_at: '2026-07-01T00:00:00Z',
+    updated_at: '2026-07-01T00:00:00Z',
+    ...overrides,
+  }
+}
+
+function filled(type: DestinationChannel, patch: Partial<DestinationFormState> = {}): DestinationFormState {
+  return { ...defaultDestinationForm(type), name: `My ${type}`, ...patch }
+}
+
+describe('destinationFormToPayload — create (ALR-1)', () => {
+  // Every channel but Telegram failed with "Telegram chat_id is required",
+  // because create spread the whole form and `chat_id: ''` went with it.
+  const cases: [DestinationChannel, Partial<DestinationFormState>, Record<string, unknown>][] = [
+    ['slack', { webhook_url: 'https://hooks.slack.com/services/T/B/X' }, {
+      webhook_url: 'https://hooks.slack.com/services/T/B/X',
+    }],
+    ['webhook', { target_url: 'https://example.com/hook' }, { target_url: 'https://example.com/hook' }],
+    ['email', { email_recipients: 'a@example.com' }, { email_recipients: 'a@example.com' }],
+    ['jira', {
+      jira_base_url: 'https://acme.atlassian.net',
+      jira_auth_email: 'a@example.com',
+      jira_api_token: 'tok',
+      jira_project_key: 'ENG',
+    }, {
+      jira_base_url: 'https://acme.atlassian.net',
+      jira_auth_email: 'a@example.com',
+      jira_api_token: 'tok',
+      jira_project_key: 'ENG',
+      jira_issue_type: 'Task',
+    }],
+    ['linear', { linear_api_key: 'lin_api_x', linear_team_id: 'TEAM' }, {
+      linear_api_key: 'lin_api_x',
+      linear_team_id: 'TEAM',
+    }],
+  ]
+
+  it.each(cases)('sends only the %s fields, and no chat_id', (type, patch, expected) => {
+    const body = destinationFormToPayload(filled(type, patch), null)
+    // Drop the keys the payload carries as `undefined` — JSON.stringify drops
+    // them too, so this is what reaches the wire.
+    const wire = JSON.parse(JSON.stringify(body)) as Record<string, unknown>
+
+    expect(wire).toEqual({
+      type,
+      name: `My ${type}`,
+      enabled: true,
+      delivery_schedule_cron: null,
+      ...expected,
+    })
+    expect(wire).not.toHaveProperty('chat_id')
+  })
+
+  it('still sends the chat id for Telegram', () => {
+    const body = destinationFormToPayload(filled('telegram', { bot_token: '1:ABC', chat_id: '-100' }), null)
+
+    expect(body).toMatchObject({ type: 'telegram', bot_token: '1:ABC', chat_id: '-100' })
+  })
+
+  it('sends the webhook header only as a pair the user typed', () => {
+    const body = destinationFormToPayload(
+      filled('webhook', {
+        target_url: 'https://example.com',
+        webhook_header_name: 'X-Key',
+        webhook_header_value: 's3cret',
+      }),
+      null,
+    )
+    expect(body).toMatchObject({ webhook_header_name: 'X-Key', webhook_header_value: 's3cret' })
+  })
+
+  it('refuses to create the demo-only local sink', () => {
+    expect(() => destinationFormToPayload({ ...filled('slack'), type: 'demo_sink' }, null)).toThrow()
+  })
+})
+
+describe('destinationFormToPayload — edit', () => {
+  it('omits an empty secret, which keeps the stored one', () => {
+    const existing = makeDestination({ type: 'slack', webhook_set: true })
+    const body = destinationFormToPayload(destinationToForm(existing), existing)
+
+    expect(JSON.parse(JSON.stringify(body))).not.toHaveProperty('webhook_url')
+  })
+
+  it('clears an optional column that was emptied', () => {
+    const existing = makeDestination({ type: 'linear', linear_team_id: 'T', linear_state_id: 'S' })
+    const body = destinationFormToPayload({ ...destinationToForm(existing), linear_state_id: '' }, existing)
+
+    expect(body).toMatchObject({ linear_team_id: 'T', linear_state_id: null })
+  })
+
+  it('sends a required field as typed rather than dropping an emptied one (ALR-26)', () => {
+    const existing = makeDestination({
+      type: 'jira',
+      jira_base_url: 'https://acme.atlassian.net',
+      jira_auth_email: 'a@example.com',
+      jira_project_key: 'ENG',
+    })
+    const body = destinationFormToPayload({ ...destinationToForm(existing), jira_project_key: 'OPS' }, existing)
+
+    expect(body).toMatchObject({ jira_project_key: 'OPS', jira_base_url: 'https://acme.atlassian.net' })
+  })
+
+  it('resets an emptied Jira issue type to Task instead of dropping it (ALR-26)', () => {
+    const existing = makeDestination({
+      type: 'jira',
+      jira_base_url: 'https://acme.atlassian.net',
+      jira_auth_email: 'a@example.com',
+      jira_project_key: 'ENG',
+      jira_issue_type: 'Bug',
+    })
+    const body = destinationFormToPayload({ ...destinationToForm(existing), jira_issue_type: '' }, existing)
+
+    expect(JSON.parse(JSON.stringify(body))).toMatchObject({ jira_issue_type: 'Task' })
+  })
+
+  it('removes the webhook secret header as a pair of nulls (ALR-24)', () => {
+    const existing = makeDestination()
+    const body = destinationFormToPayload(destinationToForm(existing), existing, { removeWebhookHeader: true })
+
+    expect(body).toMatchObject({ webhook_header_name: null, webhook_header_value: null })
+  })
+
+  it('sends a local sink its name, switch and schedule only (ALR-2)', () => {
+    const existing = makeDestination({ type: 'demo_sink', is_local: true, webhook_header_name: null })
+    const body = destinationFormToPayload(
+      { ...destinationToForm(existing), name: 'Renamed', enabled: false },
+      existing,
+    )
+
+    expect(JSON.parse(JSON.stringify(body))).toEqual({
+      name: 'Renamed',
+      enabled: false,
+      delivery_schedule_cron: null,
+    })
+  })
+})
+
+describe('destinationFormProblems — the webhook header is a pair (ALR-24)', () => {
+  it('asks for a name when only a value is typed', () => {
+    expect(destinationFormProblems(filled('webhook', { webhook_header_value: 'v' }), null))
+      .toHaveProperty('webhook_header_name')
+  })
+
+  it('asks for a value when a new name has nothing stored behind it', () => {
+    expect(destinationFormProblems(filled('webhook', { webhook_header_name: 'X-Key' }), null))
+      .toHaveProperty('webhook_header_value')
+  })
+
+  it('accepts an unchanged name whose value is stored', () => {
+    const existing = makeDestination()
+    expect(destinationFormProblems(destinationToForm(existing), existing)).toEqual({})
+  })
+
+  it('does not let clearing the name orphan a stored value', () => {
+    const existing = makeDestination()
+    expect(destinationFormProblems({ ...destinationToForm(existing), webhook_header_name: '' }, existing))
+      .toHaveProperty('webhook_header_name')
+    expect(
+      destinationFormProblems(
+        { ...destinationToForm(existing), webhook_header_name: '' },
+        existing,
+        { removeWebhookHeader: true },
+      ),
+    ).toEqual({})
+  })
+})

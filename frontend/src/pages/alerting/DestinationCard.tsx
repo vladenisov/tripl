@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Pencil, Send } from "lucide-react"
 import type { AlertDestination } from "@/types"
@@ -7,10 +8,12 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
 import { getErrorMessage } from '@/lib/utils'
+import { SILENT_ERROR_META } from "@/lib/errorFeedback"
 import { formatDateTime } from "@/lib/datetime"
 import { countOf } from "@/lib/plural"
 import { describeCron, formatInProjectZone } from "./deliverySchedule"
 import { invalidateAlertingConfig } from "./alertingCache"
+import { toastAlertingWriteError } from "./writeErrorToast"
 
 interface DestinationCardProps {
   slug: string
@@ -44,21 +47,45 @@ export function DestinationCard({
   // Goes through the one shared invalidation: a destination write also moves
   // the Inbox and the delivery log, and eight hand-kept copies of
   // `['alertDestinations', slug]` is how none of them did (tripl-oxkt.14).
+  //
+  // A refusal says why. The switch snaps back to the server's value either
+  // way, and on its own that read as a click that did nothing — a 403 after a
+  // demotion, or the API refusing to enable a demo's Slack example (ALR-6).
   const updateDestinationMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (data: { enabled?: boolean }) =>
       alertingApi.updateDestination(slug, destination.id, data),
     onSuccess: () => invalidateAlertingConfig(qc, slug),
+    onError: error => {
+      toastAlertingWriteError(error)
+    },
   })
 
   // A test send is deliberately NOT invalidating the destinations list: the
   // backend records it in the audit log rather than as an AlertDelivery, so the
   // counts on this card do not move and a refetch would only throw away the
   // answer the operator is reading.
+  //
+  // `testedVersion` is the channel's configuration fingerprint when the test
+  // was sent: a result describes the settings stored THEN. After a change it is
+  // hidden rather than left saying "the channel refused… Unauthorized" under a
+  // token the operator has just replaced (ALR-40).
+  //
+  // Not `updated_at`: that moves on every write to the row, including the
+  // digest flusher's `last_flushed_at` on each cadence tick and the Enabled
+  // switch, so a result vanished at the next refetch with nothing changed. A
+  // replaced secret does not move the fingerprint (the `*_set` flag stays
+  // true), so opening the editor drops the result too.
+  const [testedVersion, setTestedVersion] = useState<string | null>(null)
   const testDestinationMut = useMutation({
+    // Its outcome renders on the card, transport failure included.
+    meta: SILENT_ERROR_META,
     mutationFn: () => alertingApi.testDestination(slug, destination.id),
   })
 
-  const testResult = testDestinationMut.data ?? null
+  const testIsCurrent = testedVersion === destinationConfigFingerprint(destination)
+  const testResult = testIsCurrent ? testDestinationMut.data ?? null : null
+  const testFailed = testIsCurrent && testDestinationMut.isError
 
   return (
     <Card>
@@ -147,7 +174,10 @@ export function DestinationCard({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => testDestinationMut.mutate()}
+              onClick={() => {
+                setTestedVersion(destinationConfigFingerprint(destination))
+                testDestinationMut.mutate()
+              }}
               disabled={testDestinationMut.isPending}
               aria-label={`Send a test message through ${destination.name}`}
             >
@@ -163,7 +193,11 @@ export function DestinationCard({
               onCheckedChange={checked => updateDestinationMut.mutate({ enabled: checked })}
               aria-label={`Toggle ${destination.name}`}
             />
-            <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit destination ${destination.name}`} onClick={() => onEditDestination(destination)}>
+            <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit destination ${destination.name}`} onClick={() => {
+              // The editor can replace a secret the fingerprint cannot see.
+              setTestedVersion(null)
+              onEditDestination(destination)
+            }}>
               <Pencil aria-hidden="true" className="h-4 w-4" />
             </Button>
           </div>
@@ -173,9 +207,10 @@ export function DestinationCard({
         {/* A channel refusal arrives as a 200 with `ok: false` — it is the
             answer the button was pressed for, so it renders as a result and
             not as a crash. Only a transport failure gets `role="alert"`. */}
-        {(testDestinationMut.isPending || testResult || testDestinationMut.isError) && (
+        {(testDestinationMut.isPending || testResult || testFailed) && (
+          <div className="flex items-start justify-between gap-2">
           <p
-            role={testDestinationMut.isError ? 'alert' : 'status'}
+            role={testFailed ? 'alert' : 'status'}
             className={
               testResult?.ok
                 ? 'text-xs text-success'
@@ -193,12 +228,56 @@ export function DestinationCard({
             {!testDestinationMut.isPending && testResult && !testResult.ok && (
               `The channel refused the test message: ${testResult.error ?? 'no reason given'}`
             )}
-            {!testDestinationMut.isPending && !testResult && testDestinationMut.isError && (
+            {!testDestinationMut.isPending && !testResult && testFailed && (
               `Test send failed: ${getErrorMessage(testDestinationMut.error)}`
             )}
           </p>
+          {/* A result stays until the channel's settings change, so the reader
+              can put it away once it has been read. */}
+          {!testDestinationMut.isPending && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 shrink-0 px-2 text-xs"
+              onClick={() => setTestedVersion(null)}
+              aria-label={`Dismiss the test result for ${destination.name}`}
+            >
+              Dismiss
+            </Button>
+          )}
+          </div>
         )}
       </CardContent>
     </Card>
   )
+}
+
+/**
+ * What a test send was a test OF: the channel type, which secrets are stored,
+ * and every non-secret delivery setting. Deliberately leaves out `updated_at`,
+ * `enabled`, the schedule and the digest bookkeeping, none of which change
+ * whether the channel accepts a message.
+ */
+function destinationConfigFingerprint(destination: AlertDestination): string {
+  return JSON.stringify([
+    destination.type,
+    destination.webhook_set,
+    destination.bot_token_set,
+    destination.chat_id,
+    destination.target_url_set,
+    destination.webhook_header_name,
+    destination.email_recipients,
+    destination.email_from_address,
+    destination.email_subject_template,
+    destination.jira_base_url,
+    destination.jira_auth_email,
+    destination.jira_api_token_set,
+    destination.jira_project_key,
+    destination.jira_issue_type,
+    destination.linear_api_key_set,
+    destination.linear_team_id,
+    destination.linear_state_id,
+    destination.linear_label_ids,
+  ])
 }

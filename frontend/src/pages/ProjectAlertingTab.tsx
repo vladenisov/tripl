@@ -14,14 +14,8 @@ import { alertingApi } from '@/api/alerting'
 import { eventTypesApi } from '@/api/eventTypes'
 import { projectsApi } from '@/api/projects'
 import { scansApi } from '@/api/scans'
-import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ErrorState } from '@/components/error-state'
 import { useConfirm } from '@/hooks/useConfirm'
-import { useDirtySinceOpen, useUnsavedDialogGuard } from '@/hooks/useUnsavedChangesGuard'
 import {
   ALERT_INBOX_STATUSES,
   bulkInboxActionSuccessMessage,
@@ -29,7 +23,6 @@ import {
   falsePositiveConfirmMessage,
   inboxActionSuccessMessage,
   muteConfirmMessage,
-  stripValueErrorPrefix,
 } from '@/lib/alertStatus'
 import { useCanWriteProject } from '@/lib/permissions'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
@@ -37,6 +30,7 @@ import type { AlertDestination, AlertInboxListResponse } from '@/types'
 
 import type { DeliveryFilters } from './alerting/AlertAuditPanel'
 import { invalidateAlertingConfig } from './alerting/alertingCache'
+import { toastAlertingWriteError } from './alerting/writeErrorToast'
 import { describeDeletionImpact } from './alerting/deletionImpact'
 import { AlertingGuidedSetup } from './alerting/AlertingGuidedSetup'
 import type { InboxActionVariables, InboxStatusFilter } from './alerting/AlertingInbox'
@@ -48,16 +42,10 @@ import {
   writeInboxFilters,
   type InboxFilterState,
 } from './alerting/inboxFilters'
-import { DeliveryScheduleField } from './alerting/DeliveryScheduleField'
-import { resolveScheduleTimezone } from './alerting/deliverySchedule'
 import { CHANNEL_META } from './alerting/channelMeta'
 import { PageHead, Panel } from '@/components/settings/kit'
-import {
-  defaultDestinationForm,
-  type DestinationChannel,
-  type DestinationFormState,
-} from './alerting/constants'
-import { getErrorMessage } from '@/lib/utils'
+import type { DestinationChannel } from './alerting/constants'
+import { DestinationDialog, type DestinationDialogTarget } from './alerting/DestinationDialog'
 import {
   alertDeliveriesAnyKey,
   alertDeliveriesKey,
@@ -180,9 +168,12 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // own: this dialog, which can outlive the control that opened it
   // (tripl-oxkt.9).
   const canWrite = useCanWriteProject()
-  const [createType, setCreateType] = useState<DestinationChannel | null>(null)
-  const [destinationForm, setDestinationForm] = useState<DestinationFormState>(defaultDestinationForm('slack'))
-  const [editingDestination, setEditingDestination] = useState<AlertDestination | null>(null)
+  // What the destination dialog is open for, or null while it is closed. The
+  // form itself lives in DestinationDialog (ALR-42), keyed per opening.
+  const [destinationDialog, setDestinationDialog] = useState<DestinationDialogTarget | null>(null)
+  // Bumped on every opening, so reopening the same channel mounts a fresh
+  // form and fresh mutations rather than the previous attempt (ALR-7).
+  const [destinationDialogOpenings, setDestinationDialogOpenings] = useState(0)
   // Which destination card should open its rule form by itself — the guided
   // checklist's step 3, handed to the card that owns the destination just
   // created. Cleared the moment the card consumes it, so it cannot re-open the
@@ -288,10 +279,20 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     tabRefs.current[next]?.focus()
   }
 
-  const { data: destinations = [], isSuccess: destinationsLoaded } = useQuery({
+  const destinationsQuery = useQuery({
     queryKey: alertDestinationsKey(slug),
     queryFn: () => alertingApi.listDestinations(slug),
+    // Its failure is rendered in place of the sections that read it (below),
+    // so the global toast would only say it twice.
+    meta: SILENT_ERROR_META,
   })
+  const { data: destinations = [] } = destinationsQuery
+  // "Loaded" means there IS a list, not that the last request succeeded: a
+  // failed background refetch (every alerting write invalidates this query)
+  // keeps the cached list but flips the query to `isError`, and keying on that
+  // flag swapped a populated section — and any rule editor open inside it — for
+  // an error panel (the same reasoning as `surfaceQueryError`).
+  const destinationsLoaded = destinationsQuery.data !== undefined
   const { data: project } = useQuery({
     queryKey: projectKey(slug),
     queryFn: () => projectsApi.get(slug),
@@ -303,7 +304,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     // the rest of the rule form (tripl-89ps).
     enabled: section === 'monitors',
   })
-  const { data: scans = [], isSuccess: scansLoaded } = useQuery({
+  const scansQuery = useQuery({
     queryKey: scansKey(slug),
     queryFn: () => scansApi.list(slug),
     // Read by the rule editor's scan binding and by the audit filter bar — and
@@ -311,6 +312,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     // looked at the answer (tripl-oxkt.20).
     enabled: section === 'monitors' || section === 'audit',
   })
+  const { data: scans = [], isSuccess: scansLoaded } = scansQuery
+  // A failed scan list is not "still loading": without this the Scan setting
+  // read "…" and the editor offered "Loading scans…" forever (ALR-47).
+  const scansFailed = scansQuery.isError && scansQuery.data === undefined
   // A `?scan=` naming a scan this project does not have (deleted since the link
   // was written, or hand-edited) reads as "All" rather than as a permanently
   // empty audit log — the same degradation AnomaliesPage applies to its facet.
@@ -498,130 +503,44 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       destination_id: destination.id,
     })))
 
-  // Create and update render their error inside the destination dialog
-  // (`destinationMutation` below); delete has no inline error and keeps the toast.
-  const createDestinationMut = useMutation({
-    meta: SILENT_ERROR_META,
-    mutationFn: () => {
-      // The demo-only ``demo_sink`` is created by the seeder, never here — so the
-      // create payload always carries a real ``DestinationChannel``. Narrow the
-      // widened form type explicitly rather than casting.
-      const { type } = destinationForm
-      if (type === 'demo_sink') {
-        throw new Error('The local demo sink cannot be created from the UI')
-      }
-      return alertingApi.createDestination(slug, {
-        ...destinationForm,
-        type,
-        // '' is the form's way of saying immediate; the API wants null.
-        delivery_schedule_cron: destinationForm.delivery_schedule_cron || null,
-      })
-    },
-    onSuccess: created => {
-      invalidateAlertingConfig(qc, slug)
-      setCreateType(null)
-      setDestinationForm(defaultDestinationForm('slack'))
-      // Step 2 of the checklist has to land on step 3. It used to land nowhere:
-      // creating the destination flipped `hasDestinations`, which took
-      // `showGuidedSetup` false, which dropped the reader on the default Inbox
-      // section reading "No rules yet, so nothing can raise an incident" — with
-      // the destination they just made on a tab they were not on. The checklist
-      // promises "a rule prefilled on the new destination", so open exactly that
-      // (tripl-oxkt.15). The section named here is the one that owns the rule
-      // form, which is Monitors since tripl-89ps — landing on Destinations would
-      // reproduce the original bug with a different tab.
-      selectSection('monitors')
-      setAutoOpenRuleForDestinationId(created.id)
-    },
-  })
-
-  const updateDestinationMut = useMutation({
-    meta: SILENT_ERROR_META,
-    mutationFn: () => {
-      if (!editingDestination) throw new Error('Missing destination')
-      return alertingApi.updateDestination(slug, editingDestination.id, {
-        name: destinationForm.name,
-        enabled: destinationForm.enabled,
-        delivery_schedule_cron: destinationForm.delivery_schedule_cron || null,
-        webhook_url: destinationForm.type === 'slack' && destinationForm.webhook_url ? destinationForm.webhook_url : undefined,
-        bot_token: destinationForm.type === 'telegram' && destinationForm.bot_token ? destinationForm.bot_token : undefined,
-        chat_id: destinationForm.type === 'telegram' ? destinationForm.chat_id : undefined,
-        target_url: destinationForm.type === 'webhook' && destinationForm.target_url ? destinationForm.target_url : undefined,
-        webhook_header_name: destinationForm.type === 'webhook' ? destinationForm.webhook_header_name : undefined,
-        webhook_header_value: destinationForm.type === 'webhook' && destinationForm.webhook_header_value ? destinationForm.webhook_header_value : undefined,
-        email_recipients: destinationForm.type === 'email' && destinationForm.email_recipients ? destinationForm.email_recipients : undefined,
-        email_from_address: destinationForm.type === 'email' ? (destinationForm.email_from_address || null) : undefined,
-        email_subject_template: destinationForm.type === 'email' ? (destinationForm.email_subject_template || null) : undefined,
-        jira_base_url: destinationForm.type === 'jira' && destinationForm.jira_base_url ? destinationForm.jira_base_url : undefined,
-        jira_auth_email: destinationForm.type === 'jira' && destinationForm.jira_auth_email ? destinationForm.jira_auth_email : undefined,
-        jira_api_token: destinationForm.type === 'jira' && destinationForm.jira_api_token ? destinationForm.jira_api_token : undefined,
-        jira_project_key: destinationForm.type === 'jira' && destinationForm.jira_project_key ? destinationForm.jira_project_key : undefined,
-        jira_issue_type: destinationForm.type === 'jira' && destinationForm.jira_issue_type ? destinationForm.jira_issue_type : undefined,
-        linear_api_key: destinationForm.type === 'linear' && destinationForm.linear_api_key ? destinationForm.linear_api_key : undefined,
-        linear_team_id: destinationForm.type === 'linear' && destinationForm.linear_team_id ? destinationForm.linear_team_id : undefined,
-        linear_state_id: destinationForm.type === 'linear' ? (destinationForm.linear_state_id || null) : undefined,
-        linear_label_ids: destinationForm.type === 'linear' ? (destinationForm.linear_label_ids || null) : undefined,
-      })
-    },
-    onSuccess: () => {
-      invalidateAlertingConfig(qc, slug)
-      setEditingDestination(null)
-      setDestinationForm(defaultDestinationForm('slack'))
-    },
-  })
-
+  // Create and update live in DestinationDialog and render their errors there.
+  // Delete has no dialog of its own to report in, so it says why in a toast
+  // rather than doing nothing visible (ALR-6).
   const deleteDestinationMut = useMutation({
+    meta: SILENT_ERROR_META,
     mutationFn: (destinationId: string) => alertingApi.deleteDestination(slug, destinationId),
     onSuccess: () => invalidateAlertingConfig(qc, slug),
+    onError: error => {
+      toastAlertingWriteError(error)
+    },
   })
 
-  const openCreate = (type: DestinationChannel) => {
-    setCreateType(type)
-    setEditingDestination(null)
-    setDestinationForm(defaultDestinationForm(type))
+  const openDestinationDialog = (target: DestinationDialogTarget) => {
+    setDestinationDialog(target)
+    setDestinationDialogOpenings(count => count + 1)
   }
+  const closeDestinationDialog = () => setDestinationDialog(null)
 
-  const openEdit = (destination: AlertDestination) => {
-    setEditingDestination(destination)
-    setCreateType(null)
-    setDestinationForm({
-      type: destination.type,
-      name: destination.name,
-      enabled: destination.enabled,
-      webhook_url: '',
-      bot_token: '',
-      chat_id: destination.chat_id ?? '',
-      target_url: '',
-      webhook_header_name: destination.webhook_header_name ?? '',
-      webhook_header_value: '',
-      email_recipients: destination.email_recipients ?? '',
-      email_from_address: destination.email_from_address ?? '',
-      email_subject_template: destination.email_subject_template ?? '',
-      jira_base_url: destination.jira_base_url ?? '',
-      jira_auth_email: destination.jira_auth_email ?? '',
-      jira_api_token: '',
-      jira_project_key: destination.jira_project_key ?? '',
-      jira_issue_type: destination.jira_issue_type ?? 'Task',
-      linear_api_key: '',
-      linear_team_id: destination.linear_team_id ?? '',
-      linear_state_id: destination.linear_state_id ?? '',
-      linear_label_ids: destination.linear_label_ids ?? '',
-      delivery_schedule_cron: destination.delivery_schedule_cron ?? '',
-    })
+  const handleDestinationCreated = (created: AlertDestination, handOffToRule: boolean) => {
+    setDestinationDialog(null)
+    if (!handOffToRule) {
+      // Adding one more channel is not a setup flow: stay on the list it was
+      // added to, and say it worked (ALR-9).
+      toast.success(`Destination "${created.name}" created`)
+      return
+    }
+    // Step 2 of the checklist has to land on step 3. It used to land nowhere:
+    // creating the destination flipped `hasDestinations`, which took
+    // `showGuidedSetup` false, which dropped the reader on the default Inbox
+    // section reading "No rules yet, so nothing can raise an incident" — with
+    // the destination they just made on a tab they were not on. The checklist
+    // promises "a rule prefilled on the new destination", so open exactly that
+    // (tripl-oxkt.15). The section named here is the one that owns the rule
+    // form, which is Monitors since tripl-89ps — landing on Destinations would
+    // reproduce the original bug with a different tab.
+    selectSection('monitors')
+    setAutoOpenRuleForDestinationId(created.id)
   }
-
-  const closeDestinationDialog = () => {
-    setCreateType(null)
-    setEditingDestination(null)
-    setDestinationForm(defaultDestinationForm('slack'))
-  }
-
-  // Same as the rule dialog (ALR-17): a close that would drop typed-in
-  // credentials or templates asks first.
-  const destinationDialogOpen = canWrite && (!!createType || !!editingDestination)
-  const destinationGuard = useUnsavedDialogGuard(
-    useDirtySinceOpen(destinationDialogOpen, destinationForm),
-  )
 
   const handleDeleteDestination = async (destination: AlertDestination) => {
     const ok = await confirm({
@@ -637,10 +556,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       confirmLabel: 'Delete',
       variant: 'danger',
     })
-    if (ok) deleteDestinationMut.mutate(destination.id)
+    // A second confirm while the first delete is in flight would send a
+    // second DELETE for a row that is already going.
+    if (ok && !deleteDestinationMut.isPending) deleteDestinationMut.mutate(destination.id)
   }
-
-  const destinationMutation = editingDestination ? updateDestinationMut : createDestinationMut
 
   // Draft note per group. The backend has accepted a note on every inbox action
   // since the feature shipped, but nothing ever sent one — the field was
@@ -962,7 +881,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     // N cards and belongs to none of them, and the one thing worse than a toast
     // here would be the same message stamped onto twelve rows.
     onError: error => {
-      toast.error(stripValueErrorPrefix(getErrorMessage(error)))
+      toastAlertingWriteError(error)
     },
     // On settled, not on success — same reasoning as the single route: an action
     // can commit and then fail to render its response, and a list left showing
@@ -1039,8 +958,6 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   const failedGroupId = inboxActionMut.isError
     ? inboxActionMut.variables?.group.correlation_group_id ?? null
     : null
-  const activeDestinationType = editingDestination?.type ?? createType ?? destinationForm.type
-
   const hasDestinations = destinations.length > 0
   const hasRules = allRules.length > 0
   // Delivery history means alerts have fired before, so the project is NOT a
@@ -1069,6 +986,42 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // rejection. Say why instead (tripl-2su6.12).
   const isDemo = project?.is_demo === true
 
+  // Every channel button outside guided setup. Adding a channel hands on to a
+  // rule form only while the project has no rule at all — otherwise the
+  // reader is adding one more channel and stays on the list (ALR-9).
+  const openCreate = (type: DestinationChannel) =>
+    openDestinationDialog({ mode: 'create', type, handOffToRule: !hasRules })
+
+  // Monitors and Destinations are both drawn FROM the destinations list, so
+  // while it is missing they have nothing true to say: a failed load used to
+  // render "No alert destinations" and "No rules yet … Add a destination",
+  // inviting a duplicate setup on a transient 500 (ALR-11).
+  const destinationsUnavailable = destinationsQuery.isError && !destinationsLoaded ? (
+    <ErrorState
+      title="Could not load alert destinations"
+      error={destinationsQuery.error}
+      onRetry={() => void destinationsQuery.refetch()}
+    />
+  ) : destinationsQuery.isPending ? (
+    <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+      Loading…
+    </p>
+  ) : null
+  // A refresh that failed while a list is on screen keeps the list (and any
+  // editor open over it) and says so in one line, instead of replacing it.
+  const destinationsRefreshFailed = destinationsQuery.isError && destinationsLoaded ? (
+    <p role="status" className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      Could not refresh alert destinations; showing the last loaded list.
+      <button
+        type="button"
+        className="underline underline-offset-2"
+        onClick={() => void destinationsQuery.refetch()}
+      >
+        Retry
+      </button>
+    </p>
+  ) : null
+
   return (
     <div className="space-y-6">
       {dialog}
@@ -1082,7 +1035,9 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
         description={
           isDemo
             ? 'Route active anomaly signals through rules and destinations. In a demo workspace every destination is a local sink: deliveries are recorded and rendered here, and none of them leave this instance.'
-            : 'Route active anomaly signals to Slack, Telegram, or a generic webhook. Rules are project-level and apply to every scan in the project.'
+            // All six channels, not the three the page shipped with: the
+            // issue-tracker integrations went unnoticed from here (ALR-44).
+            : 'Route active anomaly signals to Slack, Telegram, email, webhooks, Jira or Linear. Rules are project-level and apply to every scan in the project.'
         }
       />
 
@@ -1128,7 +1083,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
 
       {showGuidedSetup ? (
         <>
-          <AlertingGuidedSetup channels={CHANNEL_META} onPickChannel={openCreate} />
+          <AlertingGuidedSetup
+            channels={CHANNEL_META}
+            onPickChannel={type => openDestinationDialog({ mode: 'create', type, handOffToRule: true })}
+          />
           {/* Keep the delivery log reachable before anything is configured so
               the surface stays discoverable. Guided state requires zero
               deliveries, so it is always empty here — render just the panel +
@@ -1155,17 +1113,22 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           aria-labelledby={tabId('monitors')}
         >
         <SectionSuspense>
+        {destinationsRefreshFailed}
+        {destinationsUnavailable ?? (
         <MonitorsSection
           slug={slug}
           destinations={destinations}
           rules={allRules}
           eventTypes={eventTypes}
           scans={scans}
+          scansLoaded={scansLoaded}
+          scansFailed={scansFailed}
           canWrite={canWrite}
           autoOpenRuleForDestinationId={autoOpenRuleForDestinationId}
           onAutoOpenRuleConsumed={() => setAutoOpenRuleForDestinationId(null)}
           onGoToDestinations={() => selectSection('destinations')}
         />
+        )}
         </SectionSuspense>
         </div>
       )}
@@ -1178,14 +1141,20 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           aria-labelledby={tabId('destinations')}
         >
         <SectionSuspense>
+        {destinationsRefreshFailed}
+        {destinationsUnavailable ?? (
         <DestinationsSection
           slug={slug}
           destinations={destinations}
           isDemo={isDemo}
           onCreateDestination={openCreate}
-          onEditDestination={openEdit}
+          onEditDestination={destination => openDestinationDialog({ mode: 'edit', destination })}
           onDeleteDestination={handleDeleteDestination}
+          deletingDestinationId={
+            deleteDestinationMut.isPending ? deleteDestinationMut.variables ?? null : null
+          }
         />
+        )}
         </SectionSuspense>
         </div>
       )}
@@ -1205,7 +1174,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           isError={inboxQuery.isError}
           loadError={inboxQuery.error}
           pinnedGroup={pinnedIncident}
-          hasRules={hasRules}
+          // "No rules yet" is a claim, and a destinations list that failed or
+          // has not answered cannot back it: unknown reads as "has rules",
+          // the state that asserts nothing (ALR-11).
+          hasRules={hasRules || !destinationsLoaded}
           statusFilter={inboxStatus}
           onStatusFilterChange={setInboxStatus}
           filters={inboxFilters}
@@ -1284,292 +1256,20 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       </>
       )}
 
-      {/* Gated on the role as well as on the two state flags: `refresh()` can
+      {/* Gated on the role as well as on the open state: `refresh()` can
           rewrite the session mid-visit, and a create form left open across a
           demotion would still POST its Create. */}
-      {destinationGuard.dialog}
-      <Dialog open={destinationDialogOpen} onOpenChange={open => { if (!open) destinationGuard.requestClose(closeDestinationDialog) }}>
-        <DialogContent className="max-w-lg">
-          <form onSubmit={event => { event.preventDefault(); destinationMutation.mutate() }}>
-            <DialogHeader>
-              <DialogTitle>{editingDestination ? 'Edit Destination' : `New ${activeDestinationType === 'slack' ? 'Slack' : activeDestinationType === 'telegram' ? 'Telegram' : activeDestinationType === 'email' ? 'Email' : activeDestinationType === 'jira' ? 'Jira' : activeDestinationType === 'linear' ? 'Linear' : 'Webhook'} Destination`}</DialogTitle>
-            </DialogHeader>
-            <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="grid gap-2">
-                  <Label htmlFor="dest-name">Name</Label>
-                  <Input
-                    id="dest-name"
-                    value={destinationForm.name}
-                    onChange={event => setDestinationForm(current => ({ ...current, name: event.target.value }))}
-                    required
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="dest-channel">Channel</Label>
-                  <Select
-                    value={destinationForm.type}
-                    onValueChange={value => setDestinationForm(current => ({ ...defaultDestinationForm(value as DestinationChannel), name: current.name, delivery_schedule_cron: current.delivery_schedule_cron }))}
-                    disabled={!!editingDestination}
-                  >
-                    <SelectTrigger id="dest-channel"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="slack">Slack</SelectItem>
-                      <SelectItem value="telegram">Telegram</SelectItem>
-                      <SelectItem value="webhook">Webhook</SelectItem>
-                      <SelectItem value="email">Email</SelectItem>
-                      <SelectItem value="jira">Jira</SelectItem>
-                      <SelectItem value="linear">Linear</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              {destinationForm.type === 'slack' ? (
-                <div className="grid gap-2">
-                  <Label htmlFor="dest-webhook-url">Webhook URL</Label>
-                  <Input
-                    id="dest-webhook-url"
-                    type="password"
-                    placeholder={editingDestination?.webhook_set ? 'Leave empty to keep current webhook' : 'https://hooks.slack.com/...'}
-                    value={destinationForm.webhook_url}
-                    onChange={event => setDestinationForm(current => ({ ...current, webhook_url: event.target.value }))}
-                    required={!editingDestination || !editingDestination.webhook_set}
-                  />
-                </div>
-              ) : destinationForm.type === 'telegram' ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="grid gap-2">
-                    <Label htmlFor="dest-bot-token">Bot Token</Label>
-                    <Input
-                      id="dest-bot-token"
-                      type="password"
-                      placeholder={editingDestination?.bot_token_set ? 'Leave empty to keep current token' : '123456:ABC...'}
-                      value={destinationForm.bot_token}
-                      onChange={event => setDestinationForm(current => ({ ...current, bot_token: event.target.value }))}
-                      required={!editingDestination || !editingDestination.bot_token_set}
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="dest-chat-id">Chat ID</Label>
-                    <Input
-                      id="dest-chat-id"
-                      value={destinationForm.chat_id}
-                      onChange={event => setDestinationForm(current => ({ ...current, chat_id: event.target.value }))}
-                      required
-                    />
-                  </div>
-                </div>
-              ) : destinationForm.type === 'webhook' ? (
-                <div className="grid gap-3">
-                  <div className="grid gap-2">
-                    <Label htmlFor="dest-target-url">Target URL</Label>
-                    <Input
-                      id="dest-target-url"
-                      placeholder={editingDestination?.target_url_set ? 'Leave empty to keep current URL' : 'https://example.com/webhook'}
-                      value={destinationForm.target_url}
-                      onChange={event => setDestinationForm(current => ({ ...current, target_url: event.target.value }))}
-                      required={!editingDestination || !editingDestination.target_url_set}
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div className="grid gap-2">
-                      <Label htmlFor="dest-header-name">Secret Header Name</Label>
-                      <Input
-                        id="dest-header-name"
-                        placeholder="Authorization (optional)"
-                        value={destinationForm.webhook_header_name}
-                        onChange={event => setDestinationForm(current => ({ ...current, webhook_header_name: event.target.value }))}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="dest-header-value">Secret Header Value</Label>
-                      <Input
-                        id="dest-header-value"
-                        type="password"
-                        placeholder={editingDestination?.webhook_header_name ? 'Leave empty to keep current value' : 'Bearer … (optional)'}
-                        value={destinationForm.webhook_header_value}
-                        onChange={event => setDestinationForm(current => ({ ...current, webhook_header_value: event.target.value }))}
-                      />
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Alerts POST a JSON payload (project, rule, scan, message, items). The optional secret header is sent with every request — use it for auth (e.g. Authorization).
-                  </p>
-                </div>
-              ) : destinationForm.type === 'email' ? (
-                <div className="grid gap-3">
-                  <div className="grid gap-2">
-                    <Label htmlFor="dest-email-recipients">Recipients</Label>
-                    <Input
-                      id="dest-email-recipients"
-                      placeholder="alice@example.com, bob@example.com"
-                      value={destinationForm.email_recipients}
-                      onChange={event => setDestinationForm(current => ({ ...current, email_recipients: event.target.value }))}
-                      required
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div className="grid gap-2">
-                      <Label htmlFor="dest-email-from">From Address (optional)</Label>
-                      <Input
-                        id="dest-email-from"
-                        placeholder={'alerts@tripl.example or Tripl Alerts <alerts@tripl.example>'}
-                        value={destinationForm.email_from_address}
-                        onChange={event => setDestinationForm(current => ({ ...current, email_from_address: event.target.value }))}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="dest-email-subject">Subject Template (optional)</Label>
-                      <Input
-                        id="dest-email-subject"
-                        placeholder={`[\${project_name}] \${rule_name}`}
-                        value={destinationForm.email_subject_template}
-                        onChange={event => setDestinationForm(current => ({ ...current, email_subject_template: event.target.value }))}
-                      />
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    SMTP settings (host/port/credentials) come from the instance config. Recipients are comma-separated. Subject supports {`\${project_name}`}, {`\${rule_name}`}, {`\${destination_name}`}, {`\${matched_count}`}.
-                  </p>
-                </div>
-              ) : destinationForm.type === 'jira' ? (
-                <div className="grid gap-3">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div className="grid gap-2">
-                      <Label htmlFor="dest-jira-base-url">Base URL</Label>
-                      <Input
-                        id="dest-jira-base-url"
-                        placeholder="https://acme.atlassian.net"
-                        value={destinationForm.jira_base_url}
-                        onChange={event => setDestinationForm(current => ({ ...current, jira_base_url: event.target.value }))}
-                        required={!editingDestination}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="dest-jira-auth-email">Auth Email</Label>
-                      <Input
-                        id="dest-jira-auth-email"
-                        placeholder="alice@example.com"
-                        value={destinationForm.jira_auth_email}
-                        onChange={event => setDestinationForm(current => ({ ...current, jira_auth_email: event.target.value }))}
-                        required={!editingDestination}
-                      />
-                    </div>
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="dest-jira-api-token">API Token</Label>
-                    <Input
-                      id="dest-jira-api-token"
-                      type="password"
-                      placeholder={editingDestination?.jira_api_token_set ? 'Leave empty to keep current token' : 'Atlassian API token'}
-                      value={destinationForm.jira_api_token}
-                      onChange={event => setDestinationForm(current => ({ ...current, jira_api_token: event.target.value }))}
-                      required={!editingDestination || !editingDestination.jira_api_token_set}
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div className="grid gap-2">
-                      <Label htmlFor="dest-jira-project-key">Project Key</Label>
-                      <Input
-                        id="dest-jira-project-key"
-                        placeholder="ENG"
-                        value={destinationForm.jira_project_key}
-                        onChange={event => setDestinationForm(current => ({ ...current, jira_project_key: event.target.value.toUpperCase() }))}
-                        required={!editingDestination}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="dest-jira-issue-type">Issue Type</Label>
-                      <Input
-                        id="dest-jira-issue-type"
-                        placeholder="Task"
-                        value={destinationForm.jira_issue_type}
-                        onChange={event => setDestinationForm(current => ({ ...current, jira_issue_type: event.target.value }))}
-                      />
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Each delivery opens a new issue in the project via Jira REST API v3 with Basic auth (email + API token). Body is rendered as ADF.
-                  </p>
-                </div>
-              ) : (
-                <div className="grid gap-3">
-                  <div className="grid gap-2">
-                    <Label htmlFor="dest-linear-api-key">API Key</Label>
-                    <Input
-                      id="dest-linear-api-key"
-                      type="password"
-                      placeholder={editingDestination?.linear_api_key_set ? 'Leave empty to keep current key' : 'lin_api_…'}
-                      value={destinationForm.linear_api_key}
-                      onChange={event => setDestinationForm(current => ({ ...current, linear_api_key: event.target.value }))}
-                      required={!editingDestination || !editingDestination.linear_api_key_set}
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div className="grid gap-2">
-                      <Label htmlFor="dest-linear-team-id">Team ID</Label>
-                      <Input
-                        id="dest-linear-team-id"
-                        placeholder="team-uuid or short id"
-                        value={destinationForm.linear_team_id}
-                        onChange={event => setDestinationForm(current => ({ ...current, linear_team_id: event.target.value }))}
-                        required={!editingDestination}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="dest-linear-state-id">State ID (optional)</Label>
-                      <Input
-                        id="dest-linear-state-id"
-                        placeholder="state-uuid"
-                        value={destinationForm.linear_state_id}
-                        onChange={event => setDestinationForm(current => ({ ...current, linear_state_id: event.target.value }))}
-                      />
-                    </div>
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="dest-linear-label-ids">Label IDs (optional, comma-separated)</Label>
-                    <Input
-                      id="dest-linear-label-ids"
-                      placeholder="label-1, label-2"
-                      value={destinationForm.linear_label_ids}
-                      onChange={event => setDestinationForm(current => ({ ...current, linear_label_ids: event.target.value }))}
-                    />
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Each delivery opens a new issue in the team via Linear's GraphQL <code>issueCreate</code>. Use API key from Linear settings → API.
-                  </p>
-                </div>
-              )}
-
-              <DeliveryScheduleField
-                value={destinationForm.delivery_schedule_cron}
-                onChange={cron => setDestinationForm(current => ({ ...current, delivery_schedule_cron: cron }))}
-                projectTimezone={resolveScheduleTimezone(project, editingDestination)}
-                nextDigestAt={editingDestination?.next_digest_at}
-              />
-
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={destinationForm.enabled}
-                  onCheckedChange={checked => setDestinationForm(current => ({ ...current, enabled: !!checked }))}
-                />
-                Destination enabled
-              </label>
-
-              {destinationMutation.isError && (
-                <p className="text-sm text-destructive">{getErrorMessage(destinationMutation.error)}</p>
-              )}
-            </div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => destinationGuard.requestClose(closeDestinationDialog)}>Cancel</Button>
-              <Button type="submit" disabled={destinationMutation.isPending}>
-                {editingDestination ? 'Save' : 'Create'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      {canWrite && destinationDialog && (
+        <DestinationDialog
+          key={destinationDialogOpenings}
+          slug={slug}
+          target={destinationDialog}
+          project={project}
+          isDemo={isDemo}
+          onClose={closeDestinationDialog}
+          onCreated={handleDestinationCreated}
+        />
+      )}
     </div>
   )
 }

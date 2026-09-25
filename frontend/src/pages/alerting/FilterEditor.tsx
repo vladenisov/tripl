@@ -41,11 +41,22 @@ export function FilterEditor({
   eventTypes,
   slug,
   onChange,
+  rowErrors = {},
+  error,
 }: {
   filters: RuleFilterDraft[]
   eventTypes: EventType[]
   slug: string
   onChange: (filters: RuleFilterDraft[]) => void
+  /**
+   * Why a row cannot be saved, keyed by its `uid`. A row with no values used
+   * to be dropped from the payload without a word, so the rule saved broader
+   * than the form showed (ALR-5); the dialog now refuses the submit and the
+   * row says why.
+   */
+  rowErrors?: Record<string, string>
+  /** A server rejection that names the filters. */
+  error?: string | null
 }) {
   const addFilter = () => {
     onChange([
@@ -87,10 +98,12 @@ export function FilterEditor({
               slug={slug}
               onChange={patch => updateFilter(filter.uid, patch)}
               onRemove={() => removeFilter(filter.uid)}
+              error={rowErrors[filter.uid]}
             />
           ))}
         </div>
       )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   )
 }
@@ -180,15 +193,18 @@ function FilterRow({
   slug,
   onChange,
   onRemove,
+  error,
 }: {
   filter: RuleFilterDraft
   eventTypes: EventType[]
   slug: string
   onChange: (patch: Partial<RuleFilterDraft>) => void
   onRemove: () => void
+  error?: string
 }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const errorIdBase = `filter-${filter.uid}`
 
   const isEventField = filter.field === 'event'
   const single = isSingleValueOperator(filter.operator)
@@ -258,7 +274,11 @@ function FilterRow({
 
   return (
     <div className="rounded-md border p-2 space-y-2">
-      <div className="flex items-center gap-2">
+      {/* Wraps below `sm`: the two fixed selects, the picker and the bin on
+          one line left the picker 0-30px at 375px, its label unreadable
+          (ALR-22). The picker takes a line of its own there; from `sm` up the
+          row is one line again. */}
+      <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
         <Select value={filter.field} onValueChange={value => onFieldChange(value as AlertRuleFilterField)}>
           <SelectTrigger aria-label="Filter field" className="w-36"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -288,6 +308,7 @@ function FilterRow({
           onToggle={toggleValue}
           loading={isEventField && eventOptions.loading}
           hiddenCount={isEventField ? eventOptions.hiddenCount : 0}
+          errorId={error ? `${errorIdBase}-error` : undefined}
         />
         <Button
           type="button"
@@ -299,6 +320,9 @@ function FilterRow({
           <Trash2 className="h-4 w-4" />
         </Button>
       </div>
+      {error && (
+        <p id={`${errorIdBase}-error`} className="text-xs text-destructive">{error}</p>
+      )}
       {selectedValues.length > 0 && !single && (
         <div className="flex flex-wrap gap-1">
           {selectedValues.map(value => (
@@ -333,6 +357,7 @@ function FilterValuePicker({
   onToggle,
   loading,
   hiddenCount,
+  errorId,
 }: {
   single: boolean
   open: boolean
@@ -346,6 +371,8 @@ function FilterValuePicker({
   onToggle: (value: string) => void
   loading: boolean
   hiddenCount: number
+  /** The row's error message, when it has one. */
+  errorId?: string
 }) {
   const triggerLabel = (() => {
     const [value] = selectedValues
@@ -357,7 +384,15 @@ function FilterValuePicker({
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
-        <Button type="button" variant="outline" className="flex-1 justify-between min-w-0">
+        <Button
+          type="button"
+          variant="outline"
+          // A full line of its own on a phone (see the row), and the rest of
+          // the row from `sm` up.
+          className="order-last w-full justify-between min-w-0 sm:order-none sm:w-auto sm:flex-1"
+          aria-invalid={errorId ? true : undefined}
+          aria-describedby={errorId}
+        >
           <span className="truncate">{triggerLabel}</span>
           <ChevronDown className="h-4 w-4 shrink-0" />
         </Button>

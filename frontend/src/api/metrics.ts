@@ -24,6 +24,16 @@ export interface EventsMetricsParams {
   to?: string
 }
 
+/**
+ * Event and scan MONITORING reads: per-event / per-event-type volume, overview
+ * KPIs, seasonality, drift, app-version adoption and release regressions.
+ *
+ * Not the metrics catalog. User-defined metrics (fact, SQL and event
+ * composition), their CRUD, collection and series live in
+ * {@link metricsCatalogApi} (`api/metricsCatalogApi.ts`). The two names are
+ * easy to confuse (MET-45); renaming this module is a cross-cutting sweep of
+ * its ~20 importers and their `vi.mock` paths, left for a quiet tree.
+ */
 export const metricsApi = {
   // `branchId` scopes the tag / status / search filter to that branch's events;
   // their metrics are read through each copy's main twin (tripl-vk1p).

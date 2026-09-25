@@ -61,6 +61,10 @@ export const DEFAULT_MAX_BILLED_BYTES_LABEL = '107374182400'
 export const MAX_SCHEMA_DATASETS = 20
 export const MAX_DATASET_ALLOWLIST = MAX_SCHEMA_DATASETS - 1
 
+// The one native <select> look for settings forms: the data-source dialogs and
+// the scan form (scanUtils re-exports it). The copies used to differ in
+// background and, worse, the scan form's had no focus ring at all, so its
+// selects were invisible to keyboard users (DATA-48).
 export const SELECT_CLASS =
   'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm ' +
   'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
@@ -70,6 +74,83 @@ export const TEXTAREA_CLASS =
   'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
 
 export const HELP_CLASS = 'text-xs text-muted-foreground'
+
+export const ERROR_CLASS = 'text-xs text-destructive'
+
+/**
+ * Attributes every credential input and textarea carries (DATA-28, DATA-29).
+ *
+ * - No spellcheck: Chrome's enhanced spell check sends the typed text — a
+ *   private key included — to a remote service.
+ * - No autofill: a "Username" input followed by a password field reads as a
+ *   login form, so browsers and password managers offered to save warehouse
+ *   credentials as the tripl login and, worse, filled the user's tripl password
+ *   into the edit dialog's empty "leave empty to keep" field, which the next
+ *   unrelated save then wrote over the stored warehouse password.
+ */
+export const SECRET_INPUT_PROPS = {
+  spellCheck: false,
+  autoComplete: 'off',
+  autoCorrect: 'off',
+  autoCapitalize: 'off',
+  'data-1p-ignore': 'true',
+  'data-lpignore': 'true',
+} as const
+
+/** Same as SECRET_INPUT_PROPS, for the password field of a non-login form. */
+export const PASSWORD_INPUT_PROPS = {
+  ...SECRET_INPUT_PROPS,
+  autoComplete: 'new-password',
+} as const
+
+type PemKind = 'certificate' | 'private key'
+
+/**
+ * Why `value` is not PEM content of the expected kind, or null when it is (or
+ * is empty — emptiness is the field's own "keep / not set" state).
+ *
+ * Only the envelope is checked: `-----BEGIN …-----` and a matching `-----END`.
+ * A partial paste or a server path ("/etc/ssl/ca.pem") is the common mistake
+ * and would otherwise only surface as a failed connection much later.
+ *
+ * The block is searched for, not anchored: `openssl pkcs12` and
+ * `openssl s_client -showcerts` output carries "Bag Attributes",
+ * "subject=/issuer=" or comment lines before it, which libpq, OpenSSL and the
+ * backend (it only looks for "-----BEGIN" anywhere) all skip. TRUSTED and
+ * X509 certificate labels count as certificates.
+ */
+export function pemError(value: string, kind: PemKind): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const label = kind === 'certificate' ? '[A-Z0-9 ]*CERTIFICATE' : '[A-Z ]*PRIVATE KEY'
+  const begin = new RegExp(`-----BEGIN (${label})-----`)
+  const match = begin.exec(trimmed)
+  if (!match) {
+    return kind === 'certificate'
+      ? 'Paste the PEM certificate itself: a -----BEGIN CERTIFICATE----- block.'
+      : 'Paste the PEM private key itself: a -----BEGIN PRIVATE KEY----- block.'
+  }
+  if (!trimmed.includes(`-----END ${match[1]}-----`, match.index + match[0].length)) {
+    return `The ${kind} is incomplete: its -----END ${match[1]}----- line is missing.`
+  }
+  return null
+}
+
+export type PemField = 'sslrootcert' | 'sslcert' | 'sslkey'
+export type PemErrors = Partial<Record<PemField, string>>
+
+/** Inline PEM errors for the Postgres TLS fields; empty for other warehouses. */
+export function connectionSettingsErrors(dbType: DbType, form: ConnectionSettingsForm): PemErrors {
+  if (dbType !== 'postgres') return {}
+  const errors: PemErrors = {}
+  const root = pemError(form.sslrootcert, 'certificate')
+  if (root) errors.sslrootcert = root
+  const cert = pemError(form.sslcert, 'certificate')
+  if (cert) errors.sslcert = cert
+  const key = form.clearSslkey ? null : pemError(form.sslkey, 'private key')
+  if (key) errors.sslkey = key
+  return errors
+}
 
 // One field column inside a `grid-cols-N` row: label, control, and usually a
 // help paragraph. `content-start` is load-bearing — without it the row height

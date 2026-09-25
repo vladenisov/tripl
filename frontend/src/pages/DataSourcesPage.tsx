@@ -29,21 +29,25 @@ import {
   EMPTY_CONNECTION_CORE_FORM,
   buildCoreCreatePayload,
   buildCoreUpdatePayload,
+  connectionCoreSecretError,
+  coreConnectionChanged,
   dataSourceToCoreForm,
   type ConnectionCoreForm,
 } from '@/components/data-sources/connection-core'
 import {
   EMPTY_CONNECTION_SETTINGS_FORM,
+  SELECT_CLASS,
   buildConnectionSettings,
+  connectionSettingsErrors,
   connectionSettingsToForm,
   type ConnectionSettingsForm,
+  type PemErrors,
 } from '@/components/data-sources/connection-settings'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SyntheticSourceBadge } from '@/demo/capabilityBadges'
 import { Chip } from '@/components/primitives/chip'
-import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import {
   CheckCircle2,
@@ -58,7 +62,7 @@ import {
 } from 'lucide-react'
 import { dataSourceHealthLexeme } from '@/lib/statusLexicon'
 import { getErrorMessage } from '@/lib/utils'
-import { formatDate } from '@/lib/datetime'
+import { formatDate, formatRelativeTime } from '@/lib/datetime'
 import { dataSourcesKey } from '@/lib/queryKeys'
 import { isOwner } from '@/lib/permissions'
 
@@ -74,6 +78,40 @@ function isHealthCheckStale(ds: DataSource, now: number = Date.now()): boolean {
   return now - new Date(ds.last_test_at).getTime() > HEALTH_STALE_AFTER_MS
 }
 
+/**
+ * Inline validation for the connection dialogs (DATA-29): a malformed
+ * service-account key or PEM block is caught here instead of at connect time.
+ *
+ * Only fields that differ from `baseline` are checked. On edit the baseline is
+ * the stored settings, so a certificate saved before this check existed cannot
+ * block an unrelated rename; on create it is the empty form.
+ */
+interface ConnectionErrors {
+  secret: string | null
+  pem: PemErrors
+}
+
+const NO_CONNECTION_ERRORS: ConnectionErrors = { secret: null, pem: {} }
+
+function connectionErrors(
+  dbType: DbType,
+  core: ConnectionCoreForm,
+  settings: ConnectionSettingsForm,
+  baseline: ConnectionSettingsForm,
+): ConnectionErrors {
+  const pem: PemErrors = {}
+  const all = connectionSettingsErrors(dbType, settings)
+  for (const field of ['sslrootcert', 'sslcert', 'sslkey'] as const) {
+    const error = all[field]
+    if (error && settings[field] !== baseline[field]) pem[field] = error
+  }
+  return { secret: connectionCoreSecretError(dbType, core), pem }
+}
+
+function hasConnectionErrors(errors: ConnectionErrors): boolean {
+  return !!errors.secret || Object.keys(errors.pem).length > 0
+}
+
 export default function DataSourcesPage() {
   const { dsId } = useParams<{ dsId?: string }>()
   return <ConnectionsTab openDsId={dsId} />
@@ -87,15 +125,23 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const [editingDs, setEditingDs] = useState<DataSource | null>(null)
   const editingDsIdRef = useRef<string | null>(null)
   const { confirm, dialog } = useConfirm()
+  // Validation errors shown after a submit attempt; cleared as the user edits.
+  const [createErrors, setCreateErrors] = useState<ConnectionErrors>(NO_CONNECTION_ERRORS)
+  const [editErrors, setEditErrors] = useState<ConnectionErrors>(NO_CONNECTION_ERRORS)
+  const [editNameError, setEditNameError] = useState<string | null>(null)
 
   const [name, setName] = useState('')
   const [dbType, setDbType] = useState<DbType>('clickhouse')
   const [core, setCore] = useState<ConnectionCoreForm>(EMPTY_CONNECTION_CORE_FORM)
-  const patchCore = (patch: Partial<ConnectionCoreForm>) =>
+  const patchCore = (patch: Partial<ConnectionCoreForm>) => {
     setCore((prev) => ({ ...prev, ...patch }))
+    setCreateErrors(NO_CONNECTION_ERRORS)
+  }
   const [settings, setSettings] = useState<ConnectionSettingsForm>(EMPTY_CONNECTION_SETTINGS_FORM)
-  const patchSettings = (patch: Partial<ConnectionSettingsForm>) =>
+  const patchSettings = (patch: Partial<ConnectionSettingsForm>) => {
     setSettings((prev) => ({ ...prev, ...patch }))
+    setCreateErrors(NO_CONNECTION_ERRORS)
+  }
 
   const handleDbTypeChange = (value: DbType) => {
     const previousDefault = DB_TYPE_OPTIONS.find((o) => o.value === dbType)?.defaultPort
@@ -110,15 +156,21 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
 
   const [editName, setEditName] = useState('')
   const [editCore, setEditCore] = useState<ConnectionCoreForm>(EMPTY_CONNECTION_CORE_FORM)
-  const patchEditCore = (patch: Partial<ConnectionCoreForm>) =>
+  const patchEditCore = (patch: Partial<ConnectionCoreForm>) => {
     setEditCore((prev) => ({ ...prev, ...patch }))
+    setEditErrors(NO_CONNECTION_ERRORS)
+  }
   const [editSettings, setEditSettings] = useState<ConnectionSettingsForm>(
     EMPTY_CONNECTION_SETTINGS_FORM,
   )
-  const patchEditSettings = (patch: Partial<ConnectionSettingsForm>) =>
+  const patchEditSettings = (patch: Partial<ConnectionSettingsForm>) => {
     setEditSettings((prev) => ({ ...prev, ...patch }))
+    setEditErrors(NO_CONNECTION_ERRORS)
+  }
 
-  const [testingId, setTestingId] = useState<string | null>(null)
+  // Every source with a test in flight. One shared id let testing A then B
+  // re-enable A's button mid-test, and A's finish re-enabled B's (DATA-34).
+  const [testingIds, setTestingIds] = useState<ReadonlySet<string>>(() => new Set())
   const canManageDataSources = isOwner(user?.role)
 
   const dataSourcesQuery = useQuery({
@@ -133,26 +185,31 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     mutationFn: () => {
       const connectionSettings = buildConnectionSettings(dbType, settings)
       return dataSourcesApi.create({
-        name,
+        name: name.trim(),
         db_type: dbType,
         ...buildCoreCreatePayload(dbType, core),
         ...(connectionSettings ? { connection_settings: connectionSettings } : {}),
       })
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: dataSourcesKey() })
+    onSuccess: (created) => {
       resetForm()
+      // No endpoint tests a connection before it is saved, so test it the
+      // moment it is: a typo in the host shows on the card right away instead
+      // of as the first failed scan (DATA-30).
+      void qc
+        .invalidateQueries({ queryKey: dataSourcesKey() })
+        .then(() => handleTest(created.id))
     },
   })
 
   const updateMut = useMutation({
     meta: SILENT_ERROR_META,
-    mutationFn: (id: string) => {
+    mutationFn: ({ id }: { id: string; retest: boolean }) => {
       const editDbType = editingDs?.db_type
       if (!editDbType) throw new Error('No data source is being edited')
       if (editingDs.is_synthetic) {
         return dataSourcesApi.update(id, {
-          name: editName,
+          name: editName.trim(),
           timeout_seconds: editCore.timeoutSeconds.trim()
             ? Number(editCore.timeoutSeconds)
             : null,
@@ -160,7 +217,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       }
       const connectionSettings = buildConnectionSettings(editDbType, editSettings)
       return dataSourcesApi.update(id, {
-        name: editName,
+        name: editName.trim(),
         // Branches on the warehouse exactly like the create payload does:
         // BigQuery gets no port and no username, and the secret is only sent
         // when the operator typed a new one.
@@ -168,9 +225,12 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
         ...(connectionSettings ? { connection_settings: connectionSettings } : {}),
       })
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: dataSourcesKey() })
+    onSuccess: (_saved, { id, retest }) => {
       closeEdit()
+      // A changed host, credential or TLS setting is re-tested right away, so
+      // the card never keeps a "healthy" earned by the old connection.
+      const refreshed = qc.invalidateQueries({ queryKey: dataSourcesKey() })
+      if (retest) void refreshed.then(() => handleTest(id))
     },
   })
 
@@ -181,6 +241,8 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     mutationFn: (id: string) => dataSourcesApi.del(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: dataSourcesKey() }),
   })
+  // Stable (the observer binds it once), so the edit-form callback can depend on it.
+  const resetUpdate = updateMut.reset
   const failedDeleteId = deleteMut.isError ? deleteMut.variables : undefined
 
   const handleDelete = async (ds: DataSource) => {
@@ -194,7 +256,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   }
 
   const handleTest = async (id: string) => {
-    setTestingId(id)
+    setTestingIds((prev) => new Set(prev).add(id))
     try {
       const result = await dataSourcesApi.testConnection(id)
       qc.setQueryData<DataSource[] | undefined>(dataSourcesKey(), (prev) =>
@@ -216,20 +278,28 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
         ),
       )
     } finally {
-      setTestingId(null)
+      setTestingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
     }
   }
 
   const populateEditForm = useCallback((ds: DataSource) => {
     if (editingDsIdRef.current === ds.id) return
     editingDsIdRef.current = ds.id
+    // A failure from another source's save must not greet this one (DATA-32).
+    resetUpdate()
+    setEditErrors(NO_CONNECTION_ERRORS)
+    setEditNameError(null)
     setEditingDs(ds)
     setEditName(ds.name)
     // Neither helper prefills a secret: the API returns `password_set` /
     // `sslkey_set` booleans, never the credential itself.
     setEditCore(dataSourceToCoreForm(ds))
     setEditSettings(connectionSettingsToForm(ds.connection_settings))
-  }, [])
+  }, [resetUpdate])
 
   const startEdit = useCallback((ds: DataSource) => {
     populateEditForm(ds)
@@ -242,6 +312,14 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const closeEdit = () => {
     editingDsIdRef.current = null
     setEditingDs(null)
+    // Drop the typed secret and any stale error with the dialog, rather than
+    // keeping a pasted key in memory until the next edit opens (DATA-29,
+    // DATA-32).
+    setEditCore(EMPTY_CONNECTION_CORE_FORM)
+    setEditSettings(EMPTY_CONNECTION_SETTINGS_FORM)
+    setEditErrors(NO_CONNECTION_ERRORS)
+    setEditNameError(null)
+    resetUpdate()
     navigate('/settings/data-sources', { replace: true, state: LEAVE_CONFIRMED })
   }
 
@@ -271,6 +349,40 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     setDbType('clickhouse')
     setCore(EMPTY_CONNECTION_CORE_FORM)
     setSettings(EMPTY_CONNECTION_SETTINGS_FORM)
+    setCreateErrors(NO_CONNECTION_ERRORS)
+    // Opening "Add connection" after a failed attempt showed the old error.
+    createMut.reset()
+  }
+
+  const submitCreate = () => {
+    const errors = connectionErrors(dbType, core, settings, EMPTY_CONNECTION_SETTINGS_FORM)
+    setCreateErrors(errors)
+    if (hasConnectionErrors(errors)) return
+    createMut.mutate()
+  }
+
+  const submitEdit = () => {
+    if (!editingDs) return
+    // `required` stops a browser submit; this also catches a name of spaces,
+    // which the backend would otherwise answer with a raw 422 (DATA-33).
+    if (!editName.trim()) {
+      setEditNameError('Enter a name.')
+      return
+    }
+    setEditNameError(null)
+    if (editingDs.is_synthetic) {
+      updateMut.mutate({ id: editingDs.id, retest: false })
+      return
+    }
+    const baseline = connectionSettingsToForm(editingDs.connection_settings)
+    const errors = connectionErrors(editingDs.db_type, editCore, editSettings, baseline)
+    setEditErrors(errors)
+    if (hasConnectionErrors(errors)) return
+    const settingsChanged = JSON.stringify(editSettings) !== JSON.stringify(baseline)
+    updateMut.mutate({
+      id: editingDs.id,
+      retest: settingsChanged || coreConnectionChanged(editingDs, editCore),
+    })
   }
 
   // One stray overlay click or Escape used to throw away a pasted service-account
@@ -298,7 +410,11 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const healthyCount = dataSources.filter(
     (ds) => ds.last_test_status === 'success' && !isHealthCheckStale(ds),
   ).length
-  const warningCount = dataSources.filter((ds) => ds.last_test_status === 'failed').length
+  // A stale "healthy" check renders amber on its card, so it counts here too;
+  // the header read "Warnings 0" above amber cards (DATA-35).
+  const warningCount = dataSources.filter(
+    (ds) => ds.last_test_status === 'failed' || isHealthCheckStale(ds),
+  ).length
   /* Nothing numeric is claimed before the fetch settles: `dataSources` defaults
      to [], so a cold load would otherwise report "Connections 0 / Healthy 0" as
      if those were measurements. ScansTab holds its 24h KPI at "—" for the same
@@ -311,9 +427,12 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       {createGuard.dialog}
       {editGuard.dialog}
 
-      {/* Compact stats header (page title comes from the Settings tab bar) */}
-      <div className="flex items-end justify-end gap-6">
-        <div className="flex items-center gap-4">
+      {/* Compact stats header (page title comes from the Settings tab bar).
+          It wraps, and is never right-aligned: a non-wrapping `justify-end` row
+          overflowed off the LEFT edge at 375px, where nothing can scroll to it,
+          and "Connections" read as "TIONS" (DATA-35 / LIVE-4). */}
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+        <div className="flex flex-wrap items-center gap-4">
           <MiniStat label="Connections" value={statsPending ? '—' : String(dataSources.length)} />
           <MiniStatDivider />
           <MiniStat
@@ -329,25 +448,25 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
             value={statsPending ? '—' : String(warningCount)}
             tone={!statsPending && warningCount > 0 ? 'danger' : 'neutral'}
           />
-          {canManageDataSources && (
-            <Button onClick={() => setShowForm(true)} size="sm">
-              <Plus className="h-3.5 w-3.5" />
-              Add connection
-            </Button>
-          )}
         </div>
+        {canManageDataSources && (
+          <Button onClick={() => setShowForm(true)} size="sm">
+            <Plus className="h-3.5 w-3.5" />
+            Add connection
+          </Button>
+        )}
       </div>
 
       {/* Create dialog */}
       <Dialog open={showForm} onOpenChange={(v) => { if (!v) createGuard.requestClose(resetForm) }}>
         <DialogContent className="sm:max-w-lg">
-          <form onSubmit={(e) => { e.preventDefault(); createMut.mutate() }}>
+          <form onSubmit={(e) => { e.preventDefault(); submitCreate() }}>
             <DialogHeader>
               <DialogTitle>New data source</DialogTitle>
             </DialogHeader>
             <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-3 gap-3">
-                <div className="col-span-2 grid gap-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="grid gap-2 sm:col-span-2">
                   <Label htmlFor="ds-name">Name</Label>
                   <Input id="ds-name" value={name} onChange={(e) => setName(e.target.value)} required placeholder="Production ClickHouse" />
                 </div>
@@ -357,7 +476,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                     id="ds-type"
                     value={dbType}
                     onChange={(e) => handleDbTypeChange(e.target.value as DbType)}
-                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className={SELECT_CLASS}
                   >
                     {DB_TYPE_OPTIONS.map((opt) => (
                       <option key={opt.value} value={opt.value}>
@@ -373,12 +492,14 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 value={core}
                 onChange={patchCore}
                 mode="create"
+                secretError={createErrors.secret}
               />
               <ConnectionSettingsFields
                 idPrefix="ds"
                 dbType={dbType}
                 value={settings}
                 onChange={patchSettings}
+                pemErrors={createErrors.pem}
               />
               {createMut.isError && (
                 <p className="text-sm text-destructive">{getErrorMessage(createMut.error)}</p>
@@ -395,14 +516,29 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       {/* Edit dialog */}
       <Dialog open={!!editingDs} onOpenChange={(v) => { if (!v) editGuard.requestClose(closeEdit) }}>
         <DialogContent className="sm:max-w-lg">
-          <form onSubmit={(e) => { e.preventDefault(); if (editingDs) updateMut.mutate(editingDs.id) }}>
+          <form onSubmit={(e) => { e.preventDefault(); submitEdit() }}>
             <DialogHeader>
               <DialogTitle>Edit data source</DialogTitle>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
                 <Label htmlFor="edit-ds-name">Name</Label>
-                <Input id="edit-ds-name" value={editName} onChange={(e) => setEditName(e.target.value)} />
+                <Input
+                  id="edit-ds-name"
+                  value={editName}
+                  onChange={(e) => {
+                    setEditName(e.target.value)
+                    setEditNameError(null)
+                  }}
+                  required
+                  aria-invalid={editNameError ? true : undefined}
+                  aria-describedby={editNameError ? 'edit-ds-name-error' : undefined}
+                />
+                {editNameError && (
+                  <p id="edit-ds-name-error" role="alert" className="text-xs text-destructive">
+                    {editNameError}
+                  </p>
+                )}
               </div>
               {editingDs && (
                 <>
@@ -430,6 +566,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                         onChange={patchEditCore}
                         mode="edit"
                         secretSet={editingDs.password_set}
+                        secretError={editErrors.secret}
                       />
                       <ConnectionSettingsFields
                         idPrefix="edit-ds"
@@ -437,6 +574,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                         value={editSettings}
                         onChange={patchEditSettings}
                         sslkeySet={editingDs.connection_settings?.sslkey_set ?? false}
+                        pemErrors={editErrors.pem}
                       />
                     </>
                   )}
@@ -498,7 +636,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
             <DataSourceCard
               key={ds.id}
               ds={ds}
-              testing={testingId === ds.id}
+              testing={testingIds.has(ds.id)}
               canManage={canManageDataSources}
               onTest={() => handleTest(ds.id)}
               onEdit={() => startEdit(ds)}
@@ -540,7 +678,12 @@ function DataSourceCard({
   const health = dataSourceHealthLexeme(ds.last_test_status, stale)
   const statusTone = health.tone
   const statusLabel = health.label
-  const dotTone = health.tone
+  // One health indicator and one type marker per card (LIVE-36). A card used
+  // to carry a dot, a health chip AND the last-test row (three health
+  // markers), plus a "synthetic" type chip next to the Synthetic badge. The
+  // last-test row now leads with the health word; the chip only stands in
+  // when there is no row (an untested source).
+  const hasTestRow = !!(ds.last_test_status && ds.last_test_message)
   // A failed test or a stale "healthy" check both leave the user stuck with a
   // problem and no obvious next step, so we surface inline recovery actions
   // (re-test / edit) right where the failure is reported, not just in the
@@ -581,7 +724,6 @@ function DataSourceCard({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <Dot tone={dotTone} size={6} pulse={dotTone === 'success'} />
             <span className="truncate text-[13px] font-semibold">{ds.name}</span>
           </div>
           {!connectionRedacted && (
@@ -605,20 +747,21 @@ function DataSourceCard({
         className="flex flex-wrap items-center gap-1.5 border-t px-3.5 py-2.5"
         style={{ borderColor: 'var(--border-subtle)' }}
       >
-        <Chip tone={statusTone} size="xs">
-          {statusLabel}
-        </Chip>
-        <Chip size="xs">{ds.db_type}</Chip>
-        {ds.is_synthetic && <SyntheticSourceBadge />}
+        {!hasTestRow && (
+          <Chip tone={statusTone} size="xs">
+            {statusLabel}
+          </Chip>
+        )}
+        {ds.is_synthetic ? <SyntheticSourceBadge /> : <Chip size="xs">{ds.db_type}</Chip>}
         {ds.username && <Chip size="xs">{ds.username}</Chip>}
         {ds.timeout_seconds != null && <Chip size="xs">timeout {ds.timeout_seconds}s</Chip>}
         <div className="flex-1" />
         <span className="mono text-[10.5px]" style={{ color: 'var(--fg-faint)' }}>
-          {formatRelative(ds.updated_at)}
+          {formatRelativeTime(ds.updated_at)}
         </span>
       </div>
 
-      {ds.last_test_status && ds.last_test_message && (
+      {hasTestRow && (
         <div
           className="border-t text-[11.5px]"
           style={{
@@ -643,6 +786,8 @@ function DataSourceCard({
             ) : (
               <XCircle className="h-3 w-3 shrink-0" />
             )}
+            <span className="shrink-0 font-semibold">{statusLabel}</span>
+            <span aria-hidden="true">·</span>
             <span className="truncate" title={stale ? ds.last_test_message ?? undefined : undefined}>
               {stale && lastTestAt ? `Last checked ${formatDate(lastTestAt)}` : ds.last_test_message}
             </span>
@@ -651,7 +796,7 @@ function DataSourceCard({
                 className="mono ml-auto shrink-0 text-[10.5px]"
                 style={{ color: 'var(--fg-faint)' }}
               >
-                {stale ? 're-test to confirm' : formatRelative(lastTestAt)}
+                {stale ? 're-test to confirm' : formatRelativeTime(lastTestAt)}
               </span>
             )}
           </div>
@@ -707,17 +852,4 @@ function DataSourceCard({
       )}
     </div>
   )
-}
-
-function formatRelative(iso: string): string {
-  const date = new Date(iso)
-  const delta = Date.now() - date.getTime()
-  const minutes = Math.floor(delta / 60_000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}d ago`
-  return formatDate(iso)
 }

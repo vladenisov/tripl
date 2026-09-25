@@ -12,6 +12,7 @@ import { BranchContext } from '@/components/branch-context-internal'
 import { DemoScenarioProvider } from '@/demo/DemoScenarioProvider'
 import { readScenarioState, writeScenarioState } from '@/demo/scenarioModel'
 import { chapterState } from '@/demo/scenarioTestState'
+import { toast } from 'sonner'
 import { EventForm } from './EventForm'
 import { expectNoAxeViolations } from '@/test/axe'
 
@@ -30,6 +31,8 @@ vi.mock('@/api/events', () => ({
     get: vi.fn().mockResolvedValue({}),
   },
 }))
+
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
 vi.mock('@/api/users', () => ({
   usersApi: { list: vi.fn().mockResolvedValue([]) },
@@ -253,7 +256,7 @@ describe('EventForm template authoring', () => {
     ).toBeNull()
   })
 
-  it('shows rich ${ suggestions, inline unknown-token warnings, and copyable documented values', () => {
+  it('shows rich ${ suggestions, inline unknown-token warnings, and copyable documented values', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -291,8 +294,26 @@ describe('EventForm template authoring', () => {
     const copyChip = screen.getByRole('button', { name: 'Copy documented value control' })
     fireEvent.click(copyChip)
     expect(writeText).toHaveBeenCalledWith('control')
-    expect(screen.getByText('Copied control')).toBeInTheDocument()
+    // Reported through a toast, like the spec card's copy buttons (EVT-49).
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Copied control'))
     expect(input).toHaveValue('${variant}')
+  })
+
+  it('says so when the clipboard refuses, instead of claiming a copy (EVT-49)', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+    })
+    renderForm(null, {
+      eventTypes: [TEMPLATE_EVENT_TYPE],
+      projectVariables: [TEMPLATE_VARIABLE],
+    })
+    fireEvent.change(screen.getByLabelText('Variant'), { target: { value: '${variant}' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Copy documented value control' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Could not copy control'))
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Copied control/)).toBeNull()
   })
 })
 
@@ -1505,5 +1526,383 @@ describe('EventForm unsaved-changes guard (EVT-8)', () => {
     )
     await waitFor(() => expect(screen.getByLabelText('Jira')).toHaveValue('WND-4770'))
     expect(reloadIsGuarded()).toBe(false)
+  })
+})
+
+const NUMBER_EVENT_TYPE = {
+  ...EVENT_TYPE,
+  field_definitions: [
+    {
+      id: 'field-price',
+      event_type_id: 'et-1',
+      name: 'price',
+      display_name: 'Price',
+      field_type: 'number',
+      is_required: false,
+      enum_options: null,
+      order: 0,
+    },
+  ],
+} as unknown as EventType
+
+const PRICE_VARIABLE: Variable = {
+  ...PRODUCT_ID_VARIABLE,
+  id: 'var-price',
+  name: 'price',
+  source_name: 'price',
+  description: 'Price paid',
+}
+
+describe('EventForm templated number fields (EVT-23)', () => {
+  it('shows a stored ${variable} in a number field and saves it back unchanged', async () => {
+    vi.mocked(eventsApi.update).mockResolvedValue({} as never)
+    renderForm(
+      {
+        ...EXISTING_EVENT,
+        field_values: [{ field_definition_id: 'field-price', value: '${price}' }],
+      } as unknown as TEvent,
+      { eventTypes: [NUMBER_EVENT_TYPE], projectVariables: [PRICE_VARIABLE] },
+    )
+
+    // A native number input sanitised the token to an empty display.
+    const input = screen.getByLabelText('Price')
+    expect(input).toHaveValue('${price}')
+    expect(input).toHaveAttribute('inputmode', 'decimal')
+    expect(input).toHaveAttribute('role', 'combobox')
+
+    fireEvent.click(screen.getByRole('button', { name: /Save event/i }))
+    await waitFor(() =>
+      expect(eventsApi.update).toHaveBeenCalledWith(
+        'demo',
+        'ev-1',
+        expect.objectContaining({
+          field_values: [{ field_definition_id: 'field-price', value: '${price}' }],
+        }),
+        null,
+      ),
+    )
+  })
+
+  it('opens the variable autocomplete on a number field', () => {
+    renderForm(null, { eventTypes: [NUMBER_EVENT_TYPE], projectVariables: [PRICE_VARIABLE] })
+    fireEvent.change(screen.getByLabelText('Price'), { target: { value: '${' } })
+    expect(screen.getByRole('option', { name: /\$\{price\}/ })).toBeInTheDocument()
+  })
+
+  it('takes a plain number, and refuses text that is neither a number nor a token', () => {
+    renderForm(null, { eventTypes: [NUMBER_EVENT_TYPE] })
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:paid' } })
+    const input = screen.getByLabelText('Price')
+
+    fireEvent.change(input, { target: { value: '12.5' } })
+    expect(input).not.toHaveAttribute('aria-invalid')
+    expect(screen.getByRole('button', { name: /Create event/i })).not.toBeDisabled()
+
+    fireEvent.change(input, { target: { value: 'twelve' } })
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(input).toHaveAccessibleDescription(/Enter a number or a \$\{variable\} token/)
+    expect(screen.getByRole('button', { name: /Create event/i })).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a number or a variable in: Price')
+  })
+
+  it('does not hold the event hostage to a stored value that is not a number', async () => {
+    // The backend does not validate number values, so a scan can store `N/A`.
+    // Rewriting it would freeze the field against scans; editing the rest of the
+    // event must not require that.
+    vi.mocked(eventsApi.update).mockResolvedValue({} as never)
+    renderForm(
+      {
+        ...EXISTING_EVENT,
+        field_values: [{ field_definition_id: 'field-price', value: 'N/A', is_authored: false }],
+      } as unknown as TEvent,
+      { eventTypes: [NUMBER_EVENT_TYPE] },
+    )
+
+    expect(screen.getByLabelText('Price')).toHaveAttribute('aria-invalid', 'true')
+    const save = screen.getByRole('button', { name: /Save event/i })
+    expect(save).not.toBeDisabled()
+    fireEvent.click(save)
+    await waitFor(() =>
+      expect(eventsApi.update).toHaveBeenCalledWith(
+        'demo',
+        'ev-1',
+        expect.objectContaining({
+          field_values: [{ field_definition_id: 'field-price', value: 'N/A' }],
+        }),
+        null,
+      ),
+    )
+
+    // A new value the author types is still held to a number or a token.
+    fireEvent.change(screen.getByLabelText('Price'), { target: { value: 'twelve' } })
+    expect(screen.getByRole('button', { name: /Save event/i })).toBeDisabled()
+  })
+
+  it('takes a decimal comma from a comma-locale keyboard and sends a point', async () => {
+    vi.mocked(eventsApi.create).mockResolvedValue({} as never)
+    renderForm(null, { eventTypes: [NUMBER_EVENT_TYPE] })
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:paid' } })
+    const input = screen.getByLabelText('Price')
+
+    fireEvent.change(input, { target: { value: '1,5' } })
+    expect(input).not.toHaveAttribute('aria-invalid')
+    const create = screen.getByRole('button', { name: /Create event/i })
+    expect(create).not.toBeDisabled()
+    fireEvent.click(create)
+    await waitFor(() =>
+      expect(eventsApi.create).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({
+          field_values: [{ field_definition_id: 'field-price', value: '1.5' }],
+        }),
+        null,
+      ),
+    )
+  })
+})
+
+describe('EventForm sunset date zone (EVT-27)', () => {
+  // Pinned off UTC: CI runs in UTC, where local wall time and UTC coincide and
+  // a form that treated the picker value as UTC would pass unnoticed.
+  beforeEach(() => {
+    vi.stubEnv('TZ', 'Asia/Tokyo')
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('runs in a zone that is not UTC', () => {
+    expect(new Date(2026, 9, 1).getTimezoneOffset()).toBe(-540)
+  })
+
+  it('shows the stored instant in local time and saves the same instant back', async () => {
+    vi.mocked(eventsApi.update).mockResolvedValue({} as never)
+    renderForm({
+      ...EXISTING_EVENT,
+      status: 'deprecated',
+      sunset_at: '2026-10-01T09:00:00Z',
+    } as unknown as TEvent)
+
+    // The picker shows local wall time — the zone the detail page formats in —
+    // not the UTC wall time a slice of the ISO string gave.
+    expect(screen.getByLabelText('Sunset date')).toHaveValue('2026-10-01T18:00')
+
+    fireEvent.click(screen.getByRole('button', { name: /Save event/i }))
+    await waitFor(() =>
+      expect(eventsApi.update).toHaveBeenCalledWith(
+        'demo',
+        'ev-1',
+        expect.objectContaining({ sunset_at: '2026-10-01T09:00:00.000Z' }),
+        null,
+      ),
+    )
+  })
+
+  it('sends a local time as the instant it names', async () => {
+    vi.mocked(eventsApi.update).mockResolvedValue({} as never)
+    renderForm({ ...EXISTING_EVENT, status: 'deprecated' } as unknown as TEvent)
+
+    fireEvent.change(screen.getByLabelText('Sunset date'), { target: { value: '2026-12-31T09:00' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save event/i }))
+
+    // 09:00 in Tokyo is midnight UTC.
+    await waitFor(() =>
+      expect(eventsApi.update).toHaveBeenCalledWith(
+        'demo',
+        'ev-1',
+        expect.objectContaining({ sunset_at: '2026-12-31T00:00:00.000Z' }),
+        null,
+      ),
+    )
+  })
+})
+
+describe('EventForm pending chip text (EVT-26)', () => {
+  it('saves a tag and a column typed without pressing Enter', async () => {
+    vi.mocked(eventsApi.create).mockResolvedValue({} as never)
+    renderForm(null)
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:started' } })
+    fireEvent.change(screen.getByLabelText('Tags'), { target: { value: 'Checkout' } })
+    fireEvent.change(screen.getByLabelText('Metric breakdowns'), { target: { value: 'country' } })
+
+    fireEvent.click(screen.getByRole('button', { name: /Create event/i }))
+
+    await waitFor(() =>
+      expect(eventsApi.create).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({ tags: ['checkout'], metric_breakdown_columns: ['country'] }),
+        null,
+      ),
+    )
+  })
+
+  it('turns the text into a chip when the input is left', () => {
+    renderForm(null)
+    const tags = screen.getByLabelText('Tags')
+    fireEvent.change(tags, { target: { value: 'critical' } })
+    fireEvent.blur(tags)
+
+    expect(tags).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Remove critical tag' })).toBeInTheDocument()
+  })
+
+  it('counts text left in the tag input as an unsaved change', () => {
+    renderForm(null)
+    fireEvent.change(screen.getByLabelText('Tags'), { target: { value: 'critical' } })
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+  })
+})
+
+describe('EventForm "Save and add another" identity (EVT-25)', () => {
+  it('refuses the name it has just created on the next press', async () => {
+    vi.mocked(eventsApi.list).mockResolvedValue({ items: [], total: 0 } as never)
+    vi.mocked(eventsApi.create).mockResolvedValue(
+      { id: 'ev-new', name: 'pv:b2', event_type_id: 'et-1' } as never,
+    )
+    renderForm(null, { eventTypes: [RULED_TYPE] })
+
+    await screen.findByText(/generated by scan rule/)
+    fireEvent.change(screen.getByLabelText(/^Variant/), { target: { value: 'b2' } })
+    // The probe answers "free" first — the case that used to stay cached.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Save and add another/i })).not.toBeDisabled(),
+      { timeout: 3000 },
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Save and add another/i }))
+    await waitFor(() => expect(eventsApi.create).toHaveBeenCalledTimes(1))
+
+    const warning = await screen.findByRole('alert')
+    expect(warning).toHaveTextContent(/already answers to this name/)
+    expect(within(warning).getByRole('link', { name: /open it instead/i })).toHaveAttribute(
+      'href',
+      '/p/demo/monitoring/event/ev-new',
+    )
+    expect(screen.getByRole('button', { name: /Save and add another/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Create event/i })).toBeDisabled()
+  })
+
+  it('does not hold a name taken under one type against another type', async () => {
+    // Identities are unique per event type: the server keys on both.
+    const OTHER_RULED_TYPE = {
+      ...RULED_TYPE,
+      id: 'et-2',
+      name: 'other',
+      display_name: 'Other',
+      field_definitions: [
+        {
+          id: 'field-variant-2',
+          event_type_id: 'et-2',
+          name: 'variant',
+          display_name: 'Variant',
+          field_type: 'string',
+          is_required: false,
+          enum_options: null,
+          order: 0,
+        },
+      ],
+    } as unknown as EventType
+    vi.mocked(eventsApi.list).mockResolvedValue({ items: [], total: 0 } as never)
+    vi.mocked(eventsApi.create).mockResolvedValue(
+      { id: 'ev-new', name: 'pv:b2', event_type_id: 'et-1' } as never,
+    )
+    renderForm(null, { eventTypes: [RULED_TYPE, OTHER_RULED_TYPE] })
+    fireEvent.change(screen.getByLabelText(/Event type/), { target: { value: 'et-1' } })
+
+    await screen.findByText(/generated by scan rule/)
+    fireEvent.change(screen.getByLabelText(/^Variant/), { target: { value: 'b2' } })
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Save and add another/i })).not.toBeDisabled(),
+      { timeout: 3000 },
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Save and add another/i }))
+    await waitFor(() => expect(eventsApi.create).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText(/already answers to this name/)).toBeInTheDocument()
+
+    // The same composed name under the other type is free.
+    fireEvent.change(screen.getByLabelText(/Event type/), { target: { value: 'et-2' } })
+    await waitFor(() => expect(screen.queryByText(/already answers to this name/)).toBeNull())
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Save and add another/i })).not.toBeDisabled(),
+      { timeout: 3000 },
+    )
+  })
+})
+
+describe('EventForm event-type change (EVT-47)', () => {
+  const OTHER_TYPE = {
+    ...TEMPLATE_EVENT_TYPE,
+    id: 'et-2',
+    name: 'other',
+    display_name: 'Other',
+    field_definitions: [
+      {
+        id: 'field-variant-2',
+        event_type_id: 'et-2',
+        name: 'variant',
+        display_name: 'Variant',
+        field_type: 'string',
+        is_required: false,
+        enum_options: null,
+        order: 0,
+      },
+    ],
+  } as unknown as EventType
+
+  it('carries values onto the fields of the same name without asking', () => {
+    renderForm(null, { eventTypes: [TEMPLATE_EVENT_TYPE, OTHER_TYPE] })
+    fireEvent.change(screen.getByLabelText(/Event type/), { target: { value: 'et-1' } })
+    fireEvent.change(screen.getByLabelText('Variant'), { target: { value: 'b2' } })
+
+    fireEvent.change(screen.getByLabelText(/Event type/), { target: { value: 'et-2' } })
+
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByLabelText(/Event type/)).toHaveValue('et-2')
+    expect(screen.getByLabelText('Variant')).toHaveValue('b2')
+  })
+
+  it('asks before dropping a value the new type has no field for, and keeps it on Cancel', async () => {
+    renderForm(null, { eventTypes: [JSON_TEMPLATE_EVENT_TYPE, OTHER_TYPE] })
+    fireEvent.change(screen.getByLabelText(/Event type/), { target: { value: 'et-1' } })
+    fireEvent.change(screen.getByLabelText('Payload'), { target: { value: '{"a":1}' } })
+
+    fireEvent.change(screen.getByLabelText(/Event type/), { target: { value: 'et-2' } })
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent(/Other has no field for Payload/)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(screen.getByLabelText(/Event type/)).toHaveValue('et-1')
+    expect(screen.getByLabelText('Payload')).toHaveValue('{"a":1}')
+  })
+})
+
+describe('EventForm hint wiring (EVT-48)', () => {
+  it('ties a row hint and a consequential notice to the control', () => {
+    renderForm(
+      {
+        ...EDIT_EVENT,
+        field_values: [{ field_definition_id: 'field-product-id', value: 'prod_monthly', is_authored: false }],
+      } as unknown as TEvent,
+      { eventTypes: [EDIT_EVENT_TYPE] },
+    )
+    expect(screen.getByLabelText('Title')).toHaveAccessibleDescription(
+      /Never part of the name a scan matches on/,
+    )
+
+    const productId = screen.getByLabelText(/Product ID/)
+    fireEvent.change(productId, { target: { value: 'prod_annual' } })
+    expect(productId).toHaveAccessibleDescription(/Saving this stops scans from updating the field/)
+  })
+
+  it('does not read the required star aloud; the control says it is required', () => {
+    const { container } = renderForm(null)
+    const star = container.querySelector('label[for="form-name"] span')
+    expect(star).toHaveTextContent('*')
+    expect(star).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByLabelText(/^Name/)).toBeRequired()
   })
 })

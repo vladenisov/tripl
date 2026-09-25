@@ -7,9 +7,9 @@
  * runs collections constantly, so a spy on the API would prove nothing.
  */
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   MetricCollectNowResponse,
@@ -27,6 +27,8 @@ import {
   type ScenarioState,
 } from '@/demo/scenarioModel'
 import { liveLoopState } from '@/demo/scenarioTestState'
+import { ApiError } from '@/api/client'
+import { stopAllMetricCollectionWatches } from '@/hooks/useMetricCollectionWatcher'
 import { MetricsCatalog } from './MetricsCatalog'
 
 vi.mock('@/api/metricsCatalogApi', () => ({
@@ -45,6 +47,7 @@ vi.mock('sonner', () => ({
 }))
 
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { toast } from 'sonner'
 import { at } from '@/test/at'
 
 const SLUG = 'demo'
@@ -117,11 +120,14 @@ function seeChartState(metricId: string): ScenarioState {
   return liveLoopState('live-loop/see-chart', { metric: { metricId, startedAt: Date.now() } })
 }
 
-function renderCatalog(project: Project | undefined = demoProject()) {
+function renderCatalog(
+  project: Project | undefined = demoProject(),
+  path = `/p/${SLUG}/metrics`,
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[`/p/${SLUG}/metrics`]}>
+      <MemoryRouter initialEntries={[path]}>
         <DemoScenarioProvider project={project} pollIntervalMs={POLL_MS}>
           <MetricsCatalog slug={SLUG} />
         </DemoScenarioProvider>
@@ -145,6 +151,10 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  // Module-factory mocks keep their call history across tests otherwise.
+  vi.clearAllMocks()
+  vi.mocked(metricsCatalogApi.create).mockReset()
+  vi.mocked(metricsCatalogApi.bulkUpdate).mockReset()
   vi.mocked(metricsCatalogApi.list).mockReset()
   vi.mocked(metricsCatalogApi.get).mockReset()
   vi.mocked(metricsCatalogApi.collect).mockReset()
@@ -165,6 +175,9 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // Collect watches outlive the component by design (MET-8); end them so one
+  // test's poll never reports into the next.
+  stopAllMetricCollectionWatches()
   vi.restoreAllMocks()
   window.localStorage.clear()
 })
@@ -259,5 +272,262 @@ describe('MetricsCatalog — the coach marks', () => {
     await screen.findByText('Signups')
     expect(callouts()).toHaveLength(0)
     expect(screen.queryByText(COLLECT_INSTRUCTION)).not.toBeInTheDocument()
+  })
+})
+
+const NOT_A_DEMO = demoProject({ is_demo: false })
+
+function listCallParams(index: number) {
+  return at(vi.mocked(metricsCatalogApi.list).mock.calls, index)[1]
+}
+
+describe('MetricsCatalog — the whole catalog, not its first page (MET-7)', () => {
+  it('walks every page and offers reorder over the full list', async () => {
+    const third = makeItem({ id: 'm-3', name: 'refunds', display_name: 'Refunds' })
+    vi.mocked(metricsCatalogApi.list).mockImplementation(async (_slug, params) =>
+      params?.offset
+        ? { items: [third], total: 3, active_total: 3 }
+        : { ...TWO_METRICS, total: 3, active_total: 3 },
+    )
+    renderCatalog(NOT_A_DEMO)
+
+    expect(await screen.findByText('Refunds')).toBeInTheDocument()
+    expect(screen.getByText('Checkout conversion')).toBeInTheDocument()
+    expect(listCallParams(0)).toMatchObject({ offset: 0, limit: 1000 })
+    expect(listCallParams(1)).toMatchObject({ offset: 2, limit: 1000 })
+    // Every row arrived, so reordering is allowed — on all three.
+    expect(screen.getByRole('button', { name: 'Reorder Refunds' })).toBeInTheDocument()
+    expect(screen.queryByText(/Showing 2 of 3 metrics/)).not.toBeInTheDocument()
+  })
+
+  it('says when rows are missing and turns reorder off', async () => {
+    // The server claims more rows than it will hand over.
+    vi.mocked(metricsCatalogApi.list).mockImplementation(async (_slug, params) =>
+      params?.offset
+        ? { items: [], total: 5, active_total: 5 }
+        : { ...TWO_METRICS, total: 5, active_total: 5 },
+    )
+    renderCatalog(NOT_A_DEMO)
+
+    expect(await screen.findByText(/Showing 2 of 5 metrics/)).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Reorder Checkout conversion' }),
+    ).not.toBeInTheDocument()
+  })
+})
+
+describe('MetricsCatalog — filters keep the rows while they load (MET-11)', () => {
+  it('leaves the previous rows up instead of blanking to Loading', async () => {
+    renderCatalog(NOT_A_DEMO)
+    await screen.findByText('Signups')
+
+    // The next list never answers, so what shows is what the placeholder keeps.
+    vi.mocked(metricsCatalogApi.list).mockImplementation(() => new Promise(() => {}))
+    fireEvent.change(screen.getByLabelText('Filter by status'), { target: { value: 'draft' } })
+
+    await waitFor(() =>
+      expect(metricsCatalogApi.list).toHaveBeenCalledWith(
+        SLUG,
+        expect.objectContaining({ status: ['draft'] }),
+      ),
+    )
+    expect(screen.getByText('Signups')).toBeInTheDocument()
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+    expect(screen.getByRole('table', { name: 'Metrics' })).toHaveAttribute('aria-busy', 'true')
+  })
+})
+
+describe('MetricsCatalog — filters live in the URL (MET-24)', () => {
+  it('restores search, status and the stat filter from the address', async () => {
+    renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?q=sign&status=active&signal=anomalies`)
+
+    await waitFor(() =>
+      expect(metricsCatalogApi.list).toHaveBeenCalledWith(
+        SLUG,
+        expect.objectContaining({ search: 'sign', status: ['active'] }),
+      ),
+    )
+    expect(screen.getByLabelText('Search metrics')).toHaveValue('sign')
+    expect(screen.getByLabelText('Filter by status')).toHaveValue('active')
+    expect(screen.getByRole('button', { name: 'Filter by active anomalies' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
+  it('keeps typed search text local and writes only the settled value to the address', async () => {
+    // Bound straight to `q`, the box was reset to the old URL value between a
+    // keystroke and the async navigation commit: caret jumps, lost characters.
+    function Probe() {
+      const location = useLocation()
+      const navigate = useNavigate()
+      return (
+        <>
+          <output data-testid="address">{location.search}</output>
+          <button type="button" onClick={() => navigate(`/p/${SLUG}/metrics?q=signups`)}>
+            Go elsewhere
+          </button>
+        </>
+      )
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[`/p/${SLUG}/metrics`]}>
+          <DemoScenarioProvider project={NOT_A_DEMO} pollIntervalMs={POLL_MS}>
+            <MetricsCatalog slug={SLUG} />
+            <Probe />
+          </DemoScenarioProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Signups')
+    const box = screen.getByLabelText('Search metrics')
+
+    fireEvent.change(box, { target: { value: 'ch' } })
+    fireEvent.change(box, { target: { value: 'chec' } })
+    expect(box).toHaveValue('chec')
+    // Not one history write per keystroke: the address waits for a pause.
+    expect(screen.getByTestId('address')).toHaveTextContent(/^$/)
+    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent('?q=chec'))
+    // Its own write landing does not reset what the user sees.
+    expect(box).toHaveValue('chec')
+
+    // A change from outside (Back, a link) still wins.
+    fireEvent.click(screen.getByRole('button', { name: 'Go elsewhere' }))
+    await waitFor(() => expect(box).toHaveValue('signups'))
+  })
+
+  it('ignores values that are not filters', async () => {
+    renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?status=bogus&signal=bogus`)
+
+    await screen.findByText('Signups')
+    expect(listCallParams(0)).toMatchObject({ status: undefined })
+    expect(screen.getByRole('button', { name: 'Filter by active anomalies' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+  })
+})
+
+describe('MetricsCatalog — an empty filter result has a way out (MET-25)', () => {
+  it('names the active filters and clears them in one click', async () => {
+    vi.mocked(metricsCatalogApi.list).mockImplementation(async (_slug, params) =>
+      params?.search ? { items: [], total: 0, active_total: 0 } : TWO_METRICS,
+    )
+    renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?q=nothing`)
+
+    expect(await screen.findByText('No metrics match search “nothing”.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+
+    expect(await screen.findByText('Signups')).toBeInTheDocument()
+    expect(screen.getByLabelText('Search metrics')).toHaveValue('')
+  })
+})
+
+describe('MetricsCatalog — one Tab stop per row destination (MET-39)', () => {
+  it('keeps rows out of the tab order and the name link in it', async () => {
+    renderCatalog(NOT_A_DEMO)
+    const link = await screen.findByRole('link', { name: 'Signups' })
+
+    const row = link.closest('[role="row"]') as HTMLElement
+    expect(row).not.toHaveAttribute('tabindex')
+    expect(within(row).getByRole('link', { name: 'Signups' })).toBe(link)
+  })
+})
+
+describe('MetricsCatalog — collect completion outlives the row (MET-8)', () => {
+  it('still reports the finished run after the catalog unmounts', async () => {
+    let finishRun: (definition: MetricDefinitionDetailResponse) => void = () => {}
+    vi.mocked(metricsCatalogApi.get).mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finishRun = resolve
+        }),
+    )
+    const view = renderCatalog(NOT_A_DEMO)
+
+    await openRowMenu('Signups')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Collect now' }))
+    await waitFor(() => expect(metricsCatalogApi.get).toHaveBeenCalledWith(SLUG, 'm-2'))
+
+    // Leaving the page used to end the watch without a word.
+    view.unmount()
+    finishRun({ id: 'm-2', last_collection_status: 'success' } as MetricDefinitionDetailResponse)
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith('"Signups" collected — the chart is up to date.'),
+    )
+  })
+})
+
+describe('MetricsCatalog — duplicate as draft (MET-22)', () => {
+  it('appends an unreviewed copy and steps past a name the filtered list hid', async () => {
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue({
+      id: 'm-2',
+      name: 'signups',
+      display_name: 'Signups',
+      kind: 'sql',
+      order: 7,
+      reviewed: true,
+      interval: '1h',
+      data_source_id: 'ds-1',
+      config: { metric_sql: 'SELECT 1', time_column: 'ts' },
+    } as unknown as MetricDefinitionDetailResponse)
+    vi.mocked(metricsCatalogApi.create)
+      .mockRejectedValueOnce(new ApiError('Metric definition with this name already exists', 409))
+      .mockResolvedValueOnce({ id: 'm-copy' } as Awaited<ReturnType<typeof metricsCatalogApi.create>>)
+    renderCatalog(NOT_A_DEMO)
+
+    await openRowMenu('Signups')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate as draft' }))
+
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(2))
+    const [, first] = at(vi.mocked(metricsCatalogApi.create).mock.calls, 0)
+    const [, second] = at(vi.mocked(metricsCatalogApi.create).mock.calls, 1)
+    expect(first).toMatchObject({ name: 'signups_copy', order: 0, reviewed: false, status: 'draft' })
+    expect(second).toMatchObject({ name: 'signups_copy_2' })
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Metric duplicated as a draft.'))
+  })
+})
+
+describe('MetricsCatalog — status changes can be undone (MET-23)', () => {
+  it('offers Undo on a bulk archive and restores what each metric was', async () => {
+    vi.mocked(metricsCatalogApi.list).mockResolvedValue({
+      items: [
+        makeItem({ id: 'm-1', name: 'checkout_conversion', display_name: 'Checkout conversion' }),
+        makeItem({ id: 'm-2', name: 'signups', display_name: 'Signups', status: 'draft' }),
+      ],
+      total: 2,
+      active_total: 1,
+    })
+    vi.mocked(metricsCatalogApi.bulkUpdate).mockResolvedValue(undefined)
+    renderCatalog(NOT_A_DEMO)
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select all metrics' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Set archived' }))
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        '2 metrics set to archived.',
+        expect.objectContaining({ action: expect.objectContaining({ label: 'Undo' }) }),
+      ),
+    )
+    const call = vi
+      .mocked(toast.success)
+      .mock.calls.find(([message]) => message === '2 metrics set to archived.')
+    const options = call?.[1] as unknown as { action: { onClick: () => void } }
+    options.action.onClick()
+
+    await waitFor(() => {
+      expect(metricsCatalogApi.bulkUpdate).toHaveBeenCalledWith(SLUG, {
+        metric_ids: ['m-1'],
+        status: 'active',
+      })
+      expect(metricsCatalogApi.bulkUpdate).toHaveBeenCalledWith(SLUG, {
+        metric_ids: ['m-2'],
+        status: 'draft',
+      })
+    })
   })
 })

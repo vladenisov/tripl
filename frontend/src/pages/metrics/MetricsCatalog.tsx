@@ -1,6 +1,12 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query'
 import { DndContext, closestCenter, type DragEndEvent } from '@dnd-kit/core'
 import {
   SortableContext,
@@ -22,7 +28,8 @@ import {
   Search,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { metricsCatalogApi } from '@/api/metricsCatalogApi'
+import { ApiError } from '@/api/client'
+import { metricsCatalogApi, type MetricListParams } from '@/api/metricsCatalogApi'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -42,7 +49,11 @@ import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatDivider } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
-import { useMetricCollectionWatcher } from '@/hooks/useMetricCollectionWatcher'
+import {
+  startMetricCollectionWatch,
+  useIsMetricCollectionWatched,
+} from '@/hooks/useMetricCollectionWatcher'
+import { useNow } from '@/hooks/useNow'
 import { useEventsDndSensors } from '@/pages/events/useEventsDndSensors'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { METRIC_INTERVAL_LABEL, formatMetricValue } from '@/lib/metricFormat'
@@ -106,8 +117,10 @@ const KIND_FILTER_OPTIONS: { value: '' | MetricKind; label: string }[] = [
   { value: 'event_composition', label: 'Event composition' },
 ]
 
+// 16px below md: iOS zooms the page into any focused control under 16px, and
+// these are the first thing a phone user touches on the catalog (MET-21).
 const FILTER_SELECT_CLASS =
-  'h-8 rounded-md border bg-[var(--bg)] px-2 text-[12px] text-[var(--fg)] outline-none'
+  'h-8 rounded-md border bg-[var(--bg)] px-2 text-[16px] text-[var(--fg)] outline-none md:text-[12px]'
 
 // Interval → milliseconds, for the staleness threshold (tripl-nxk2.10).
 const INTERVAL_MS: Record<MetricScanInterval, number> = {
@@ -124,6 +137,45 @@ const INTERVAL_MS: Record<MetricScanInterval, number> = {
 const STALE_INTERVAL_MULTIPLIER = 3
 
 type SignalFilter = 'anomalies' | 'stale'
+const SIGNAL_FILTERS: readonly SignalFilter[] = ['anomalies', 'stale']
+
+/** The URL search params the catalog's filters live in (MET-24). */
+type FilterParam = 'q' | 'status' | 'kind' | 'signal'
+
+/** How long the search box waits after the last keystroke before writing `q`. */
+const SEARCH_URL_WRITE_MS = 250
+
+// The list endpoint caps a page at 1000 rows (backend metrics_catalog.py).
+const CATALOG_PAGE_SIZE = 1000
+// A catalog this many pages deep is not a real project; stop rather than loop
+// against a server whose `total` keeps moving.
+const MAX_CATALOG_PAGES = 20
+
+/**
+ * The whole filtered catalog, page after page. The screen renders, counts,
+ * selects and reorders "the catalog", so a single default page (200 rows) left
+ * everything past it invisible while the header still said "250 total", and a
+ * drag sent a partial `metric_ids` list (MET-7). If the server's total still
+ * outruns what arrived (rows added mid-walk, or the page cap), the caller sees
+ * `items.length < total` and says so instead of pretending.
+ */
+async function fetchWholeCatalog(
+  slug: string,
+  params: Omit<MetricListParams, 'offset' | 'limit'>,
+): Promise<MetricDefinitionListResponse> {
+  const first = await metricsCatalogApi.list(slug, { ...params, offset: 0, limit: CATALOG_PAGE_SIZE })
+  let items = first.items
+  for (let page = 1; page < MAX_CATALOG_PAGES && items.length < first.total; page += 1) {
+    const next = await metricsCatalogApi.list(slug, {
+      ...params,
+      offset: items.length,
+      limit: CATALOG_PAGE_SIZE,
+    })
+    if (next.items.length === 0) break
+    items = [...items, ...next.items]
+  }
+  return { ...first, items }
+}
 
 // A latest-scan signal (state !== 'recent') is an active anomaly on the most
 // recent scan; a 'recent' signal means the newest scan was already clean.
@@ -196,6 +248,9 @@ function StatFilter({
 // copy name: `<name>_copy`, then `_2` / `_3`… on collision against the loaded
 // catalog. The source name is already a valid identifier, so the suffix keeps it
 // one (tripl-nxk2.9).
+// Name clashes the duplicate retries through before giving up (MET-22).
+const MAX_COPY_NAME_ATTEMPTS = 5
+
 function makeCopyName(baseName: string, existing: ReadonlySet<string>): string {
   const root = `${baseName}_copy`
   if (!existing.has(root)) return root
@@ -207,8 +262,8 @@ function makeCopyName(baseName: string, existing: ReadonlySet<string>): string {
 /**
  * Map a loaded metric definition to a fresh create payload for "Duplicate as
  * draft": copy presentation + kind-specific collection config verbatim for all
- * three kinds, overriding only identity (display/internal name) and forcing
- * `status: 'draft'`. The response nests kind config under `config`; the create
+ * three kinds, overriding identity (display/internal name), forcing
+ * `status: 'draft'`, appending it to the end (`order: 0`) and clearing review. The response nests kind config under `config`; the create
  * union expects it at the shapes {@link MetricForm} builds, so each kind is
  * remapped explicitly.
  */
@@ -229,10 +284,13 @@ function buildDuplicatePayload(
     description: def.description,
     display_name: displayName,
     name,
-    order: def.order,
+    // 0 appends the copy to the end of the catalog; the source's own order
+    // made the backend keep it, so the two tied for one position (MET-22).
+    order: 0,
     owner_id: def.owner_id,
     platform_column: def.platform_column,
-    reviewed: def.reviewed,
+    // A fresh draft has not been reviewed, whatever its source was.
+    reviewed: false,
     status: 'draft' as const,
     unit: def.unit,
   }
@@ -299,6 +357,32 @@ function buildDuplicatePayload(
   return payload
 }
 
+/** Refresh every catalog list in the project — after any write or a settled collect. */
+function invalidateCatalog(qc: QueryClient, slug: string | undefined): void {
+  void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
+}
+
+/**
+ * Put metrics back to the statuses they had before a status change — the
+ * Undo on the success toast (MET-23). One bulk call per previous status.
+ */
+async function restoreStatuses(
+  slug: string,
+  previous: ReadonlyArray<{ id: string; status: MetricStatus }>,
+): Promise<void> {
+  const byStatus = new Map<MetricStatus, string[]>()
+  for (const { id, status } of previous) {
+    byStatus.set(status, [...(byStatus.get(status) ?? []), id])
+  }
+  for (const [status, metricIds] of byStatus) {
+    await metricsCatalogApi.bulkUpdate(slug, { metric_ids: metricIds, status })
+  }
+}
+
+function pluralMetrics(count: number): string {
+  return count === 1 ? '1 metric' : `${count.toLocaleString()} metrics`
+}
+
 /**
  * Metrics catalog body — the stat rollup, filters, and metric rows. Rendered as
  * the "Catalog" tab inside {@link MetricsPage}; owns its own data fetching and
@@ -309,53 +393,89 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   // Reorder, bulk status and every row action are EditorUserDep; a viewer gets
   // the catalog to read and drill into, without controls that end in a 403.
   const canWrite = useCanWriteProject()
-  const [searchInput, setSearchInput] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'' | MetricStatus>('')
-  // The kind filter lives in the URL rather than in component state so each kind
-  // is deep-linkable: the demo's "metric building blocks" (Fact / SQL / Event
-  // composition) each need a link that opens the catalog already narrowed to that
-  // kind, instead of all landing on the same unfiltered page (tripl-2su6.19).
-  // Unknown values fall back to "no filter" rather than querying a bogus kind.
+  // Every filter lives in the URL rather than in component state: each kind is
+  // deep-linkable (the demo's "metric building blocks" link to Fact / SQL /
+  // Event composition, tripl-2su6.19), and opening a metric then pressing Back
+  // returns to the same search, status and signal slice instead of a reset
+  // catalog (MET-24). Unknown values fall back to "no filter" rather than
+  // querying a bogus one. Writes replace the history entry, so typing a search
+  // does not bury the previous page under one entry per keystroke.
   const [searchParams, setSearchParams] = useSearchParams()
   const kindParam = searchParams.get('kind')
   const kindFilter: '' | MetricKind = METRIC_KINDS.includes(kindParam as MetricKind)
     ? (kindParam as MetricKind)
     : ''
-  const setKindFilter = (next: '' | MetricKind) => {
+  const statusParam = searchParams.get('status')
+  const statusFilter: '' | MetricStatus = METRIC_STATUSES.includes(statusParam as MetricStatus)
+    ? (statusParam as MetricStatus)
+    : ''
+  // Client-side derived filter driven by the operational stat cells; layered on
+  // top of the server-side status/kind/search filters (tripl-nxk2.10).
+  const signalParam = searchParams.get('signal')
+  const signalFilter: SignalFilter | null = SIGNAL_FILTERS.includes(signalParam as SignalFilter)
+    ? (signalParam as SignalFilter)
+    : null
+  // The search box keeps its own text and writes the settled value to the URL.
+  // Bound straight to `q`, every keystroke went through an async navigation
+  // that commits in a transition: React reset the DOM value to the old `q` in
+  // between, so the caret jumped to the end, IME composition broke and fast
+  // typing lost characters. The URL still wins when it changes from outside
+  // (Back, Clear filters): `writtenSearch` is the last `q` this box wrote, so
+  // its own write landing is not mistaken for an outside change.
+  const urlSearch = searchParams.get('q') ?? ''
+  const [searchInput, setSearchInput] = useState(urlSearch)
+  const [writtenSearch, setWrittenSearch] = useState(urlSearch)
+  const [seenUrlSearch, setSeenUrlSearch] = useState(urlSearch)
+  if (urlSearch !== seenUrlSearch) {
+    setSeenUrlSearch(urlSearch)
+    if (urlSearch !== writtenSearch) {
+      setWrittenSearch(urlSearch)
+      setSearchInput(urlSearch)
+    }
+  }
+  const searchWriteTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(searchWriteTimer.current), [])
+  const setFilterParams = (patch: Partial<Record<FilterParam, string | null>>) => {
     setSearchParams(
       (previous) => {
         const params = new URLSearchParams(previous)
-        if (next) params.set('kind', next)
-        else params.delete('kind')
+        for (const [key, value] of Object.entries(patch)) {
+          if (value) params.set(key, value)
+          else params.delete(key)
+        }
         return params
       },
       { replace: true },
     )
   }
-  // Client-side derived filter driven by the operational stat cells; layered on
-  // top of the server-side status/kind/search filters (tripl-nxk2.10).
-  const [signalFilter, setSignalFilter] = useState<SignalFilter | null>(null)
-  // "Now" snapshotted once at mount for staleness comparisons — a stable render
-  // input (Date.now() during render is impure); mirrors ScansTab's mountedAtMs.
-  const [nowMs] = useState(() => Date.now())
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set())
-  const search = useDebouncedValue(searchInput, 250)
+  const search = useDebouncedValue(searchInput, SEARCH_URL_WRITE_MS)
 
   const queryKey = metricsCatalogListKey(slug, statusFilter, kindFilter, search)
   const metricsQuery = useQuery({
     queryKey,
     queryFn: () =>
-      metricsCatalogApi.list(slug!, {
+      fetchWholeCatalog(slug!, {
         status: statusFilter ? [statusFilter] : undefined,
         kind: kindFilter || undefined,
         search: search || undefined,
       }),
     enabled: !!slug,
     staleTime: 30_000,
+    // A new filter or search is a new cache entry. Without this every change
+    // swapped the whole table for "Loading…" and the stats for "—", then
+    // repainted, losing the scroll position on each pause in typing (MET-11).
+    // The previous rows stay, dimmed, until the new ones land.
+    placeholderData: keepPreviousData,
   })
+  const isRefreshing = metricsQuery.isPlaceholderData
 
   const data = metricsQuery.data
   const metrics = useMemo(() => data?.items ?? [], [data])
+  const total = data ? data.total : 0
+  // More rows on the server than arrived: say so, and keep whole-catalog
+  // actions (reorder) off, rather than acting on a slice (MET-7).
+  const isTruncated = !!data && metrics.length < total
   // Internal names of the loaded catalog — the collision set for the "Duplicate
   // as draft" copy-name suffixing.
   const existingNames = useMemo(() => new Set(metrics.map(m => m.name)), [metrics])
@@ -363,6 +483,12 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   // Counting the loaded page made the two stats disagree the moment the catalog
   // outgrew one page (tripl-jfm3.109).
   const active = data?.active_total ?? metrics.filter(m => m.status === 'active').length
+  // Staleness is judged against a clock that keeps moving. A "now" frozen at
+  // mount never counted a metric that went stale while the tab stayed open —
+  // the normal life of a monitoring surface (MET-26). A fresh fetch moves it
+  // too, so the count agrees with the rows it just received.
+  const tickMs = useNow(60_000)
+  const nowMs = Math.max(tickMs, metricsQuery.dataUpdatedAt)
   // Operational rollups derived from the loaded list (tripl-nxk2.10). Counts
   // reflect every loaded metric regardless of the client-side signal filter, so
   // clicking a stat to filter never changes its own number.
@@ -393,14 +519,28 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   // an early return, so nothing below changes for a real project.
   const scenarioMetricId = useScenarioArtifacts().metricId
   const coachTargetId = visibleMetrics[0]?.id ?? null
-  const hasFilters = !!statusFilter || !!kindFilter || !!search || !!signalFilter
+  // The debounced search counts too: for 250ms after "Clear" the list still
+  // holds the old search's (empty) result, which is not "no metrics yet".
+  const hasFilters =
+    !!statusFilter || !!kindFilter || !!searchInput || !!search || !!signalFilter
   // Loaded with no metrics AND no active filters — the true "nothing here yet"
   // state, distinct from loading, error, and "filters matched nothing".
   const isEmpty = !metricsQuery.isError && !!data && metrics.length === 0 && !hasFilters
 
   // Reorder only makes sense against the full, unfiltered catalog: a partial
-  // list can't express the canonical order the backend persists.
-  const canReorder = canWrite && !hasFilters && metrics.length > 1
+  // list can't express the canonical order the backend persists. Placeholder
+  // rows belong to the previous filter, so they are not that list either.
+  const canReorder =
+    canWrite && !hasFilters && !isTruncated && !isRefreshing && metrics.length > 1
+
+  // The active filters, named, for the "nothing matched" state (MET-25).
+  const activeFilterLabels = [
+    searchInput ? `search “${searchInput}”` : null,
+    statusFilter ? `status ${METRIC_STATUS_LABEL[statusFilter]}` : null,
+    kindFilter ? `kind ${METRIC_KIND_LABEL[kindFilter]}` : null,
+    signalFilter === 'anomalies' ? 'metrics with anomalies' : null,
+    signalFilter === 'stale' ? 'stale metrics' : null,
+  ].filter((label): label is string => label !== null)
 
   const selected = useMemo(
     () => visibleMetrics.filter(m => selectedIds.has(m.id)),
@@ -421,36 +561,80 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   }
   // Filter/search changes swap the visible set; carrying hidden selections
   // across views would let a later bulk action silently hit rows the user
-  // no longer sees — so every view change starts with a clean slate.
-  const clearSelectionAnd = <T,>(setter: (value: T) => void) => (value: T) => {
+  // no longer sees — so every view change starts with a clean slate. A
+  // server-side filter change also swaps the loaded set out from under the
+  // client-side signal filter, so it drops that too (tripl-nxk2.10).
+  const setServerFilter = (param: Exclude<FilterParam, 'signal'>, value: string) => {
     setSelectedIds(new Set())
-    // A server-side filter change swaps the loaded set out from under the
-    // client-side signal filter, so drop it too (tripl-nxk2.10).
-    setSignalFilter(null)
-    setter(value)
+    setFilterParams({ [param]: value, signal: null })
   }
   // Toggling a stat cell filters the table to that operational slice; clicking
-  // the active one clears it. Mirrors clearSelectionAnd — every view change
-  // starts with a clean selection so a later bulk action can't hit hidden rows.
+  // the active one clears it. Every view change starts with a clean selection
+  // so a later bulk action can't hit hidden rows.
+  const changeSearch = (value: string) => {
+    setSelectedIds(new Set())
+    setSearchInput(value)
+    window.clearTimeout(searchWriteTimer.current)
+    searchWriteTimer.current = window.setTimeout(() => {
+      setWrittenSearch(value)
+      setFilterParams({ q: value, signal: null })
+    }, SEARCH_URL_WRITE_MS)
+  }
   const toggleSignalFilter = (filter: SignalFilter) => {
     setSelectedIds(new Set())
-    setSignalFilter(prev => (prev === filter ? null : filter))
+    setFilterParams({ signal: signalFilter === filter ? null : filter })
+  }
+  const clearFilters = () => {
+    setSelectedIds(new Set())
+    window.clearTimeout(searchWriteTimer.current)
+    setSearchInput('')
+    setWrittenSearch('')
+    setFilterParams({ q: null, status: null, kind: null, signal: null })
   }
 
   const bulkStatusMut = useMutation({
     meta: SILENT_ERROR_META,
-    mutationFn: (status: MetricStatus) =>
-      metricsCatalogApi.bulkUpdate(slug!, {
+    mutationFn: async (status: MetricStatus) => {
+      // Captured before the call: the Undo puts back what each row WAS.
+      const previous = selected
+        .filter(m => m.status !== status)
+        .map(m => ({ id: m.id, status: m.status }))
+      await metricsCatalogApi.bulkUpdate(slug!, {
         metric_ids: selected.map(m => m.id),
         status,
-      }),
-    onSuccess: () => {
+      })
+      return { status, count: selected.length, previous }
+    },
+    onSuccess: ({ status, count, previous }) => {
       setSelectedIds(new Set())
-      void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
+      invalidateCatalog(qc, slug)
+      // One click used to archive N metrics and stop their collection with no
+      // way back (MET-23). The toast carries the way back.
+      toast.success(
+        `${pluralMetrics(count)} set to ${METRIC_STATUS_LABEL[status].toLowerCase()}.`,
+        previous.length > 0 && slug
+          ? {
+              action: {
+                label: 'Undo',
+                onClick: () => {
+                  restoreStatuses(slug, previous).then(
+                    () => invalidateCatalog(qc, slug),
+                    (error: unknown) => {
+                      invalidateCatalog(qc, slug)
+                      toast.error(`Could not undo — ${getErrorMessage(error)}`)
+                    },
+                  )
+                },
+              },
+            }
+          : undefined,
+      )
     },
   })
 
   const reorderMut = useMutation({
+    // Its own toast below; the rows snapping back needs a reason next to it.
+    meta: SILENT_ERROR_META,
     mutationFn: (metricIds: string[]) =>
       metricsCatalogApi.reorder(slug!, { metric_ids: metricIds }),
     onMutate: async (metricIds: string[]) => {
@@ -468,11 +652,13 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
       }
       return { previous }
     },
-    onError: (_error, _ids, context) => {
+    onError: (error, _ids, context) => {
       if (context?.previous) qc.setQueryData(queryKey, context.previous)
+      // The rows jump back; without a word that looks like the drop misfired.
+      toast.error(`Could not save the new order — ${getErrorMessage(error)}`)
     },
     onSettled: () => {
-      void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
+      invalidateCatalog(qc, slug)
     },
   })
 
@@ -507,7 +693,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
           }`}
           style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
         >
-          <MiniStat label="Metrics" value={data ? (data.total ?? metrics.length).toLocaleString() : '—'} />
+          <MiniStat label="Metrics" value={data ? total.toLocaleString() : '—'} />
           <MiniStatDivider />
           <MiniStat label="Active" value={data ? active.toLocaleString() : '—'} tone="success" />
           <MiniStatDivider />
@@ -575,10 +761,16 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
         ) : (
           <Panel
             title="Catalog"
-            subtitle={data ? `${(data.total ?? metrics.length).toLocaleString()} total` : undefined}
+            subtitle={
+              data
+                ? `${total.toLocaleString()} total${isRefreshing ? ' · Updating…' : ''}`
+                : undefined
+            }
             right={
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="relative">
+              // Full width below sm, so the search takes its own line and the
+              // two selects share the next instead of stacking three deep.
+              <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                <div className="relative min-w-0 flex-1 basis-full sm:flex-none sm:basis-auto">
                   <Search
                     className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
                     style={{ color: 'var(--fg-subtle)' }}
@@ -586,17 +778,15 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                   <input
                     aria-label="Search metrics"
                     value={searchInput}
-                    onChange={e => clearSelectionAnd(setSearchInput)(e.target.value)}
+                    onChange={e => changeSearch(e.target.value)}
                     placeholder="Search…"
-                    className={`${FILTER_SELECT_CLASS} w-[160px] pl-7`}
+                    className={`${FILTER_SELECT_CLASS} w-full pl-7 sm:w-[160px]`}
                   />
                 </div>
                 <select
                   aria-label="Filter by status"
                   value={statusFilter}
-                  onChange={e =>
-                    clearSelectionAnd(setStatusFilter)(e.target.value as '' | MetricStatus)
-                  }
+                  onChange={e => setServerFilter('status', e.target.value)}
                   className={FILTER_SELECT_CLASS}
                 >
                   <option value="">All statuses</option>
@@ -609,9 +799,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 <select
                   aria-label="Filter by kind"
                   value={kindFilter}
-                  onChange={e =>
-                    clearSelectionAnd(setKindFilter)(e.target.value as '' | MetricKind)
-                  }
+                  onChange={e => setServerFilter('kind', e.target.value)}
                   className={FILTER_SELECT_CLASS}
                 >
                   {KIND_FILTER_OPTIONS.map(o => (
@@ -658,13 +846,39 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 )}
               </div>
             )}
+            {isTruncated && (
+              <div
+                role="status"
+                className="border-b px-4 py-2 text-[12px]"
+                style={{ borderColor: 'var(--border-subtle)', color: 'var(--warning)' }}
+              >
+                Showing {metrics.length.toLocaleString()} of {total.toLocaleString()} metrics.
+                Narrow the list with a search or filter to reach the rest; reordering is off
+                until the whole catalog is listed.
+              </div>
+            )}
             {metricsQuery.isLoading ? (
               <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
                 Loading…
               </div>
             ) : visibleMetrics.length === 0 ? (
-              <div className="px-4 py-6 text-[12px]" style={{ color: 'var(--fg-subtle)' }}>
-                No metrics match the current filters.
+              // Names what is filtering and offers the one-click way out; the
+              // stat toggle in particular is not an obvious control to undo
+              // (MET-25).
+              <div
+                className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-6 text-[12px]"
+                style={{ color: 'var(--fg-subtle)' }}
+              >
+                <span>
+                  {activeFilterLabels.length > 0
+                    ? `No metrics match ${activeFilterLabels.join(', ')}.`
+                    : 'No metrics match the current filters.'}
+                </span>
+                {hasFilters && (
+                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11.5px]" onClick={clearFilters}>
+                    Clear filters
+                  </Button>
+                )}
               </div>
             ) : (
               // DndContext renders dnd-kit's own <div role="status"> live region as
@@ -684,8 +898,16 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 collisionDetection={closestCenter}
                 onDragEnd={handleDragEnd}
               >
-                <div className="overflow-x-auto">
-                  <div role="table" aria-label="Metrics" className="md:min-w-[748px]">
+                <div
+                  className="overflow-x-auto transition-opacity"
+                  style={{ opacity: isRefreshing ? 0.6 : undefined }}
+                >
+                  <div
+                    role="table"
+                    aria-label="Metrics"
+                    aria-busy={isRefreshing || undefined}
+                    className="md:min-w-[748px]"
+                  >
                     <div role="rowgroup">
                       <div
                         role="row"
@@ -800,11 +1022,15 @@ function MetricRow({
       ? `Collected ${METRIC_INTERVAL_LABEL[metric.interval].toLowerCase()}`
       : undefined
 
+  // No tabIndex and no key handler on the row: the name Link is the keyboard
+  // route to the same page, so a focusable row only added a second Tab stop
+  // per row that did the same thing, announced as every cell run together
+  // (MET-39). The row click stays for the pointer, as a bigger target.
   return (
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/interactive-supports-focus -- pointer-only convenience; the name Link is the keyboard route (MET-39)
     <div
       ref={setNodeRef}
       role="row"
-      tabIndex={href ? 0 : undefined}
       className={`${METRIC_GRID} border-b py-2.5 last:border-0 ${
         href ? 'cursor-pointer transition-colors hover:bg-[var(--surface-hover)]' : 'cursor-default'
       }`}
@@ -817,19 +1043,6 @@ function MetricRow({
         zIndex: isDragging ? 1 : undefined,
       }}
       onClick={href ? () => navigate(href) : undefined}
-      onKeyDown={
-        href
-          ? event => {
-              if (
-                event.target === event.currentTarget
-                && (event.key === 'Enter' || event.key === ' ')
-              ) {
-                event.preventDefault()
-                navigate(href)
-              }
-            }
-          : undefined
-      }
     >
       <span role="cell" className={PHONE_CELL.grip}>
         {canReorder ? (
@@ -960,12 +1173,26 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
   const duplicateMut = useMutation({
     mutationFn: async () => {
       const def = await metricsCatalogApi.get(slug, metric.id)
-      const name = makeCopyName(def.name, existingNames)
-      const payload = buildDuplicatePayload(def, `${def.display_name} (copy)`, name)
-      return metricsCatalogApi.create(slug, payload)
+      // The loaded list is only the filtered view, so a hidden `<name>_copy`
+      // can still be taken: on a name clash take the next suffix rather than
+      // failing the whole action (MET-22).
+      const taken = new Set(existingNames)
+      for (let attempt = 1; ; attempt += 1) {
+        const name = makeCopyName(def.name, taken)
+        try {
+          return await metricsCatalogApi.create(
+            slug,
+            buildDuplicatePayload(def, `${def.display_name} (copy)`, name),
+          )
+        } catch (error) {
+          const nameTaken = error instanceof ApiError && error.status === 409
+          if (!nameTaken || attempt >= MAX_COPY_NAME_ATTEMPTS) throw error
+          taken.add(name)
+        }
+      }
     },
     onSuccess: created => {
-      void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
+      invalidateCatalog(qc, slug)
       toast.success('Metric duplicated as a draft.')
       navigate(`/p/${slug}/metrics/${created.id}/edit`)
     },
@@ -975,17 +1202,28 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
   const statusMut = useMutation({
     mutationFn: (status: MetricStatus) => metricsCatalogApi.update(slug, metric.id, { status }),
     onSuccess: (_data, status) => {
-      void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
-      toast.success(status === 'archived' ? 'Metric archived.' : 'Metric restored.')
+      invalidateCatalog(qc, slug)
+      // Archiving stops collection; the toast carries the way back (MET-23).
+      const previousStatus = metric.status
+      toast.success(status === 'archived' ? 'Metric archived.' : 'Metric restored.', {
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            metricsCatalogApi.update(slug, metric.id, { status: previousStatus }).then(
+              () => invalidateCatalog(qc, slug),
+              (error: unknown) => toast.error(`Could not undo — ${getErrorMessage(error)}`),
+            )
+          },
+        },
+      })
     },
   })
 
-  // Watch the queued run's persisted last_collection_status until it settles so
-  // the user sees "collected" or the failure reason, not silence (tripl-4mju).
-  const collectWatcher = useMetricCollectionWatcher((_metricId, status) => {
-    if (status !== 'success') return
-    void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
-  })
+  // The watch is detached from this row: search, a filter, a stat toggle or
+  // leaving the page all unmount the row, and each used to end the watch
+  // silently, breaking the "you will be notified" promise (MET-8). The list is
+  // refreshed on success AND on error, so the row's status never stays stale.
+  const isCollecting = useIsMetricCollectionWatched(slug, metric.id)
   const collectMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: () => metricsCatalogApi.collect(slug, metric.id),
@@ -993,7 +1231,10 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
       toast.success('Collection started — you will be notified when it finishes.')
       // The slug travels with the watch: leaving the project mid-run must not
       // repoint the poll at another project's metric id (tripl-htvg).
-      collectWatcher.watch({ slug, metricId: metric.id, displayName: metric.display_name })
+      startMetricCollectionWatch(
+        { slug, metricId: metric.id, displayName: metric.display_name },
+        { onSettled: () => invalidateCatalog(qc, slug) },
+      )
       // Only a collect the USER started advances the scenario — the demo's tick
       // manufactures collections of its own (tripl-2su6.21). Inert elsewhere.
       notifyMetricCollectStarted(metric.id)
@@ -1003,7 +1244,7 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
   })
 
   const busy =
-    duplicateMut.isPending || statusMut.isPending || collectMut.isPending || collectWatcher.isWatching
+    duplicateMut.isPending || statusMut.isPending || collectMut.isPending || isCollecting
 
   return (
     <DropdownMenu>

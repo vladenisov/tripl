@@ -1,16 +1,9 @@
-import type { LucideIcon } from 'lucide-react'
-
 import { Button } from '@/components/ui/button'
 import { Panel } from '@/components/settings/kit'
 import { useCanWriteProject } from '@/lib/permissions'
 
+import type { ChannelMeta } from './channelMeta'
 import type { DestinationChannel } from './constants'
-
-interface ChannelMeta {
-  channel: DestinationChannel
-  label: string
-  Icon: LucideIcon
-}
 
 interface AlertingGuidedSetupProps {
   channels: ChannelMeta[]

@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MetricDefinitionDetailResponse } from '@/types'
 
 vi.mock('@/api/metricsCatalogApi', () => ({
@@ -12,8 +12,13 @@ vi.mock('sonner', () => ({
 
 import { toast } from 'sonner'
 import { metricsCatalogApi } from '@/api/metricsCatalogApi'
-import { ApiError } from '@/api/client'
-import { useMetricCollectionWatcher } from './useMetricCollectionWatcher'
+import { ApiError, AUTH_UNAUTHORIZED_EVENT } from '@/api/client'
+import {
+  startMetricCollectionWatch,
+  stopAllMetricCollectionWatches,
+  useIsMetricCollectionWatched,
+  useMetricCollectionWatcher,
+} from './useMetricCollectionWatcher'
 
 // The watcher only reads id / last_collection_status / last_collection_error;
 // a minimal shape keeps the fixtures focused (mirrors MetricsPage.test.tsx's
@@ -308,5 +313,118 @@ describe('useMetricCollectionWatcher', () => {
     expect(metricsCatalogApi.get).not.toHaveBeenCalledWith('project-b', 'A')
     // The settle invalidates the project the collect was fired against.
     expect(onInvalidate).toHaveBeenCalledWith('project-a', 'metric', 'A')
+  })
+})
+
+function WatchedBadge({ metricId }: { metricId: string }) {
+  return <span>{useIsMetricCollectionWatched('demo', metricId) ? 'watching' : 'idle'}</span>
+}
+
+describe('startMetricCollectionWatch (MET-8)', () => {
+  afterEach(() => {
+    stopAllMetricCollectionWatches()
+  })
+
+  it('reports the outcome with no component mounted at all', async () => {
+    vi.mocked(metricsCatalogApi.get)
+      .mockResolvedValueOnce(definitionWith('running'))
+      .mockResolvedValue(definitionWith('success'))
+    const onSettled = vi.fn()
+
+    startMetricCollectionWatch(
+      { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
+      { onSettled, pollIntervalMs: 10 },
+    )
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        '"Checkout errors" collected — the chart is up to date.',
+      ),
+    )
+    expect(onSettled).toHaveBeenCalledWith('m-1', 'success')
+  })
+
+  it('settles on a failed run too, so the caller can refresh the list', async () => {
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('error', 'boom'))
+    const onSettled = vi.fn()
+
+    startMetricCollectionWatch(
+      { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
+      { onSettled, pollIntervalMs: 10 },
+    )
+
+    await waitFor(() => expect(onSettled).toHaveBeenCalledWith('m-1', 'error'))
+    expect(toast.error).toHaveBeenCalledWith('Collection failed: boom')
+  })
+
+  it('tells a mounted component while the watch runs, and after it ends', async () => {
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('running'))
+    render(<WatchedBadge metricId="m-1" />)
+    expect(screen.getByText('idle')).toBeInTheDocument()
+
+    startMetricCollectionWatch(
+      { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
+      { pollIntervalMs: 10 },
+    )
+    expect(await screen.findByText('watching')).toBeInTheDocument()
+
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('success'))
+    expect(await screen.findByText('idle')).toBeInTheDocument()
+  })
+
+  it('gives up after repeated failed polls', async () => {
+    vi.mocked(metricsCatalogApi.get).mockRejectedValue(new ApiError('Bad gateway', 502))
+
+    startMetricCollectionWatch(
+      { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
+      { pollIntervalMs: 10 },
+    )
+
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledWith(
+        'Lost track of "Checkout errors" — the server stopped answering. Reload the page to see whether it finished.',
+      ),
+    )
+    expect(metricsCatalogApi.get).toHaveBeenCalledTimes(3)
+  })
+
+  it.each([401, 403])('ends silently when a poll gets %i (the session is gone)', async (status) => {
+    vi.mocked(metricsCatalogApi.get).mockRejectedValue(new ApiError('Denied', status))
+    const onSettled = vi.fn()
+    render(<WatchedBadge metricId="m-1" />)
+
+    startMetricCollectionWatch(
+      { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
+      { onSettled, pollIntervalMs: 10 },
+    )
+
+    expect(await screen.findByText('idle')).toBeInTheDocument()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    // One poll, no retries, and nothing said on the login screen.
+    expect(metricsCatalogApi.get).toHaveBeenCalledTimes(1)
+    expect(toast.info).not.toHaveBeenCalled()
+    expect(toast.error).not.toHaveBeenCalled()
+    expect(onSettled).not.toHaveBeenCalled()
+  })
+
+  it('stops every watch when the app signals a lost session', async () => {
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('running'))
+    render(<WatchedBadge metricId="m-1" />)
+    startMetricCollectionWatch(
+      { slug: 'demo', metricId: 'm-1', displayName: 'Checkout errors' },
+      { pollIntervalMs: 10 },
+    )
+    expect(await screen.findByText('watching')).toBeInTheDocument()
+
+    act(() => {
+      window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT))
+    })
+
+    expect(screen.getByText('idle')).toBeInTheDocument()
+    const polls = vi.mocked(metricsCatalogApi.get).mock.calls.length
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(definitionWith('success'))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(metricsCatalogApi.get).toHaveBeenCalledTimes(polls)
+    expect(toast.success).not.toHaveBeenCalled()
   })
 })

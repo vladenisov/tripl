@@ -1,16 +1,21 @@
+import type { ReactNode } from 'react'
 import type { DbType, PostgresSslMode } from '@/types'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
   DEFAULT_MAX_BILLED_BYTES_LABEL,
+  ERROR_CLASS,
   FIELD_COL_CLASS,
   HELP_CLASS,
   MAX_DATASET_ALLOWLIST,
   MAX_SCHEMA_DATASETS,
+  SECRET_INPUT_PROPS,
   SELECT_CLASS,
   SSL_MODE_OPTIONS,
   TEXTAREA_CLASS,
   type ConnectionSettingsForm,
+  type PemErrors,
+  type PemField,
 } from './connection-settings'
 
 interface ConnectionSettingsFieldsProps {
@@ -20,6 +25,8 @@ interface ConnectionSettingsFieldsProps {
   onChange: (patch: Partial<ConnectionSettingsForm>) => void
   /** True when the source already has a stored client private key. */
   sslkeySet?: boolean
+  /** Inline errors for malformed PEM content, by field. */
+  pemErrors?: PemErrors
 }
 
 /**
@@ -33,11 +40,25 @@ export function ConnectionSettingsFields({
   value,
   onChange,
   sslkeySet = false,
+  pemErrors = {},
 }: ConnectionSettingsFieldsProps) {
+  // Every PEM textarea: no spellcheck or autofill (DATA-29), and its inline
+  // format error wired to it.
+  const pemProps = (field: PemField) => ({
+    ...SECRET_INPUT_PROPS,
+    'aria-invalid': pemErrors[field] ? true : undefined,
+    'aria-describedby': pemErrors[field] ? `${idPrefix}-${field}-error` : undefined,
+  })
+  const pemError = (field: PemField): ReactNode =>
+    pemErrors[field] ? (
+      <p id={`${idPrefix}-${field}-error`} role="alert" className={ERROR_CLASS}>
+        {pemErrors[field]}
+      </p>
+    ) : null
   if (dbType === 'bigquery') {
     return (
       <>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className={FIELD_COL_CLASS}>
             <Label htmlFor={`${idPrefix}-location`}>Location</Label>
             <Input
@@ -89,7 +110,7 @@ export function ConnectionSettingsFields({
   if (dbType === 'postgres') {
     return (
       <>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className={FIELD_COL_CLASS}>
             <Label htmlFor={`${idPrefix}-sslmode`}>SSL mode</Label>
             <select
@@ -132,7 +153,9 @@ export function ConnectionSettingsFields({
             rows={3}
             placeholder="-----BEGIN CERTIFICATE-----"
             className={TEXTAREA_CLASS}
+            {...pemProps('sslrootcert')}
           />
+          {pemError('sslrootcert')}
           <p className={HELP_CLASS}>
             PEM content (not a path on the server). Required by `verify-ca` and `verify-full`.
           </p>
@@ -146,7 +169,9 @@ export function ConnectionSettingsFields({
             rows={3}
             placeholder="-----BEGIN CERTIFICATE-----"
             className={TEXTAREA_CLASS}
+            {...pemProps('sslcert')}
           />
+          {pemError('sslcert')}
           <p className={HELP_CLASS}>PEM content. Only needed for certificate (mTLS) auth.</p>
         </div>
         <div className={FIELD_COL_CLASS}>
@@ -161,7 +186,9 @@ export function ConnectionSettingsFields({
             }
             className={TEXTAREA_CLASS}
             disabled={value.clearSslkey}
+            {...pemProps('sslkey')}
           />
+          {pemError('sslkey')}
           <p className={HELP_CLASS}>
             PEM content, stored encrypted and never shown again — like the password.
           </p>

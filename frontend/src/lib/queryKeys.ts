@@ -443,6 +443,13 @@ export const eventHistoryKey = (
   eventId: string,
 ) => [...branchEventHistoryKey(slug, branchId), eventId] as const
 
+/** Every identity probe on one branch, whatever the type and name — what a
+ *  create invalidates, since the name it just took is no longer free. */
+export const branchEventIdentityProbesKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+) => ['eventIdentityProbe', slug, branchId] as const
+
 /** Whether a typed name already identifies an event of that type. */
 export const eventIdentityProbeKey = (
   slug: string | undefined,
@@ -730,3 +737,10 @@ export const shadowEventsKey = (
   branchId: string | null | undefined,
   status: string,
 ) => [...projectShadowEventsKey(slug), branchId, status] as const
+/** One page size of a shadow-events list; "Show more" raises `limit`. */
+export const shadowEventsPageKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  status: string,
+  limit: number,
+) => [...shadowEventsKey(slug, branchId, status), limit] as const

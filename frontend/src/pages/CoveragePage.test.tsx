@@ -149,4 +149,52 @@ describe('CoveragePage', () => {
       await screen.findByText(/Every implemented event has recent data/),
     ).toBeInTheDocument()
   })
+
+  // 322 of 323 is a partial plan. The headline already said "99.7%", but the
+  // bar's aria-label rounded it to "100% of active events are implemented"
+  // (DATA-45).
+  it('never announces a partial plan as 100% implemented', async () => {
+    vi.spyOn(projectsApi, 'get').mockResolvedValue(
+      project({ event_count: 323, active_event_count: 323, implemented_event_count: 322 }),
+    )
+    vi.spyOn(reconciliationApi, 'deadEvents').mockResolvedValue(dead)
+
+    renderPage()
+
+    const bar = await screen.findByRole('img', { name: /of active events are implemented/ })
+    expect(bar).toHaveAccessibleName(
+      '99.7% of active events are implemented; 1 are not implemented yet.',
+    )
+    expect(bar.getAttribute('aria-label')).not.toMatch(/^100%/)
+  })
+
+  // Reconciliation's dead-event rows link to the event's monitoring page and
+  // render names through <EventName>; the same list here was plain text
+  // (DATA-46).
+  it('links each gap row to the event and renders it like Reconciliation', async () => {
+    vi.spyOn(projectsApi, 'get').mockResolvedValue(project())
+    vi.spyOn(reconciliationApi, 'deadEvents').mockResolvedValue({
+      days: 30,
+      total: 2,
+      items: [
+        ...dead.items,
+        {
+          event_id: 'z1',
+          name: '0:forecast_for_4:0',
+          event_type_id: '',
+          event_type_name: '',
+          last_seen_at: null,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    })
+
+    renderPage()
+
+    const link = await screen.findByRole('link', { name: 'legacy_banner_shown' })
+    expect(link).toHaveAttribute('href', '/p/windy-ios/monitoring/event/d1')
+    // 0-encoded empty segments render as placeholders, not a bare "0".
+    expect(screen.getByText('forecast_for_4')).toBeInTheDocument()
+    expect(screen.getAllByTitle('empty segment')).toHaveLength(2)
+  })
 })

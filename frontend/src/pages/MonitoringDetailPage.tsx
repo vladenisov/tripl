@@ -469,6 +469,10 @@ export default function MonitoringDetailPage() {
           slug={slug}
           rowBranchId={event.branch_id}
           path={`/p/${slug}/monitoring/event/${event.id}`}
+          // The events list on main, as on the edit page: this id is the
+          // branch row's, which main would render again under a mismatch
+          // warning (EVT-42).
+          mainPath={`/p/${slug}/events`}
         />
       )}
 

@@ -177,7 +177,11 @@ are shared across the workspace rather than scoped to a single project.
 
 ### Read the connection health
 
-Each connection card shows the result of its last test:
+Each connection card shows the result of its last test, led by its health word
+(healthy / stale / failing, or an "untested" chip before the first test). A new
+connection is tested as soon as you create it, and an edited one is re-tested
+when you change its host, credentials or TLS settings. The **Warnings** count at
+the top includes stale checks as well as failed ones.
 
 - **Green** — the last test succeeded recently.
 - **Amber** — the last successful test is now stale (older than seven days), so
@@ -480,7 +484,15 @@ shape. That detection is automatic and needs no setup.
   executing it — to viewers too, since it is built from configuration they can
   already read. Running **Collect now** on a fact metric refreshes the other
   active metrics on that fact table in the same multi-aggregate batch rather
-  than scanning it once per metric.
+  than scanning it once per metric. The catalog lists every metric, keeps its
+  search, status, kind and stat filters in the address (so Back and shared links
+  return to the same view), and reports a finished **Collect now** even if you
+  have moved on to another page. Archiving, one metric or many, can be undone
+  from the confirmation toast.
+- **Fact tables** — saving a fact table reads its columns from the SQL whenever
+  the SQL or data source changed since the last **Preview columns**, and checks
+  that the timestamp column is one of them. **Delete fact table** in the editor
+  removes one; while fact metrics still read it, the refusal names them.
 
 Open an event's **monitoring detail** (from the event or one of its signals) to
 see, across tabs:

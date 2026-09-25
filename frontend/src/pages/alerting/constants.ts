@@ -67,10 +67,14 @@ export type RuleFormState = {
   notify_on_spike: boolean
   notify_on_drop: boolean
   ai_explanation_enabled: boolean
-  min_percent_delta: number
-  min_absolute_delta: number
-  min_expected_count: number
-  cooldown_minutes: number
+  // The four numeric settings are held as the TEXT in their inputs and parsed
+  // by `ruleFormToPayload` (ALR-16). Holding them as numbers made an emptied
+  // box read back as "0" on the next render — the field could not be cleared
+  // to retype, and a cleared cooldown shipped as 0, which the API refuses.
+  min_percent_delta: string
+  min_absolute_delta: string
+  min_expected_count: string
+  cooldown_minutes: string
   message_template: string
   items_template: string
   message_format: AlertMessageFormat
@@ -360,10 +364,10 @@ export function defaultRuleForm(): RuleFormState {
     // backend/src/tripl/models/alert_rule.py. A new rule watches moves of at
     // least double or at most half, not every deviation; a form that opened at
     // 0 would quietly disagree with the API.
-    min_percent_delta: 100,
-    min_absolute_delta: 0,
-    min_expected_count: 0,
-    cooldown_minutes: 1440,
+    min_percent_delta: '100',
+    min_absolute_delta: '0',
+    min_expected_count: '0',
+    cooldown_minutes: '1440',
     message_template: getDefaultMessageTemplate('plain'),
     items_template: getDefaultItemsTemplate('plain'),
     message_format: 'plain',
@@ -387,10 +391,10 @@ export function ruleToForm(rule: AlertRule): RuleFormState {
     notify_on_spike: rule.notify_on_spike,
     notify_on_drop: rule.notify_on_drop,
     ai_explanation_enabled: rule.ai_explanation_enabled,
-    min_percent_delta: rule.min_percent_delta,
-    min_absolute_delta: rule.min_absolute_delta,
-    min_expected_count: rule.min_expected_count,
-    cooldown_minutes: rule.cooldown_minutes,
+    min_percent_delta: String(rule.min_percent_delta),
+    min_absolute_delta: String(rule.min_absolute_delta),
+    min_expected_count: String(rule.min_expected_count),
+    cooldown_minutes: String(rule.cooldown_minutes),
     message_template: rule.message_template ?? getDefaultMessageTemplate(rule.message_format),
     items_template: rule.items_template ?? getDefaultItemsTemplate(rule.message_format),
     message_format: rule.message_format,
@@ -406,19 +410,26 @@ export function ruleToForm(rule: AlertRule): RuleFormState {
 export function ruleFormToPayload(ruleForm: RuleFormState) {
   const normalizedTemplate = normalizeRuleTemplate(ruleForm.message_template)
   const normalizedItemsTemplate = normalizeRuleTemplate(ruleForm.items_template)
-  const filters: AlertRuleFilterPayload[] = ruleForm.filters
-    .filter(filter => filter.values.length > 0)
-    .map(filter => ({
-      field: filter.field,
-      operator: filter.operator,
-      values: isSingleValueOperator(filter.operator)
-        ? filter.values.slice(0, 1)
-        : filter.values,
-    }))
+  // Every row goes on the wire, an empty one included. Dropping a row with no
+  // values used to save the rule WITHOUT the filter the form still showed, so
+  // it matched everything (ALR-5). `ruleFormProblems` refuses the submit
+  // instead, naming the row; should a caller skip it, the API's own "Filter
+  // must have at least one value" is the right answer, not a broader rule.
+  const filters: AlertRuleFilterPayload[] = ruleForm.filters.map(filter => ({
+    field: filter.field,
+    operator: filter.operator,
+    values: isSingleValueOperator(filter.operator)
+      ? filter.values.slice(0, 1)
+      : filter.values,
+  }))
   const { filters: _ignored, ...rest } = ruleForm
   void _ignored
   return {
     ...rest,
+    min_percent_delta: Number(ruleForm.min_percent_delta.trim()),
+    min_absolute_delta: Number(ruleForm.min_absolute_delta.trim()),
+    min_expected_count: Number(ruleForm.min_expected_count.trim()),
+    cooldown_minutes: Number(ruleForm.cooldown_minutes.trim()),
     // Explicit null, never omitted: PATCH distinguishes "not mentioned" from
     // "widen this rule back to the whole project".
     scan_config_id: ruleForm.scan_config_id || null,
@@ -432,6 +443,157 @@ export function ruleFormToPayload(ruleForm: RuleFormState) {
         ? null
         : normalizedItemsTemplate,
   }
+}
+
+/** The rule setting a numeric input edits. */
+export type RuleNumericField =
+  | 'min_percent_delta'
+  | 'min_absolute_delta'
+  | 'min_expected_count'
+  | 'cooldown_minutes'
+
+/**
+ * Why the rule form cannot be saved as it stands, per field.
+ *
+ * Each of these used to reach the API and come back as a raw 422 at the bottom
+ * of the dialog — or, worse, not reach it at all and save something else: an
+ * emptied cooldown shipped as 0 (ALR-16), a filter row with no values was
+ * dropped so the rule matched everything (ALR-5), and a rule with no scope or
+ * no direction saved and could never fire (ALR-14, ALR-15). The bounds mirror
+ * `AlertRuleBase` (backend schemas/alerting.py): the three thresholds are
+ * `ge=0` floats and the cooldown an `int` with `ge=1`.
+ */
+export interface RuleFormProblems {
+  numeric: Partial<Record<RuleNumericField, string>>
+  scopes: string | null
+  direction: string | null
+  /** Keyed by the filter row's `uid`. */
+  filters: Record<string, string>
+}
+
+const SCOPE_KEYS = [
+  'include_project_total',
+  'include_event_types',
+  'include_events',
+  'include_schema_drifts',
+  'include_distribution_drifts',
+  'include_release_regressions',
+  'include_variable_value_drifts',
+  'include_metrics',
+] as const satisfies readonly (keyof RuleFormState)[]
+
+function numberProblem(text: string, { integer, min }: { integer: boolean; min: number }): string | null {
+  const trimmed = text.trim()
+  if (trimmed === '') return 'Enter a number.'
+  const value = Number(trimmed)
+  if (!Number.isFinite(value)) return 'Enter a number.'
+  if (integer && !Number.isInteger(value)) return 'Enter a whole number of minutes.'
+  if (value < min) return min === 0 ? 'Enter 0 or more.' : `Enter ${min} or more.`
+  return null
+}
+
+export function ruleFormProblems(ruleForm: RuleFormState): RuleFormProblems {
+  const numeric: RuleFormProblems['numeric'] = {}
+  const cooldown = numberProblem(ruleForm.cooldown_minutes, { integer: true, min: 1 })
+  if (cooldown) numeric.cooldown_minutes = cooldown
+  for (const field of ['min_percent_delta', 'min_absolute_delta', 'min_expected_count'] as const) {
+    const problem = numberProblem(ruleForm[field], { integer: false, min: 0 })
+    if (problem) numeric[field] = problem
+  }
+  const filters: Record<string, string> = {}
+  for (const filter of ruleForm.filters) {
+    if (filter.values.length === 0) {
+      filters[filter.uid] = 'Pick at least one value, or remove this filter.'
+    }
+  }
+  return {
+    numeric,
+    scopes: SCOPE_KEYS.some(key => ruleForm[key])
+      ? null
+      : 'Pick at least one signal kind — a rule with none can never fire.',
+    direction: ruleForm.notify_on_spike || ruleForm.notify_on_drop
+      ? null
+      : 'Pick at least one direction — a rule with none can never fire.',
+    filters,
+  }
+}
+
+export function hasRuleFormProblems(problems: RuleFormProblems): boolean {
+  return (
+    Object.keys(problems.numeric).length > 0
+    || problems.scopes !== null
+    || problems.direction !== null
+    || Object.keys(problems.filters).length > 0
+  )
+}
+
+/**
+ * The message format a rule keeps when it is pointed at another destination.
+ *
+ * Formats are per channel, so `slack_mrkdwn` chosen for a Slack destination is
+ * refused by the API once the rule routes to Telegram (ALR-4) — and the format
+ * Select rendered blank, because the value was not among its options. A format
+ * the new channel supports is kept; anything else falls back to plain text,
+ * which every channel accepts.
+ */
+export function messageFormatForDestination(
+  current: AlertMessageFormat,
+  destinationType: AlertDestinationType,
+): AlertMessageFormat {
+  return MESSAGE_FORMAT_OPTIONS[destinationType].some(option => option.value === current)
+    ? current
+    : 'plain'
+}
+
+/**
+ * Switch a rule draft to another message format, carrying the templates along
+ * when they are still the defaults of the format being left (a hand-edited
+ * template is the operator's and is kept as written).
+ */
+export function withMessageFormat(
+  ruleForm: RuleFormState,
+  messageFormat: AlertMessageFormat,
+): RuleFormState {
+  if (messageFormat === ruleForm.message_format) return ruleForm
+  const shouldResetTemplate =
+    !normalizeRuleTemplate(ruleForm.message_template)
+    || isDefaultMessageTemplate(ruleForm.message_template, ruleForm.message_format)
+  const shouldResetItemsTemplate =
+    !normalizeRuleTemplate(ruleForm.items_template)
+    || isDefaultItemsTemplate(ruleForm.items_template, ruleForm.message_format)
+  return {
+    ...ruleForm,
+    message_format: messageFormat,
+    message_template: shouldResetTemplate
+      ? getDefaultMessageTemplate(messageFormat)
+      : ruleForm.message_template,
+    items_template: shouldResetItemsTemplate
+      ? getDefaultItemsTemplate(messageFormat)
+      : ruleForm.items_template,
+  }
+}
+
+// The backend's own token pattern (`_ALERT_TEMPLATE_VAR_RE` in
+// alert_templates.py), so the two agree about what counts as a variable.
+const TEMPLATE_VARIABLE_PATTERN = /\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g
+
+/**
+ * Variables in a template that the given list does not know, in first-seen
+ * order (ALR-21). A typo such as `${scope_nme}`, or an item variable used in
+ * the message template, used to surface only as a 422 after submit, printed
+ * far below the textarea it was about.
+ */
+export function unknownTemplateVariables(
+  template: string,
+  options: readonly { name: string }[],
+): string[] {
+  const known = new Set(options.map(option => option.name))
+  const unknown: string[] = []
+  for (const match of template.matchAll(TEMPLATE_VARIABLE_PATTERN)) {
+    const name = match[1]
+    if (name !== undefined && !known.has(name) && !unknown.includes(name)) unknown.push(name)
+  }
+  return unknown
 }
 
 /**

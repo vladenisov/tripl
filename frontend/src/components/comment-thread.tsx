@@ -1,12 +1,15 @@
-import { useState } from 'react'
+import { useContext, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Loader2, MessageCircle, Trash2 } from 'lucide-react'
 import { formatDateTime } from '@/lib/datetime'
 import { isThreadUnanswered, threadStateLabel } from '@/components/commentThreadState'
 import type { EventCommentAction, EventCommentStatus } from '@/types'
-import { useCanWriteProject } from '@/lib/permissions'
+import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
 import { eventsRootKey } from '@/lib/queryKeys'
+import { useConfirm } from '@/hooks/useConfirm'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { AuthContext } from '@/components/auth-context'
 
 /**
  * The shape the thread renders. Both anchors — a photo and an event — keep
@@ -96,10 +99,21 @@ export function CommentThread({
   // Every comment write (post, reply, resolve, delete) is EditorUserDep on the
   // backend, so a viewer reads the thread and is offered none of them.
   const canWrite = useCanWriteProject()
+  const isOwner = useIsOwner()
+  const currentUserId = useContext(AuthContext)?.user?.id ?? null
+  const { confirm, dialog } = useConfirm()
   const [body, setBody] = useState(initialBody)
   const [replyTo, setReplyTo] = useState<string | null>(null)
 
   const commentsQuery = useQuery({ queryKey: queryKey, queryFn: list })
+
+  // A thread with resolution state (the event discussion — the one caller that
+  // passes `onAction`) feeds the catalog's "?N" badge and its "Open questions"
+  // filter. A post opens a question and a delete can close one, so both have to
+  // reach the list the way resolve always did (EVT-29).
+  const refreshCatalog = () => {
+    if (onAction) void queryClient.invalidateQueries({ queryKey: eventsRootKey() })
+  }
 
   const createMut = useMutation({
     mutationFn: () => create(body.trim(), replyTo),
@@ -107,14 +121,18 @@ export function CommentThread({
       setBody('')
       setReplyTo(null)
       void queryClient.invalidateQueries({ queryKey: queryKey })
+      refreshCatalog()
       onCreated?.()
     },
   })
 
   const deleteMut = useMutation({
+    // Its failure is said inline, under the thread.
+    meta: SILENT_ERROR_META,
     mutationFn: (commentId: string) => remove(commentId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKey })
+      refreshCatalog()
     },
   })
 
@@ -150,6 +168,28 @@ export function CommentThread({
     }
   }
 
+  // Delete used to fire on one click, on anybody's comment, and a parent took
+  // its replies with it (EVT-29). An editor deletes their own words; the owner
+  // moderates. A row whose shape carries no author (`user_id` absent, not null)
+  // cannot be attributed, so it keeps the editor's control it always had.
+  const canDelete = (comment: ThreadComment) =>
+    canWrite
+    && (isOwner || comment.user_id === undefined || (currentUserId !== null && comment.user_id === currentUserId))
+
+  const confirmDelete = async (commentId: string) => {
+    const replies = repliesByParent.get(commentId)?.length ?? 0
+    const ok = await confirm({
+      title: 'Delete comment',
+      message:
+        replies > 0
+          ? `Delete this comment and its ${replies === 1 ? 'reply' : `${replies} replies`}? This cannot be undone.`
+          : 'Delete this comment? This cannot be undone.',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    })
+    if (ok) deleteMut.mutate(commentId)
+  }
+
   const submit = () => {
     if (!body.trim() || createMut.isPending) return
     createMut.mutate()
@@ -157,6 +197,7 @@ export function CommentThread({
 
   return (
     <div className={className}>
+      {dialog}
       <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
         <MessageCircle className="h-4 w-4 text-muted-foreground" />
         {heading}
@@ -174,7 +215,9 @@ export function CommentThread({
               comment={comment}
               replies={repliesByParent.get(comment.id) ?? []}
               onReply={canWrite ? () => setReplyTo(comment.id) : undefined}
-              onDelete={canWrite ? id => deleteMut.mutate(id) : undefined}
+              canDelete={canDelete}
+              onDelete={id => void confirmDelete(id)}
+              deletePending={deleteMut.isPending}
               replyingTo={replyTo}
               authorName={authorName}
               onAction={
@@ -188,6 +231,11 @@ export function CommentThread({
           ))
         )}
       </div>
+      {deleteMut.isError && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          Could not delete the comment: {deleteMut.error instanceof Error ? deleteMut.error.message : 'unknown error'}
+        </p>
+      )}
       {!canWrite ? (
         <p className="mt-3 border-t pt-3 text-xs text-muted-foreground">
           Read-only: commenting is done by an editor or owner.
@@ -243,7 +291,9 @@ function CommentItem({
   comment,
   replies,
   onReply,
+  canDelete,
   onDelete,
+  deletePending,
   replyingTo,
   authorName,
   onAction,
@@ -251,9 +301,12 @@ function CommentItem({
 }: {
   comment: ThreadComment
   replies: ThreadComment[]
-  /** Omitted for a viewer, as is `onDelete`: both are editor actions. */
+  /** Omitted for a viewer: replying is an editor action. */
   onReply?: () => void
-  onDelete?: (id: string) => void
+  /** Whether this reader may delete a given comment (its author, or the owner). */
+  canDelete: (comment: ThreadComment) => boolean
+  onDelete: (id: string) => void
+  deletePending?: boolean
   replyingTo: string | null
   authorName?: (comment: ThreadComment) => string
   onAction?: (action: EventCommentAction, snoozedUntil?: string) => void
@@ -314,11 +367,12 @@ function CommentItem({
                 {replyingTo === comment.id ? 'replying…' : 'reply'}
               </button>
             )}
-            {onDelete && (
+            {canDelete(comment) && (
               <button
                 type="button"
                 aria-label="Delete comment"
                 className="hover:text-destructive"
+                disabled={deletePending}
                 onClick={() => onDelete(comment.id)}
               >
                 <Trash2 className="h-3 w-3" aria-hidden="true" />
@@ -337,11 +391,12 @@ function CommentItem({
                   {authorName ? `${authorName(reply)} · ` : ''}
                   {formatDateTime(reply.created_at)}
                 </span>
-                {onDelete && (
+                {canDelete(reply) && (
                   <button
                     type="button"
                     aria-label="Delete comment"
                     className="hover:text-destructive"
+                    disabled={deletePending}
                     onClick={() => onDelete(reply.id)}
                   >
                     <Trash2 className="h-3 w-3" aria-hidden="true" />

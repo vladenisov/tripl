@@ -12,6 +12,14 @@ interface EntityBranchBannerProps {
   path: string
   /** What the row is, for the sentence: "This event lives on…". */
   noun?: string
+  /**
+   * Where "View main plan" goes from a row that lives on a branch. Not `path`:
+   * a branch row's id names the branch row, and reads are lenient, so main
+   * rendered that same branch row again under a "you are viewing main" warning
+   * and its Save 404'd (EVT-42). The row's main twin is not on the API, so a
+   * page offers somewhere on main that exists (its list), or no link at all.
+   */
+  mainPath?: string
 }
 
 /**
@@ -25,7 +33,13 @@ interface EntityBranchBannerProps {
  * the project and report the row's `branch_id`, so this is the one place that
  * turns that into a sentence.
  */
-export function EntityBranchBanner({ slug, rowBranchId, path, noun = 'event' }: EntityBranchBannerProps) {
+export function EntityBranchBanner({
+  slug,
+  rowBranchId,
+  path,
+  noun = 'event',
+  mainPath,
+}: EntityBranchBannerProps) {
   const { branchId: activeBranchId, setBranchId } = useBranchContext()
   const { data } = useQuery({
     queryKey: planBranchesKey(slug),
@@ -53,13 +67,15 @@ export function EntityBranchBanner({ slug, rowBranchId, path, noun = 'event' }: 
           Branch <span className="font-medium text-foreground">{rowBranch.name}</span> ·{' '}
           {rowBranch.status.replace(/_/g, ' ')}
         </span>
-        <Link
-          to={path}
-          onClick={() => setBranchId(null, { updateUrl: false })}
-          className="underline-offset-2 hover:underline"
-        >
-          View main plan
-        </Link>
+        {mainPath && (
+          <Link
+            to={mainPath}
+            onClick={() => setBranchId(null, { updateUrl: false })}
+            className="underline-offset-2 hover:underline"
+          >
+            View main plan
+          </Link>
+        )}
       </div>
     )
   }

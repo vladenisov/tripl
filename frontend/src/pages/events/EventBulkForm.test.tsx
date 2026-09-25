@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EventType } from '@/types'
 import { eventsApi } from '@/api/events'
@@ -77,7 +77,7 @@ describe('EventBulkForm', () => {
 
     expect(await screen.findByText('settings:unit_change:wind_speed')).toBeInTheDocument()
     expect(screen.getByText('spot:open:models')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Create 2 events' })).not.toBeDisabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create 2 events' })).not.toBeDisabled())
   })
 
   it('sends the field values the name was built from, not just the name', async () => {
@@ -86,7 +86,8 @@ describe('EventBulkForm', () => {
     fireEvent.change(await screen.findByLabelText('Events to create'), {
       target: { value: 'settings\tunit_change\twind_speed' },
     })
-    fireEvent.click(await screen.findByRole('button', { name: 'Create 1 event' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create 1 event' })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Create 1 event' }))
 
     // An event carrying the name and none of the values behind it would show an
     // empty Field values card and drift from its scanned counterpart.
@@ -121,6 +122,7 @@ describe('EventBulkForm', () => {
     // becomes part of (tripl-kjhi.3).
     expect(await screen.findByText('weather_alert:show:widget')).toBeInTheDocument()
     expect(screen.getByText('Weather alert widget shown')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create 1 event' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Create 1 event' }))
 
     await waitFor(() =>
@@ -155,7 +157,7 @@ describe('EventBulkForm', () => {
     expect(await screen.findByText('checkout:started')).toBeInTheDocument()
     expect(screen.getByText('Checkout started')).toBeInTheDocument()
     expect(screen.getByText('checkout:completed')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Create 2 events' })).not.toBeDisabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create 2 events' })).not.toBeDisabled())
   })
 
   it('leaves out the lines it cannot create, and says why', async () => {
@@ -178,7 +180,8 @@ describe('EventBulkForm', () => {
     })
 
     expect(await screen.findByText('repeated above')).toBeInTheDocument()
-    expect(screen.getByText('already in the catalog')).toBeInTheDocument()
+    // The catalog is asked once the paste settles (debounced), name by name.
+    expect(await screen.findByText('already in the catalog')).toBeInTheDocument()
     expect(screen.getByText('missing label')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create 1 event' })).toBeInTheDocument()
   })
@@ -246,5 +249,131 @@ describe('EventBulkForm unsaved-changes guard (EVT-8)', () => {
       target: { value: 'settings\tunit_change\twind_speed' },
     })
     expect(reloadIsGuarded()).toBe(true)
+  })
+})
+
+describe('EventBulkForm duplicate check (EVT-37)', () => {
+  it('asks the catalog about the pasted names only, not for every event of the type', async () => {
+    vi.mocked(eventsApi.list).mockClear()
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+    fireEvent.change(await screen.findByLabelText('Events to create'), {
+      target: { value: 'settings\tunit_change\twind_speed\nspot\topen\tmodels' },
+    })
+
+    await waitFor(() =>
+      expect(eventsApi.list).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({ event_type_id: 'et-se', search: 'spot:open:models' }),
+        null,
+      ),
+    )
+    expect(eventsApi.list).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({ search: 'settings:unit_change:wind_speed' }),
+      null,
+    )
+    // Never the old whole-catalog read.
+    for (const call of vi.mocked(eventsApi.list).mock.calls) {
+      expect(call[1]).toEqual(expect.objectContaining({ search: expect.any(String) }))
+      expect(call[1]?.limit ?? 0).toBeLessThanOrEqual(100)
+    }
+  })
+
+  it('holds Create while the names are still being checked', async () => {
+    let answer: (value: unknown) => void = () => {}
+    vi.mocked(eventsApi.list).mockImplementation(
+      () => new Promise(resolve => { answer = resolve }) as never,
+    )
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+    fireEvent.change(await screen.findByLabelText('Events to create'), {
+      target: { value: 'spot\topen\tmodels' },
+    })
+
+    // Before the debounce and while the probe is out, nothing says the line
+    // is free — the name may be taken, and the server would refuse the batch.
+    expect(await screen.findByText('checking…')).toBeInTheDocument()
+    expect(screen.queryByText('will be created')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create 1 event' })).toBeDisabled()
+    await waitFor(() => expect(eventsApi.list).toHaveBeenCalled())
+    expect(screen.getByRole('button', { name: 'Create 1 event' })).toBeDisabled()
+
+    answer({ items: [], total: 0 })
+    expect(await screen.findByText('will be created')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create 1 event' })).not.toBeDisabled()
+  })
+
+  it('reads a failed probe as unchecked, not as a free name', async () => {
+    vi.mocked(eventsApi.list).mockRejectedValue(new Error('network down'))
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+    fireEvent.change(await screen.findByLabelText('Events to create'), {
+      target: { value: 'spot\topen\tmodels' },
+    })
+
+    expect(await screen.findByText('will be created, not checked')).toBeInTheDocument()
+    expect(screen.getByText(/1 name could not be checked against the catalog/)).toBeInTheDocument()
+  })
+
+  it('reads a truncated probe without the name as unchecked', async () => {
+    // `search` is a substring match: a common name can match more rows than one
+    // probe reads, and the exact row may be among those left out.
+    vi.mocked(eventsApi.list).mockResolvedValue({
+      items: Array.from({ length: 100 }, (_, i) => ({
+        id: `ev-${i}`,
+        name: `spot:open:models_${i}`,
+        source_name: `spot:open:models_${i}`,
+      })),
+      total: 150,
+    } as never)
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+    fireEvent.change(await screen.findByLabelText('Events to create'), {
+      target: { value: 'spot\topen\tmodels' },
+    })
+
+    expect(await screen.findByText('will be created, not checked')).toBeInTheDocument()
+    expect(screen.getByText(/1 name could not be checked against the catalog/)).toBeInTheDocument()
+  })
+
+  it('does not ask anything before a line is pasted', async () => {
+    vi.mocked(eventsApi.list).mockClear()
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+    await screen.findByLabelText('Events to create')
+    expect(eventsApi.list).not.toHaveBeenCalled()
+  })
+})
+
+function ListLocation() {
+  const location = useLocation()
+  return createElement('div', { 'data-testid': 'list-location' }, `${location.pathname}${location.search}`)
+}
+
+describe('EventBulkForm exits (EVT-38)', () => {
+  it("returns to the list with the list's filters and branch", async () => {
+    render(createElement(EventBulkForm), {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(
+            MemoryRouter,
+            { initialEntries: ['/p/demo/events/all/bulk?branch=b-1&status=draft'] },
+            createElement(
+              Routes,
+              null,
+              createElement(Route, { path: '/p/:slug/events/:tab/bulk', element: children }),
+              createElement(Route, { path: '/p/:slug/events', element: createElement(ListLocation) }),
+            ),
+          ),
+        ),
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByTestId('list-location')).toHaveTextContent(
+      '/p/demo/events?branch=b-1&status=draft',
+    )
   })
 })

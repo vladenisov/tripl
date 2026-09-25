@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { eventCommentsApi } from '@/api/eventComments'
@@ -169,5 +169,39 @@ describe('EventEditPage — a question raised while the event is being authored'
     // …and the reason it is still a draft is stated rather than swallowed.
     expect(await screen.findByRole('alert')).toHaveTextContent(/note was not posted/i)
     expect(screen.queryByText('events list')).not.toBeInTheDocument()
+  })
+})
+
+describe('EventEditPage layout and exits', () => {
+  it('puts the draft discussion note above the Create button (EVT-44)', async () => {
+    renderAtNew()
+
+    const composer = await screen.findByLabelText(/posted as the first comment/i)
+    const create = screen.getByRole('button', { name: 'Create event' })
+    // An author working top to bottom reaches the note before the button that
+    // creates the event and leaves the page.
+    expect(composer.compareDocumentPosition(create) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("keeps the list's query string when a cold-opened editor closes (EVT-38)", async () => {
+    function ListLocation() {
+      const location = useLocation()
+      return <div data-testid="list-location">{`${location.pathname}${location.search}`}</div>
+    }
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/events/all/new?branch=b-1&tag=checkout']}>
+          <Routes>
+            <Route path="/p/:slug/events/:tab/new" element={<EventEditPage />} />
+            <Route path="/p/:slug/events" element={<ListLocation />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByTestId('list-location')).toHaveTextContent(
+      '/p/demo/events?branch=b-1&tag=checkout',
+    )
   })
 })

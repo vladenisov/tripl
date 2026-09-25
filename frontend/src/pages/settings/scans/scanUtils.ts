@@ -250,4 +250,6 @@ export function isJsonPreviewType(typeName: string) {
   return typeName.toLowerCase().includes('json')
 }
 
-export const SELECT_CLASS = 'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm'
+// One shared native-select class, focus ring included (DATA-48): this copy had
+// none, so keyboard focus on the scan form's selects was invisible.
+export { SELECT_CLASS } from '@/components/data-sources/connection-settings'

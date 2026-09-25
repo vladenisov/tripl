@@ -18,14 +18,19 @@ vi.mock('@/api/planBranches', () => ({
   },
 }))
 
-function renderBanner(activeBranchId: string | null, rowBranchId: string) {
+function renderBanner(activeBranchId: string | null, rowBranchId: string, mainPath?: string) {
   const setBranchId = vi.fn()
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <BranchContext.Provider value={{ branchId: activeBranchId, setBranchId, slug: 'demo' }}>
-          <EntityBranchBanner slug="demo" rowBranchId={rowBranchId} path="/p/demo/monitoring/event/e1" />
+          <EntityBranchBanner
+            slug="demo"
+            rowBranchId={rowBranchId}
+            path="/p/demo/monitoring/event/e1"
+            mainPath={mainPath}
+          />
         </BranchContext.Provider>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -35,14 +40,24 @@ function renderBanner(activeBranchId: string | null, rowBranchId: string) {
 
 describe('EntityBranchBanner (tripl-kjhi.7)', () => {
   it('names the branch a row lives on and offers main when the reader is on that branch', async () => {
-    renderBanner('wnd-4770', 'wnd-4770')
+    const { setBranchId } = renderBanner('wnd-4770', 'wnd-4770', '/p/demo/events')
     const banner = await screen.findByTestId('entity-branch-banner')
     expect(banner.textContent).toContain('WND-4770')
     expect(banner.textContent).toContain('ready for review')
-    expect(screen.getByRole('link', { name: 'View main plan' })).toHaveAttribute(
-      'href',
-      '/p/demo/monitoring/event/e1',
-    )
+    const link = screen.getByRole('link', { name: 'View main plan' })
+    expect(link).toHaveAttribute('href', '/p/demo/events')
+    fireEvent.click(link)
+    expect(setBranchId).toHaveBeenCalledWith(null, { updateUrl: false })
+  })
+
+  it("never points main at the branch row's own address (EVT-42)", async () => {
+    // Reads are lenient: main would render the same branch row under a
+    // mismatch warning, and its Save would 404. Without somewhere on main to go,
+    // the banner names the branch and offers no link.
+    renderBanner('wnd-4770', 'wnd-4770')
+    const banner = await screen.findByTestId('entity-branch-banner')
+    expect(banner.textContent).toContain('WND-4770')
+    expect(screen.queryByRole('link', { name: 'View main plan' })).toBeNull()
   })
 
   it('offers the switch when a pasted branch link is opened with main active', async () => {
