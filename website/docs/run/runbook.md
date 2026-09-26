@@ -243,19 +243,19 @@ soft limit (`SoftTimeLimitExceeded`, allows cleanup) and a 60-minute hard limit.
 
 ### Scaling the app tier — rate-limit caveat
 
-The auth rate limiter (`/auth/login`, `/auth/register`) is an **in-memory
-token-bucket, per worker process**, keyed on `(client_ip, route)` — see
+The auth rate limiter (`/auth/login`, `/auth/register`) is a token bucket
+keyed on `(client_ip, route)`, stored in Redis when `REDIS_URL` is set — see
 [`middleware/rate_limit.py`](https://github.com/vladenisov/tripl/blob/main/backend/src/tripl/middleware/rate_limit.py).
 Defaults are 5 login attempts/minute and 3 registrations/hour
 (`rate_limit_login_per_minute`, `rate_limit_register_per_hour`).
 
-:::warning Per-replica limits do not aggregate
-Because the buckets live in process memory, running **N** app replicas (or
-multiple Uvicorn workers) multiplies the effective limit: with `--scale app=N`
-the practical login ceiling is roughly `N × 5/min`, since each replica enforces
-its own bucket. To enforce a true global limit, terminate rate limiting at a
-fronting load balancer / reverse proxy, or replace the in-memory bucket with a
-shared (e.g. Redis-backed) store.
+:::warning Without Redis, limits do not aggregate
+With Redis, every worker and every replica pointed at the same Redis draws on
+one bucket per client, so the limit holds however far you scale. Without
+`REDIS_URL` — or while Redis is unreachable, when each worker falls back to its
+own in-memory bucket — running **N** app replicas (or multiple Uvicorn workers)
+multiplies the effective limit: with `--scale app=N` the practical login
+ceiling is roughly `N × 5/min`.
 :::
 
 If you do put a trusted proxy in front, set `RATE_LIMIT_TRUST_FORWARDED_FOR=true`

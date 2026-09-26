@@ -140,7 +140,7 @@ The middleware reads `CONTENT_SECURITY_POLICY`, `SERVE_FRONTEND`, `HSTS_ENABLED`
 
 ## Rate limiting
 
-`backend/src/tripl/middleware/rate_limit.py` provides an in-process token-bucket limiter for unauthenticated auth endpoints:
+`backend/src/tripl/middleware/rate_limit.py` provides a token-bucket limiter for unauthenticated auth endpoints. With `REDIS_URL` set the buckets live in Redis, so all workers and replicas share one quota per client; without Redis, or while Redis is unreachable, each worker process enforces its own in-memory bucket:
 
 | Route | Setting | Default |
 |---|---|---|
@@ -166,7 +166,7 @@ leaving the other one active. Use `RATE_LIMIT_ENABLED=false` to disable both.
 **Client-IP source — read this before exposing the API directly.** By default the limiter keys on the real socket peer (`request.client.host`), which is correct when the API is the edge (including the single-container `SERVE_FRONTEND` deploy). `RATE_LIMIT_TRUST_FORWARDED_FOR` defaults to **false** on purpose: a raw `X-Forwarded-For` is attacker-controlled, so trusting it on a directly-exposed API lets an unauthenticated caller rotate the header per request and bypass the limit entirely. Enable it **only** behind a trusted proxy that *overwrites* `X-Real-IP` with the true client address on every request (the shipped nginx config does this). When enabled the limiter prefers `X-Real-IP`, falling back to the leftmost `X-Forwarded-For` entry.
 
 :::warning
-The limiter is **per worker, in memory**. With multiple Uvicorn/Gunicorn workers or replicas, each holds its own buckets, so the effective limit is roughly the configured value times the worker count. For a hard aggregate cap, enforce rate limiting at the proxy/LB tier as well.
+Without Redis the limiter is **per worker, in memory**: with multiple Uvicorn/Gunicorn workers or replicas, each holds its own buckets, so the effective limit is roughly the configured value times the worker count. Set `REDIS_URL` (the shipped compose files do) to make it one aggregate cap.
 :::
 
 ## Authentication, sessions, and cookies
