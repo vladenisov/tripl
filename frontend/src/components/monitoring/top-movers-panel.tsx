@@ -124,7 +124,7 @@ export function TopMoversPanel({
           see its timeline.
         </CardDescription>
         {isError && (
-          <p role="status" className="mt-1 text-body-sm text-muted-foreground">
+          <p role="status" className="mt-1 text-body-sm text-fg-tertiary">
             Refresh failed — showing the last loaded rows.{' '}
             <button
               type="button"
@@ -194,15 +194,15 @@ function TopMoverRow({
       aria-expanded={isExpanded}
     >
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <ChevronIcon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <ChevronIcon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-fg-tertiary" />
         <div className="min-w-0">
           <p className="truncate text-body font-medium">
-            <span className="text-muted-foreground">{item.breakdown_column}=</span>
+            <span className="text-fg-tertiary">{item.breakdown_column}=</span>
             <span className="font-mono">
               {item.is_other ? '(other)' : item.breakdown_value}
             </span>
           </p>
-          <p className="text-body-sm text-muted-foreground">
+          <p className="text-body-sm text-fg-tertiary">
             actual {formatCount(item.actual_count)} · expected {formatCount(item.expected_count)}
           </p>
         </div>
@@ -222,7 +222,7 @@ function TopMoverRow({
         </Chip>
         {pct && (
           <span
-            className="text-muted-foreground"
+            className="text-fg-tertiary"
             title={
               item.expected_count > 0
                 ? undefined
@@ -342,7 +342,7 @@ function BreakdownDrilldown({
 
   if (isLoading) {
     return (
-      <div className="px-2 pb-3 pt-1 text-body-sm text-muted-foreground" data-testid="breakdown-drilldown">
+      <div className="px-2 pb-3 pt-1 text-body-sm text-fg-tertiary" data-testid="breakdown-drilldown">
         Loading timeline…
       </div>
     )
@@ -367,7 +367,7 @@ function BreakdownDrilldown({
 
   if (points.length === 0) {
     return (
-      <div className="px-2 pb-3 pt-1 text-body-sm text-muted-foreground" data-testid="breakdown-drilldown">
+      <div className="px-2 pb-3 pt-1 text-body-sm text-fg-tertiary" data-testid="breakdown-drilldown">
         No timeline data for this breakdown value yet.
       </div>
     )

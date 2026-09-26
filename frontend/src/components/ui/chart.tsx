@@ -13,6 +13,7 @@ import {
   YAxis,
 } from 'recharts'
 import { cn } from '@/lib/utils'
+import { COARSE_POINTER_QUERY, useMediaQuery } from '@/hooks/useMediaQuery'
 import {
   axisWidthForValues,
   CHART_SURFACE_TAB_INDEX,
@@ -465,14 +466,14 @@ export function CustomTooltip({
   if (point.is_forecast && point.forecast_expected != null) {
     return (
       <div className="rounded-card border border-dashed bg-popover text-popover-foreground px-3 py-2 shadow-md">
-        <p className="text-body-sm text-muted-foreground">{heading} · forecast</p>
+        <p className="text-body-sm text-fg-tertiary">{heading} · forecast</p>
         <p className="text-body font-semibold">
           ~{valueFormatter
             ? valueFormatter(point.forecast_expected)
             : formatSeriesValue(Math.round(point.forecast_expected), seriesLabel)}
         </p>
         {point.forecast_band && (
-          <p className="text-body-sm text-muted-foreground">
+          <p className="text-body-sm text-fg-tertiary">
             Likely {formatValueRange(point.forecast_band, valueFormatter)}
           </p>
         )}
@@ -484,8 +485,8 @@ export function CustomTooltip({
   if (point.count == null && point.expected_count == null) {
     return (
       <div className="rounded-card border bg-popover text-popover-foreground px-3 py-2 shadow-md">
-        <p className="text-body-sm text-muted-foreground">{heading}</p>
-        <p className="text-body-sm text-muted-foreground">No data for this bucket</p>
+        <p className="text-body-sm text-fg-tertiary">{heading}</p>
+        <p className="text-body-sm text-fg-tertiary">No data for this bucket</p>
       </div>
     )
   }
@@ -507,12 +508,12 @@ export function CustomTooltip({
   // its normal range, and for a flagged bucket which way and how far.
   return (
     <div className="rounded-card border bg-popover text-popover-foreground px-3 py-2 shadow-md">
-      <p className="text-body-sm text-muted-foreground">{heading}</p>
+      <p className="text-body-sm text-fg-tertiary">{heading}</p>
       <p className="text-body font-semibold">
         {valueFormatter ? valueFormatter(count) : formatSeriesValue(count, seriesLabel)}
       </p>
       {expectedCount !== null && (
-        <p className="text-body-sm text-muted-foreground">
+        <p className="text-body-sm text-fg-tertiary">
           Expected {formatSecondary(expectedCount)}
           {point.band && ` (normal ${formatValueRange(point.band, valueFormatter ?? formatPlain)})`}
         </p>
@@ -525,7 +526,7 @@ export function CustomTooltip({
           zScore={point.z_score}
         />
       )}
-      {partialNote && <p className="text-body-sm text-muted-foreground">{partialNote}</p>}
+      {partialNote && <p className="text-body-sm text-fg-tertiary">{partialNote}</p>}
     </div>
   )
 }
@@ -648,7 +649,7 @@ export function MultiSeriesTooltip({
 
   return (
     <div className="max-w-xs rounded-card border bg-popover text-popover-foreground px-3 py-2 shadow-md">
-      <p className="text-body-sm text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
+      <p className="text-body-sm text-fg-tertiary">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
       <div className="mt-1 space-y-1">
         {visiblePayload.map(item => (
           <div key={item.dataKey} className="flex items-center justify-between gap-4 text-body-sm">
@@ -782,7 +783,7 @@ export function MetricsChart({
 
   if (!data.length) {
     return (
-      <div className={cn('flex items-center justify-center text-muted-foreground text-body', className)} style={{ height }}>
+      <div className={cn('flex items-center justify-center text-fg-tertiary text-body', className)} style={{ height }}>
         No metrics data available
       </div>
     )
@@ -877,14 +878,14 @@ export function MetricsChart({
           <XAxis
             dataKey="bucket"
             {...xAxisTicks}
-            className="text-body-sm fill-muted-foreground"
+            className="text-body-sm fill-fg-tertiary"
             tickLine={false}
             axisLine={false}
             tickMargin={8}
           />
           <YAxis
             tickFormatter={valueFormatter ?? formatCount}
-            className="text-body-sm fill-muted-foreground"
+            className="text-body-sm fill-fg-tertiary"
             tickLine={false}
             axisLine={false}
             tickMargin={8}
@@ -1062,7 +1063,7 @@ export function ChartLegend({
     <ul
       aria-label="Chart legend"
       data-testid="chart-legend"
-      className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted-foreground"
+      className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-fg-tertiary"
     >
       <li className="inline-flex items-center gap-1.5">
         <LegendSwatch stroke={color} />
@@ -1086,7 +1087,7 @@ export function ChartLegend({
       )}
       {anomaly && (
         <li className="inline-flex items-center gap-1.5">
-          <span aria-hidden="true" style={{ color: 'var(--danger)' }}>▲</span>
+          <span aria-hidden="true" className="text-danger">▲</span>
           Anomaly
         </li>
       )}
@@ -1128,6 +1129,9 @@ export function MetricsMultiSeriesChart({
   from,
   to,
 }: MetricsMultiSeriesChartProps) {
+  // On a phone the finger sits on the plot and the tooltip beside it covered
+  // the y-axis: pin it to the top edge instead, free to leave the plot (MO-29).
+  const coarsePointer = useMediaQuery(COARSE_POINTER_QUERY)
   const chartSeries = useMemo(
     () => series
       .filter(item => item.data.length > 0)
@@ -1167,7 +1171,7 @@ export function MetricsMultiSeriesChart({
 
   if (!chartSeries.length || !chartData.length) {
     return (
-      <div className={cn('flex items-center justify-center text-muted-foreground text-body', className)} style={{ height }}>
+      <div className={cn('flex items-center justify-center text-fg-tertiary text-body', className)} style={{ height }}>
         {emptyLabel}
       </div>
     )
@@ -1204,20 +1208,22 @@ export function MetricsMultiSeriesChart({
           <XAxis
             dataKey="bucket"
             {...xAxisTicks}
-            className="text-body-sm fill-muted-foreground"
+            className="text-body-sm fill-fg-tertiary"
             tickLine={false}
             axisLine={false}
             tickMargin={8}
           />
           <YAxis
             tickFormatter={valueFormatter ?? formatCount}
-            className="text-body-sm fill-muted-foreground"
+            className="text-body-sm fill-fg-tertiary"
             tickLine={false}
             axisLine={false}
             tickMargin={8}
             width={yAxisWidth}
           />
           <Tooltip
+            position={coarsePointer ? { y: 0 } : undefined}
+            allowEscapeViewBox={coarsePointer ? { y: true } : undefined}
             content={
               <MultiSeriesTooltip
                 granularity={granularity}
@@ -1481,7 +1487,7 @@ export function MiniMetricsChart({
   if (!data.length) {
     return (
       <div
-        className={cn('flex items-center justify-center text-caption text-muted-foreground', className)}
+        className={cn('flex items-center justify-center text-caption text-fg-tertiary', className)}
         style={{ height }}
       >
         No recent events

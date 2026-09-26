@@ -38,7 +38,7 @@ export function JsonValuePathsPicker({
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-body font-medium">JSON values to keep as-is</div>
-          <p className="text-body-sm text-muted-foreground">
+          <p className="text-body-sm text-fg-tertiary">
             Selected paths stay as real values in generated JSON. Unselected paths become variables.
           </p>
         </div>
@@ -65,11 +65,11 @@ export function JsonValuePathsPicker({
         <div className="space-y-3">
           {jsonColumns.map(jsonColumn => (
             <div key={jsonColumn.column} className="space-y-2">
-              <div className="text-body-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              <div className="text-body-sm font-semibold uppercase tracking-wide text-fg-tertiary">
                 {jsonColumn.column}
               </div>
               {jsonColumn.paths.length === 0 ? (
-                <div className="text-body-sm text-muted-foreground">No nested keys found in the sampled rows.</div>
+                <div className="text-body-sm text-fg-tertiary">No nested keys found in the sampled rows.</div>
               ) : (
                 <div className="grid gap-2">
                   {jsonColumn.paths.map(path => (
@@ -85,7 +85,7 @@ export function JsonValuePathsPicker({
                       <span className="space-y-1">
                         <span className="block font-mono text-body-sm">{path.path}</span>
                         {path.sample_values.length > 0 && (
-                          <span className="block text-body-sm text-muted-foreground">
+                          <span className="block text-body-sm text-fg-tertiary">
                             sample: {path.sample_values.join(', ')}
                           </span>
                         )}
@@ -98,7 +98,7 @@ export function JsonValuePathsPicker({
           ))}
         </div>
       ) : (
-        <div className="text-body-sm text-muted-foreground">
+        <div className="text-body-sm text-fg-tertiary">
           {jsonPathsDiscovered
             ? 'No nested JSON keys found in the sampled rows.'
             : 'Discover JSON keys to choose which nested values to keep as-is.'}

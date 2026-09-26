@@ -101,7 +101,7 @@ function FullScreenFallback({ label }: { label: string }) {
     <div
       role="status"
       aria-live="polite"
-      className="flex min-h-screen items-center justify-center bg-background px-6 text-body text-muted-foreground"
+      className="flex min-h-screen items-center justify-center bg-background px-6 text-body text-fg-tertiary"
     >
       {label}
     </div>

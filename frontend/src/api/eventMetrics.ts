@@ -11,6 +11,8 @@ import type {
   OverviewKpiSeries,
   ReleaseRegressionsResponse,
   SeasonalityHeatmap,
+  SignalSeries,
+  SignalSeriesScope,
   TopEvent,
   TopMoverItem,
 } from '../types'
@@ -114,6 +116,13 @@ export const eventMetricsApi = {
       { event_ids: eventIds },
     )
   },
+
+  /**
+   * `POST /anomalies/signals/series` — row sparklines for many open signals in
+   * one request (MO-19): the buckets around each flagged one.
+   */
+  getSignalSeries: (slug: string, scopes: SignalSeriesScope[]) =>
+    api.post<SignalSeries[]>(`/projects/${slug}/anomalies/signals/series`, { scopes }),
 
   getTopMovers: (
     slug: string,

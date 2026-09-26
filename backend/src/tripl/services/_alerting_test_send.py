@@ -32,7 +32,9 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.alert_templates import ALERT_MESSAGE_FORMAT_PLAIN
@@ -53,7 +55,12 @@ from tripl.alerting_validation import (
 )
 from tripl.crypto import decrypt_value
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
-from tripl.schemas.alerting import AlertDestinationTestResponse, DestinationTestErrorKind
+from tripl.models.project import Project
+from tripl.schemas.alerting import (
+    AlertDestinationDraftTestRequest,
+    AlertDestinationTestResponse,
+    DestinationTestErrorKind,
+)
 from tripl.services._alerting_destinations import get_destination
 from tripl.services.project_lookup import get_project_by_slug as _get_project
 
@@ -96,6 +103,11 @@ class DestinationTestOutcome:
 
     response: AlertDestinationTestResponse
     destination_name: str
+    # Scheme and host of a free-form target (webhook, Jira) the test was aimed
+    # at, for the audit entry. A draft's URL is caller-chosen and nothing of it
+    # is persisted, so without this the audit log could not say where a test —
+    # and whatever stored secret it carried — was sent.
+    target_origin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,7 +120,8 @@ class _TestTarget:
     from the wrong thread, so the snapshot is taken on the event loop first.
     """
 
-    destination_id: uuid.UUID
+    # None for a draft that was never saved (AL-30).
+    destination_id: uuid.UUID | None
     destination_type: str
     destination_name: str
     message: str
@@ -163,6 +176,152 @@ def _build_target(destination: AlertDestination, *, project_name: str) -> _TestT
         linear_team_id=destination.linear_team_id,
         linear_state_id=destination.linear_state_id,
         linear_label_ids=destination.linear_label_ids,
+    )
+
+
+def _url_origin(url: str | None) -> str | None:
+    """``scheme://host[:port]`` of ``url``, lowercased; None when it has neither."""
+    if not url:
+        return None
+    parsed = urlparse(url.strip())
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    try:
+        port_number = parsed.port
+    except ValueError:
+        # An out-of-range port: the netloc as typed still names the target.
+        return f"{parsed.scheme.lower()}://{parsed.netloc.rsplit('@', 1)[-1].lower()}"
+    host = (parsed.hostname or "").lower()
+    port = f":{port_number}" if port_number is not None else ""
+    return f"{parsed.scheme.lower()}://{host}{port}"
+
+
+class _SecretBorrowRefused(ValueError):
+    """A draft would carry a stored secret to a host it was never saved for."""
+
+
+def _check_secret_stays_home(
+    draft: AlertDestinationDraftTestRequest, stored: AlertDestination
+) -> None:
+    """Refuse to lend a stored secret to a draft aimed at a different host.
+
+    A blank secret in an edit dialog means "the one on file", but that secret
+    was entrusted to one Jira site or one webhook host. A draft that changes the
+    host and leaves the secret blank would send the stored credential to
+    wherever the caller typed — and a test persists nothing, so the audit trail
+    would be all that is left of it. The operator re-types the secret to test a
+    new host, exactly as they would have to know it to point a real destination
+    there.
+    """
+    if (
+        draft.type == AlertDestinationType.jira
+        and draft.jira_api_token is None
+        and stored.jira_api_token_encrypted
+        and _url_origin(draft.jira_base_url) != _url_origin(stored.jira_base_url)
+    ):
+        raise _SecretBorrowRefused(
+            "The stored Jira API token is only sent to the Jira site it was saved "
+            "for. Enter the API token again to test a different Jira site."
+        )
+    if (
+        draft.type == AlertDestinationType.webhook
+        and draft.webhook_header_name is not None
+        and draft.webhook_header_value is None
+        and draft.target_url is not None
+        and stored.webhook_header_value_encrypted
+        and _url_origin(draft.target_url) != _url_origin(_decrypt(stored.target_url_encrypted))
+    ):
+        # The stored target URL is itself a secret, so the message does not
+        # name the host it is compared with.
+        raise _SecretBorrowRefused(
+            "The stored header value is only sent to the webhook host it was saved "
+            "for. Enter the header value again to test a different host."
+        )
+
+
+def _draft_target_origin(
+    draft: AlertDestinationDraftTestRequest, stored: AlertDestination | None
+) -> str | None:
+    """Where a draft's free-form URL points, scheme and host only (for audit)."""
+    if draft.type == AlertDestinationType.jira:
+        return _url_origin(draft.jira_base_url)
+    if draft.type == AlertDestinationType.webhook:
+        if draft.target_url is not None:
+            return _url_origin(draft.target_url)
+        if stored is not None:
+            return _url_origin(_decrypt(stored.target_url_encrypted))
+    return None
+
+
+def _build_draft_target(
+    draft: AlertDestinationDraftTestRequest,
+    stored: AlertDestination | None,
+    *,
+    destination_name: str,
+    project_name: str,
+) -> _TestTarget:
+    """A test target from the dialog's settings, secrets filled from ``stored``.
+
+    Only the write-only fields fall back, because they are the only ones the
+    dialog cannot show: a blank token in an edit dialog means "keep the one on
+    file", which is what the PATCH reads it as, so the test must send with it.
+    Every other field is the form's — it was loaded from the row and is what
+    Save would write, so testing the stored value instead would test something
+    the operator is about to replace.
+
+    The header secret follows its name, as on update: a header the form removed
+    goes out with neither half, and a kept name with a blank value sends the
+    stored value — but only to the host it was stored for, and the Jira token
+    only to its own site (``_check_secret_stays_home``).
+    """
+    if stored is not None:
+        _check_secret_stays_home(draft, stored)
+
+    def secret(value: str | None, encrypted: str | None) -> str | None:
+        if value is not None:
+            return value
+        return _decrypt(encrypted) if stored is not None else None
+
+    header_value = (
+        secret(
+            draft.webhook_header_value,
+            stored.webhook_header_value_encrypted if stored is not None else None,
+        )
+        if draft.webhook_header_name is not None
+        else None
+    )
+    return _TestTarget(
+        destination_id=stored.id if stored is not None else None,
+        destination_type=draft.type,
+        destination_name=destination_name,
+        message=_test_message(project_name=project_name, destination_name=destination_name),
+        webhook_url=secret(
+            draft.webhook_url, stored.webhook_url_encrypted if stored is not None else None
+        ),
+        bot_token=secret(
+            draft.bot_token, stored.bot_token_encrypted if stored is not None else None
+        ),
+        chat_id=draft.chat_id,
+        target_url=secret(
+            draft.target_url, stored.target_url_encrypted if stored is not None else None
+        ),
+        webhook_header_name=draft.webhook_header_name,
+        webhook_header_value=header_value,
+        email_recipients=draft.email_recipients,
+        email_from_address=draft.email_from_address,
+        jira_base_url=draft.jira_base_url,
+        jira_auth_email=draft.jira_auth_email,
+        jira_api_token=secret(
+            draft.jira_api_token, stored.jira_api_token_encrypted if stored is not None else None
+        ),
+        jira_project_key=draft.jira_project_key,
+        jira_issue_type=draft.jira_issue_type,
+        linear_api_key=secret(
+            draft.linear_api_key, stored.linear_api_key_encrypted if stored is not None else None
+        ),
+        linear_team_id=draft.linear_team_id,
+        linear_state_id=draft.linear_state_id,
+        linear_label_ids=draft.linear_label_ids,
     )
 
 
@@ -357,6 +516,93 @@ async def send_destination_test(
         destination_id=destination_id,
     )
     destination_name = destination.name
+    # A DISABLED destination is still tested. Disabled means "route no alerts
+    # here", and the commonest reason to press Test is to check credentials
+    # before switching a destination back on — refusing would make the button
+    # useless exactly when it is most wanted. The send is an explicit,
+    # editor-only, one-message action, not routing.
+    response = await _run_test_send(
+        project=project,
+        policy_subject=destination,
+        build_target=lambda: _build_target(destination, project_name=project.name),
+        log_ref=destination_id,
+    )
+    return DestinationTestOutcome(response=response, destination_name=destination_name)
+
+
+#: What a draft with no name is called in the test message and the audit log.
+UNSAVED_DESTINATION_NAME = "Unsaved destination"
+
+
+async def send_draft_destination_test(
+    session: AsyncSession,
+    slug: str,
+    draft: AlertDestinationDraftTestRequest,
+) -> DestinationTestOutcome:
+    """Test the settings a destination dialog holds, before they are saved (AL-30).
+
+    The same send, the same checks and the same answer as a saved destination's
+    Test: the demo zero-egress predicate, the channel validators and, for the
+    two free-form URLs, the private-host refusal ``_send_webhook`` and
+    ``_send_jira`` run immediately before the request. Nothing is written — the
+    point is to learn a webhook is wrong BEFORE it is a stored destination.
+    """
+    project = await _get_project(session, slug)
+    stored: AlertDestination | None = None
+    if draft.destination_id is not None:
+        # Project-scoped like every other destination read: an id from another
+        # project is a 404 here, never a way to borrow that project's secrets.
+        stored = await get_destination(
+            session,
+            project_id=project.id,
+            destination_id=draft.destination_id,
+        )
+        if stored.type != draft.type:
+            # A saved destination's channel is fixed; mixing one channel's form
+            # with another's stored secrets would test something that cannot
+            # exist.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"This destination is a {stored.type} destination; its channel "
+                    "cannot change, so it cannot be tested as another one."
+                ),
+            )
+    destination_name = draft.name or (
+        stored.name if stored is not None else UNSAVED_DESTINATION_NAME
+    )
+    # The egress predicate reads the destination's type and name only. A draft
+    # has no row, so it is judged as the transient row it would become — never
+    # added to the session, so nothing can flush it.
+    policy_subject = stored or AlertDestination(
+        project_id=project.id, type=draft.type, name=destination_name
+    )
+    response = await _run_test_send(
+        project=project,
+        policy_subject=policy_subject,
+        build_target=lambda: _build_draft_target(
+            draft,
+            stored,
+            destination_name=destination_name,
+            project_name=project.name,
+        ),
+        log_ref=draft.destination_id or "draft",
+    )
+    return DestinationTestOutcome(
+        response=response,
+        destination_name=destination_name,
+        target_origin=_draft_target_origin(draft, stored),
+    )
+
+
+async def _run_test_send(
+    *,
+    project: Project,
+    policy_subject: AlertDestination,
+    build_target: Callable[[], _TestTarget],
+    log_ref: object,
+) -> AlertDestinationTestResponse:
+    """The send both Test buttons share, from the channel check to the answer."""
     now = datetime.now(UTC)
 
     # A demo_sink has no outside to reach: it renders and records locally, which
@@ -364,11 +610,8 @@ async def send_destination_test(
     # truthful answer — "this destination works as configured" — and it keeps the
     # button from looking broken on the one destination a demo project may own
     # (tripl-2su6.6).
-    if destination.type == AlertDestinationType.demo_sink:
-        return DestinationTestOutcome(
-            response=AlertDestinationTestResponse(ok=True, error=None, sent_at=now),
-            destination_name=destination_name,
-        )
+    if policy_subject.type == AlertDestinationType.demo_sink:
+        return AlertDestinationTestResponse(ok=True, error=None, sent_at=now)
 
     # A test send is still egress. Derive its readable refusal from the same
     # predicate used by actual delivery tasks, keeping this answer aligned when
@@ -376,26 +619,24 @@ async def send_destination_test(
     from tripl.worker.tasks.alerts import _assert_egress_allowed
 
     try:
-        _assert_egress_allowed(destination, project)
+        _assert_egress_allowed(policy_subject, project)
     except ValueError as exc:
-        return DestinationTestOutcome(
-            response=AlertDestinationTestResponse(
-                ok=False,
-                error=f"Demo projects cannot send external alerts. {exc}",
-                # Nothing was sent, so there is no instant to report — but the
-                # key is still present, because the response type says it is.
-                sent_at=None,
-                error_kind="policy",
-            ),
-            destination_name=destination_name,
+        return AlertDestinationTestResponse(
+            ok=False,
+            error=f"Demo projects cannot send external alerts. {exc}",
+            # Nothing was sent, so there is no instant to report — but the
+            # key is still present, because the response type says it is.
+            sent_at=None,
+            error_kind="policy",
         )
 
-    # A DISABLED destination is still tested. Disabled means "route no alerts
-    # here", and the commonest reason to press Test is to check credentials
-    # before switching a destination back on — refusing would make the button
-    # useless exactly when it is most wanted. The send is an explicit,
-    # editor-only, one-message action, not routing.
-    target = _build_target(destination, project_name=project.name)
+    # Built after the policy check, so a refused send never decrypts anything.
+    try:
+        target = build_target()
+    except _SecretBorrowRefused as exc:
+        return AlertDestinationTestResponse(
+            ok=False, error=str(exc), sent_at=None, error_kind="config"
+        )
     try:
         # Every channel client blocks (urllib, smtplib), so it must not run on the
         # request's event loop.
@@ -410,23 +651,17 @@ async def send_destination_test(
         # _safe_url_for_error strips everything but scheme+host (tripl-jfm3.94).
         logger.warning(
             "Destination test send failed for %s (%s)",
-            destination_id,
-            destination.type,
+            log_ref,
+            policy_subject.type,
             exc_info=True,
         )
         error_kind, http_status = classify_test_send_error(exc)
-        return DestinationTestOutcome(
-            response=AlertDestinationTestResponse(
-                ok=False,
-                error=str(exc),
-                sent_at=None,
-                error_kind=error_kind,
-                http_status=http_status,
-            ),
-            destination_name=destination_name,
+        return AlertDestinationTestResponse(
+            ok=False,
+            error=str(exc),
+            sent_at=None,
+            error_kind=error_kind,
+            http_status=http_status,
         )
 
-    return DestinationTestOutcome(
-        response=AlertDestinationTestResponse(ok=True, error=None, sent_at=datetime.now(UTC)),
-        destination_name=destination_name,
-    )
+    return AlertDestinationTestResponse(ok=True, error=None, sent_at=datetime.now(UTC))

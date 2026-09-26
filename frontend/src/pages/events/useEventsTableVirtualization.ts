@@ -247,6 +247,9 @@ export function useEventsTableVirtualization({
     totalVirtualSize,
     /** Ref for a rendered row (with `data-index`) so its real height is used. */
     measureRow: rowVirtualizer.measureElement,
+    /** Bring a row into view when virtualized: it may not be rendered yet, so
+     *  the DOM has nothing to `scrollIntoView`. */
+    scrollToIndex: rowVirtualizer.scrollToIndex,
     /** A client-side filter is still sweeping unloaded pages for matches. */
     isScanningForMatches: isScanningForMatches({
       isClientFiltered,

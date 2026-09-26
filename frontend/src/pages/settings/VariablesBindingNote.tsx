@@ -12,7 +12,7 @@ import type { BindingExample } from './bindingExample'
  */
 export function BindingVersusTokenNote({ example }: { example: BindingExample }) {
   return (
-    <p className="text-caption text-muted-foreground">
+    <p className="text-caption text-fg-tertiary">
       A binding is where the value lives in the warehouse. It is not what you type in a field
       value — that is the variable&apos;s name.{' '}
       {example.fromProject ? 'In this project, for instance, scans read' : 'For instance, scans read'}{' '}

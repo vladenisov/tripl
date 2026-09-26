@@ -217,14 +217,13 @@ export function DemoProvisioningDialog({
         {isError ? (
           <div
             role="alert"
-            className="space-y-1 rounded-lg border px-3 py-2.5 text-body-sm leading-[1.45]"
-            style={{ background: 'var(--danger-soft)', borderColor: 'var(--danger)', color: 'var(--fg)' }}
+            className="space-y-1 rounded-lg border px-3 py-2.5 text-body-sm leading-[1.45] bg-danger-soft border-danger text-fg"
           >
             <p>{errorMessage}</p>
             {requestId ? (
               // --fg-subtle, not --fg-faint: faint falls below AA on the
               // tinted --danger-soft fill (DEMO-24).
-              <p className="font-mono text-caption" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="font-mono text-caption text-fg-tertiary">
                 Reference: {requestId}
               </p>
             ) : null}

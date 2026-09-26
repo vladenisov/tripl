@@ -116,7 +116,7 @@ describe('EventValueDriftPanel', () => {
     // Nothing is open, so the block is muted rather than warning-toned, and the
     // row is behind the collapse toggle — named for what it is, not "resolved".
     expect(await screen.findByText(/value drift — observed values outside/i)).toHaveClass(
-      'text-muted-foreground',
+      'text-fg-tertiary',
     )
     expect(screen.queryByRole('button', { name: 'Accept for event' })).not.toBeInTheDocument()
 

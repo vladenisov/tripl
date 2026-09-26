@@ -31,6 +31,11 @@ const RelationsTab = lazyWithReload(() =>
 const VariablesTab = lazyWithReload(() =>
   import('./settings/VariablesTab').then((m) => ({ default: m.VariablesTab })),
 )
+const VariableDetailPage = lazyWithReload(() =>
+  import('./settings/variable-detail/VariableDetailPage').then((m) => ({
+    default: m.VariableDetailPage,
+  })),
+)
 const MonitoringTab = lazyWithReload(() =>
   import('./settings/MonitoringTab').then((m) => ({ default: m.MonitoringTab })),
 )
@@ -107,11 +112,11 @@ export default function ProjectSettingsPage() {
   // The incident an alert link points at — the card that holds Ack / Resolve /
   // Mute. `item` still picks the row the message quoted inside it.
   const focusIncidentId = searchParams.get('incident') ?? undefined
-  // `?edit=1` asks the tab to OPEN the thing `itemId` names, not merely to mark
-  // it. A variable has no detail route of its own — its editor is a dialog — so
-  // this is the address a branch diff's Edit action can point at
-  // (tripl-htfn.2).
-  const openItemEditor = searchParams.get('edit') === '1'
+  // `?focus=<id>` marks one row of the variables list: where the variable
+  // page's back link returns to. `/settings/variables/:id` is that variable's
+  // own page now (AU-26), so a branch diff's links — focus and Edit alike
+  // (tripl-htfn.2) — land on it, Definition tab first.
+  const focusListId = searchParams.get('focus') ?? undefined
 
   if (!slug) return null
 
@@ -139,11 +144,8 @@ export default function ProjectSettingsPage() {
         {tab === 'event-types' && !itemId && <EventTypesTab slug={slug} />}
         {tab === 'meta-fields' && <MetaFieldsTab slug={slug} />}
         {tab === 'relations' && <RelationsTab slug={slug} />}
-        {/* `itemId` focuses one variable — the target of a branch-diff link — and
-            `?edit=1` opens its editor, which is that link's Edit action. */}
-        {tab === 'variables' && (
-          <VariablesTab slug={slug} focusId={itemId} openEditor={openItemEditor} />
-        )}
+        {tab === 'variables' && itemId && <VariableDetailPage slug={slug} variableId={itemId} />}
+        {tab === 'variables' && !itemId && <VariablesTab slug={slug} focusId={focusListId} />}
         {tab === 'monitoring' && <MonitoringTab slug={slug} />}
         {tab === 'alerting' && (
           <>

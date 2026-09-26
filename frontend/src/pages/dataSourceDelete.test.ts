@@ -4,7 +4,6 @@ import type { DataSource } from '@/types'
 import {
   dataSourceDeleteMessage,
   dataSourceDeleteRequireText,
-  dataSourceUsageLabel,
 } from './dataSourceDelete'
 
 const SOURCE = { name: 'Warehouse' } as DataSource
@@ -29,18 +28,30 @@ describe('dataSourceDeleteMessage (DA-40)', () => {
   })
 })
 
-describe('dataSourceUsageLabel (DA-40)', () => {
-  it('counts the scans that read the source', () => {
-    expect(dataSourceUsageLabel({ ...SOURCE, scan_count: 1 })).toBe('Used by 1 scan')
-    expect(dataSourceUsageLabel({ ...SOURCE, scan_count: 3 })).toBe('Used by 3 scans')
+describe('dataSourceDeleteMessage names a few scans (DA-40)', () => {
+  const scan = (id: string, name: string) => ({ id, name, project_slug: 'app', project_name: 'App' })
+
+  it('names the one scan and its runs', () => {
+    expect(
+      dataSourceDeleteMessage({ ...SOURCE, scan_count: 1, scan_run_count: 42, scans: [scan('s1', 'Demo scan')] }),
+    ).toBe('Delete "Warehouse"? 1 scan (Demo scan) and its 42 runs will be removed with it.')
   })
 
-  it('says so when no scan reads it', () => {
-    expect(dataSourceUsageLabel({ ...SOURCE, scan_count: 0 })).toBe('Not used by any scan')
+  it('names several scans and their runs', () => {
+    expect(
+      dataSourceDeleteMessage({
+        ...SOURCE,
+        scan_count: 2,
+        scan_run_count: 5,
+        scans: [scan('s1', 'App events'), scan('s2', 'Web events')],
+      }),
+    ).toBe('Delete "Warehouse"? 2 scans (App events and Web events) and their 5 runs will be removed with it.')
   })
 
-  it('shows nothing when the server sent no count', () => {
-    expect(dataSourceUsageLabel(SOURCE)).toBeNull()
+  it('only counts when the list does not hold every scan', () => {
+    expect(
+      dataSourceDeleteMessage({ ...SOURCE, scan_count: 3, scan_run_count: 5, scans: [scan('s1', 'App events')] }),
+    ).toBe('Delete "Warehouse"? 3 scans and 5 runs will be removed with it.')
   })
 })
 

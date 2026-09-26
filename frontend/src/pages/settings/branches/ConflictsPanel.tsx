@@ -72,7 +72,7 @@ export function ConflictsPanel({ slug, branch }: { slug: string; branch: PlanBra
       subtitleTone={conflicts.unresolved_count > 0 ? 'danger' : 'neutral'}
     >
       <div className="space-y-3 p-4">
-        <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="text-caption text-fg-tertiary">
           Main and this branch both changed these fields since the branch was opened. Pick which
           value the merge keeps.
         </p>
@@ -80,13 +80,12 @@ export function ConflictsPanel({ slug, branch }: { slug: string; branch: PlanBra
           <div
             // Two entity types may share a name; the type is part of the identity.
             key={`${entity.entity_type}:${entity.name}`}
-            className="rounded-card border p-3"
-            style={{ borderColor: 'var(--border-subtle)' }}
+            className="rounded-card border p-3 border-border-subtle"
           >
             {/* "Event type checkout", not the wire's `event_type: checkout` (PL-20). */}
-            <div className="mb-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="mb-1 text-body-sm text-fg-tertiary">
               {entityTypeLabel(entity.entity_type)}{' '}
-              <span className="mono font-medium" style={{ color: 'var(--fg)' }}>
+              <span className="mono font-medium text-fg">
                 {entity.name}
               </span>
             </div>
@@ -113,7 +112,7 @@ export function ConflictsPanel({ slug, branch }: { slug: string; branch: PlanBra
           </div>
         ))}
         {resolutionMut.isError ? (
-          <p role="alert" className="text-caption" style={{ color: 'var(--danger)' }}>
+          <p role="alert" className="text-caption text-danger">
             Could not save the choice: {getErrorMessage(resolutionMut.error)}
           </p>
         ) : null}
@@ -135,7 +134,7 @@ function ConflictFieldRow({
   return (
     <div className="text-body-sm">
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="font-medium" style={{ color: 'var(--fg)' }}>
+        <span className="font-medium text-fg">
           {field.field}
         </span>
         <span
@@ -188,7 +187,7 @@ function ConflictValue({ label, value }: { label: string; value: unknown }) {
   // of them would break the alignment.
   return (
     <div className="min-w-0">
-      <span style={{ color: 'var(--fg-subtle)' }}>{label}: </span>
+      <span className="text-fg-tertiary">{label}: </span>
       <DiffValue value={value} />
     </div>
   )

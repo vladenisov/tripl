@@ -1,7 +1,25 @@
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { Field, NativeSelect, type SelectOption } from '@/components/settings/kit'
+import { fieldErrorId } from '@/lib/fieldErrors'
 import type { ScanConfigPreview } from '@/types'
-import { isJsonPreviewType, SELECT_CLASS } from './scanUtils'
+import { isJsonPreviewType } from './scanUtils'
+
+/**
+ * A column picker's options: the empty choice, a saved column the preview no
+ * longer lists (kept so the select does not silently show another value), then
+ * the preview's columns.
+ */
+function columnOptions(
+  emptyLabel: string,
+  savedMissing: string | null,
+  available: { name: string }[],
+): SelectOption[] {
+  return [
+    { value: '', label: emptyLabel },
+    ...(savedMissing ? [savedMissing] : []),
+    ...available.map(column => column.name),
+  ]
+}
 
 export function AppVersionFields({
   columns,
@@ -36,86 +54,73 @@ export function AppVersionFields({
   const selectedPlatformIsAvailable = availableColumns.some(column => column.name === platformColumn)
   const platformSelectDisabled = !columns && !hasSelectedPlatform
 
+  // One label column with the rest of the form: `Field` rows, like the
+  // essentials card, instead of stacked labels in a two-column grid (#247 DA-12).
   return (
-    <div className="grid gap-3">
-      <div className="grid grid-cols-2 gap-3">
-        <div className="grid gap-2">
-          <Label htmlFor="app-version-column">App version column</Label>
-          <select
-            id="app-version-column"
-            value={appVersionColumn}
-            onChange={e => onAppVersionColumnChange(e.target.value)}
-            className={SELECT_CLASS}
-            disabled={selectDisabled}
-          >
-            <option value="">{columns || hasSelectedColumn ? 'No app version' : 'Load preview first'}</option>
-            {hasSelectedColumn && !selectedColumnIsAvailable && (
-              <option value={appVersionColumn}>{appVersionColumn}</option>
-            )}
-            {availableColumns.map(column => (
-              <option key={column.name} value={column.name}>{column.name}</option>
-            ))}
-          </select>
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="platform-column">Platform column</Label>
-          <select
-            id="platform-column"
-            value={platformColumn}
-            onChange={e => onPlatformColumnChange(e.target.value)}
-            className={SELECT_CLASS}
-            disabled={platformSelectDisabled}
-          >
-            <option value="">{columns || hasSelectedPlatform ? 'No platform' : 'Load preview first'}</option>
-            {hasSelectedPlatform && !selectedPlatformIsAvailable && (
-              <option value={platformColumn}>{platformColumn}</option>
-            )}
-            {availableColumns.map(column => (
-              <option key={column.name} value={column.name}>{column.name}</option>
-            ))}
-          </select>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="grid gap-2">
-          <Label htmlFor="app-version-prerelease-pattern">Pre-release version pattern</Label>
-          <Input
-            id="app-version-prerelease-pattern"
-            type="text"
-            value={prereleasePattern}
-            onChange={e => onPrereleasePatternChange(e.target.value)}
-            disabled={!appVersionColumn}
-            placeholder={appVersionColumn ? 'e.g. -(beta|rc)' : 'Select version column'}
-          />
-          <p className="text-body-sm text-muted-foreground">
-            Regex marking beta builds, e.g. -(beta|rc). Matching versions stay out of release comparisons.
-          </p>
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="app-version-active-share">Traffic share that counts as released</Label>
-          <Input
-            id="app-version-active-share"
-            type="number"
-            min={0.01}
-            max={0.99}
-            step={0.01}
-            value={activeShareMin}
-            onChange={e => onActiveShareMinChange(e.target.value)}
-            disabled={!appVersionColumn}
-            placeholder={appVersionColumn ? 'Default 0.05' : 'Select version column'}
-            aria-invalid={activeShareMinError ? true : undefined}
-            aria-describedby={activeShareMinError ? 'app-version-active-share-error' : undefined}
-          />
-          {activeShareMinError && (
-            <p id="app-version-active-share-error" className="text-body-sm" style={{ color: 'var(--danger)' }}>
-              {activeShareMinError}
-            </p>
+    <>
+      <Field label="App version column" htmlFor="app-version-column">
+        <NativeSelect
+          id="app-version-column"
+          width="fill"
+          value={appVersionColumn}
+          onChange={onAppVersionColumnChange}
+          disabled={selectDisabled}
+          options={columnOptions(
+            columns || hasSelectedColumn ? 'No app version' : 'Load preview first',
+            hasSelectedColumn && !selectedColumnIsAvailable ? appVersionColumn : null,
+            availableColumns,
           )}
-          <p className="text-body-sm text-muted-foreground">
-            A version counts as released once it carries this share of traffic. Default 0.05 (5%).
-          </p>
-        </div>
-      </div>
-    </div>
+        />
+      </Field>
+      <Field label="Platform column" htmlFor="platform-column">
+        <NativeSelect
+          id="platform-column"
+          width="fill"
+          value={platformColumn}
+          onChange={onPlatformColumnChange}
+          disabled={platformSelectDisabled}
+          options={columnOptions(
+            columns || hasSelectedPlatform ? 'No platform' : 'Load preview first',
+            hasSelectedPlatform && !selectedPlatformIsAvailable ? platformColumn : null,
+            availableColumns,
+          )}
+        />
+      </Field>
+      <Field
+        label="Pre-release version pattern"
+        htmlFor="app-version-prerelease-pattern"
+        hint="Regex marking beta builds, e.g. -(beta|rc). Matching versions stay out of release comparisons."
+      >
+        <Input
+          id="app-version-prerelease-pattern"
+          type="text"
+          value={prereleasePattern}
+          onChange={e => onPrereleasePatternChange(e.target.value)}
+          disabled={!appVersionColumn}
+          placeholder={appVersionColumn ? 'e.g. -(beta|rc)' : 'Select version column'}
+        />
+      </Field>
+      <Field
+        label="Traffic share that counts as released"
+        htmlFor="app-version-active-share"
+        hint="A version counts as released once it carries this share of traffic. Default 0.05 (5%)."
+        error={activeShareMinError}
+        last
+      >
+        <Input
+          id="app-version-active-share"
+          type="number"
+          min={0.01}
+          max={0.99}
+          step={0.01}
+          value={activeShareMin}
+          onChange={e => onActiveShareMinChange(e.target.value)}
+          disabled={!appVersionColumn}
+          placeholder={appVersionColumn ? 'Default 0.05' : 'Select version column'}
+          aria-invalid={activeShareMinError ? true : undefined}
+          aria-describedby={activeShareMinError ? fieldErrorId('app-version-active-share') : undefined}
+        />
+      </Field>
+    </>
   )
 }

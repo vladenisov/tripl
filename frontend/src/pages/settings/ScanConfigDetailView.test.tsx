@@ -528,6 +528,28 @@ describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
     expect(queryClient.getQueryData(['scanJobs', SLUG, 'scan-1'])).toBeUndefined()
   })
 
+  it('puts the scheduler\'s next metrics run in the header (i9mt.16 DA-5)', async () => {
+    const nextRunAt = new Date(Date.now() + 3 * 24 * 3_600_000 + 60_000).toISOString()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/projects/demo/scans/scan-1')) {
+        return mockJsonResponse({ ...scanConfig, last_metrics_run_at: null, next_metrics_run_at: nextRunAt })
+      }
+      if (url.endsWith('/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/platform-presence')) {
+        return mockJsonResponse({ scan_config_id: 'scan-1', platform_column: null, platforms: [], items: [] })
+      }
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/scans/activity')) return mockJsonResponse({ window_from: '', window_to: '', items: [] })
+      if (url.includes('/data-sources')) return mockJsonResponse([])
+      if (url.includes('event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderAt(`/p/${SLUG}/scans/scan-1`)
+
+    expect(await screen.findByText('Next run in 3d')).toBeInTheDocument()
+  })
+
   it('switches tabs at once while nothing is edited', async () => {
     setupFetch()
     renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)

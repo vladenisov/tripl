@@ -73,7 +73,7 @@ export function CreateMissingFieldsButton({
   const remaining = unmappedColumns.filter(column => !created.has(column))
 
   const createdNote = created.size > 0 && (
-    <p role="status" className="text-body-sm" style={{ color: 'var(--success)' }}>
+    <p role="status" className="text-body-sm text-success">
       Created {countOf(created.size, 'field', 'fields')} on "{eventType.display_name}".
     </p>
   )
@@ -94,7 +94,7 @@ export function CreateMissingFieldsButton({
     <div className="space-y-2">
       {createdNote}
       <div className="flex items-center justify-between gap-3 rounded-md border border-dashed bg-muted/10 px-3 py-2">
-        <p className="text-body-sm text-muted-foreground">
+        <p className="text-body-sm text-fg-tertiary">
           Add {remaining.length === 1 ? 'it' : 'them'} to
           {' '}"{eventType.display_name}" and runs will collect {remaining.length === 1 ? 'it' : 'them'} instead.
         </p>

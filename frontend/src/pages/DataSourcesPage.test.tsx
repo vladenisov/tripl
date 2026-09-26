@@ -402,6 +402,30 @@ describe('DataSourcesPage', () => {
     await waitFor(() => expect(deleted).toHaveBeenCalledTimes(1))
   })
 
+  it('links each scan that reads a source to its scan page (DA-40)', async () => {
+    const usedSource: DataSource = {
+      ...DATA_SOURCE,
+      scan_count: 3,
+      scan_run_count: 9,
+      scans: [
+        { id: 'scan-a', name: 'App events', project_slug: 'app', project_name: 'App' },
+        { id: 'scan-b', name: 'Web events', project_slug: 'web', project_name: 'Web' },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([usedSource]))
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    const appLink = await screen.findByRole('link', { name: 'App events' })
+    expect(appLink).toHaveAttribute('href', '/p/app/scans/scan-a')
+    expect(screen.getByRole('link', { name: 'Web events' })).toHaveAttribute('href', '/p/web/scans/scan-b')
+    // Two projects, so each link names its own; the third scan is past the cap.
+    expect(screen.getByText('(Web)')).toBeInTheDocument()
+    expect(screen.getByText(/Used by 3 scans/)).toHaveTextContent(
+      'Used by 3 scans: App events (App), Web events (Web) and 1 more',
+    )
+  })
+
   it('flags an old successful health check as stale instead of confident "healthy"', async () => {
     const staleSource: DataSource = {
       ...DATA_SOURCE,

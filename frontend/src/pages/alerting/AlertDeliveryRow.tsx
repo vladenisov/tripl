@@ -7,7 +7,7 @@ import type { AlertDelivery, AlertDeliveryDetail, AlertDeliveryItem, AlertDestin
 import { alertingApi } from "@/api/alerting"
 import { getScopeMonitoringPath } from "@/lib/monitoring"
 import { useCanWriteProject } from "@/lib/permissions"
-import { getErrorMessage } from "@/lib/utils"
+import { cn, getErrorMessage } from "@/lib/utils"
 import { formatDateTime } from "@/lib/datetime"
 import { formatIncidentCount, scopeKindLabel } from "@/lib/alertStatus"
 import { SILENT_ERROR_META } from "@/lib/errorFeedback"
@@ -37,13 +37,18 @@ import { watchRetriedDelivery, type RetryWatchOptions } from "./retryWatch"
  * cell's max-width never bound, every short column collapsed to min-content and
  * a single timestamp wrapped over four lines, inflating rows to ~100px
  * (tripl-oxkt.18). The min-width is what the eight columns actually need; the
- * Table's own container scrolls, so the page body never does. Below `md` that
- * container scrolls sideways; a card rendering for phones is deferred (AL-20).
+ * Table's own container scrolls, so the page body never does.
+ *
+ * Below `md` each row is a card instead (AL-20): time · status, then the
+ * destination, the rule and what fired, stacked. At 390px the table used to
+ * scroll sideways with only Time, Status and Destination in view. The cards are
+ * the same rows restyled by CSS rather than a second rendering, so there is one
+ * set of cells to keep right; the header stays for screen readers only.
  */
 export function DeliveryTable({ children }: { children: ReactNode }) {
   return (
-    <Table className="min-w-[1000px] table-fixed">
-      <TableHeader>
+    <Table className="table-fixed max-md:block md:min-w-[1000px]">
+      <TableHeader className="max-md:sr-only">
         <TableRow>
           <TableHead className="w-[96px]">Time</TableHead>
           <TableHead className="w-[84px]">Status</TableHead>
@@ -62,7 +67,7 @@ export function DeliveryTable({ children }: { children: ReactNode }) {
           <TableHead className="w-[104px]"></TableHead>
         </TableRow>
       </TableHeader>
-      <TableBody>{children}</TableBody>
+      <TableBody className="max-md:block">{children}</TableBody>
     </Table>
   )
 }
@@ -396,32 +401,41 @@ export function AlertDeliveryRow({
   return (
     <>
       {dialog}
-      <TableRow ref={focusRef} className={isFocused ? 'bg-primary/5' : undefined}>
+      <TableRow
+        ref={focusRef}
+        // The phone card (AL-20, see DeliveryTable): a grid of time | status |
+        // actions, with destination, rule and what fired on full-width lines
+        // below. Scan and count drop out there; the expanded row has both.
+        className={cn(
+          'max-md:grid max-md:h-auto max-md:grid-cols-[auto_minmax(0,1fr)_auto] max-md:items-center max-md:gap-x-2 max-md:py-2',
+          isFocused && 'bg-primary/5',
+        )}
+      >
         {/* The columns are sized by the table this row sits in (`table-fixed`
             in AlertAuditPanel), so every cell that can hold a long value
             truncates inside its own width and keeps the full string on `title`.
             Without that the fixed widths would simply be overrun. */}
-        <TableCell className="text-body-sm">
+        <TableCell className="text-body-sm max-md:col-start-1 max-md:row-start-1">
           {compactTime ? (
-            <div className="whitespace-nowrap" title={formatDateTime(delivery.created_at)}>
+            <div className="whitespace-nowrap max-md:flex max-md:gap-1.5" title={formatDateTime(delivery.created_at)}>
               <div>{compactTime.date}</div>
-              <div className="text-muted-foreground">{compactTime.time}</div>
+              <div className="text-fg-tertiary">{compactTime.time}</div>
             </div>
           ) : '—'}
         </TableCell>
-        <TableCell>
+        <TableCell className="max-md:col-start-2 max-md:row-start-1">
           {/* Status pill (DS-6): "sent" was a solid brand block, the one
               loud shape in a column of quiet ones, for the normal outcome.
               Alone in its cell: the local/simulated flag stacked under it
               pushed this row's baseline off its neighbours' (AL-20). */}
           <Chip tone={status === 'failed' ? 'danger' : status === 'sent' ? 'success' : 'neutral'}>{status}</Chip>
         </TableCell>
-        <TableCell className="text-body-sm">
+        <TableCell className="text-body-sm max-md:col-span-3 max-md:row-start-2">
           <div className="flex min-w-0 items-center gap-1.5" title={delivery.destination_name}>
             <ChannelGlyph
               type={delivery.channel as AlertDestinationType}
               aria-hidden="true"
-              className="size-3.5 shrink-0 text-muted-foreground"
+              className="size-3.5 shrink-0 text-fg-tertiary"
             />
             <span className="sr-only">{channelLabel(delivery.channel)}</span>{' '}
             <span className="truncate">{delivery.destination_name}</span>
@@ -438,14 +452,14 @@ export function AlertDeliveryRow({
             </span>
           )}
         </TableCell>
-        <TableCell className="text-body-sm">
+        <TableCell className="text-body-sm max-md:col-span-3 max-md:row-start-3">
           <span className="block truncate" title={delivery.rule_name}>{delivery.rule_name}</span>
         </TableCell>
-        <TableCell className="text-body-sm">
+        <TableCell className="text-body-sm max-md:hidden">
           <span className="block truncate" title={delivery.scan_name}>{delivery.scan_name}</span>
         </TableCell>
-        <TableCell className="tnum text-right text-body-sm">{delivery.matched_count}</TableCell>
-        <TableCell className="text-body-sm text-muted-foreground">
+        <TableCell className="tnum text-right text-body-sm max-md:hidden">{delivery.matched_count}</TableCell>
+        <TableCell className="text-body-sm text-fg-tertiary max-md:col-span-3 max-md:row-start-4">
           {/* Truncated here; the whole message is the first thing in the
               expanded row, where touch and screen-reader users can reach it
               too — a `title` alone reaches neither (ALR-33). */}
@@ -464,7 +478,7 @@ export function AlertDeliveryRow({
             </div>
           ) : '—'}
         </TableCell>
-        <TableCell>
+        <TableCell className="max-md:col-start-3 max-md:row-start-1">
           <div className="flex items-center justify-end gap-1">
             {/* Re-queuing a failed delivery re-sends a real message, so it is
                 editor-only server-side. The expander beside it stays: reading
@@ -504,8 +518,8 @@ export function AlertDeliveryRow({
         </TableCell>
       </TableRow>
       {retryMut.isError && (
-        <TableRow>
-          <TableCell colSpan={8} className="py-1">
+        <TableRow className="max-md:block max-md:h-auto">
+          <TableCell colSpan={8} className="py-1 max-md:block">
             <p role="alert" className="text-body-sm text-destructive">
               Retry failed: {getErrorMessage(retryMut.error)}
             </p>
@@ -513,8 +527,8 @@ export function AlertDeliveryRow({
         </TableRow>
       )}
       {open && (
-        <TableRow>
-          <TableCell colSpan={8} className="bg-muted/20">
+        <TableRow className="max-md:block max-md:h-auto">
+          <TableCell colSpan={8} className="bg-muted/20 max-md:block">
             <div className="space-y-3 p-3">
               {/* The full failure, first: it is why the reader opened a failed
                   row, and the cell above can only show its first line
@@ -530,7 +544,7 @@ export function AlertDeliveryRow({
                   to see" while the request was in flight, and forever when it
                   failed (ALR-34). */}
               {!detail && !detailFailed && (
-                <p role="status" className="text-body-sm text-muted-foreground">
+                <p role="status" className="text-body-sm text-fg-tertiary">
                   Loading delivery details…
                 </p>
               )}
@@ -583,7 +597,7 @@ export function AlertDeliveryRow({
                 </div>
               )}
               {detail.items.length === 0 ? (
-                <div className="rounded-lg border border-dashed p-4 text-body-sm text-muted-foreground">
+                <div className="rounded-lg border border-dashed p-4 text-body-sm text-fg-tertiary">
                   {emptyItemsNotice(detail.matched_count)}
                 </div>
               ) : (
@@ -639,7 +653,7 @@ export function AlertDeliveryRow({
                                   </Chip>
                                 )}
                               </div>
-                              <div className="text-muted-foreground">{scopeKindLabel(item.scope_type)}</div>
+                              <div className="text-fg-tertiary">{scopeKindLabel(item.scope_type)}</div>
                             </TableCell>
                             <TableCell className="text-body-sm">{item.direction}</TableCell>
                             {/* All three are declared `float` on
@@ -659,7 +673,7 @@ export function AlertDeliveryRow({
                                 {formatIncidentCount(item.expected_count)}
                               </div>
                               {basisNote && (
-                                <div className="mt-0.5 max-w-64 text-micro leading-snug text-muted-foreground">
+                                <div className="mt-0.5 max-w-64 text-micro leading-snug text-fg-tertiary">
                                   {basisNote}
                                 </div>
                               )}
@@ -720,7 +734,7 @@ export function AlertDeliveryRow({
                   kilobytes, and the page body must never scroll sideways. */}
               {renderedMessage && (
                 <details className="rounded-lg border">
-                  <summary className="cursor-pointer px-3 py-2 text-body-sm text-muted-foreground">
+                  <summary className="cursor-pointer px-3 py-2 text-body-sm text-fg-tertiary">
                     Message as sent
                   </summary>
                   <pre className="max-h-64 overflow-auto border-t px-3 py-2 text-caption leading-relaxed break-words whitespace-pre-wrap">

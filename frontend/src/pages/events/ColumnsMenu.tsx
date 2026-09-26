@@ -64,8 +64,7 @@ export function ColumnsMenu({
           <span className="max-sm:sr-only">Columns</span>
           {badge && (
             <span
-              className="ml-1 text-micro"
-              style={{ color: 'var(--fg-subtle)' }}
+              className="ml-1 text-micro text-fg-tertiary"
             >
               {badge}
             </span>
@@ -74,8 +73,7 @@ export function ColumnsMenu({
       </PopoverTrigger>
       <PopoverContent align="end" className="w-60 p-1.5">
         <div
-          className="px-2 pb-1 pt-1.5 micro-label"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="px-2 pb-1 pt-1.5 micro-label text-fg-tertiary"
         >
           Toggle columns
         </div>
@@ -126,8 +124,7 @@ export function ColumnsMenu({
         {fieldColumns.length > 0 && (
           <>
             <div
-              className="px-2 pb-1 pt-2 micro-label"
-              style={{ color: 'var(--fg-faint)' }}
+              className="px-2 pb-1 pt-2 micro-label text-fg-tertiary"
             >
               Fields
             </div>
@@ -145,8 +142,7 @@ export function ColumnsMenu({
         {metaFields.length > 0 && (
           <>
             <div
-              className="px-2 pb-1 pt-2 micro-label"
-              style={{ color: 'var(--fg-faint)' }}
+              className="px-2 pb-1 pt-2 micro-label text-fg-tertiary"
             >
               Meta
             </div>
@@ -162,8 +158,7 @@ export function ColumnsMenu({
           </>
         )}
         <div
-          className="border-t px-2 pb-1 pt-2 text-micro"
-          style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
+          className="border-t px-2 pb-1 pt-2 text-micro border-border-subtle text-fg-tertiary"
         >
           Event stays pinned to the left edge while you scroll. Type and{' '}
           {ROW_METRICS_LABEL} cannot be hidden.
@@ -199,13 +194,12 @@ function ColumnToggle({
           borderColor: checked ? 'var(--accent-solid)' : 'var(--border-strong)',
         }}
       >
-        {checked && <Check className="size-3" style={{ color: 'var(--accent-solid-fg)' }} />}
+        {checked && <Check className="size-3 text-accent-solid-fg" />}
       </span>
       <span className="flex-1 truncate">{label}</span>
       {pinned && (
         <span
-          className="micro-label"
-          style={{ color: 'var(--fg-faint)' }}
+          className="micro-label text-fg-tertiary"
         >
           pinned
         </span>

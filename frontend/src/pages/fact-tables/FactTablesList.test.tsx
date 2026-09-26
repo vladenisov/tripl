@@ -6,7 +6,7 @@ import type { DataSource, FactTableListItem, FactTableListResponse } from '@/typ
 import { FactTablesList } from './FactTablesList'
 
 vi.mock('@/api/factTables', () => ({
-  factTablesApi: { list: vi.fn(), remove: vi.fn() },
+  factTablesApi: { list: vi.fn(), remove: vi.fn(), get: vi.fn(), create: vi.fn() },
 }))
 vi.mock('@/api/dataSources', () => ({
   dataSourcesApi: { list: vi.fn() },
@@ -245,6 +245,55 @@ describe('FactTablesList rows (MT-30)', () => {
     const row = (await screen.findByRole('link', { name: 'Orders' })).closest('[role="row"]')!
     fireEvent.click(within(row as HTMLElement).getByText('created_at'))
 
+    expect(await screen.findByText('fact table editor')).toBeInTheDocument()
+  })
+})
+
+describe('FactTablesList follow-ups (F7)', () => {
+  it('links a Used-by count to the catalog narrowed to that table', async () => {
+    mockList({ items: [makeItem({ id: 'ft-1', display_name: 'Orders', metric_count: 3 })], total: 1 })
+    renderList()
+
+    const link = await screen.findByRole('link', { name: '3 metrics' })
+    expect(link).toHaveAttribute('href', '/p/demo/metrics?fact_table=ft-1')
+  })
+
+  it('duplicates a table under a free name and opens the copy', async () => {
+    mockList({
+      items: [
+        makeItem({ id: 'ft-1', name: 'orders', display_name: 'Orders' }),
+        makeItem({ id: 'ft-2', name: 'orders_copy', display_name: 'Orders (copy)' }),
+      ],
+      total: 2,
+    })
+    vi.mocked(factTablesApi.get).mockResolvedValue({
+      ...makeItem({ id: 'ft-1', name: 'orders', display_name: 'Orders' }),
+      sql: 'SELECT id, created_at FROM orders',
+      columns: [{ name: 'id', type: 'bigint' }],
+      identifier_columns: ['id'],
+      row_filters: [{ name: 'big', sql: 'amount > 100' }],
+    } as unknown as Awaited<ReturnType<typeof factTablesApi.get>>)
+    vi.mocked(factTablesApi.create).mockResolvedValue({
+      id: 'ft-3',
+    } as unknown as Awaited<ReturnType<typeof factTablesApi.create>>)
+    renderList()
+
+    const trigger = await screen.findByRole('button', { name: 'Actions for Orders' })
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Duplicate' }))
+
+    await waitFor(() =>
+      expect(factTablesApi.create).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({
+          name: 'orders_copy_2',
+          display_name: 'Orders (copy)',
+          sql: 'SELECT id, created_at FROM orders',
+          identifier_columns: ['id'],
+          row_filters: [{ name: 'big', sql: 'amount > 100' }],
+        }),
+      ),
+    )
     expect(await screen.findByText('fact table editor')).toBeInTheDocument()
   })
 })

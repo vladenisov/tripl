@@ -27,6 +27,7 @@ import { aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
 import type { ChartAnnotation, EventType, MonitoringSignal } from '@/types'
 
 import { getMonitoringPath } from '@/lib/monitoring'
+import { formatWeekSummary } from '@/lib/monitoringWeekTotals'
 import { eventsMetricsChartKey } from '@/lib/queryKeys'
 import {
   TAB_METRICS_GRANULARITY_OPTIONS,
@@ -149,6 +150,10 @@ export function TabMetricsCard({
   // "No recent volume" with live range controls (EV-16).
   const isEmpty = isOpen && !isLoading && !hasChartData
   const annotations = useMemo(() => signalAnnotation(activeTabSignal), [activeTabSignal])
+  // "612k in 7d · +4% vs prior week" (EV-21). The weekly totals do not follow
+  // the chart's range. Collapsed, the card does not fetch (EVT-20), so the
+  // strip shows the line only while an earlier open left the series cached.
+  const weekSummary = formatWeekSummary(tabMetrics)
 
   return (
     <Collapsible open={isOpen} onOpenChange={onOpenChange}>
@@ -166,14 +171,18 @@ export function TabMetricsCard({
             {/* Collapsed by default, and then a bare header: the chart pushed
                 the table below the fold on every visit (EV-21). */}
             {isOpen && (
-              <p className="text-caption leading-tight text-muted-foreground">
+              <p className="text-caption leading-tight text-fg-tertiary">
                 {isEmpty ? `No volume in the last ${rangeDays} days` : `Last ${rangeDays} days, grouped by ${granularity}`}
                 {tabMetrics?.scan_config_name ? ` · scan: ${tabMetrics.scan_config_name}` : ''}
                 {/* The collection interval rides in the subtitle instead of a
                     line of its own under the chart (EV-21). */}
-                {tabMetrics?.interval ? ` · collected every ${tabMetrics.interval}` : ''}.
+                {tabMetrics?.interval ? ` · collected every ${tabMetrics.interval}` : ''}
+                {weekSummary ? ` · ${weekSummary}` : ''}.
                 {unappliedFilters.length > 0 && ` Not narrowed by ${unappliedFilters.join(', ')}.`}
               </p>
+            )}
+            {!isOpen && weekSummary && (
+              <p className="text-caption leading-tight text-fg-tertiary">{weekSummary}</p>
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2">

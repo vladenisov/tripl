@@ -156,6 +156,8 @@ export type EventsTableProps = {
    * every row settled.
    */
   rowMetricsSettled?: Set<string>
+  /** Rows the reader has just created, marked so they can be found (AU-20 / AU-21). */
+  createdIds?: ReadonlySet<string>
 }
 
 export function EventsTable({
@@ -219,6 +221,7 @@ export function EventsTable({
   sortOrder,
   onSortOrderChange,
   rowMetricsSettled,
+  createdIds,
 }: EventsTableProps) {
   const branchId = useActiveBranchId()
   // Selecting is only ever for a bulk edit, which a viewer cannot make.
@@ -316,6 +319,7 @@ export function EventsTable({
         reorderable={canReorder}
         measureRef={virtualize ? measureRow : undefined}
         virtualIndex={virtualIndex}
+        justCreated={createdIds?.has(ev.id) ?? false}
       />
     )
   }
@@ -351,12 +355,7 @@ export function EventsTable({
         >
           {nameClusters.length > 0 && (
             <div
-              className="border-b text-caption"
-              style={{
-                borderColor: 'var(--border)',
-                background: 'var(--bg-sunken)',
-                color: 'var(--fg-subtle)',
-              }}
+              className="border-b text-caption border-border bg-bg-sunken text-fg-tertiary"
             >
               <button
                 type="button"
@@ -371,7 +370,7 @@ export function EventsTable({
                 )}
                 <Layers className="size-3.5" aria-hidden />
                 <span>
-                  <span className="tnum" style={{ color: 'var(--fg-muted)' }}>
+                  <span className="tnum text-fg-secondary">
                     {nameClusters.length.toLocaleString()}
                   </span>{' '}
                   similar-name {nameClusters.length === 1 ? 'cluster' : 'clusters'} detected
@@ -385,12 +384,11 @@ export function EventsTable({
                       {/* Sans like the names in the rows below it: a name
                           prefix is display text, not code (DS-17). */}
                       <span
-                        className="truncate"
-                        style={{ color: 'var(--fg-muted)' }}
+                        className="truncate text-fg-secondary"
                         title={group.prefix}
                       >
                         {group.prefix}
-                        <span style={{ color: 'var(--fg-faint)' }}>…</span>
+                        <span className="text-fg-tertiary">…</span>
                       </span>
                       <span className="tnum whitespace-nowrap">
                         · {group.count.toLocaleString()} events
@@ -407,7 +405,7 @@ export function EventsTable({
                     </li>
                   ))}
                   {nameClusters.length > MAX_VISIBLE_CLUSTERS && (
-                    <li className="px-5 py-1" style={{ color: 'var(--fg-faint)' }}>
+                    <li className="px-5 py-1 text-fg-tertiary">
                       and {(nameClusters.length - MAX_VISIBLE_CLUSTERS).toLocaleString()} more…
                     </li>
                   )}
@@ -581,7 +579,7 @@ export function EventsTable({
                       <FilterableHead
                         key={mf.id}
                         label={mf.display_name}
-                        className="text-muted-foreground"
+                        className="text-fg-tertiary"
                         filter={
                           <ColumnFilter
                             label={mf.display_name}
@@ -658,7 +656,7 @@ export function EventsTable({
                         // still searching the rest (EVT-4).
                         <div
                           role="status"
-                          className="flex items-center justify-center gap-2 py-16 text-body text-muted-foreground"
+                          className="flex items-center justify-center gap-2 py-16 text-body text-fg-tertiary"
                         >
                           <Loader2 className="size-4 animate-spin" aria-hidden="true" />
                           {`Searching… ${loadedCount.toLocaleString()} of ${total.toLocaleString()} events checked`}
@@ -692,12 +690,7 @@ export function EventsTable({
           </div>
           {events.length > 0 && (
             <div
-              className="flex h-[30px] items-center gap-3.5 border-t px-5 text-caption"
-              style={{
-                borderColor: 'var(--border)',
-                background: 'var(--bg-sunken)',
-                color: 'var(--fg-subtle)',
-              }}
+              className="flex h-[30px] items-center gap-3.5 border-t px-5 text-caption border-border bg-bg-sunken text-fg-tertiary"
             >
               <span aria-live="polite" aria-atomic="true" className="sr-only">
                 {footerLabel}

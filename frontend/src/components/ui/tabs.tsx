@@ -50,7 +50,7 @@ function TabsList({
         className={cn(
           variant === "segmented"
             ? SEGMENTED_TRACK
-            : "text-muted-foreground flex w-full items-end gap-1 overflow-x-auto border-b border-border",
+            : "text-fg-tertiary flex w-full items-end gap-1 overflow-x-auto border-b border-border",
           className
         )}
         {...props}

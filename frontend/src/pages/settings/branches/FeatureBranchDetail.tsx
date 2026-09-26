@@ -83,7 +83,7 @@ import {
   invalidateBranchReview,
   invalidateMainPlan,
 } from './branchQueryKeys'
-import { BranchReviewSummary } from './BranchReviewers'
+import { BranchReviewSummary, type ReviewerPickerIntent } from './BranchReviewers'
 import { CommentsPanel, ImplementationTicketsPanel } from './BranchSidePanels'
 import { ChangeRow, HousekeepingFold } from './ChangeRow'
 import { ConflictsPanel } from './ConflictsPanel'
@@ -131,7 +131,7 @@ export function BranchDetail({
   if (!branch) {
     return (
       <Panel title="Branch">
-        <p className="px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="px-4 py-7 text-center text-body-sm text-fg-tertiary">
           Select a branch to review its diff.
         </p>
       </Panel>
@@ -181,6 +181,10 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
   // When this session merged the branch — the ticket panel waits for the
   // tracker ticket the merge worker writes a moment later (PLAN-10).
   const [mergedAt, setMergedAt] = useState<number | null>(null)
+  // The reviewer picker in the review summary. Lifted here so "Submit for
+  // review" on a branch with nobody assigned opens it instead of sending the
+  // branch to no one (JR-14).
+  const [reviewerPicker, setReviewerPicker] = useState<ReviewerPickerIntent>(null)
   // The ticket a branch is named after, linked through the meta field that
   // links event values to the tracker (tripl-kjhi.14). Main's fields: the
   // template is project-wide and a branch copy carries the same one.
@@ -382,6 +386,17 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
       })
       if (!ok) return
     }
+    // Nobody assigned yet: ask who should review first, when there is someone
+    // other than you to ask. The picker then submits ("Add and submit") or
+    // lets the author send it anyway.
+    if (
+      action === 'submit' &&
+      (detail?.reviewers.length ?? 0) === 0 &&
+      [...usersById.keys()].some((id) => id !== user?.id)
+    ) {
+      setReviewerPicker('submit')
+      return
+    }
     actionMut.mutate(action)
   }
 
@@ -479,8 +494,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
                 href={ticket.href}
                 target="_blank"
                 rel="noreferrer"
-                className="mono inline-flex items-center gap-0.5 text-caption hover:underline"
-                style={{ color: 'var(--accent)' }}
+                className="mono inline-flex items-center gap-0.5 text-caption hover:underline text-accent"
                 title={`Open ${ticket.key} in ${ticket.field.display_name}`}
               >
                 {ticket.key}
@@ -535,8 +549,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
             around the header chips (PL-17). */}
         {!landed || (canWrite && branch.status !== 'merged') ? (
           <div
-            className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5"
-            style={{ borderColor: 'var(--border-subtle)' }}
+            className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5 border-border-subtle"
           >
             {!landed ? (
               <>
@@ -570,7 +583,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
             {canWrite && branch.status !== 'merged' && (
               <IconButton
                 variant="ghost"
-                className="ml-auto text-muted-foreground hover:text-[var(--danger)]"
+                className="ml-auto text-fg-tertiary hover:text-[var(--danger)]"
                 onClick={handleDelete}
                 disabled={deleteMut.isPending}
                 label="Delete branch"
@@ -581,8 +594,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
           </div>
         ) : null}
         <div
-          className="flex flex-wrap items-center gap-x-[18px] gap-y-2 border-t px-4 py-3"
-          style={{ borderColor: 'var(--border-subtle)' }}
+          className="flex flex-wrap items-center gap-x-[18px] gap-y-2 border-t px-4 py-3 border-border-subtle"
         >
           {diffLoad.status !== 'success' ? (
             // Never the zero counts: "+0 ~0 −0" over an unloaded diff reads as
@@ -666,6 +678,9 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
           detail={detail}
           usersById={usersById}
           canWrite={canWrite}
+          picker={reviewerPicker}
+          onPickerChange={setReviewerPicker}
+          onSubmitForReview={() => actionMut.mutate('submit')}
         />
         {/* Every status change, Merge included, in one row with exactly one
             primary: the next step (PL-7). The reason a button is disabled is
@@ -673,8 +688,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
             never shown (#237 DA-9). */}
         {canWrite && (transitions.length > 0 || branch.status === 'approved') && (
           <div
-            className="flex flex-col gap-2 border-t px-4 py-3"
-            style={{ borderColor: 'var(--border-subtle)' }}
+            className="flex flex-col gap-2 border-t px-4 py-3 border-border-subtle"
           >
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap">
               {branch.status === 'approved' ? (
@@ -726,8 +740,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
         {actionError ? (
           <p
             role="alert"
-            className="border-t px-4 py-2.5 text-caption"
-            style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)' }}
+            className="border-t px-4 py-2.5 text-caption border-border-subtle text-danger"
           >
             {actionError}
           </p>
@@ -735,16 +748,14 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
         {deleteMut.isError ? (
           <p
             role="alert"
-            className="border-t px-4 py-2.5 text-caption"
-            style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)' }}
+            className="border-t px-4 py-2.5 text-caption border-border-subtle text-danger"
           >
             Could not delete the branch: {getErrorMessage(deleteMut.error)}
           </p>
         ) : null}
         {actionSuccess ? (
           <p
-            className="border-t px-4 py-2.5 text-caption"
-            style={{ borderColor: 'var(--border-subtle)', color: 'var(--success)' }}
+            className="border-t px-4 py-2.5 text-caption border-border-subtle text-success"
           >
             {actionSuccess}
           </p>
@@ -785,7 +796,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
             <DiffLoadNotice load={diffLoad} className="px-4 py-7 text-center text-body-sm" />
           )
         ) : visibleEntries.length === 0 ? (
-          <div className="px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="px-4 py-7 text-center text-body-sm text-fg-tertiary">
             <p>No changes in this branch.</p>
             {/* The way forward from an empty branch (PL-4 / PL-28). */}
             {!landed && canWrite ? (
@@ -823,8 +834,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
         {revertMut.isError ? (
           <p
             role="alert"
-            className="border-t px-4 py-2.5 text-caption"
-            style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)' }}
+            className="border-t px-4 py-2.5 text-caption border-border-subtle text-danger"
           >
             {getErrorMessage(revertMut.error)}
           </p>
@@ -947,7 +957,7 @@ function ReviewProgress({ status, next }: { status: PlanBranchStatus; next: stri
                 }}
               >
                 {index > 0 ? (
-                  <span aria-hidden="true" style={{ color: 'var(--fg-faint)' }}>
+                  <span aria-hidden="true" className="text-fg-tertiary">
                     ·
                   </span>
                 ) : null}
@@ -957,7 +967,7 @@ function ReviewProgress({ status, next }: { status: PlanBranchStatus; next: stri
           })}
         </ol>
       ) : null}
-      <p className="text-body-sm" style={{ color: 'var(--fg-secondary)' }}>
+      <p className="text-body-sm text-fg-secondary">
         {next}
       </p>
     </div>
@@ -1004,7 +1014,7 @@ function MainBranchPane({
   }
   return (
     <Panel title={main.name} subtitle="The live production plan">
-      <div className="flex flex-col gap-2 px-4 py-4 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="flex flex-col gap-2 px-4 py-4 text-body-sm text-fg-tertiary">
         <p>This is the default branch: every change merges here. Select a branch to review its changes.</p>
         <ul className="flex flex-col gap-1 text-caption">
           {lastMerged ? (
@@ -1012,8 +1022,7 @@ function MainBranchPane({
               Last merged:{' '}
               <Link
                 to={`/p/${slug}/settings/branches/${lastMerged.id}`}
-                className="mono hover:underline"
-                style={{ color: 'var(--fg)' }}
+                className="mono hover:underline text-fg"
               >
                 {lastMerged.name}
               </Link>{' '}
@@ -1027,8 +1036,7 @@ function MainBranchPane({
         </ul>
         <Link
           to={`/p/${slug}/settings/history`}
-          className="inline-flex w-fit items-center gap-1 text-caption font-medium hover:underline"
-          style={{ color: 'var(--accent)' }}
+          className="inline-flex w-fit items-center gap-1 text-caption font-medium hover:underline text-accent"
         >
           <History className="size-3" aria-hidden="true" />
           View plan history

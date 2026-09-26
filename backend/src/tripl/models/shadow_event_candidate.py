@@ -3,7 +3,16 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tripl.models.base import Base, UUIDMixin
@@ -13,6 +22,8 @@ from tripl.models.enum_types import db_enum
 SHADOW_STATUS_NEW = ShadowEventStatus.new.value
 SHADOW_STATUS_ACCEPTED = ShadowEventStatus.accepted.value
 SHADOW_STATUS_DISMISSED = ShadowEventStatus.dismissed.value
+# Sample property dicts kept per candidate.
+SHADOW_SAMPLE_LIMIT = 5
 
 
 class ShadowEventCandidate(UUIDMixin, Base):
@@ -48,6 +59,13 @@ class ShadowEventCandidate(UUIDMixin, Base):
     # Count observed in the most recent collection window (not cumulative —
     # collection windows are re-collected, so summing would double-count).
     observed_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Up to ``SHADOW_SAMPLE_LIMIT`` property dicts (column -> value) from the rows
+    # that produced this identity in the most recent collection window, so the
+    # shadow inbox can show what the event looks like before it is accepted
+    # (DA-32). Replaced, not merged, like ``observed_count``.
+    sample_properties: Mapped[list[dict[str, str]]] = mapped_column(
+        JSON, default=list, server_default="[]"
+    )
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(

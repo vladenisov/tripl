@@ -107,7 +107,7 @@ export function InactiveGroup({
   return (
     <div data-inactive="true">
       {reason && (
-        <p className="m-0 px-4 pt-2.5 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="m-0 px-4 pt-2.5 text-caption text-fg-tertiary">
           {reason}
         </p>
       )}
@@ -132,8 +132,7 @@ export function InstanceSettingsSkeleton() {
             // layout does not jump when the data lands.
             <div key={row} className="@container">
               <div
-                className="flex flex-col gap-2 px-4 py-[15px] @min-[560px]:flex-row @min-[560px]:items-center @min-[560px]:gap-6"
-                style={{ borderTop: '1px solid var(--border-subtle)' }}
+                className="flex flex-col gap-2 px-4 py-[15px] @min-[560px]:flex-row @min-[560px]:items-center @min-[560px]:gap-6 border-t border-t-border-subtle"
               >
                 <Skeleton className="h-3 w-28 shrink-0" />
                 <Skeleton className="h-[34px] w-full" />
@@ -182,7 +181,7 @@ export function NumberSettingInput({
         aria-describedby={error ? errorId : undefined}
       />
       {error && (
-        <p id={errorId} className="mt-1 text-caption" style={{ color: 'var(--danger)' }}>
+        <p id={errorId} className="mt-1 text-caption text-danger">
           {error}
         </p>
       )}
@@ -233,7 +232,7 @@ export function ResetSectionCard({
             <RotateCcw className="h-3.5 w-3.5" />
             Reset to defaults
           </Button>
-          <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="text-caption text-fg-tertiary">
             Applies immediately — it does not wait for Save changes.
           </span>
         </>

@@ -6,6 +6,7 @@ import { defaultDestinationForm, type DestinationChannel, type DestinationFormSt
 import {
   destinationFormProblems,
   destinationFormToPayload,
+  destinationFormToTestBody,
   destinationToForm,
 } from './destinationForm'
 
@@ -203,5 +204,41 @@ describe('destinationFormProblems — the webhook header is a pair (ALR-24)', ()
         { removeWebhookHeader: true },
       ),
     ).toEqual({})
+  })
+})
+
+// The dialog's "Send test" (AL-30): the channel fields the save would send,
+// plus the channel and the destination whose stored secrets fill the blanks.
+describe('destinationFormToTestBody', () => {
+  it('sends an unsaved destination as the create body would, with no id', () => {
+    const body = destinationFormToTestBody(
+      filled('slack', { webhook_url: 'https://hooks.slack.com/services/T/B/X' }),
+      null,
+    )
+
+    expect(body).toMatchObject({ destination_id: null, type: 'slack', name: 'My slack' })
+    expect(body.webhook_url).toBe('https://hooks.slack.com/services/T/B/X')
+  })
+
+  it('names the saved destination and leaves an untouched secret out', () => {
+    const existing = makeDestination()
+    const body = destinationFormToTestBody(destinationToForm(existing), existing)
+
+    expect(body.destination_id).toBe(existing.id)
+    expect(body.type).toBe('webhook')
+    // Absent means "the stored one" to the server, exactly as on Save.
+    expect(body.target_url).toBeUndefined()
+    expect(body.webhook_header_value).toBeUndefined()
+    expect(body.webhook_header_name).toBe('Authorization')
+  })
+
+  it('sends a removed header as removed', () => {
+    const existing = makeDestination()
+    const body = destinationFormToTestBody(destinationToForm(existing), existing, {
+      removeWebhookHeader: true,
+    })
+
+    expect(body.webhook_header_name).toBeNull()
+    expect(body.webhook_header_value).toBeNull()
   })
 })

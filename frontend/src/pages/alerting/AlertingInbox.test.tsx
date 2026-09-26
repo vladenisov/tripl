@@ -1099,7 +1099,7 @@ describe('AlertingInbox — narrowing the list past its status', () => {
     )
   })
 
-  it('states the window a date filter can reach, on the control itself', () => {
+  it('states the window a date filter can reach, on the control itself', async () => {
     renderInbox()
 
     // The list is read over 30 days and then capped, so a date older than that
@@ -1107,9 +1107,27 @@ describe('AlertingInbox — narrowing the list past its status', () => {
     // be describing the project rather than the page (tripl-39n6).
     // The range and its caveat are one chip now, opened on demand (AL-15).
     fireEvent.click(screen.getByRole('button', { name: 'Last fired filter: any' }))
-    const from = screen.getByLabelText('Last fired from')
-    expect(from).toHaveAttribute('min', earliestReachableDay(new Date()))
     expect(screen.getByText(/Dates narrow the 30 days this list already covers/)).toBeInTheDocument()
+
+    // The app's calendar rather than a native date input (AL-15): the bound
+    // is a disabled day, not a `min` attribute.
+    const earliest = earliestReachableDay(new Date())
+    const [year, month, day] = earliest.split('-').map(Number)
+    const bound = new Date(year, month - 1, day)
+    fireEvent.click(screen.getByLabelText('Last fired from'))
+    const grid = await screen.findByRole('grid')
+    const now = new Date()
+    if (bound.getMonth() !== now.getMonth()) {
+      // It opens on today, clamped into range; the floor is last month.
+      fireEvent.click(screen.getByRole('button', { name: 'Previous month' }))
+    }
+    const dayName = (date: Date) =>
+      date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+    expect(within(grid).getByRole('button', { name: dayName(bound) })).toBeEnabled()
+    if (day > 1) {
+      const before = new Date(year, month - 1, day - 1)
+      expect(within(grid).getByRole('button', { name: dayName(before) })).toBeDisabled()
+    }
   })
 
   it('names the filters in the empty state, and Show all clears them with the status', () => {

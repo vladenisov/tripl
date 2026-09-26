@@ -43,7 +43,7 @@ export function DangerRow({
       <div className={DANGER_ROW_CLASS}>
         <div className="min-w-0 flex-1">
           <div className="text-body font-medium">{title}</div>
-          <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="mt-[3px] text-body-sm leading-[1.45] text-fg-tertiary">
             {hint}
           </div>
         </div>
@@ -78,11 +78,11 @@ export function DangerResetRow({
   feedback: ReactNode
 }) {
   return (
-    <div className={DANGER_ROW_CONTAINER_CLASS} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+    <div className={`${DANGER_ROW_CONTAINER_CLASS} border-b border-b-border-subtle`}>
       <div className={DANGER_ROW_CLASS}>
         <div className="min-w-0 flex-1">
           <div className="text-body font-medium">{title}</div>
-          <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="mt-[3px] text-body-sm leading-[1.45] text-fg-tertiary">
             {hint}
           </div>
           {feedback}
@@ -146,7 +146,7 @@ export function DangerRetireVariablesRow({
       <div className={DANGER_ROW_CLASS}>
         <div className="min-w-0 flex-1">
           <div className="text-body font-medium">Retire unused variables</div>
-          <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="mt-[3px] text-body-sm leading-[1.45] text-fg-tertiary">
             Delete variables a scan created that no event field value references and that carry no
             observed values, drift or documented values. Nothing edited by hand is touched.
           </div>

@@ -265,24 +265,22 @@ function MapCard({ area }: { area: Area }) {
   const Icon = area.icon
   return (
     <div
-      className="flex flex-col rounded-card border p-4"
-      style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+      className="flex flex-col rounded-card border p-4 bg-surface border-border"
     >
       <div className="flex items-center gap-2">
         <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
-          style={{ background: 'var(--surface-hover)' }}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-surface-hover"
         >
           <Icon className="size-4" style={{ color: area.accent }} aria-hidden="true" />
         </span>
         <div className="min-w-0">
           <div className="text-body font-semibold leading-tight">{area.label}</div>
-          <div className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-caption text-fg-tertiary">
             {area.tagline}
           </div>
         </div>
       </div>
-      <p className="mt-2.5 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="mt-2.5 text-body-sm leading-relaxed text-fg-tertiary">
         {area.blurb}
       </p>
       {/* Each chip jumps to its glossary row: chips that looked like links
@@ -326,8 +324,7 @@ function TermRow({ term, slug }: { term: Term; slug: string | undefined }) {
           // one's.
           <Link
             to={href}
-            className="flex shrink-0 items-center gap-0.5 text-caption font-medium no-underline"
-            style={{ color: 'var(--accent)' }}
+            className="flex shrink-0 items-center gap-0.5 text-caption font-medium no-underline text-accent"
             aria-label={term.surface ? `${label}, for ${term.term}` : `${label} in the app`}
           >
             {label}
@@ -335,7 +332,7 @@ function TermRow({ term, slug }: { term: Term; slug: string | undefined }) {
           </Link>
         )}
       </div>
-      <p className="mt-1 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="mt-1 text-body-sm leading-relaxed text-fg-tertiary">
         {term.definition}
       </p>
     </div>
@@ -361,8 +358,7 @@ export default function ConceptsPage() {
             How tripl models your plan
           </h2>
           <div
-            className="flex items-center gap-1.5 text-caption font-medium"
-            style={{ color: 'var(--fg-faint)' }}
+            className="flex items-center gap-1.5 text-caption font-medium text-fg-tertiary"
           >
             {AREAS.map((area, i) => (
               <span key={area.key} className="flex items-center gap-1.5">
@@ -389,7 +385,7 @@ export default function ConceptsPage() {
           // h2 Glossary → h3 area → h4 term: the panels sit under the page's own
           // h2, so they must not flatten the outline back to level 2.
           <Panel key={area.key} title={area.label} subtitle={area.tagline} headingLevel={3}>
-            <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div className="divide-y border-border-subtle">
               {area.terms.map((term) => (
                 <TermRow key={term.term} term={term} slug={slug} />
               ))}

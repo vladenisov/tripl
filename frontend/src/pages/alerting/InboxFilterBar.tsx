@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { FilterBar, FilterSearch, FilterSelect } from '@/components/ui/filter-bar'
+import { FilterBar, FilterBarItem, FilterSearch, FilterSelect } from '@/components/ui/filter-bar'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { scopeKindLabel } from '@/lib/alertStatus'
 import type { AlertInboxStatusCounts, MetricScopeType } from '@/types'
@@ -156,17 +156,20 @@ export function InboxFilterBar({
           what is already here and cannot fetch an older incident — a
           control that accepted such a date and answered "none" would be
           describing the project rather than the page (tripl-39n6,
-          tripl-htfn.4). */}
-      <DateRangeFilter
-        label="Last fired"
-        fromLabel="Last fired from"
-        toLabel="Last fired to"
-        min={earliest}
-        from={value.firedFrom}
-        to={value.firedTo}
-        onRangeChange={({ from, to }) => onChange({ ...value, firedFrom: from, firedTo: to })}
-        hint={`Dates narrow the ${INBOX_LOOKBACK_DAYS} days this list already covers — an older incident is not reachable from here, and its own link still opens it.`}
-      />
+          tripl-htfn.4). Folds into the phone "Filters (n)" sheet with the
+          chips beside it. */}
+      <FilterBarItem active={!!(value.firedFrom || value.firedTo)}>
+        <DateRangeFilter
+          label="Last fired"
+          fromLabel="Last fired from"
+          toLabel="Last fired to"
+          min={earliest}
+          from={value.firedFrom}
+          to={value.firedTo}
+          onRangeChange={({ from, to }) => onChange({ ...value, firedFrom: from, firedTo: to })}
+          hint={`Dates narrow the ${INBOX_LOOKBACK_DAYS} days this list already covers — an older incident is not reachable from here, and its own link still opens it.`}
+        />
+      </FilterBarItem>
     </FilterBar>
   )
 }

@@ -313,6 +313,34 @@ describe('RadioCards keyboard (DS-35)', () => {
   })
 })
 
+describe('RadioCards dimmed option (MT-3)', () => {
+  function Harness() {
+    const [value, setValue] = useState('a')
+    return (
+      <RadioCards
+        groupLabel="Metric kind"
+        value={value}
+        onChange={setValue}
+        options={[
+          { value: 'a', label: 'Alpha' },
+          { value: 'b', label: 'Beta', dimmed: true },
+        ]}
+      />
+    )
+  }
+
+  it('fades a card without disabling it, and not once it is checked', () => {
+    render(<Harness />)
+    const beta = screen.getByRole('radio', { name: 'Beta' })
+    expect(beta).toHaveAttribute('data-dimmed', 'true')
+    expect(beta).toBeEnabled()
+
+    fireEvent.click(beta)
+    expect(beta).toBeChecked()
+    expect(beta).not.toHaveAttribute('data-dimmed')
+  })
+})
+
 describe('Panel options (DS-15)', () => {
   it('drops the header and its heading when there is neither title nor right slot', () => {
     const { container } = render(<Panel>body</Panel>)
@@ -468,6 +496,40 @@ describe('NativeSelect width (ST-27)', () => {
       <NativeSelect aria-label="Mode" value="a" onChange={() => {}} options={['a', 'b']} width="fill" />,
     )
     expect(screen.getByRole('combobox', { name: 'Mode' }).parentElement?.style.maxWidth).toBe('')
+  })
+})
+
+describe('NativeSelect options, groups, size and ref', () => {
+  it('renders disabled options and optgroups after the plain options', () => {
+    render(
+      <NativeSelect
+        aria-label="Event"
+        value=""
+        options={[{ value: '', label: 'Choose one', disabled: true }]}
+        groups={[
+          { label: 'Events', options: [{ value: 'e1', label: 'Signup' }] },
+          { label: 'Types', options: ['t1'] },
+        ]}
+      />,
+    )
+    const select = screen.getByRole('combobox', { name: 'Event' })
+    expect(screen.getByRole('option', { name: 'Choose one' })).toBeDisabled()
+    const groups = select.querySelectorAll('optgroup')
+    expect([...groups].map((g) => g.label)).toEqual(['Events', 'Types'])
+    expect(groups[0]).toContainElement(screen.getByRole('option', { name: 'Signup' }))
+    expect(groups[1]).toContainElement(screen.getByRole('option', { name: 't1' }))
+  })
+
+  it('is 28px tall at size sm and forwards its ref', () => {
+    const ref = { current: null as HTMLSelectElement | null }
+    const { rerender } = render(
+      <NativeSelect aria-label="Mode" value="a" onChange={() => {}} options={['a']} ref={ref} />,
+    )
+    expect(ref.current).toBe(screen.getByRole('combobox', { name: 'Mode' }))
+    expect(ref.current).toHaveStyle({ height: '32px' })
+
+    rerender(<NativeSelect aria-label="Mode" value="a" onChange={() => {}} options={['a']} ref={ref} size="sm" />)
+    expect(ref.current).toHaveStyle({ height: '28px' })
   })
 })
 

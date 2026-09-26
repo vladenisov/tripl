@@ -7,53 +7,39 @@ import { auditApi } from '@/api/audit'
 import { ApiError } from '@/api/client'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
-import { Chip, type ChipTone } from '@/components/primitives/chip'
+import { Chip } from '@/components/primitives/chip'
 import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { FilterBar, FilterSearch } from '@/components/ui/filter-bar'
+import { FilterBar, FilterBarItem, FilterSearch } from '@/components/ui/filter-bar'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { formatDate, formatTimestamp } from '@/lib/datetime'
-import { APP_LOCALE } from '@/lib/format'
+import { formatTimestamp } from '@/lib/datetime'
 import { useIsOwner } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import { auditActionsKey, auditEntryKey, auditKey } from '@/lib/queryKeys'
-import type { AuditEntry } from '@/types'
+import {
+  actionOptionLabels,
+  actionSentence,
+  actionTone,
+  displayTarget,
+  groupByDay,
+  humanize,
+  TARGET_NOUN,
+  targetPath,
+  timeOfDay,
+  toIsoOrUndef,
+} from './auditSentences'
 import { stateKeyLabel } from './branches/branchMeta'
 
 // How long the email box waits after the last keystroke before it filters.
 const EMAIL_DEBOUNCE_MS = 400
-
-/**
- * Tone by what the verb DOES, matched on its suffix rather than as an exact word.
- *
- * Only `create`/`update`/`delete` used to be coloured, so `bulk_delete`,
- * `remove_owner`, `merge` and `close` all rendered neutral: a destructive bulk
- * action looked exactly like a snapshot (PLAN-49). Suffix rules mean a future
- * `bulk_<verb>` lands in the right tone without this list learning it. First
- * match wins.
- */
-const ACTION_TONE_RULES: { pattern: RegExp; tone: ChipTone }[] = [
-  {
-    pattern: /(delete|remove|remove_owner|remove_reviewer|revoke|cancel|dismiss|close|revert|reset\w*|retire_unused_variables)$/,
-    tone: 'danger',
-  },
-  {
-    pattern: /(create|add_owner|add_reviewer|invite|merge|approve|accept|override_set)$/,
-    tone: 'success',
-  },
-  {
-    pattern: /(update|apply|submit|request_changes|reopen|mute|unmute|snooze|false_positive|acknowledge|resolve|drift_action|role_update)$/,
-    tone: 'warning',
-  },
-]
 
 // One page of audit entries. It used to be 200 — the endpoint's own ceiling —
 // and the page sent no offset, so the most recent 200 rows were the ONLY rows a
@@ -64,157 +50,6 @@ const ACTION_TONE_RULES: { pattern: RegExp; tone: ChipTone }[] = [
 // were missing. 50 matches the sibling delivery log (ProjectAlertingTab.tsx),
 // which got the same treatment in tripl-oxkt.12.
 const PAGE_SIZE = 50
-
-function actionTone(action: string): ChipTone {
-  const verb = action.split('.').pop() ?? ''
-  return ACTION_TONE_RULES.find((rule) => rule.pattern.test(verb))?.tone ?? 'neutral'
-}
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-// Some audit targets (e.g. scan_job.cancel) record a raw UUID as the name.
-// A full UUID is unreadable in a dense row, so show a short prefix instead.
-function displayTarget(entry: { target_name?: string | null; target_type: string }): string {
-  const name = entry.target_name
-  if (!name) return entry.target_type
-  return UUID_RE.test(name) ? name.slice(0, 8) : name
-}
-
-/** Past-tense verbs for the action codes, so a row reads as a sentence
- * ("Approved branch") instead of a server log line (`plan_branch.approve`,
- * PL-23). An unknown verb is humanised; the raw code stays in the chip's
- * title. */
-const VERB_PAST: Record<string, string> = {
-  create: 'Created',
-  update: 'Updated',
-  delete: 'Deleted',
-  bulk_delete: 'Deleted',
-  bulk_update: 'Updated',
-  merge: 'Merged',
-  approve: 'Approved',
-  submit: 'Submitted for review',
-  request_changes: 'Requested changes on',
-  reopen: 'Reopened',
-  close: 'Closed',
-  revert: 'Reverted a change on',
-  dismiss: 'Dismissed',
-  accept: 'Accepted',
-  invite: 'Invited',
-  revoke: 'Revoked',
-  cancel: 'Cancelled',
-  mute: 'Muted',
-  unmute: 'Unmuted',
-  snooze: 'Snoozed',
-  acknowledge: 'Acknowledged',
-  resolve: 'Resolved',
-  apply: 'Applied',
-  add_reviewer: 'Added a reviewer to',
-  remove_reviewer: 'Removed a reviewer from',
-  add_owner: 'Added an owner to',
-  remove_owner: 'Removed an owner from',
-  role_update: 'Changed the role of',
-}
-
-const TARGET_NOUN: Record<string, string> = {
-  plan_branch: 'branch',
-  event_type: 'event type',
-  field_definition: 'field',
-  meta_field: 'meta field',
-  metric_definition: 'metric',
-  shadow_event: 'shadow event',
-  alert_rule: 'alert rule',
-  alert_destination: 'alert destination',
-  scan_config: 'scan',
-  scan_job: 'scan run',
-  data_source: 'data source',
-  api_key: 'API key',
-}
-
-function humanize(code: string): string {
-  return code.replace(/_/g, ' ')
-}
-
-/** "Updated event", "Approved branch" — the verb and the kind of thing. */
-function actionSentence(action: string): string {
-  const dot = action.lastIndexOf('.')
-  const type = dot >= 0 ? action.slice(0, dot) : action
-  const verb = dot >= 0 ? action.slice(dot + 1) : ''
-  const past = VERB_PAST[verb] ?? (verb ? humanize(verb).replace(/^./, (c) => c.toUpperCase()) : '')
-  const noun = TARGET_NOUN[type] ?? humanize(type)
-  return past ? `${past} ${noun}` : noun
-}
-
-/**
- * The Action filter's option labels: the same sentence the row chip shows, not
- * the code (ST-34). Two codes can read alike (`event.delete` and
- * `event.bulk_delete` are both "Deleted event"), and a menu with two identical
- * entries cannot be chosen from, so only those carry their code in brackets.
- */
-function actionOptionLabels(actions: readonly string[]): Map<string, string> {
-  const sentences = actions.map((a) => [a, actionSentence(a)] as const)
-  const seen = new Map<string, number>()
-  for (const [, sentence] of sentences) seen.set(sentence, (seen.get(sentence) ?? 0) + 1)
-  return new Map(
-    sentences.map(([a, sentence]) => [a, (seen.get(sentence) ?? 0) > 1 ? `${sentence} (${a})` : sentence]),
-  )
-}
-
-/** Where a row's target lives, for the targets that have a page. None for a
- * deletion: the thing is gone. */
-function targetPath(entry: AuditEntry): string | null {
-  if (!entry.project_slug || !entry.target_id || entry.action.endsWith('delete')) return null
-  const base = `/p/${entry.project_slug}`
-  switch (entry.target_type) {
-    case 'event':
-      return `${base}/events/all/${entry.target_id}`
-    case 'event_type':
-      return `${base}/settings/event-types/${entry.target_id}`
-    case 'variable':
-      return `${base}/settings/variables/${entry.target_id}`
-    case 'plan_branch':
-      return `${base}/settings/branches/${entry.target_id}`
-    default:
-      return null
-  }
-}
-
-/** "Today", "Yesterday" or the date, for the day headers (PL-24). */
-function dayLabel(iso: string, now = new Date()): string {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return ''
-  const key = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
-  const yesterday = new Date(now)
-  yesterday.setDate(now.getDate() - 1)
-  if (key(date) === key(now)) return 'Today'
-  if (key(date) === key(yesterday)) return 'Yesterday'
-  return formatDate(iso)
-}
-
-function timeOfDay(iso: string): string {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleTimeString(APP_LOCALE, { hour: 'numeric', minute: '2-digit' })
-}
-
-/** Consecutive entries of one local day, in list order. */
-function groupByDay(entries: AuditEntry[]): { label: string; entries: AuditEntry[] }[] {
-  const groups: { label: string; entries: AuditEntry[] }[] = []
-  for (const entry of entries) {
-    const label = dayLabel(entry.created_at)
-    const last = groups[groups.length - 1]
-    if (last && last.label === label) last.entries.push(entry)
-    else groups.push({ label, entries: [entry] })
-  }
-  return groups
-}
-
-function toIsoOrUndef(localDateTime: string, endOfDay = false): string | undefined {
-  if (!localDateTime) return undefined
-  // <input type="date"> gives YYYY-MM-DD without time; pin to start/end of day.
-  const iso = `${localDateTime}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}`
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString()
-}
 
 /**
  * The payload of one entry, fetched when its row is expanded.
@@ -519,7 +354,7 @@ function AuditLog({ slug }: { slug?: string }) {
         <summary className="w-fit cursor-pointer text-caption font-medium text-fg-secondary">
           About this log
         </summary>
-        <p className="mt-1.5 max-w-[640px] text-body-sm text-muted-foreground">{description}</p>
+        <p className="mt-1.5 max-w-[640px] text-body-sm text-fg-tertiary">{description}</p>
       </details>
 
       {/* The shared filter bar (DS-15): every filter applies as it changes —
@@ -544,65 +379,72 @@ function AuditLog({ slug }: { slug?: string }) {
             onValueChange={setEmailInput}
             onKeyDown={(e) => { if (e.key === 'Enter') applyEmail() }}
           />
-          {/* A native select: the action vocabulary is grouped, and neither
-              the filter chip's Radix select nor the kit NativeSelect has
-              groups. Styled as the bar's chip: dashed while unset, accent once
-              set. Options read as the row chips do; the code is the value. */}
-          <select
-            id="audit-action"
-            aria-label="Action"
-            value={action}
-            onChange={(e) => applyAction(e.target.value)}
-            className={
-              'h-7 max-w-[16rem] rounded-control border px-2 text-caption ' +
-              (action
-                ? 'border-accent bg-accent-soft text-fg'
-                : 'border-dashed border-input bg-transparent text-fg-muted')
-            }
-          >
-            <option value="">Action: any</option>
-            {offeredGroups.map((group) => (
-              <optgroup key={group.label} label={group.label}>
-                {group.actions.map((a) => (
-                  <option key={a} value={a}>{optionLabels.get(a) ?? a}</option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          {/* A native select: the action vocabulary is grouped, which the
+              filter chip's Radix select cannot show, and the kit NativeSelect
+              has a form field's look, not a chip's. Styled as the bar's chip: dashed while unset, accent once
+              set. Options read as the row chips do; the code is the value.
+              It and the dates fold into the phone "Filters (n)" sheet. */}
+          <FilterBarItem active={!!action}>
+            <select
+              id="audit-action"
+              aria-label="Action"
+              value={action}
+              onChange={(e) => applyAction(e.target.value)}
+              className={
+                'h-7 max-w-[16rem] rounded-control border px-2 text-caption ' +
+                (action
+                  ? 'border-accent bg-accent-soft text-fg'
+                  : 'border-dashed border-input bg-transparent text-fg-muted')
+              }
+            >
+              <option value="">Action: any</option>
+              {offeredGroups.map((group) => (
+                <optgroup key={group.label} label={group.label}>
+                  {group.actions.map((a) => (
+                    <option key={a} value={a}>{optionLabels.get(a) ?? a}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </FilterBarItem>
           {/* No format hint: these are native <input type="date"> controls,
               which render and parse in the browser's own locale (mm/dd/yyyy
               on a US profile). A hard-coded "(YYYY-MM-DD)" contradicted what
               the control actually showed (tripl-jfm3.37). */}
-          <div className="flex items-center gap-1.5">
-            <Label htmlFor="audit-since" className="text-caption font-normal text-fg-muted">
-              From
-            </Label>
-            <Input
-              id="audit-since"
-              type="date"
-              value={sinceDate}
-              max={untilDate || undefined}
-              aria-invalid={rangeInvalid || undefined}
-              aria-describedby={rangeInvalid ? 'audit-range-error' : undefined}
-              onChange={(e) => applySince(e.target.value)}
-              className="h-7 w-auto text-caption"
-            />
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Label htmlFor="audit-until" className="text-caption font-normal text-fg-muted">
-              To
-            </Label>
-            <Input
-              id="audit-until"
-              type="date"
-              value={untilDate}
-              min={sinceDate || undefined}
-              aria-invalid={rangeInvalid || undefined}
-              aria-describedby={rangeInvalid ? 'audit-range-error' : undefined}
-              onChange={(e) => applyUntil(e.target.value)}
-              className="h-7 w-auto text-caption"
-            />
-          </div>
+          <FilterBarItem active={!!sinceDate}>
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="audit-since" className="text-caption font-normal text-fg-muted">
+                From
+              </Label>
+              <Input
+                id="audit-since"
+                type="date"
+                value={sinceDate}
+                max={untilDate || undefined}
+                aria-invalid={rangeInvalid || undefined}
+                aria-describedby={rangeInvalid ? 'audit-range-error' : undefined}
+                onChange={(e) => applySince(e.target.value)}
+                className="h-7 w-auto text-caption"
+              />
+            </div>
+          </FilterBarItem>
+          <FilterBarItem active={!!untilDate}>
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="audit-until" className="text-caption font-normal text-fg-muted">
+                To
+              </Label>
+              <Input
+                id="audit-until"
+                type="date"
+                value={untilDate}
+                min={sinceDate || undefined}
+                aria-invalid={rangeInvalid || undefined}
+                aria-describedby={rangeInvalid ? 'audit-range-error' : undefined}
+                onChange={(e) => applyUntil(e.target.value)}
+                className="h-7 w-auto text-caption"
+              />
+            </div>
+          </FilterBarItem>
         </FilterBar>
         {rangeInvalid && (
           <p id="audit-range-error" role="alert" className="text-body-sm text-destructive">
@@ -614,7 +456,7 @@ function AuditLog({ slug }: { slug?: string }) {
       <Card>
         <CardContent className="p-0">
           {rangeInvalid ? (
-            <div className="p-4 text-body text-muted-foreground">
+            <div className="p-4 text-body text-fg-tertiary">
               Fix the date range to see entries.
             </div>
           ) : listQuery.isError ? (
@@ -652,7 +494,7 @@ function AuditLog({ slug }: { slug?: string }) {
               ))}
             </div>
           ) : items.length === 0 ? (
-            <div className="p-4 text-body text-muted-foreground">
+            <div className="p-4 text-body text-fg-tertiary">
               {filtersActive
                 ? 'No entries match the current filter.'
                 : workspace
@@ -692,19 +534,19 @@ function AuditLog({ slug }: { slug?: string }) {
                       className="flex w-full flex-wrap items-start gap-x-2 gap-y-1 text-left sm:grid sm:grid-cols-[auto_4rem_11rem_9rem_minmax(0,1fr)_10rem] sm:items-center"
                     >
                       {isOpen ? (
-                        <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                        <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-fg-tertiary" aria-hidden="true" />
                       ) : (
-                        <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                        <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-fg-tertiary" aria-hidden="true" />
                       )}
                       <span
-                        className="tnum text-micro text-muted-foreground shrink-0 sm:w-16"
+                        className="tnum text-micro text-fg-tertiary shrink-0 sm:w-16"
                         title={formatTimestamp(entry.created_at, { seconds: true })}
                       >
                         {timeOfDay(entry.created_at)}
                       </span>
                       {/* The person, with the address in the title (PL-23). */}
                       <span
-                        className="order-1 ml-auto min-w-0 truncate text-muted-foreground text-caption sm:order-last sm:ml-0"
+                        className="order-1 ml-auto min-w-0 truncate text-fg-tertiary text-caption sm:order-last sm:ml-0"
                         title={entry.user_email}
                       >
                         {actor}
@@ -776,8 +618,7 @@ function AuditLog({ slug }: { slug?: string }) {
                             {path ? (
                               <Link
                                 to={path}
-                                className="inline-flex items-center gap-0.5 font-medium hover:underline"
-                                style={{ color: 'var(--accent)' }}
+                                className="inline-flex items-center gap-0.5 font-medium hover:underline text-accent"
                               >
                                 Open {TARGET_NOUN[entry.target_type] ?? humanize(entry.target_type)}
                                 <ArrowUpRight className="size-3" aria-hidden="true" />
@@ -786,8 +627,7 @@ function AuditLog({ slug }: { slug?: string }) {
                             {entry.branch_id && entry.project_slug ? (
                               <Link
                                 to={`/p/${entry.project_slug}/settings/branches/${entry.branch_id}`}
-                                className="inline-flex items-center gap-0.5 font-medium hover:underline"
-                                style={{ color: 'var(--accent)' }}
+                                className="inline-flex items-center gap-0.5 font-medium hover:underline text-accent"
                               >
                                 Open branch {entry.branch_name}
                                 <ArrowUpRight className="size-3" aria-hidden="true" />
@@ -815,7 +655,7 @@ function AuditLog({ slug }: { slug?: string }) {
               actions" — the only way past row 200 was to guess an action type
               or a date range, on the surface the user guide points at for
               tracking down a wrong edit or merge (tripl-5ydt). */}
-          <p className="text-body-sm text-muted-foreground">
+          <p className="text-body-sm text-fg-tertiary">
             {hasNewer
               ? `Showing ${rangeStart}–${rangeEnd} of ${countOf(total, 'entry', 'entries')}.`
               : `Showing the most recent ${items.length} of ${countOf(total, 'entry', 'entries')} — use Older to reach the rest, or narrow the filter.`}
@@ -826,7 +666,7 @@ function AuditLog({ slug }: { slug?: string }) {
                 held shut for the same window: a second click moved the query key
                 again and the page in flight was dropped unrendered — 0 → 50 →
                 100, with rows 51–100 never shown and nothing saying so. */}
-            {isPaging && <span className="text-body-sm text-muted-foreground">Updating…</span>}
+            {isPaging && <span className="text-body-sm text-fg-tertiary">Updating…</span>}
             <Button
               type="button"
               variant="outline"

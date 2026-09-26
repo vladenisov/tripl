@@ -107,7 +107,7 @@ export function EventDriftBadge({
       <PopoverContent align="start" className="w-72 p-2 text-body-sm">
         <div className="mb-1 flex items-center justify-between">
           <span className="font-semibold">Schema drift</span>
-          <span className="text-micro text-muted-foreground">last 30 days</span>
+          <span className="text-micro text-fg-tertiary">last 30 days</span>
         </div>
         {/* What each action does, once, instead of three unexplained buttons. */}
         {canWrite && (
@@ -115,14 +115,14 @@ export function EventDriftBadge({
             Accept adds the change to the plan. Snooze hides it for 7 days.
           </p>
         )}
-        {driftsQuery.isLoading && <div className="text-muted-foreground">Loading…</div>}
+        {driftsQuery.isLoading && <div className="text-fg-tertiary">Loading…</div>}
         {/* Through ErrorState, so a 401 under the session-expired dialog
             reads as paused, not as a red auth failure (SH-35). */}
         {driftsQuery.isError && (
           <ErrorState compact headingLevel={3} title="Failed to load drifts" error={driftsQuery.error} />
         )}
         {driftsQuery.data && driftsQuery.data.items.length === 0 && (
-          <div className="text-muted-foreground">No drifts in this window.</div>
+          <div className="text-fg-tertiary">No drifts in this window.</div>
         )}
         {/* Without this the backend's 409 (accepting a drift for a column the
             scan's event name format needs) is invisible: the button just stops
@@ -145,7 +145,7 @@ export function EventDriftBadge({
                   <div className="truncate font-mono text-caption" title={drift.field_name}>
                     {drift.field_name}
                   </div>
-                  <div className="text-micro text-muted-foreground">
+                  <div className="text-micro text-fg-tertiary">
                     {DRIFT_LABEL[drift.drift_type] ?? drift.drift_type}
                     {drift.observed_type && drift.declared_type
                       ? ` · ${drift.declared_type} → ${drift.observed_type}`
@@ -157,8 +157,7 @@ export function EventDriftBadge({
                   </div>
                   {drift.sample_value && (
                     <div
-                      className="truncate font-mono text-micro"
-                      style={{ color: 'var(--fg-faint)' }}
+                      className="truncate font-mono text-micro text-fg-tertiary"
                       title={drift.sample_value}
                     >
                       e.g. {drift.sample_value}
@@ -207,8 +206,7 @@ export function EventDriftBadge({
                   )}
                 </div>
                 <span
-                  className="shrink-0 text-micro tnum"
-                  style={{ color: 'var(--fg-faint)' }}
+                  className="shrink-0 text-micro tnum text-fg-tertiary"
                 >
                   {formatRelativeTime(drift.detected_at)}
                 </span>

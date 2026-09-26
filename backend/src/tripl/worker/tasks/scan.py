@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -18,6 +19,7 @@ from sqlalchemy.orm import Session
 from tripl import realtime
 from tripl.core.adapters.base import BaseAdapter, ColumnInfo
 from tripl.core.analyzers.cardinality import (
+    BreakdownAnalysis,
     analyze_cardinality,
     analyze_cardinality_grouped,
 )
@@ -26,6 +28,7 @@ from tripl.core.analyzers.event_generator import (
     generate_events,
     merge_existing_events_for_group_rules,
 )
+from tripl.core.analyzers.event_plan import breakdown_row_count
 from tripl.core.analyzers.preview import build_json_paths_payload, build_preview_payload
 from tripl.json_paths import group_json_value_paths
 from tripl.models.data_source import DataSource
@@ -248,7 +251,12 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             # Event type column groups rows into different event types.
             # Use GROUPING SETS to get per-group cardinalities in one query.
             logger.info("Using grouped scan with GROUPING SETS")
-            result, group_results, scan_rows_processed = _scan_with_grouping(
+            (
+                result,
+                group_results,
+                scan_rows_processed,
+                catalog_rows_scanned,
+            ) = _scan_with_grouping(
                 session,
                 config.project_id,
                 config,
@@ -299,6 +307,7 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             )
             group_results = None
             scan_rows_processed = len(analysis.rows)
+            catalog_rows_scanned = _warehouse_rows([analysis])
         else:
             raise ScanError(NO_EVENT_NAMING_MSG)
 
@@ -385,6 +394,16 @@ def run_scan(self: object, scan_config_id: str, job_id: str) -> dict[str, object
             "scan_window_from": scan_window[0].isoformat() if scan_window else None,
             "scan_window_to": scan_window[1].isoformat() if scan_window else None,
             "scan_rows_processed": scan_rows_processed,
+            # The warehouse rows behind those combinations: the sum of the
+            # ``_cnt`` every breakdown row carries, the population the dry run
+            # reports as "sampled rows". ``scan_rows_processed`` alone put a
+            # catalog run ~180x below its own dry run (DA-4). Omitted when a row
+            # carries no count, rather than guessed.
+            **(
+                {"catalog_rows_scanned": catalog_rows_scanned}
+                if catalog_rows_scanned is not None
+                else {}
+            ),
             "details": result.details,
             "generation_snapshot": _serialize_generation_snapshot(
                 result,
@@ -451,8 +470,12 @@ def _scan_with_grouping(
     columns: list[ColumnInfo],
     scan_window: TimeWindow | None,
     row_limit: int,
-) -> tuple[GenerationResult, dict[str, GenerationResult], int]:
+) -> tuple[GenerationResult, dict[str, GenerationResult], int, int | None]:
     """Handle scans where event_type_column groups rows into different event types.
+
+    Returns ``(combined, per_group, scan_rows_processed, catalog_rows_scanned)``:
+    the distinct combinations the breakdown returned and the warehouse rows
+    behind them (``None`` when a row carries no count).
 
     Uses GROUPING SETS to compute per-group cardinalities in a single query,
     so a column that is high-cardinality globally may be low-cardinality
@@ -483,6 +506,7 @@ def _scan_with_grouping(
         raise ScanError(msg)
     logger.info(f"Grouped scan: {len(group_values)} groups found for {col_name!r}")
     scan_rows_processed = sum(len(analysis.rows) for analysis in grouped_results.values())
+    catalog_rows_scanned = _warehouse_rows(grouped_results.values())
 
     combined = GenerationResult()
     per_group_results: dict[str, GenerationResult] = {}
@@ -534,7 +558,23 @@ def _scan_with_grouping(
         combined.details.extend(result.details)
         per_group_results[et_value] = result
 
-    return combined, per_group_results, scan_rows_processed
+    return combined, per_group_results, scan_rows_processed, catalog_rows_scanned
+
+
+def _warehouse_rows(analyses: Iterable[BreakdownAnalysis]) -> int | None:
+    """Warehouse rows behind a breakdown: the sum of each row's ``_cnt``.
+
+    ``None`` when any row carries no count column (``breakdown_row_count``'s
+    contract), so the run report never prints a column value as a row count.
+    """
+    total = 0
+    for analysis in analyses:
+        for row in analysis.rows:
+            count = breakdown_row_count(analysis, row)
+            if count is None:
+                return None
+            total += count
+    return total
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]

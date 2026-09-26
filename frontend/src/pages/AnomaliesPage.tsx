@@ -42,17 +42,26 @@ import {
   signalScopeRefLabel,
   unnamedScopeLabel,
 } from '@/lib/signalScope'
-import type { MonitoringSignal } from '@/types'
+import {
+  signalRowKey,
+  signalSeriesLookupKey,
+  signalSparkline,
+  useSignalSeries,
+} from '@/lib/monitoringSignalSeries'
+import { Sparkline, SparklineSkeleton } from '@/components/primitives/sparkline'
+import type { MonitoringSignal, SignalSeries } from '@/types'
 import { scansKey } from '@/lib/queryKeys'
 
-// Change sits right after the scope, the one figure a reader scans for (MO-19).
+// Change sits right after the scope and its trend, the one figure a reader
+// scans for (MO-19). The trend column is sm+ only: its cell is `hidden` below,
+// which takes it out of the phone card's grid altogether.
 // Below `sm` the same four cells fold into a two-line card — scope and change on
 // the first line, values and time on the second — instead of a 640px table in a
 // sideways scroller that hid "how bad" and "how recent" off-screen (MO-20).
 // The last column is the row's action menu (MO-4). On a phone it spans both
 // lines of the two-line card, so the other cells keep their two columns.
 const ANOMALY_GRID =
-  'grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-0.5 px-4 sm:grid-cols-[minmax(0,1.7fr)_88px_minmax(0,1fr)_120px_28px]'
+  'grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-0.5 px-4 sm:grid-cols-[minmax(0,1.7fr)_80px_88px_minmax(0,1fr)_120px_28px]'
 
 // ───────── Magnitude filter ─────────
 //
@@ -99,8 +108,7 @@ function UnnamedScope({ signal }: { signal: MonitoringSignal }) {
       role="img"
       aria-label={ref}
       title={ref}
-      className="italic"
-      style={{ color: 'var(--fg-faint)' }}
+      className="italic text-fg-tertiary"
     >
       {unnamedScopeLabel(signal)}
     </span>
@@ -185,6 +193,9 @@ export default function AnomaliesPage() {
 
   const signals = signalsQuery.data ?? []
   const total = signals.length
+  // Row sparklines, one batched request beside the signals list rather than
+  // inside its shared 30 s cache (MO-19).
+  const seriesQuery = useSignalSeries(slug, signalsQuery.data)
   const activePreset = MAGNITUDE_PRESETS.find((p) => p.id === level) ?? MAGNITUDE_PRESETS[0]
   const threshold = activePreset.minRelEffect
   const byMagnitude = signals.filter((s) => relativeEffect(s) >= threshold)
@@ -297,7 +308,7 @@ export default function AnomaliesPage() {
           slug ? (
             <>
               Signals are what detection found. Incidents, in{' '}
-              <Link to={getAlertingPath(slug)} style={{ color: 'var(--accent)' }}>
+              <Link to={getAlertingPath(slug)} className="text-accent">
                 Alerting
               </Link>
               , are the ones an alert rule routed to your team; triage happens there.
@@ -493,10 +504,10 @@ export default function AnomaliesPage() {
                         there, and every cell reads on its own (MO-20). */}
                     <div
                       role="row"
-                      className={`${ANOMALY_GRID} hidden border-b py-2 micro-label sm:grid`}
-                      style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
+                      className={`${ANOMALY_GRID} hidden border-b py-2 micro-label sm:grid border-border-subtle text-fg-tertiary`}
                     >
                       <span role="columnheader">Anomaly</span>
+                      <span role="columnheader">Trend</span>
                       <span role="columnheader" className="text-right">Change</span>
                       <span role="columnheader" className="text-right">Actual / expected</span>
                       {/* The cell leads with the bucket's absolute START (its
@@ -518,6 +529,8 @@ export default function AnomaliesPage() {
                         key={signalRowKey(signal)}
                         slug={slug}
                         signal={signal}
+                        series={seriesQuery.byKey.get(signalSeriesLookupKey(signal))}
+                        seriesPending={seriesQuery.isPending}
                       />
                     ))}
                   </div>
@@ -528,11 +541,6 @@ export default function AnomaliesPage() {
         ))}
     </PageContainer>
   )
-}
-
-/** Unique per open signal: the backend keys signals on scan config + scope. */
-function signalRowKey(signal: MonitoringSignal): string {
-  return `${signal.scan_config_id ?? 'metric'}:${signal.scope_type}:${signal.scope_ref}:${signal.bucket}`
 }
 
 /**
@@ -572,10 +580,15 @@ function localTimeZone(): string {
 function AnomalyRow({
   slug,
   signal,
+  series,
+  seriesPending,
 }: {
   slug?: string
   signal: MonitoringSignal
+  series: SignalSeries | undefined
+  seriesPending: boolean
 }) {
+  const sparkline = signalSparkline(series)
   const label = signalScopeLabel(signal)
   const isDrop = signal.direction === 'drop'
   const DirIcon = isDrop ? ArrowDown : ArrowUp
@@ -604,8 +617,7 @@ function AnomalyRow({
       // table's does.
       className={`${ANOMALY_GRID} relative min-h-(--row-h) border-b py-2 last:border-0 ${
         href ? 'transition-colors hover:bg-[var(--surface-hover)]' : ''
-      }`}
-      style={{ borderColor: 'var(--border-subtle)' }}
+      } border-border-subtle`}
     >
       <span role="cell" className="flex min-w-0 items-center gap-2">
         {/* Static in a list: with every row pulsing, a flooded project
@@ -616,13 +628,12 @@ function AnomalyRow({
           <Link
             to={href}
             data-anomaly-label=""
-            className={`${textClass} no-underline outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-[var(--accent)]`}
-            style={{ color: 'var(--fg)' }}
+            className={`${textClass} no-underline outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-[var(--accent)] text-fg`}
           >
             {text}
           </Link>
         ) : (
-          <span data-anomaly-label="" className={textClass} style={{ color: 'var(--fg)' }}>
+          <span data-anomaly-label="" className={`${textClass} text-fg`}>
             {text}
           </span>
         )}
@@ -630,8 +641,7 @@ function AnomalyRow({
           <span
             // Dropped on phones, where it left the scope name a few letters.
             // `relative` lifts it over the row link so its tooltip still shows.
-            className="relative hidden shrink-0 whitespace-nowrap text-micro sm:inline"
-            style={{ color: 'var(--fg-faint)' }}
+            className="relative hidden shrink-0 whitespace-nowrap text-micro sm:inline text-fg-tertiary"
             title={`This scope fired as part of a project-total ${isDrop ? 'drop' : 'spike'} on the same bucket`}
           >
             {/* Says what it means; "part of total" read as a data annotation
@@ -646,13 +656,28 @@ function AnomalyRow({
         {slug && signal.incident_id && (
           <Link
             to={getAlertingPath(slug, { incidentId: signal.incident_id })}
-            className="relative shrink-0 whitespace-nowrap text-micro no-underline hover:underline"
-            style={{ color: 'var(--accent)' }}
+            className="relative shrink-0 whitespace-nowrap text-micro no-underline hover:underline text-accent"
           >
             Incident
             {signal.incident_status ? ` · ${alertInboxStatusLabel(signal.incident_status).toLowerCase()}` : ''}
           </Link>
         )}
+      </span>
+      {/* The shape of the move, flagged bucket marked: a one-off spike, a
+          sustained rise and a slow drift read differently at a glance (MO-19).
+          A catalog-metric row has no scan series, so it stays blank. */}
+      <span role="cell" className="hidden sm:block">
+        {sparkline ? (
+          <Sparkline
+            data={sparkline.data}
+            anomalyIdx={sparkline.anomalyIdx}
+            width={80}
+            height={20}
+            variant="line-only"
+          />
+        ) : seriesPending && signal.scope_type !== 'metric' ? (
+          <SparklineSkeleton width={80} height={20} />
+        ) : null}
       </span>
       {/* The change first, in the direction colour: "+203%" where the row used
           to print z=40.7 (MO-2). The magnitude word rides underneath and the
@@ -667,18 +692,17 @@ function AnomalyRow({
         >
           {formatSignalEffect(signal)}
         </span>
-        <span className="hidden text-micro sm:block" style={{ color: 'var(--fg-faint)' }}>
+        <span className="hidden text-micro sm:block text-fg-tertiary">
           {signalMagnitudeWord(signal)}
         </span>
       </span>
       <span
         role="cell"
-        className="tnum truncate text-caption sm:text-right"
-        style={{ color: 'var(--fg-subtle)' }}
+        className="tnum truncate text-caption sm:text-right text-fg-tertiary"
       >
         {formatSignalValues(signal)}
       </span>
-      <span role="cell" className="tnum text-right text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <span role="cell" className="tnum text-right text-caption text-fg-tertiary">
         {/* `relative` lifts it over the row link, so the tooltip naming this as
             the bucket's start is reachable (MON-40). */}
         <time
@@ -694,8 +718,7 @@ function AnomalyRow({
           <time
             dateTime={signal.detected_at}
             title={`Detected ${formatTimestamp(signal.detected_at)} (${localTimeZone()})`}
-            className="relative block text-micro"
-            style={{ color: 'var(--fg-faint)' }}
+            className="relative block text-micro text-fg-tertiary"
           >
             found {formatRelativeTime(signal.detected_at)}
           </time>

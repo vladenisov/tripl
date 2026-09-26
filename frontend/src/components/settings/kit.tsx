@@ -140,8 +140,7 @@ export function SCard({
             )}
             {description && (
               <p
-                className="mt-1 text-body-sm leading-[1.5]"
-                style={{ color: 'var(--fg-subtle)' }}
+                className="mt-1 text-body-sm leading-[1.5] text-fg-tertiary"
               >
                 {description}
               </p>
@@ -152,11 +151,7 @@ export function SCard({
       {children}
       {footer && (
         <footer
-          className="flex items-center gap-2.5 px-4 py-3"
-          style={{
-            borderTop: '1px solid var(--border-subtle)',
-            background: 'var(--bg-sunken)',
-          }}
+          className="flex items-center gap-2.5 px-4 py-3 border-t border-border-subtle bg-bg-sunken"
         >
           {footer}
         </footer>
@@ -241,7 +236,7 @@ export function Field({
   // The asterisk is the sighted half; `aria-required` on the control is the
   // announced half, so the mark itself stays out of the label's name.
   const requiredMark = required ? (
-    <span aria-hidden="true" className="ml-0.5" style={{ color: 'var(--danger)' }}>
+    <span aria-hidden="true" className="ml-0.5 text-danger">
       *
     </span>
   ) : null
@@ -253,11 +248,11 @@ export function Field({
             getByLabelText and some screen readers match the control by. */}
         <span className="inline-flex items-baseline">
           {controlId === null ? (
-            <span id={generatedId} className="block text-body font-medium" style={{ color: 'var(--fg)' }}>
+            <span id={generatedId} className="block text-body font-medium text-fg">
               {label}
             </span>
           ) : (
-            <label htmlFor={controlId} className="block text-body font-medium" style={{ color: 'var(--fg)' }}>
+            <label htmlFor={controlId} className="block text-body font-medium text-fg">
               {label}
             </label>
           )}
@@ -266,14 +261,14 @@ export function Field({
         {labelRight}
       </div>
       {hint && (
-        <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="mt-[3px] text-body-sm leading-[1.45] text-fg-tertiary">
           {hint}
         </div>
       )}
     </>
   )
   const errorLine = hasError ? (
-    <p id={errorId} role={announceError ? 'alert' : undefined} className="mt-1.5 text-body-sm leading-[1.45]" style={{ color: 'var(--danger)' }}>
+    <p id={errorId} role={announceError ? 'alert' : undefined} className="mt-1.5 text-body-sm leading-[1.45] text-danger">
       {error}
     </p>
   ) : null
@@ -349,7 +344,7 @@ export function ToggleRow({
           {labelRight}
         </div>
         {hint && (
-          <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="mt-[3px] text-body-sm leading-[1.45] text-fg-tertiary">
             {hint}
           </div>
         )}
@@ -378,7 +373,7 @@ export function InfoRow({
     <FormRow
       labelWidth={200}
       caption={
-        <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <span className="text-body-sm text-fg-tertiary">
           {label}
         </span>
       }
@@ -386,8 +381,7 @@ export function InfoRow({
       style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
     >
       <span
-        className={mono ? 'mono block truncate text-body-sm' : 'block truncate text-body-sm'}
-        style={{ color: 'var(--fg)' }}
+        className={mono ? 'mono block truncate text-body-sm text-fg' : 'block truncate text-body-sm text-fg'}
         title={typeof value === 'string' || typeof value === 'number' ? String(value) : undefined}
       >
         {value}
@@ -631,21 +625,41 @@ export function TextArea({
 }
 
 // ───────── NativeSelect ─────────
-export type SelectOption = string | { value: string; label: string }
+export type SelectOption = string | { value: string; label: string; disabled?: boolean }
+export type SelectOptionGroup = { label: string; options: readonly SelectOption[] }
+
+function renderOption(o: SelectOption) {
+  return typeof o === 'string' ? (
+    <option key={o} value={o}>
+      {o}
+    </option>
+  ) : (
+    <option key={o.value} value={o.value} disabled={o.disabled}>
+      {o.label}
+    </option>
+  )
+}
 
 /**
  * The kit's native `<select>`. Named for what it is: `ui/select` exports a
  * `Select` too (the Radix listbox), and the shared name invited importing the
- * wrong one (DS-9). Pages use this rather than a raw `<select>` — eslint
- * enforces it for `src/pages/**` (see eslint.config.js).
+ * wrong one (DS-9). Pages use this rather than a raw `<select>` — Oxlint
+ * enforces it for `src/pages/**` (tripl/no-raw-select, .oxlintrc.json).
+ *
+ * `options` render first, then each of `groups` as an `<optgroup>`; a
+ * placeholder is an option with an empty value (`disabled` when the empty
+ * answer is not allowed).
  */
 export function NativeSelect({
   value,
   onChange,
   options,
+  groups,
   disabled,
   id,
+  ref,
   width = 'compact',
+  size = 'default',
   'aria-required': ariaRequired,
   'aria-label': ariaLabel,
   'aria-invalid': ariaInvalid,
@@ -654,6 +668,7 @@ export function NativeSelect({
   value: string
   onChange?: (value: string) => void
   options: readonly SelectOption[]
+  groups?: readonly SelectOptionGroup[]
   disabled?: boolean
   /**
    * `compact` (default) caps the select at 280px, for short enums beside a
@@ -662,7 +677,10 @@ export function NativeSelect({
    * a long option label is not cut mid-word (ST-27).
    */
   width?: 'compact' | 'fill'
+  /** `sm` is 28px with caption text from `md` up, to sit beside `size="sm"` buttons. */
+  size?: 'default' | 'sm'
   id?: string
+  ref?: Ref<HTMLSelectElement>
   'aria-required'?: boolean
   'aria-label'?: string
   /** Set by a form row that shows a validation message for this control. */
@@ -670,9 +688,11 @@ export function NativeSelect({
   'aria-describedby'?: string
 }) {
   const { id: controlId, aria: fieldAria } = useFieldControl(id)
+  const small = size === 'sm'
   return (
     <div className="relative" style={width === 'compact' ? { maxWidth: 280 } : undefined}>
       <select
+        ref={ref}
         id={controlId}
         value={value}
         disabled={disabled}
@@ -684,26 +704,29 @@ export function NativeSelect({
         className={cn(INPUT_CLASS, 'w-full appearance-none')}
         style={{
           ...INPUT_BASE,
-          paddingRight: 30,
+          // Caption text from `md` up; still 16px on phones, where anything
+          // smaller makes iOS zoom the page on focus (see INPUT_FONT_SIZE).
+          ...(small
+            ? { height: 28, fontSize: 'clamp(var(--text-caption), calc((768px - 100vw) * 1000), 16px)', padding: '0 8px' }
+            : {}),
+          paddingRight: small ? 26 : 30,
           ...(disabled ? INPUT_DISABLED : {}),
         }}
       >
-        {options.map((o) =>
-          typeof o === 'string' ? (
-            <option key={o} value={o}>
-              {o}
-            </option>
-          ) : (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ),
-        )}
+        {options.map(renderOption)}
+        {groups?.map((group) => (
+          <optgroup key={group.label} label={group.label}>
+            {group.options.map(renderOption)}
+          </optgroup>
+        ))}
       </select>
       {/* A disabled select still shows a chevron, so it gets dimmed to the
           border scale — at hint brightness it kept promising a menu. */}
       <ChevronDown
-        className="pointer-events-none absolute right-[11px] top-1/2 size-3.5 -translate-y-1/2"
+        className={cn(
+          'pointer-events-none absolute top-1/2 size-3.5 -translate-y-1/2',
+          small ? 'right-[9px]' : 'right-[11px]',
+        )}
         style={{ color: disabled ? 'var(--border-strong)' : 'var(--fg-subtle)' }}
       />
     </div>
@@ -717,6 +740,11 @@ export type RadioCardOption = {
   label: string
   description?: string
   icon?: ReactNode
+  /**
+   * Faded but still selectable: a choice whose prerequisite is missing, which
+   * the card's description says. A checked card is never faded.
+   */
+  dimmed?: boolean
 }
 
 export function RadioCards({
@@ -779,6 +807,7 @@ export function RadioCards({
     >
       {options.map((o, index) => {
         const active = value === o.value
+        const dimmed = !!o.dimmed && !active
         return (
           <button
             key={o.value}
@@ -792,7 +821,8 @@ export function RadioCards({
             disabled={disabled}
             onClick={() => onChange?.(o.value)}
             onKeyDown={(event) => onKeyDown(event, index)}
-            className="flex flex-col gap-0.5 rounded-card px-[13px] py-[11px] text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+            data-dimmed={dimmed || undefined}
+            className={`flex flex-col gap-0.5 rounded-card px-[13px] py-[11px] text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60${dimmed ? ' opacity-60' : ''}`}
             style={{
               border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
               background: active ? 'var(--accent-soft)' : 'var(--bg)',
@@ -809,14 +839,12 @@ export function RadioCards({
               >
                 {active && (
                   <span
-                    className="size-2 rounded-full"
-                    style={{ background: 'var(--accent)' }}
+                    className="size-2 rounded-full bg-accent"
                   />
                 )}
               </span>
               <span
-                className="flex min-w-0 items-center gap-1.5 text-body-sm font-semibold"
-                style={{ color: 'var(--fg)' }}
+                className="flex min-w-0 items-center gap-1.5 text-body-sm font-semibold text-fg"
               >
                 {o.icon}
                 {o.label}
@@ -833,8 +861,7 @@ export function RadioCards({
               // each, which is also what stops the row growing 48px of dead
               // space under the two that did not wrap.
               <span
-                className="block text-caption leading-[1.4]"
-                style={{ color: 'var(--fg-subtle)' }}
+                className="block text-caption leading-[1.4] text-fg-tertiary"
               >
                 {o.description}
               </span>
@@ -919,8 +946,7 @@ export function Panel({
   const subtitleColor = subtitleTone ? `var(--${subtitleTone})` : 'var(--fg-subtle)'
   return (
     <section
-      className={cn('overflow-hidden rounded-card border', className)}
-      style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+      className={cn('overflow-hidden rounded-card border', className, 'bg-surface border-border')}
       aria-labelledby={title ? headingId : undefined}
     >
       {/* The header wraps below `sm`-ish widths instead of pinning the right
@@ -963,8 +989,7 @@ export function Panel({
       {footer && (
         <footer
           data-slot="panel-footer"
-          className="flex flex-wrap items-center gap-2.5 border-t px-4 py-3"
-          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
+          className="flex flex-wrap items-center gap-2.5 border-t px-4 py-3 border-border-subtle bg-bg-sunken"
         >
           {footer}
         </footer>

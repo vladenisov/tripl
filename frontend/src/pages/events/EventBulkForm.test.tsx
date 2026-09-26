@@ -7,6 +7,7 @@ import type { EventType } from '@/types'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import EventBulkForm from './EventBulkForm'
+import { readCreatedEvents } from './createdEventsHandoff'
 
 vi.mock('@/api/events', () => ({
   eventsApi: {
@@ -199,7 +200,7 @@ describe('EventBulkForm', () => {
     expect(screen.getByRole('button', { name: 'Create 1 event' })).toBeInTheDocument()
   })
 
-  it('refuses a type whose required fields a pasted list cannot fill', async () => {
+  it('carries a required field the name is not built from as a column of its own (tripl-hhw3)', async () => {
     vi.mocked(eventTypesApi.list).mockResolvedValue([
       {
         ...SE_TYPE,
@@ -212,7 +213,54 @@ describe('EventBulkForm', () => {
     render(createElement(EventBulkForm), { wrapper })
     await chooseType()
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/needs platform/)
+    // The column order is stated, as the naming-rule path states its own.
+    expect(
+      await screen.findByText(/category, then action, then label, then platform, separated by a tab or a comma/),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Events to create'), {
+      target: { value: 'settings,unit_change,wind_speed,web,Wind unit changed\nspot,open,models' },
+    })
+
+    expect(await screen.findByText('missing platform')).toBeInTheDocument()
+    expect(screen.getByText('platform: web')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create 1 event' })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Create 1 event' }))
+
+    await waitFor(() =>
+      expect(eventsApi.bulkCreate).toHaveBeenCalledWith(
+        'demo',
+        [
+          expect.objectContaining({
+            name: 'settings:unit_change:wind_speed',
+            title: 'Wind unit changed',
+            field_values: [
+              { field_definition_id: 'f-category', value: 'settings' },
+              { field_definition_id: 'f-action', value: 'unit_change' },
+              { field_definition_id: 'f-label', value: 'wind_speed' },
+              { field_definition_id: 'f-plat', value: 'web' },
+            ],
+          }),
+        ],
+        null,
+      ),
+    )
+  })
+
+  it('refuses a type whose required JSON field a pasted list cannot fill', async () => {
+    vi.mocked(eventTypesApi.list).mockResolvedValue([
+      {
+        ...SE_TYPE,
+        field_definitions: [
+          ...SE_TYPE.field_definitions,
+          { id: 'f-ctx', name: 'context', display_name: 'Context', field_type: 'json', is_required: true, order: 3 },
+        ],
+      } as unknown as EventType,
+    ])
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/needs context, a JSON value/)
     expect(screen.queryByLabelText('Events to create')).not.toBeInTheDocument()
   })
 
@@ -222,7 +270,7 @@ describe('EventBulkForm', () => {
         ...SE_TYPE,
         field_definitions: [
           ...SE_TYPE.field_definitions,
-          { id: 'f-plat', name: 'platform', display_name: 'Platform', field_type: 'string', is_required: true, order: 3 },
+          { id: 'f-ctx', name: 'context', display_name: 'Context', field_type: 'json', is_required: true, order: 3 },
         ],
       } as unknown as EventType,
     ])
@@ -239,6 +287,19 @@ describe('EventBulkForm', () => {
       '/p/demo/settings/event-types/et-se',
     )
     expect(screen.queryByRole('button', { name: /^Create/ })).toBeNull()
+  })
+
+  it('hands the created events to the list, which scrolls to and marks them (AU-20)', async () => {
+    vi.mocked(eventsApi.bulkCreate).mockResolvedValue([{ id: 'ev-new-1' }, { id: 'ev-new-2' }] as never)
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+    fireEvent.change(await screen.findByLabelText('Events to create'), {
+      target: { value: 'settings\tunit_change\twind_speed\nspot\topen\tmodels' },
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create 2 events' })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Create 2 events' }))
+
+    await waitFor(() => expect(readCreatedEvents('demo')).toEqual(['ev-new-1', 'ev-new-2']))
   })
 
   it('sets the owner on every event of the batch when one is picked (AU-20)', async () => {

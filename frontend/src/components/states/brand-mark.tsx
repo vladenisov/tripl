@@ -11,7 +11,7 @@ export function TrifoldMark({ size = 24 }: { size?: number }) {
       height={size}
       viewBox="0 0 100 100"
       aria-hidden="true"
-      style={{ display: 'block', flexShrink: 0 }}
+      className="block shrink-0"
     >
       <polygon points="50,15 14,85 50,61.7" fill="color-mix(in oklab, var(--accent) 60%, white)" />
       <polygon points="50,15 86,85 50,61.7" fill="color-mix(in oklab, var(--accent) 80%, black)" />

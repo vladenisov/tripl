@@ -164,10 +164,9 @@ export function EventCompositionFields({
       )}
       {formula && (
         <p
-          className="border-t px-4 py-[11px] text-body-sm"
-          style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-muted)' }}
+          className="border-t px-4 py-[11px] text-body-sm border-border-subtle text-fg-secondary"
         >
-          Computes: <span style={{ color: 'var(--fg)' }}>{formula}</span>
+          Computes: <span className="text-fg">{formula}</span>
         </p>
       )}
     </SCard>

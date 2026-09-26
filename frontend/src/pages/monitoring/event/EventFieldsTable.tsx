@@ -25,14 +25,14 @@ export function EventFieldsTable({
   const showSensitivity = fields.some(f => (fieldDefMap.get(f.id) ?? f).sensitivity !== 'none')
   return (
     <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-      <div className="flex items-center gap-2 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="flex items-center gap-2 border-b px-4 py-3 border-border-subtle">
         <h2 className="m-0 flex-1 text-body-sm font-semibold">Fields</h2>
-        <span className="tnum text-micro" style={{ color: 'var(--fg-subtle)' }}>
+        <span className="tnum text-micro text-fg-tertiary">
           {fields.length} · {requiredCount} required
         </span>
       </div>
       {fields.length === 0 ? (
-        <div className="px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="px-4 py-7 text-center text-body-sm text-fg-tertiary">
           No fields defined.
         </div>
       ) : (
@@ -55,13 +55,13 @@ export function EventFieldsTable({
                 <TableRow key={field.id} style={{ borderColor: 'var(--border-subtle)' }}>
                   <TableCell className={EV_TD_CLASS}>
                     <span className="mono text-body-sm">{def.name}</span>
-                    {def.is_required && <span className="ml-[3px]" style={{ color: 'var(--danger)' }}>*</span>}
+                    {def.is_required && <span className="ml-[3px] text-danger">*</span>}
                   </TableCell>
                   <TableCell className={`${EV_TD_CLASS} hidden md:table-cell`}>
                     <Chip size="xs" variant="outline">{def.field_type}</Chip>
                   </TableCell>
                   <TableCell className={EV_TD_CLASS}>
-                    <span className="mono inline-flex items-center gap-1.5 text-caption" style={{ color: 'var(--fg-muted)' }}>
+                    <span className="mono inline-flex items-center gap-1.5 text-caption text-fg-secondary">
                       <span className="break-all">{fv?.value || '—'}</span>
                       {fv?.variable_values?.length ? (
                         <VariableValueContextTrigger contexts={fv.variable_values} />

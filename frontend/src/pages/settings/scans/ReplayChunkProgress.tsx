@@ -50,7 +50,7 @@ export function ReplayChunkProgress({
 
   return (
     <div className={compact ? 'w-44 max-w-full space-y-1' : 'space-y-2'}>
-      <div className="flex items-center justify-between gap-2 text-micro text-muted-foreground">
+      <div className="flex items-center justify-between gap-2 text-micro text-fg-tertiary">
         <span className="font-medium text-foreground">Replay chunks</span>
         <span>{chunkLabel}</span>
       </div>
@@ -65,7 +65,7 @@ export function ReplayChunkProgress({
         <div className="h-full bg-primary transition-[width]" style={{ width: `${progress.percent}%` }} />
       </div>
       {!compact && (
-        <div className="flex flex-wrap gap-x-3 gap-y-1 text-body-sm text-muted-foreground">
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-body-sm text-fg-tertiary">
           {phaseLabel && <span>{phaseLabel}</span>}
           {progress.currentFrom && progress.currentTo && (
             <span>
@@ -74,7 +74,7 @@ export function ReplayChunkProgress({
           )}
         </div>
       )}
-      {compact && phaseLabel && <div className="text-micro text-muted-foreground">{phaseLabel}</div>}
+      {compact && phaseLabel && <div className="text-micro text-fg-tertiary">{phaseLabel}</div>}
     </div>
   )
 }

@@ -60,7 +60,7 @@ function StatHelp({ help }: { help: string }) {
             className="inline-flex shrink-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
             aria-label={help}
           >
-            <Info className="size-3" style={{ color: 'var(--fg-faint)' }} aria-hidden />
+            <Info className="size-3 text-fg-tertiary" aria-hidden />
           </button>
         </TooltipTrigger>
         <TooltipContent side="bottom" align="end" className="whitespace-normal">

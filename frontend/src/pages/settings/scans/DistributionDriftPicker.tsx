@@ -33,7 +33,7 @@ export function DistributionDriftPicker({
         <div className="text-body font-medium">Distribution drift</div>
         {/* Plain words first; "PSI" and "scalar" explained nothing to the
             reader choosing columns (#247 DA-16). */}
-        <p className="text-body-sm text-muted-foreground">
+        <p className="text-body-sm text-fg-tertiary">
           tripl watches the mix of values in these columns (e.g. the share of iOS vs Android) and flags
           when it shifts from the usual pattern (population stability index).
         </p>
@@ -65,7 +65,7 @@ export function DistributionDriftPicker({
         })}
       </div>
       {availableColumns.length === 0 && (
-        <p className="text-body-sm text-muted-foreground">
+        <p className="text-body-sm text-fg-tertiary">
           The preview has no plain-value columns to watch (JSON columns cannot be).
         </p>
       )}

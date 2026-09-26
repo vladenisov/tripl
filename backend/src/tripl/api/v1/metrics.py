@@ -21,6 +21,8 @@ from tripl.schemas.event_metric import (
     OverviewKpiSeriesResponse,
     ReleaseRegressionsResponse,
     SeasonalityHeatmapResponse,
+    SignalSeriesQuery,
+    SignalSeriesResponse,
     TopEventResponse,
     TopMoverItem,
 )
@@ -230,6 +232,20 @@ async def query_active_signals(
     return await metrics_insights_service.get_active_signals(
         session, slug, event_ids=data.event_ids or None
     )
+
+
+@router.post(
+    "/projects/{slug}/anomalies/signals/series",
+    response_model=list[SignalSeriesResponse],
+)
+async def query_signal_series(
+    session: SessionDep,
+    slug: str,
+    data: SignalSeriesQuery,
+) -> list[SignalSeriesResponse]:
+    """Row sparklines for many open signals in one request (MO-19). POST for
+    the same reason as ``/signals/query``: the batch outgrows a query string."""
+    return await metrics_insights_service.get_signal_series(session, slug, data.scopes)
 
 
 @router.get(

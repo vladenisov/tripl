@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import type { MonitoringSignal } from '@/types'
 import { SignalSummary } from './SignalSummary'
 
@@ -74,5 +74,26 @@ describe('SignalSummary (MO-2)', () => {
     )
     expect(summaryText()).toContain('137 events, with no baseline to compare against.')
     expect(summaryText()).toContain('Why flagged: it fired where nothing was expected.')
+  })
+})
+
+describe('SignalSummary — Annotate (metric-scope handoff)', () => {
+  it('offers Annotate on the flagged bucket only when given a handler', () => {
+    const onAnnotate = vi.fn()
+    const { rerender } = render(
+      <SignalSummary signal={signal()} formatActual={formatActual} formatExpected={formatExpected} />,
+    )
+    expect(screen.queryByRole('button', { name: 'Annotate' })).toBeNull()
+
+    rerender(
+      <SignalSummary
+        signal={signal()}
+        formatActual={formatActual}
+        formatExpected={formatExpected}
+        onAnnotate={onAnnotate}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Annotate' }))
+    expect(onAnnotate).toHaveBeenCalledWith('2026-09-25T18:00:00Z')
   })
 })

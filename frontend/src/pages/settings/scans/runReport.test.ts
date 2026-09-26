@@ -44,6 +44,15 @@ describe('buildRunReport — "Rows read" covers two populations', () => {
     expect(metricsRows.title).toContain('capped by the metrics row cap')
   })
 
+  it('reads a catalog run in warehouse rows, with its combinations beside them (i9mt.16)', () => {
+    const summary = { catalog_rows_scanned: 28160, scan_rows_processed: 153 }
+    const line = lineById(buildRunReport(job(summary), 'catalog'), 'rows-read')!
+    expect(line.text).toBe(
+      'Read 28,160 warehouse rows (153 distinct column combinations, grouped in the warehouse).',
+    )
+    expect(jobRowsReadTitle(job(summary))).toContain('Warehouse rows behind the column combinations')
+  })
+
   it('labels the kind by the counter jobRowsScanned actually returns', () => {
     // jobRowsScanned prefers query_rows_scanned; the title must agree with it or
     // a metrics run would be described under the catalog cap. Asserted through

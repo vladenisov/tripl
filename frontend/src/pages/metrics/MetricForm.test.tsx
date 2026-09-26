@@ -47,6 +47,11 @@ vi.mock('@/api/factTables', () => ({
   },
 }))
 
+// The fact / event series dry run (MT-9).
+vi.mock('./catalogRequests', () => ({
+  previewMetricSeries: vi.fn(),
+}))
+
 // CodeMirror needs real layout measurement jsdom can't provide; stub it with a
 // plain textarea that forwards value/onChange/placeholder and the aria-label so
 // the SQL editor stays queryable by accessible name.
@@ -97,6 +102,7 @@ import { factTablesApi } from '@/api/factTables'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import { dataSourcesApi } from '@/api/dataSources'
+import { previewMetricSeries } from './catalogRequests'
 import { at } from '@/test/at'
 
 // Radix drives the dropdown through pointer-capture APIs jsdom omits.
@@ -263,6 +269,7 @@ beforeEach(() => {
   vi.mocked(metricsCatalogApi.create).mockClear()
   vi.mocked(metricsCatalogApi.update).mockClear()
   vi.mocked(metricsCatalogApi.preview).mockReset()
+  vi.mocked(previewMetricSeries).mockReset()
   vi.mocked(factTablesApi.list).mockReset()
   vi.mocked(factTablesApi.get).mockReset()
   vi.mocked(factTablesApi.list).mockResolvedValue(
@@ -1179,6 +1186,13 @@ describe('MetricForm templates', () => {
     ])
     expect(await screen.findByText(/No events are tracked in this project yet/)).toBeInTheDocument()
     expect(await screen.findByText(/This project has no fact tables yet/)).toBeInTheDocument()
+    // Faded, not disabled: the author may still pick them and fill them in later.
+    const [events, facts, sql] = within(screen.getByRole('radiogroup', { name: 'Metric kind' })).getAllByRole('radio')
+    for (const kind of [events, facts]) {
+      expect(kind).toHaveAttribute('data-dimmed', 'true')
+      expect(kind).toBeEnabled()
+    }
+    expect(sql).not.toHaveAttribute('data-dimmed')
   })
 
   it('never shows the gallery in edit mode', () => {
@@ -2034,6 +2048,8 @@ describe('MetricForm unit, colour and template (MT-17, MT-35, MT-32)', () => {
 
   it('picks a colour from the swatches', () => {
     renderForm()
+    // Colour sits in the "More options" fold (MT-2).
+    fireEvent.click(screen.getByRole('button', { name: /More options/ }))
     const sky = screen.getByRole('button', { name: 'Sky' })
     expect(sky).toHaveAttribute('aria-pressed', 'false')
     fireEvent.click(sky)
@@ -2124,5 +2140,110 @@ describe('MetricForm SQL preview guard (MT-15)', () => {
     submit()
     await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
     expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+})
+
+describe('MetricForm follow-ups (MT-2, MT-3, MT-9)', () => {
+  it('folds the internal name, description and colour behind More options (MT-2)', async () => {
+    renderForm(null, DATA_SOURCES, { pickSql: false })
+    const more = screen.getByRole('button', { name: /More options/ })
+    expect(more).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('textbox', { name: 'Description' })).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Checkout conversion' },
+    })
+    // The derived internal name stays readable while its input is folded.
+    expect(screen.getByText('checkout_conversion')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change' }))
+    expect(more).toHaveAttribute('aria-expanded', 'true')
+    await waitFor(() => expect(document.getElementById('metric-name')).toHaveFocus())
+    expect(screen.getByRole('textbox', { name: 'Description' })).toBeInTheDocument()
+  })
+
+  it('opens an edited metric with a description with the fold open', () => {
+    renderForm({ ...EDIT_METRIC, description: 'Orders per day' })
+    expect(screen.getByRole('button', { name: /More options/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('group', { name: 'Internal name' })).toBeInTheDocument()
+  })
+
+  it('starts on a fact table when the project tracks no events (MT-3)', async () => {
+    EVENT_CATALOG = []
+    renderForm(null, DATA_SOURCES, { pickSql: false })
+
+    await waitFor(() =>
+      expect(screen.getByRole('radio', { name: /From a fact table/ })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      ),
+    )
+    expect(screen.getByRole('link', { name: 'Add events' })).toHaveAttribute('href', '/p/demo/events')
+  })
+
+  it('starts on SQL, and links to a new fact table, when there are neither (MT-3)', async () => {
+    EVENT_CATALOG = []
+    vi.mocked(factTablesApi.list).mockResolvedValue(
+      { total: 0, items: [] } as unknown as Awaited<ReturnType<typeof factTablesApi.list>>,
+    )
+    renderForm(null, DATA_SOURCES, { pickSql: false })
+
+    await waitFor(() =>
+      expect(screen.getByRole('radio', { name: /Custom SQL/ })).toHaveAttribute('aria-checked', 'true'),
+    )
+    expect(screen.getByRole('link', { name: 'Create one' })).toHaveAttribute(
+      'href',
+      '/p/demo/metrics/fact-tables/new',
+    )
+  })
+
+  it('keeps the kind the author picked once the roster says there are no events', async () => {
+    EVENT_CATALOG = []
+    renderForm()
+    await screen.findByRole('link', { name: 'Add events' })
+    expect(screen.getByRole('radio', { name: /Custom SQL/ })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('previews an event metric\'s series from the definition a save would send (MT-9)', async () => {
+    vi.mocked(previewMetricSeries).mockResolvedValue({
+      columns: [],
+      points: [
+        { bucket: '2026-09-01T10:00:00Z', value: 3 },
+        { bucket: '2026-09-01T11:00:00Z', value: 4 },
+      ],
+      point_count: 2,
+      truncated: false,
+      error: null,
+    })
+    renderForm(null, DATA_SOURCES, { pickSql: false })
+    const preview = screen.getByRole('button', { name: 'Preview' })
+    expect(preview).toBeDisabled()
+    expect(preview).toHaveAccessibleDescription('Pick an event to preview.')
+
+    await pickOption('metric-numerator', 'ev-1')
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    await waitFor(() =>
+      expect(previewMetricSeries).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({ kind: 'event_composition', numerator_event_id: 'ev-1' }),
+      ),
+    )
+    expect(await screen.findByText('2 buckets')).toBeInTheDocument()
+  })
+
+  it('shows a server-reported preview problem inline', async () => {
+    vi.mocked(previewMetricSeries).mockResolvedValue({
+      columns: [],
+      points: [],
+      point_count: 0,
+      truncated: false,
+      error: 'No counts have been collected for this event yet.',
+    })
+    renderForm(null, DATA_SOURCES, { pickSql: false })
+    await pickOption('metric-numerator', 'ev-1')
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    expect(await screen.findByText(/No counts have been collected/)).toBeInTheDocument()
   })
 })

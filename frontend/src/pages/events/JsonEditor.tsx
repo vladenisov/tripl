@@ -205,7 +205,7 @@ export function JsonEditor({
           the box's right edge and read as stray text. Not an overlay either —
           that covered the first line of every payload wider than the box. */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        <span className="text-caption text-fg-tertiary">
           JSON · <span className="mono">{'${variables}'}</span> allowed
         </span>
         <Button type="button" variant="ghost" size="xs" onClick={handleFormat} className="shrink-0">
@@ -250,7 +250,7 @@ export function JsonEditor({
       <p id={errorId} className="min-w-0 text-body-sm text-destructive empty:hidden">{error}</p>
       {repair && (
         <div className="flex items-start justify-between gap-2" aria-live="polite">
-          <p className="min-w-0 text-body-sm text-muted-foreground">
+          <p className="min-w-0 text-body-sm text-fg-tertiary">
             Format {repair.fixes.join(', ')}.
           </p>
           <Button type="button" variant="ghost" size="xs" onClick={handleUndoRepair} className="shrink-0">

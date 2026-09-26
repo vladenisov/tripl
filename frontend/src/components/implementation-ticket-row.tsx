@@ -21,12 +21,10 @@ export function ImplementationTicketRow({ ticket }: { ticket: ImplementationTick
 
   return (
     <div
-      className="flex items-center gap-2 border-t px-4 py-2.5 first:border-t-0"
-      style={{ borderColor: 'var(--border-subtle)' }}
+      className="flex items-center gap-2 border-t px-4 py-2.5 first:border-t-0 border-border-subtle"
     >
       <Ticket
-        className="size-3.5 shrink-0"
-        style={{ color: 'var(--fg-subtle)' }}
+        className="size-3.5 shrink-0 text-fg-tertiary"
         aria-hidden="true"
       />
       {ticket.external_url ? (
@@ -34,18 +32,17 @@ export function ImplementationTicketRow({ ticket }: { ticket: ImplementationTick
           href={ticket.external_url}
           target="_blank"
           rel="noopener noreferrer"
-          className="shrink-0 text-body-sm font-medium underline"
-          style={{ color: 'var(--accent)' }}
+          className="shrink-0 text-body-sm font-medium underline text-accent"
         >
           {label}
           <ArrowUpRight className="ml-0.5 inline size-3" aria-hidden="true" />
         </a>
       ) : (
-        <span className="shrink-0 text-body-sm font-medium" style={{ color: 'var(--fg)' }}>
+        <span className="shrink-0 text-body-sm font-medium text-fg">
           {label}
         </span>
       )}
-      <span className="truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="truncate text-caption text-fg-tertiary">
         {ticket.summary}
       </span>
       <div className="flex-1" />

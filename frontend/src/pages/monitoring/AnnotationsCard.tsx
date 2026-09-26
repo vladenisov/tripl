@@ -132,9 +132,9 @@ export function AnnotationsCard({
     <Card id="chart-annotations" className="scroll-mt-4">
       <CardHeader>
         <div className="flex items-center gap-2">
-          <CalendarPlus aria-hidden="true" className="size-4 text-muted-foreground" />
+          <CalendarPlus aria-hidden="true" className="size-4 text-fg-tertiary" />
           <CardTitle as="h2">Annotations</CardTitle>
-          <span className="tnum text-caption text-muted-foreground">
+          <span className="tnum text-caption text-fg-tertiary">
             ({annotations.length})
           </span>
         </div>
@@ -167,7 +167,7 @@ export function AnnotationsCard({
                   onChange={setBucket}
                   aria-describedby="annotation-bucket-hint"
                 />
-                <span id="annotation-bucket-hint" className="text-micro text-muted-foreground">
+                <span id="annotation-bucket-hint" className="text-micro text-fg-tertiary">
                   Your local time ({offset})
                 </span>
               </div>
@@ -217,7 +217,7 @@ export function AnnotationsCard({
                       className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
                       style={{ backgroundColor: annotationDisplayColor(annotation.color) }}
                     />
-                    <span className="text-muted-foreground">
+                    <span className="text-fg-tertiary">
                       {formatTimestamp(annotation.bucket)}
                     </span>
                     <span className="min-w-0 break-words font-medium">{annotation.label}</span>
@@ -228,7 +228,7 @@ export function AnnotationsCard({
                   {canWrite && (
                     <IconButton
                       variant="ghost"
-                      className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                      className="h-7 w-7 shrink-0 text-fg-tertiary hover:text-destructive"
                       onClick={() => void deleteAnnotation(annotation)}
                       // Only the row being deleted waits, not every row.
                       disabled={deleteMut.isPending && deleteMut.variables === annotation.id}

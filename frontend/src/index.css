@@ -133,12 +133,14 @@
   --secondary: var(--surface-hover);
   --secondary-foreground: var(--fg);
   --muted: var(--surface-hover);
-  /* Naming trap (DS-22): shadcn's `muted-foreground` is --fg-SUBTLE (the
-     0.50-lightness caption grey), not --fg-muted (the darker secondary-text
-     grey). `text-muted-foreground` and `text-fg-subtle` are the same colour;
-     reach for `text-fg-muted` when secondary text is meant. Likewise danger
-     text has one spelling to use: `text-danger` (== `text-destructive`). */
-  --muted-foreground: var(--fg-subtle);
+  /* No `--muted-foreground` (DS-22). shadcn's `muted-foreground` was the
+     TERTIARY step (--fg-subtle, the caption grey), not --fg-muted, and the
+     name kept getting read as "secondary". Every call site moved to the
+     explicit steps and the alias is gone; tripl/no-muted-foreground stops it
+     coming back with shadcn-generated code. Use `text-fg-tertiary` for
+     captions, placeholders and meta, `text-fg-secondary` for body copy and
+     labels. Likewise danger text has one spelling to use: `text-danger`
+     (== `text-destructive`). */
   --accent-foreground: var(--accent-fg);
   --destructive: var(--danger);
   --destructive-foreground: oklch(0.985 0 0);
@@ -431,6 +433,12 @@
   background: var(--bg);
   z-index: 2;
 }
+/* A just-created row's tint reaches its pinned cells too. The tint is
+   translucent, so it is laid over the opaque page colour: a sticky cell must
+   still hide the columns scrolling under it. */
+.tripl-table tbody tr[data-created] td.tripl-pin-l {
+  background: linear-gradient(var(--success-soft), var(--success-soft)), var(--bg);
+}
 .tripl-table tbody tr:hover td.tripl-pin-l {
   background: var(--surface-hover);
 }
@@ -468,7 +476,6 @@
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
   /* The brand colour, NOT a hover surface. shadcn's menus, selects and badges
      read `bg-accent` as "subtle highlight"; here that painted every focused
      menu row a solid brand bar and left --fg text under 4.5:1 on it. Those

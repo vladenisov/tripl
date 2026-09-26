@@ -22,8 +22,14 @@ warehouse.
 * ``preview_fact_operand`` compiles a draft ``fact`` operand's row filter with
   the worker's OWN ``_resolve_fact_operand_query`` (fed the very config dict a
   save would persist) and executes the result, bounded to one row.
+* ``preview_metric_series`` is the series dry run for the two kinds that have
+  no SELECT of their own (MT-9): a ``fact`` draft runs the collector's own
+  ``_aggregate_fact_window`` per operand over the last closed buckets
+  (``fact_series_preview_window``), and an ``event_composition`` draft
+  composes the already-collected event counts of one scan grid with the
+  collector's ``evaluate_composition``.
 
-Neither persists anything. Expected user mistakes — bad SQL, an unknown named
+None of them persists anything. Expected user mistakes — bad SQL, an unknown named
 filter, a measure column the filtered query does not project, a warehouse
 rejection — come back as a 200 payload with ``error`` set so the editor can
 render them inline; only auth, unknown project, unknown fact table and unknown
@@ -36,13 +42,16 @@ import logging
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, cast
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.core.adapters.measure_validator import (
+    SqlDialect,
     dialect_for_db_type,
     lint_dialect_sql,
     requires_measure,
@@ -50,12 +59,17 @@ from tripl.core.adapters.measure_validator import (
     validate_measure_column,
     validate_select_sql,
 )
+from tripl.core.bucketing import floor_to_bucket, to_utc
 from tripl.core.intervals import get_interval
 from tripl.models.data_source import DataSource
 from tripl.models.domain_enums import MetricComposition, MetricKind
+from tripl.models.event_metric import EventMetric
 from tripl.models.fact_table import FactTable
 from tripl.models.metric_definition import MetricDefinition
+from tripl.models.scan_config import ScanConfig
 from tripl.schemas.metric_definition import (
+    EventCompositionMetricDefinition,
+    FactMetricDefinition,
     FactOperand,
     FactOperandPreviewResponse,
     MetricGeneratedSqlQuery,
@@ -63,15 +77,27 @@ from tripl.schemas.metric_definition import (
     MetricPreviewPoint,
     MetricPreviewRequest,
     MetricPreviewResponse,
+    MetricSeriesPreviewRequest,
 )
 from tripl.services.fact_table_service import get_fact_table
 from tripl.services.project_lookup import get_project_id_by_slug
+
+if TYPE_CHECKING:
+    # Type-only: the worker package stays out of this module's import graph.
+    from tripl.worker.tasks.metrics._fact_conditions import _FactOperand
 
 logger = logging.getLogger(__name__)
 
 # Preview window: the last N interval buckets ending now. Small enough to stay
 # interactive, large enough to show the series shape.
 PREVIEW_WINDOW_BUCKETS = 50
+
+# A fact draft's series preview runs a warehouse aggregation per operand, and the
+# editor re-runs it as filters change — so on a coarse grid it is capped by wall
+# clock too: 50 weekly buckets would aggregate most of a year each time. The
+# floor keeps a weekly draft drawable as a shape rather than a handful of dots.
+FACT_SERIES_PREVIEW_MAX_SPAN = timedelta(days=31)
+FACT_SERIES_PREVIEW_MIN_BUCKETS = 8
 
 # Hard row cap (LIMIT) on the wrapped query; the response flags truncation.
 PREVIEW_ROW_LIMIT = 200
@@ -576,6 +602,356 @@ async def preview_fact_operand(
             return _fact_error_response(_trimmed_error(exc), columns=list(columns))
 
     return FactOperandPreviewResponse(columns=list(columns), row_count=len(rows), error=None)
+
+
+def _series_response(values: Mapping[datetime, float | None]) -> MetricPreviewResponse:
+    """Points from a composed series; a ``None`` bucket (divide-by-zero) is a gap."""
+    points = [
+        MetricPreviewPoint(bucket=bucket, value=value)
+        for bucket, value in sorted(values.items())
+        if value is not None
+    ]
+    return MetricPreviewResponse(
+        columns=[], points=points, point_count=len(points), truncated=False, error=None
+    )
+
+
+def fact_series_preview_window(interval_code: str, *, now: datetime) -> tuple[datetime, datetime]:
+    """``[time_from, time_to)`` of a fact draft's series preview, on the bucket grid.
+
+    Both edges sit on bucket boundaries, as the collector's windows do
+    (``_floor_to_interval``): an unaligned start would draw a first bucket
+    holding a fraction of its interval, and ``now`` as the end would draw the
+    still-open bucket — neither is a value a collection would store. The span
+    is ``PREVIEW_WINDOW_BUCKETS`` buckets, capped at
+    ``FACT_SERIES_PREVIEW_MAX_SPAN`` but never fewer than
+    ``FACT_SERIES_PREVIEW_MIN_BUCKETS``.
+    """
+    delta = get_interval(interval_code).delta
+    buckets = max(
+        FACT_SERIES_PREVIEW_MIN_BUCKETS,
+        min(PREVIEW_WINDOW_BUCKETS, FACT_SERIES_PREVIEW_MAX_SPAN // delta),
+    )
+    time_to = floor_to_bucket(now, interval_code)
+    return time_to - buckets * delta, time_to
+
+
+def _run_fact_series(
+    targets: list[tuple[_FactOperand, FactTable, DataSource, SqlDialect]],
+    *,
+    interval_code: str,
+    time_from: datetime,
+    time_to: datetime,
+) -> list[dict[datetime, float]]:
+    """Aggregate each operand over one window with the collector's own function.
+
+    Runs in a worker thread (sync warehouse drivers). Each operand gets its own
+    adapter and its own introspection of the RAW fact SQL, exactly as
+    ``_collect_fact_single`` / ``_collect_fact_ratio`` arm theirs, so the
+    measure and condition columns are checked against what the warehouse
+    returns today rather than what was recorded when the table was saved.
+    """
+    from tripl.core.adapters.registry import build_adapter
+    from tripl.worker.tasks.metrics.metric_collect import _aggregate_fact_window
+
+    series: list[dict[datetime, float]] = []
+    for operand, fact_table, ds, dialect in targets:
+        adapter = build_adapter(ds)
+        try:
+            allowed_columns = {column.name for column in adapter.get_columns(fact_table.sql)}
+            values, _base_query, _measure = _aggregate_fact_window(
+                adapter,
+                fact_table=fact_table,
+                operand=operand,
+                allowed_columns=allowed_columns,
+                dialect=dialect,
+                interval_code=interval_code,
+                chunk_from=time_from,
+                chunk_to=time_to,
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                adapter.close()
+        series.append(values)
+    return series
+
+
+async def _preview_fact_series(
+    session: AsyncSession, slug: str, project_id: uuid.UUID, data: FactMetricDefinition
+) -> MetricPreviewResponse:
+    """Dry-run a ``fact`` draft: one bucketed aggregate per operand, then compose."""
+    from tripl.services.metric_definition_service import load_project_data_source
+    from tripl.worker.analyzers.metric_composition import evaluate_composition
+    from tripl.worker.tasks._errors import ScanError
+    from tripl.worker.tasks.metrics._fact_conditions import (
+        _operand_from_config,
+        _resolve_fact_operand_query,
+    )
+
+    # The exact config dict a save would persist, parsed by the worker's own
+    # reader — the same route ``get_saved_fact_metric_sql`` takes.
+    config = data.to_definition_values()["config"]
+    assert isinstance(config, dict)
+    is_ratio = data.composition is MetricComposition.ratio
+    if is_ratio:
+        raw_operands: list[Mapping[str, object]] = [config["numerator"], config["denominator"]]
+    else:
+        assert data.fact_table_id is not None and data.aggregation is not None
+        raw_operands = [
+            {
+                **config,
+                "fact_table_id": str(data.fact_table_id),
+                "aggregation": data.aggregation.value,
+            }
+        ]
+
+    targets: list[tuple[_FactOperand, FactTable, DataSource, SqlDialect]] = []
+    for raw in raw_operands:
+        try:
+            operand = _operand_from_config(raw)
+        except (ScanError, ValueError) as exc:
+            return _error_response(_trimmed_error(exc))
+        # Project-scoped: 404 for a fact table in another project.
+        fact_table = await get_fact_table(session, slug, operand.fact_table_id)
+        if fact_table.data_source_id is None:
+            return _error_response(
+                f"Fact table {fact_table.display_name!r} has no data source bound; "
+                "bind one before previewing."
+            )
+        # The credential the collector would open, fenced the way the SQL
+        # preview fences its own (``_reject_foreign_data_source`` at collection).
+        ds = await load_project_data_source(session, project_id, fact_table.data_source_id)
+        try:
+            dialect = dialect_for_db_type(ds.db_type)
+            # Compile-time rejections (unknown named filter, unquotable value)
+            # answered here, before a connection is opened.
+            _resolve_fact_operand_query(fact_table, operand, dialect=dialect)
+        except (ScanError, ValueError) as exc:
+            return _error_response(_trimmed_error(exc))
+        targets.append((operand, fact_table, ds, dialect))
+
+    interval_code = data.interval.value
+    time_from, time_to = fact_series_preview_window(interval_code, now=datetime.now(UTC))
+    try:
+        series = await asyncio.to_thread(
+            _run_fact_series,
+            targets,
+            interval_code=interval_code,
+            time_from=time_from,
+            time_to=time_to,
+        )
+    except ScanError as exc:
+        # tripl-authored: a measure or condition column the query no longer
+        # returns, a truncated window.
+        return _error_response(_trimmed_error(exc))
+    except Exception as exc:  # noqa: BLE001 - warehouse failures are user-facing
+        logger.exception("Fact metric series preview failed in project %s", project_id)
+        return _error_response(_warehouse_error_message(exc))
+
+    if is_ratio:
+        values = evaluate_composition(
+            MetricComposition.ratio, numerator=series[0], denominator=series[1]
+        )
+    else:
+        values = dict(series[0])
+    return _series_response(values)
+
+
+def _event_metric_condition(
+    event_id: uuid.UUID | None, event_type_id: uuid.UUID | None
+) -> ColumnElement[bool] | None:
+    """The scope ``_read_event_metric_series`` reads: per-event, else per-type rows."""
+    if event_id is not None:
+        return EventMetric.event_id == event_id
+    if event_type_id is not None:
+        return EventMetric.event_type_id == event_type_id
+    return None
+
+
+async def _read_event_series_window(
+    session: AsyncSession,
+    condition: ColumnElement[bool],
+    *,
+    scan_config_id: uuid.UUID,
+    floor: datetime,
+) -> dict[datetime, float]:
+    """One grid's counts from ``floor`` on — ``_read_event_metric_series``, bounded.
+
+    The collector reads a scope's whole retained history on every grid; a
+    preview only shows ``PREVIEW_WINDOW_BUCKETS`` buckets of one grid, so it
+    reads only those. Same condition, same bucket → count mapping.
+    """
+    rows = (
+        await session.execute(
+            select(EventMetric.bucket, EventMetric.count).where(
+                condition,
+                EventMetric.scan_config_id == scan_config_id,
+                EventMetric.bucket >= floor,
+            )
+        )
+    ).all()
+    return {to_utc(bucket): float(count) for bucket, count in rows}
+
+
+class _PreloadedDataSourceSession:
+    """Answers the one ``Session.get`` ``_collect_distinct_user_series`` makes.
+
+    That collector takes a sync ``Session`` only to load the scan's data source.
+    The request path has an async session and must not run a warehouse driver on
+    the event loop, so the source is loaded (and project-fenced) up front and
+    handed over through this stand-in; the collector itself runs unchanged in a
+    worker thread.
+    """
+
+    def __init__(self, data_source: DataSource) -> None:
+        self._data_source = data_source
+
+    def get(self, model: type[object], ident: object) -> object | None:
+        if model is DataSource and ident == self._data_source.id:
+            return self._data_source
+        return None
+
+
+def _run_distinct_user_series(
+    data_source: DataSource,
+    *,
+    scan_config: ScanConfig,
+    user_id_column: str,
+    time_from: datetime,
+    time_to: datetime,
+) -> dict[datetime, float]:
+    from tripl.worker.tasks.metrics.metric_collect import _collect_distinct_user_series
+
+    return _collect_distinct_user_series(
+        cast("Session", _PreloadedDataSourceSession(data_source)),
+        scan_config=scan_config,
+        user_id_column=user_id_column,
+        time_from=time_from,
+        time_to=time_to,
+    )
+
+
+async def _preview_event_composition_series(
+    session: AsyncSession, project_id: uuid.UUID, data: EventCompositionMetricDefinition
+) -> MetricPreviewResponse:
+    """Compose a draft from already-collected event counts on its newest grid.
+
+    An ``event_composition`` metric is collected per source scan grid; the
+    preview shows ONE: the grid whose numerator series reaches the most recent
+    bucket (ties broken by id, so the choice is stable). Nothing runs against a
+    warehouse except the distinct-user denominator of ``per_distinct_user``,
+    which is the collector's own query over the same bounded window.
+    """
+    from tripl.services.metric_definition_service import (
+        _verify_composition_refs,
+        load_project_data_source,
+    )
+    from tripl.worker.analyzers.metric_composition import evaluate_composition
+    from tripl.worker.tasks._errors import ScanError
+    from tripl.worker.tasks.metrics.metric_collect import DEFAULT_USER_ID_COLUMN
+
+    # The save path's own 422 for an event or event type outside the project:
+    # without it a preview would read another project's counts by id.
+    await _verify_composition_refs(session, project_id, data)
+    numerator_condition = _event_metric_condition(
+        data.numerator_event_id, data.numerator_event_type_id
+    )
+    if numerator_condition is None:  # pragma: no cover - the schema requires a numerator
+        return _error_response("Pick an event to count.")
+
+    heads = (
+        await session.execute(
+            select(EventMetric.scan_config_id, func.max(EventMetric.bucket))
+            .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
+            .where(
+                numerator_condition,
+                ScanConfig.project_id == project_id,
+                ScanConfig.interval.is_not(None),
+            )
+            .group_by(EventMetric.scan_config_id)
+        )
+    ).all()
+    candidates = [
+        (to_utc(head), scan_config_id) for scan_config_id, head in heads if head is not None
+    ]
+    if not candidates:
+        return _error_response(
+            "No counts have been collected for this event yet. They appear after the "
+            "next scan that tracks it."
+        )
+    head, scan_config_id = max(candidates, key=lambda item: (item[0], str(item[1])))
+    scan_config = await session.get(ScanConfig, scan_config_id)
+    if scan_config is None or scan_config.interval is None:  # pragma: no cover - joined above
+        return _error_response("The scan these counts came from no longer exists.")
+    interval_code = str(getattr(scan_config.interval, "value", scan_config.interval))
+    delta = get_interval(interval_code).delta
+    floor = head - delta * (PREVIEW_WINDOW_BUCKETS - 1)
+
+    numerator = await _read_event_series_window(
+        session, numerator_condition, scan_config_id=scan_config_id, floor=floor
+    )
+    composition = data.composition
+    if composition is MetricComposition.single:
+        return _series_response(evaluate_composition(composition, numerator=numerator))
+    if composition is MetricComposition.ratio:
+        denominator_condition = _event_metric_condition(
+            data.denominator_event_id, data.denominator_event_type_id
+        )
+        denominator = (
+            await _read_event_series_window(
+                session, denominator_condition, scan_config_id=scan_config_id, floor=floor
+            )
+            if denominator_condition is not None
+            else {}
+        )
+        return _series_response(
+            evaluate_composition(composition, numerator=numerator, denominator=denominator)
+        )
+
+    # per_distinct_user: the warehouse distinct-user count over the numerator's
+    # range, the bound ``_compose_grid_region`` puts on the same query.
+    if not numerator:
+        return _series_response({})
+    data_source = await load_project_data_source(session, project_id, scan_config.data_source_id)
+    try:
+        distinct = await asyncio.to_thread(
+            _run_distinct_user_series,
+            data_source,
+            scan_config=scan_config,
+            user_id_column=data.user_id_column or DEFAULT_USER_ID_COLUMN,
+            time_from=min(numerator),
+            time_to=max(numerator) + delta,
+        )
+    except ScanError as exc:
+        return _error_response(_trimmed_error(exc))
+    except Exception as exc:  # noqa: BLE001 - warehouse failures are user-facing
+        logger.exception("Distinct-user preview failed for scan config %s", scan_config.id)
+        return _error_response(_warehouse_error_message(exc))
+    return _series_response(
+        evaluate_composition(composition, numerator=numerator, denominator=distinct)
+    )
+
+
+async def preview_metric_series(
+    session: AsyncSession, slug: str, data: MetricSeriesPreviewRequest
+) -> MetricPreviewResponse:
+    """Dry-run a draft ``fact`` or ``event_composition`` metric's series (MT-9).
+
+    The body is the definition a save would send, and the values come from the
+    collector's own functions, so what the editor draws is what the first
+    collection would store — minus persistence, breakdowns and the resume
+    window: a fact draft covers the closed buckets of
+    ``fact_series_preview_window`` (up to ``PREVIEW_WINDOW_BUCKETS``, capped at
+    a month), an event composition the last
+    ``PREVIEW_WINDOW_BUCKETS`` buckets of its newest source grid. Expected
+    mistakes and warehouse failures come back as a 200 with ``error`` set, as
+    the other previews do; an unknown project, fact table or data source is a
+    404 and an event outside the project a 422, as on save.
+    """
+    project_id = await get_project_id_by_slug(session, slug)
+    if isinstance(data, FactMetricDefinition):
+        return await _preview_fact_series(session, slug, project_id, data)
+    return await _preview_event_composition_series(session, project_id, data)
 
 
 async def get_saved_fact_metric_sql(

@@ -274,7 +274,7 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
       }}
     >
       <div className="grid gap-4 py-4">
-        <p className="text-body-sm text-muted-foreground">
+        <p className="text-body-sm text-fg-tertiary">
           When enabled, merging a branch opens one Jira ticket for its added/changed events;
           closing the ticket marks those events implemented.
         </p>
@@ -282,7 +282,7 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
         <div className="flex items-center justify-between gap-3">
           <div>
             <Label htmlFor={enabledId}>Enabled</Label>
-            <p className="mt-1 text-body-sm text-muted-foreground">
+            <p className="mt-1 text-body-sm text-fg-tertiary">
               Open implementation tickets when branches merge.
             </p>
           </div>
@@ -353,7 +353,7 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             placeholder={tokenPlaceholder}
             disabled={!canEdit}
           />
-          <p className="text-body-sm text-muted-foreground">
+          <p className="text-body-sm text-fg-tertiary">
             {config.api_token_set
               ? 'A token is stored. Leave this blank to keep it, or paste a new one to replace it.'
               : 'Create an API token in your Jira account settings.'}
@@ -373,12 +373,12 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
         </fieldset>
 
         {saveMut.isError && (
-          <p className="text-body" style={{ color: 'var(--danger)' }}>
+          <p className="text-body text-danger">
             {describeTrackerError(saveMut.error)}
           </p>
         )}
         {!canEdit && (
-          <p className="text-body-sm text-muted-foreground">
+          <p className="text-body-sm text-fg-tertiary">
             Only project owners can edit the tracker connection.
           </p>
         )}

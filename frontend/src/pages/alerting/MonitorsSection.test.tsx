@@ -218,9 +218,11 @@ describe('MonitorsSection live state (tripl-89ps)', () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary({ healthy_count: 3 }))
     const { container } = renderSection()
 
-    const healthy = await screen.findByText('Healthy', { selector: 'dt' })
-    const figure = healthy.closest('dl')?.querySelector('[data-slot="mini-stat-value"]')
-    await waitFor(() => expect(figure).toHaveTextContent('3'))
+    // A toggle once the summary has answered (AL-47), so the figure is read
+    // off the button rather than a definition list.
+    const healthy = await screen.findByRole('button', { name: /^Healthy 3/ })
+    const figure = healthy.querySelector('[data-slot="mini-stat-value"]')
+    expect(figure).toHaveTextContent('3')
     expect(figure).not.toHaveAttribute('data-tone')
     expect(container.querySelectorAll('[data-slot="mini-stat-value"][data-tone="success"]')).toHaveLength(0)
   })
@@ -1070,5 +1072,60 @@ describe('MonitorsSection — rows read as sentences (AL-11, JR-15)', () => {
     expect(screen.queryByRole('button', { name: 'Mute Prod drops' })).toBeNull()
     const menu = await openRowMenu()
     expect(within(menu).getByRole('menuitem', { name: 'Replay Prod drops' })).toHaveTextContent('Replay')
+  })
+})
+
+// "Firing 1" is exactly the filter a reader wants, and the strip used to be a
+// row of numbers nothing could be done with (AL-47).
+describe('MonitorsSection state tiles filter the rules (AL-47)', () => {
+  function twoRuleSummary() {
+    const firing = makeSummary().monitors[0]!
+    return makeSummary({
+      monitors: [
+        firing,
+        { ...firing, rule_id: 'rule-2', rule_name: 'Quiet spikes', status: 'healthy', firing_scope_count: 0 },
+      ],
+      firing_count: 1,
+      healthy_count: 1,
+      total: 2,
+    })
+  }
+  const twoRules = () => [makeRule(), makeRule({ id: 'rule-2', name: 'Quiet spikes' })]
+
+  it('shows only the rules in the pressed state, and all of them again on a second press', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(twoRuleSummary())
+    renderSection({ rules: twoRules() })
+
+    const firing = await screen.findByRole('button', { name: /^Firing 1/ })
+    expect(firing).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(firing)
+
+    expect(firing).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('link', { name: 'Prod drops' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Quiet spikes' })).toBeNull()
+    expect(screen.getByText('1 of 2 alert rules · firing')).toBeInTheDocument()
+
+    fireEvent.click(firing)
+    expect(firing).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('link', { name: 'Quiet spikes' })).toBeInTheDocument()
+  })
+
+  it('says when no rule is in the pressed state, with a way back to all of them', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(twoRuleSummary())
+    renderSection({ rules: twoRules() })
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Warning 0/ }))
+
+    expect(screen.getByText(/No rules are warning right now/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show all rules' }))
+    expect(screen.getByRole('link', { name: 'Prod drops' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Quiet spikes' })).toBeInTheDocument()
+  })
+
+  it('is not a toggle until the summary has answered', () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockReturnValue(new Promise(() => {}))
+    renderSection({ rules: twoRules() })
+
+    expect(screen.queryByRole('button', { name: /^Firing/ })).toBeNull()
   })
 })

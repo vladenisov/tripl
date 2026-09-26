@@ -61,6 +61,7 @@ import { PageContainer } from '@/components/primitives/page-container'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { DestinationChannel } from './alerting/constants'
 import { DestinationDialog, type DestinationDialogTarget } from './alerting/DestinationDialog'
+import { useAlertingTabCounts } from './alerting/useAlertingTabCounts'
 import {
   alertDeliveriesAnyKey,
   alertDeliveriesKey,
@@ -542,6 +543,9 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     return {
       items,
       total: firstPage.total,
+      // The per-status counts the Status filter shows on each option (AL-14).
+      // A fact about the filtered source like `total`, so the first page's.
+      status_counts: firstPage.status_counts,
       window_truncated_at: firstPage.window_truncated_at,
       next_cursor: pages[pages.length - 1]?.next_cursor ?? null,
     }
@@ -1099,6 +1103,16 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     && !hasDestinations
     && !hasRules
     && !hasDeliveries
+  // "Inbox 3" and "Delivery log 2" on the strip (AL-46). Only while the strip
+  // is shown, and on the inbox's own cadence.
+  const tabCounts = useAlertingTabCounts(slug, {
+    enabled: !showGuidedSetup,
+    refetchInterval: inboxRefetchInterval,
+  })
+  const sectionCount: Partial<Record<AlertingSection, number | undefined>> = {
+    inbox: tabCounts.openIncidents,
+    audit: tabCounts.failedDeliveries,
+  }
   // A demo workspace is zero-egress: the API accepts no destination but the local
   // demo sink, so offering the channel buttons would only walk the user into a
   // rejection. Say why instead (tripl-2su6.12).
@@ -1127,7 +1141,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // A refresh that failed while a list is on screen keeps the list (and any
   // editor open over it) and says so in one line, instead of replacing it.
   const destinationsRefreshFailed = destinationsQuery.isError && destinationsLoaded ? (
-    <p role="status" className="flex flex-wrap items-center gap-2 text-body-sm text-muted-foreground">
+    <p role="status" className="flex flex-wrap items-center gap-2 text-body-sm text-fg-tertiary">
       Could not refresh alert destinations; showing the last loaded list.
       <button
         type="button"
@@ -1182,6 +1196,10 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
               {...(section === value ? {} : { 'aria-controls': undefined })}
               onPointerEnter={() => void SECTION_PREFETCH[value]().catch(() => {})}
               onFocus={() => void SECTION_PREFETCH[value]().catch(() => {})}
+              // Zero says nothing a bare label does not, so it is left off:
+              // only open incidents and failed deliveries earn the red count.
+              count={sectionCount[value] ? sectionCount[value] : undefined}
+              countUrgent
             >
               {SECTION_LABELS[value]}
             </TabsTrigger>
@@ -1266,7 +1284,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
             than silently (ALR-10). */}
         {destinationsRefreshFailed}
         {destinationsQuery.isError && !destinationsLoaded && (
-          <p role="status" className="flex flex-wrap items-center gap-2 text-body-sm text-muted-foreground">
+          <p role="status" className="flex flex-wrap items-center gap-2 text-body-sm text-fg-tertiary">
             Could not load alert destinations and rules; the incidents below are unaffected.
             <button
               type="button"

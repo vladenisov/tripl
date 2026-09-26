@@ -1,4 +1,4 @@
-import { Panel, Field } from '@/components/settings/kit'
+import { Panel, Field, NativeSelect } from '@/components/settings/kit'
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -42,7 +42,6 @@ import { PageHeader } from '@/components/primitives/page-header'
 import { FieldError } from '@/components/forms/FieldError'
 import { SaveBar } from '@/components/forms/SaveBar'
 import { REQUIRED_MESSAGE, attentionSummary, focusFirstInvalid } from '@/components/forms/validation'
-import { INPUT_INVALID_CLASS, INPUT_TEXT_CLASS } from '@/components/settings/input-style'
 import { SensitivityChip } from '@/components/primitives/sensitivity-chip'
 import { countOf } from '@/lib/plural'
 import { cn, getErrorMessage } from '@/lib/utils'
@@ -275,12 +274,11 @@ export function EventTypesTab({ slug }: { slug: string }) {
                             column headers (PLAN-39). */}
                         <Link
                           to={`/p/${slug}/settings/event-types/${et.id}`}
-                          className="text-body font-semibold hover:underline"
-                          style={{ color: 'var(--fg)' }}
+                          className="text-body font-semibold hover:underline text-fg"
                         >
                           {et.display_name}
                         </Link>
-                        <div className="mono text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                        <div className="mono text-caption text-fg-tertiary">
                           {et.name}_*
                         </div>
                       </div>
@@ -291,7 +289,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                     <span className="tnum">{et.field_definitions.length}</span>
                   </Td>
                   <Td align="right" wideOnly>
-                    <span className="tnum" style={{ color: 'var(--fg-muted)' }}>
+                    <span className="tnum text-fg-secondary">
                       {requiredFieldCount(et)}
                     </span>
                   </Td>
@@ -302,7 +300,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                           {sensitiveFieldCount(et)}
                         </Chip>
                       ) : (
-                        <span style={{ color: 'var(--fg-faint)' }}>—</span>
+                        <span className="text-fg-tertiary">—</span>
                       )}
                     </Td>
                   )}
@@ -312,10 +310,10 @@ export function EventTypesTab({ slug }: { slug: string }) {
                         const owners = ownersByType.get(et.id) ?? []
                         const [firstOwner] = owners
                         if (!firstOwner) {
-                          return <span style={{ color: 'var(--fg-faint)' }}>—</span>
+                          return <span className="text-fg-tertiary">—</span>
                         }
                         return (
-                          <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                          <span className="text-body-sm text-fg-tertiary">
                             {firstOwner.user_name || firstOwner.user_email}
                             {owners.length > 1 ? ` +${owners.length - 1}` : ''}
                           </span>
@@ -329,7 +327,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                         const owners = ownersByType.get(et.id)
                         if (owners === undefined) {
                           return (
-                            <span style={{ color: 'var(--fg-faint)' }} title="Owners not known yet">
+                            <span className="text-fg-tertiary" title="Owners not known yet">
                               —
                             </span>
                           )
@@ -357,8 +355,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                   )}
                   <Td>
                     <ChevronRight
-                      className="size-3.5"
-                      style={{ color: 'var(--fg-faint)' }}
+                      className="size-3.5 text-fg-tertiary"
                       aria-hidden="true"
                     />
                   </Td>
@@ -475,12 +472,12 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
             <ColorPicker value={color} onChange={setColor} />
           </SField>
         </Panel>
-        <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="text-body-sm text-fg-tertiary">
           Next: add the fields every event of this type carries. The type opens on its settings once
           created.
         </p>
         {createMut.isError && (
-          <p className="mt-2 text-body" style={{ color: 'var(--danger)' }}>
+          <p className="mt-2 text-body text-danger">
             {getErrorMessage(createMut.error)}
           </p>
         )}
@@ -503,7 +500,7 @@ export function ColorPicker({ value, onChange }: { value: string; onChange: (v: 
         className="cursor-pointer rounded-control p-0.5"
         style={{ width: 40, height: 34, border: '1px solid var(--border)', background: 'none' }}
       />
-      <span className="mono text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+      <span className="mono text-body-sm text-fg-secondary">
         {value || DEFAULT_ENTITY_COLOR}
       </span>
     </div>
@@ -776,7 +773,7 @@ export function FieldsEditor({
         {moveAnnouncement}
       </p>
       {sortedFields.length === 0 ? (
-        <p className="px-4 py-3.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="px-4 py-3.5 text-body-sm text-fg-tertiary">
           No fields defined yet.
         </p>
       ) : (
@@ -887,7 +884,7 @@ function FieldRow({
         )}
       </Td>
       <Td wideOnly>
-        <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+        <span className="text-body-sm text-fg-secondary">
           {field.display_name}
         </span>
       </Td>
@@ -896,7 +893,7 @@ function FieldRow({
           {field.field_type}
         </Chip>
         {field.field_type === 'enum' && field.enum_options && (
-          <span className="ml-1 text-micro" style={{ color: 'var(--fg-faint)' }}>
+          <span className="ml-1 text-micro text-fg-tertiary">
             ({field.enum_options.length})
           </span>
         )}
@@ -906,9 +903,9 @@ function FieldRow({
       </Td>
       <Td>
         {field.is_required ? (
-          <Check className="size-3.5" style={{ color: 'var(--success)' }} />
+          <Check className="size-3.5 text-success" />
         ) : (
-          <span style={{ color: 'var(--fg-faint)' }}>—</span>
+          <span className="text-fg-tertiary">—</span>
         )}
       </Td>
       <Td wideOnly>
@@ -917,7 +914,7 @@ function FieldRow({
             {countOf(contractRules.length, 'rule', 'rules')}
           </Chip>
         ) : (
-          <span style={{ color: 'var(--fg-faint)' }}>—</span>
+          <span className="text-fg-tertiary">—</span>
         )}
       </Td>
       <Td>
@@ -1100,7 +1097,7 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
               checked={draft.is_required}
               onCheckedChange={(c) => set('is_required', c)}
             />
-            <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+            <span className="text-body-sm text-fg-secondary">
               Must be present on every event
             </span>
           </div>
@@ -1187,7 +1184,7 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
           <SField label="Regex" hint="Values must match this pattern." last={!showRange}>
             {contractInput('contract_regex', { placeholder: 'e.g. ^[a-z0-9_]+$' })}
             {draft.contract_regex !== initialDraft.contract_regex && regexNotice(draft.contract_regex) && (
-              <p className="mt-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="mt-1 text-body-sm text-fg-tertiary">
                 {regexNotice(draft.contract_regex)}
               </p>
             )}
@@ -1204,7 +1201,7 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
           </>
         )}
         {draft.field_type === 'enum' && !showRegex && !showRange && (
-          <p className="px-4 py-3 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="px-4 py-3 text-body-sm text-fg-tertiary">
             Values outside the enum options count as invalid.
           </p>
         )}
@@ -1310,7 +1307,7 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
       {dialog}
       <div className="flex flex-col gap-3 px-4 py-3.5">
         {owners.length === 0 ? (
-          <p className="m-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="m-0 text-body-sm text-fg-tertiary">
             No owners — anyone can merge a branch touching this type.
           </p>
         ) : (
@@ -1318,12 +1315,11 @@ export function OwnersEditor({ slug, eventType }: { slug: string; eventType: Eve
             {owners.map((owner: EventTypeOwner) => (
               <span
                 key={owner.id}
-                className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1"
-                style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}
+                className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 border border-border bg-background"
               >
                 <UserAvatar name={owner.user_name || owner.user_email} size={18} />
                 <span className="text-body-sm font-medium">{owner.user_name || owner.user_email}</span>
-                <span className="mono text-micro" style={{ color: 'var(--fg-subtle)' }}>
+                <span className="mono text-micro text-fg-tertiary">
                   {owner.user_email}
                 </span>
                 {canWrite && (
@@ -1409,7 +1405,7 @@ export function SaveFooter({
 }) {
   return (
     <>
-      <span role="status" className="mr-auto text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+      <span role="status" className="mr-auto text-body-sm text-fg-tertiary">
         {status}
       </span>
       {onCancel && (
@@ -1551,27 +1547,21 @@ export function SSelect({
   id?: string
   ariaLabel?: string
 }) {
-  const controlId = useFieldControlId(id)
   const hintId = useSFieldHintId()
+  // The kit's select (DS-9), capped at the text inputs' 420px so the column
+  // keeps one right edge.
   return (
-    <select
-      id={controlId}
-      value={value}
-      aria-label={ariaLabel}
-      aria-describedby={hintId}
-      onChange={(e) => onChange(e.target.value)}
-      // The control spec (DS-14): 32px, rounded-control, 16px on phones.
-      className={cn('flex h-8 w-full max-w-[420px] rounded-control border px-2.5 py-1', INPUT_TEXT_CLASS, INPUT_INVALID_CLASS)}
-      // The page's own surface rather than `bg-transparent`, so the native
-      // popup cannot paint light text on a light list in dark mode.
-      style={{ borderColor: 'var(--border)', background: 'var(--bg)', color: 'var(--fg)' }}
-    >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
+    <div className="max-w-[420px]">
+      <NativeSelect
+        id={id}
+        width="fill"
+        value={value}
+        aria-label={ariaLabel}
+        aria-describedby={hintId}
+        onChange={onChange}
+        options={options}
+      />
+    </div>
   )
 }
 
@@ -1649,8 +1639,7 @@ function Td({
 function ListRow({ children }: { children: ReactNode }) {
   return (
     <TableRow
-      className="border-t border-b-0 hover:bg-[var(--surface-hover)]"
-      style={{ borderColor: 'var(--border-subtle)' }}
+      className="border-t border-b-0 hover:bg-[var(--surface-hover)] border-border-subtle"
     >
       {children}
     </TableRow>

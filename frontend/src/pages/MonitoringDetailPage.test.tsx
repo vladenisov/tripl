@@ -1749,6 +1749,35 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     expect(screen.queryByLabelText('Label')).not.toBeInTheDocument()
   })
 
+  it('takes an Annotate handed over from the Anomalies list once the definition loads', async () => {
+    // The row menu navigates here with the bucket in the location state. The
+    // metric page paints a skeleton until its definition arrives, so focusing
+    // on arrival found no form and the handoff looked ignored (i9mt.10).
+    installMetricDetailFetch('1h')
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={null}>
+          <MemoryRouter
+            initialEntries={[
+              {
+                pathname: '/p/demo/monitoring/metric/metric-1',
+                state: { annotateBucket: '2026-04-01T10:00:00Z' },
+              },
+            ]}
+          >
+            <Routes>
+              <Route path="/p/:slug/monitoring/:scope/:id" element={<MonitoringDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+
+    const label = await screen.findByLabelText('Label')
+    await waitFor(() => expect(label).toHaveFocus())
+  })
+
   it('says a draft is not collected and invites a description (JR-16)', async () => {
     installMetricDetailFetch('1h', { status: 'draft' }, { data: [] })
     renderMetricDetail()

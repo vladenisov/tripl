@@ -98,9 +98,9 @@ function isUtcMidnight(bucket: string): boolean {
 /** Which bar is which: nothing said the grey one was the baseline (MO-27). */
 function ShareBarLegend() {
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted-foreground" data-testid="distribution-legend">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-fg-tertiary" data-testid="distribution-legend">
       <span className="inline-flex items-center gap-1.5">
-        <span aria-hidden="true" className="h-2 w-4 rounded-full bg-muted-foreground" />
+        <span aria-hidden="true" className="h-2 w-4 rounded-full bg-fg-tertiary" />
         Baseline (earlier window)
       </span>
       <span className="inline-flex items-center gap-1.5">
@@ -124,14 +124,14 @@ function DistributionShareBar({
     <div className="grid gap-2 rounded-md border bg-background p-3">
       <div className="flex items-center justify-between gap-3 text-body-sm">
         <span className="min-w-0 truncate font-mono">{label}</span>
-        <span className="shrink-0 text-muted-foreground">
+        <span className="shrink-0 text-fg-tertiary">
           {formatPercent(baselineShare)} → {formatPercent(currentShare)}
         </span>
       </div>
       <div className="grid gap-1.5">
         <div className="h-2 rounded-full bg-muted" title="Baseline">
           <div
-            className="h-2 rounded-full bg-muted-foreground"
+            className="h-2 rounded-full bg-fg-tertiary"
             style={{ width: `${Math.max(2, baselineShare * 100)}%` }}
           />
         </div>
@@ -195,7 +195,7 @@ function DistributionDriftPanel({
   if (!data.length || !fields.length) {
     return (
       <Card>
-        <CardContent className="flex h-56 flex-col items-center justify-center gap-1 text-center text-body text-muted-foreground">
+        <CardContent className="flex h-56 flex-col items-center justify-center gap-1 text-center text-body text-fg-tertiary">
           <p>No distribution drift data available</p>
           {/* "the scan" is the one resolved above (`scanConfigId`) — this scope's
               samples come from that scan and no other, so "run a scan" pointed the
@@ -230,9 +230,11 @@ function DistributionDriftPanel({
           </Select>
         </ChartCardHeader>
         <CardContent className="space-y-4">
-          {/* The one KPI idiom (DS-5); unboxed, as it already sits in a card. */}
+          {/* The one KPI idiom (DS-5); unboxed, as it already sits in a card.
+              A 2×2 grid on a phone: stacked one per row the four stats took
+              about 200px there (MO-27). */}
           {latest && (
-            <MiniStatStrip>
+            <MiniStatStrip phoneGrid>
               <MiniStat label="Bucket" value={formatDriftBucket(latest.bucket, daily)} />
               <MiniStat label="Drift (PSI)" value={latest.psi.toFixed(3)} />
               <MiniStat
@@ -248,7 +250,7 @@ function DistributionDriftPanel({
           {/* What PSI and the band mean, in the same thresholds the detector
               uses (docs: use/anomaly-detection). Visible, not a hover title,
               so it reaches touch readers too (MO-27). */}
-          <p className="text-caption text-muted-foreground" data-testid="psi-explainer">
+          <p className="text-caption text-fg-tertiary" data-testid="psi-explainer">
             Drift (PSI, Population Stability Index) compares this field's mix
             of values with the earlier window: below 0.10 is stable, 0.10–0.25
             minor, 0.25 and above significant.
@@ -295,7 +297,7 @@ function DistributionDriftPanel({
                 const topMover = row.top_movers[0]
                 return (
                   <TableRow key={row.id}>
-                    <TableCell className="px-4 py-3 text-muted-foreground">
+                    <TableCell className="px-4 py-3 text-fg-tertiary">
                       {formatDriftBucket(row.bucket, daily)}
                     </TableCell>
                     <TableCell className="px-4 py-3 font-medium">{row.psi.toFixed(3)}</TableCell>
@@ -308,7 +310,7 @@ function DistributionDriftPanel({
                           {topMover.value}: {formatPercent(topMover.baseline_share)} → {formatPercent(topMover.current_share)}
                         </span>
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <span className="text-fg-tertiary">—</span>
                       )}
                     </TableCell>
                   </TableRow>

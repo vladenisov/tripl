@@ -81,8 +81,7 @@ export function ColumnCheckboxPicker({
             return (
               <label
                 key={name}
-                className="flex items-center gap-2 rounded-control border bg-background p-2 text-body-sm"
-                style={{ borderColor: 'var(--border)' }}
+                className="flex items-center gap-2 rounded-control border bg-background p-2 text-body-sm border-border"
               >
                 <Checkbox
                   checked={value.includes(name)}
@@ -101,7 +100,7 @@ export function ColumnCheckboxPicker({
           })}
         </div>
       ) : (
-        <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="text-body-sm text-fg-tertiary">
           No columns available yet.
         </p>
       )}

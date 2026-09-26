@@ -141,7 +141,7 @@ export function BreakdownsTab({
       <ChartCardHeader
         title={(
           <>
-            <Layers aria-hidden="true" className="size-4 text-muted-foreground" />
+            <Layers aria-hidden="true" className="size-4 text-fg-tertiary" />
             <CardTitle as="h2">Breakdowns</CardTitle>
           </>
         )}
@@ -185,7 +185,7 @@ export function BreakdownsTab({
         ) : query.isLoading ? (
           <ChartSkeleton height={280} label="Loading breakdowns…" />
         ) : !breakdowns?.columns.length ? (
-          <div className="flex h-[280px] flex-col items-center justify-center gap-1 text-center text-body text-muted-foreground">
+          <div className="flex h-[280px] flex-col items-center justify-center gap-1 text-center text-body text-fg-tertiary">
             <p>No breakdown groups yet.</p>
             {scope === 'metric' ? (
               <>
@@ -224,7 +224,7 @@ export function BreakdownsTab({
               to={timeRange.to}
             />
             {chart.hiddenCount > 0 && (
-              <p className="mt-2 text-body-sm text-muted-foreground">
+              <p className="mt-2 text-body-sm text-fg-tertiary">
                 Showing the first {BREAKDOWN_SERIES_CAP} of {chart.series.length + chart.hiddenCount} values
                 — pick values below to compare others.
               </p>
@@ -239,7 +239,7 @@ export function BreakdownsTab({
             />
             {latestParityAnomalies.length > 0 && (
               <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
-                <p className="mb-2 text-body-sm font-medium text-muted-foreground">
+                <p className="mb-2 text-body-sm font-medium text-fg-secondary">
                   {selectedColumn} share anomalies
                 </p>
                 <div className="flex flex-wrap gap-2">
@@ -310,7 +310,7 @@ function BreakdownValueChips({
           >
             <SeriesSwatch color={option.color} dash={option.dash} />
             <span className="min-w-0 truncate font-mono">{option.label}</span>
-            <span className="shrink-0 text-muted-foreground">
+            <span className="shrink-0 text-fg-tertiary">
               {valueKind === 'latest' ? `latest ${value}` : value}
             </span>
           </button>

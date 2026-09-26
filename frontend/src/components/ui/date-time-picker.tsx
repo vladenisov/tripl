@@ -179,7 +179,7 @@ function CalendarGrid({
                 key={day.getDay()}
                 scope="col"
                 abbr={day.toLocaleDateString(undefined, { weekday: "long" })}
-                className="text-muted-foreground pb-1 text-center text-caption font-normal"
+                className="text-fg-tertiary pb-1 text-center text-caption font-normal"
               >
                 {day.toLocaleDateString(undefined, { weekday: "narrow" })}
               </th>
@@ -291,8 +291,8 @@ export function DateTimePicker({
             aria-label={`${label}, date: ${date ? formatDate(date) : "none picked"}`}
             className="h-8 justify-start gap-1.5 px-2.5 text-body font-normal"
           >
-            <CalendarDays aria-hidden="true" className="size-3.5 text-muted-foreground" />
-            {date ? formatDate(date) : <span className="text-muted-foreground">Pick a date</span>}
+            <CalendarDays aria-hidden="true" className="size-3.5 text-fg-tertiary" />
+            {date ? formatDate(date) : <span className="text-fg-tertiary">Pick a date</span>}
           </Button>
         </PopoverTrigger>
         <PopoverContent
@@ -389,8 +389,8 @@ export function DatePicker({
           aria-label={`${label}: ${date ? formatDate(date) : "none picked"}`}
           className={cn("h-8 justify-start gap-1.5 px-2.5 text-body font-normal", className)}
         >
-          <CalendarDays aria-hidden="true" className="size-3.5 text-muted-foreground" />
-          {date ? formatDate(date) : <span className="text-muted-foreground">Pick a date</span>}
+          <CalendarDays aria-hidden="true" className="size-3.5 text-fg-tertiary" />
+          {date ? formatDate(date) : <span className="text-fg-tertiary">Pick a date</span>}
         </Button>
       </PopoverTrigger>
       <PopoverContent

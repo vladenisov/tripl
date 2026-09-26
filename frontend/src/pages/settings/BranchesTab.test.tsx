@@ -873,14 +873,13 @@ describe('BranchesTab', () => {
     const edit = await screen.findByRole('link', { name: 'Edit checkout_started' })
     expect(edit).toHaveAttribute('href', '/p/demo/events/all/ev-9/edit?branch=feat-1')
 
-    // A variable's editor is a dialog, not a route, so its Edit asks the
-    // Variables tab to open the one `itemId` names (tripl-htfn.2). Before this
-    // it had no Edit at all and a reviewer had to expand the row, find the
-    // 11px link after Revert, and land on a highlighted row that was closed.
+    // A variable's Edit opens its own page (AU-26), Definition tab first
+    // (tripl-htfn.2). Before this it had no Edit at all and a reviewer had to
+    // expand the row and find the small link after Revert.
     const editVariable = await screen.findByRole('link', { name: 'Edit variant' })
     expect(editVariable).toHaveAttribute(
       'href',
-      '/p/demo/settings/variables/var-3?edit=1&branch=feat-1',
+      '/p/demo/settings/variables/var-3?branch=feat-1',
     )
 
     // Field definitions still have no editor to point at, so the row must not
@@ -1143,11 +1142,92 @@ describe('BranchesTab', () => {
 
     fireEvent.click(await screen.findByText('gdpr-audit'))
     const submitBtn = await screen.findByRole('button', { name: 'Submit for review' })
+    // The roster has loaded (the author's name resolves), so Submit on an
+    // unstaffed branch asks who should review it first (JR-14).
+    await screen.findByText(/Opened by Priya S\./)
     fireEvent.click(submitBtn)
+    expect(await screen.findByLabelText('Who should review this?')).toBeInTheDocument()
+    expect(planBranchesApi.transition).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Submit without a reviewer' }))
     await waitFor(() =>
       expect(planBranchesApi.transition).toHaveBeenCalledWith('demo', 'feat-2', 'submit'),
     )
     expect(screen.queryByRole('button', { name: /Merge to main/i })).not.toBeInTheDocument()
+  })
+
+  it('adds the reviewer picked on Submit, then submits (JR-14)', async () => {
+    const draftFeature = makeBranch({
+      id: 'feat-2',
+      name: 'gdpr-audit',
+      kind: 'working',
+      status: 'draft',
+      created_by: 'u-priya',
+    })
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, draftFeature], total: 2 })
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 1, removed: 0, changed: 0 },
+      entries: [],
+    })
+    vi.mocked(planBranchesApi.addReviewer).mockResolvedValue({
+      id: 'r-1',
+      user_id: 'u-maya',
+      created_at: '2026-01-03T00:00:00Z',
+    })
+    vi.mocked(planBranchesApi.transition).mockResolvedValue({} as never)
+
+    renderTab('feat-2')
+
+    const submitBtn = await screen.findByRole('button', { name: 'Submit for review' })
+    await screen.findByText(/Opened by Priya S\./)
+    fireEvent.click(submitBtn)
+    const picker = await screen.findByLabelText('Who should review this?')
+    expect(picker).toHaveFocus()
+    // Cancel closes the prompt and sends nothing.
+    fireEvent.click(within(picker.closest('form')!).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByLabelText('Who should review this?')).not.toBeInTheDocument()
+    expect(planBranchesApi.transition).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for review' }))
+    fireEvent.change(await screen.findByLabelText('Who should review this?'), {
+      target: { value: 'u-maya' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add and submit' }))
+    await waitFor(() =>
+      expect(planBranchesApi.transition).toHaveBeenCalledWith('demo', 'feat-2', 'submit'),
+    )
+    expect(planBranchesApi.addReviewer).toHaveBeenCalledWith('demo', 'feat-2', 'u-maya')
+  })
+
+  it('submits at once when the branch already has a reviewer (JR-14)', async () => {
+    const draftFeature = makeBranch({
+      id: 'feat-2',
+      name: 'gdpr-audit',
+      kind: 'working',
+      status: 'draft',
+      created_by: 'u-priya',
+    })
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, draftFeature], total: 2 })
+    vi.mocked(planBranchesApi.get).mockResolvedValue({
+      ...draftFeature,
+      reviewers: [{ id: 'r-1', user_id: 'u-maya', created_at: '2026-01-01T00:00:00Z' }],
+      approvals: [],
+    })
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: false,
+      summary: { added: 1, removed: 0, changed: 0 },
+      entries: [],
+    })
+    vi.mocked(planBranchesApi.transition).mockResolvedValue({} as never)
+
+    renderTab('feat-2')
+
+    await screen.findByRole('button', { name: 'Remove reviewer Maya R.' })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for review' }))
+    await waitFor(() =>
+      expect(planBranchesApi.transition).toHaveBeenCalledWith('demo', 'feat-2', 'submit'),
+    )
+    expect(screen.queryByLabelText('Who should review this?')).not.toBeInTheDocument()
   })
 
   it('opens the create dialog from the New branch button', async () => {

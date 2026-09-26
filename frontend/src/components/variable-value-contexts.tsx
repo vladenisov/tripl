@@ -18,7 +18,7 @@ export function VariableValueContextTrigger({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-fg-tertiary hover:bg-muted hover:text-foreground"
           aria-label="Observed variable values"
         >
           <Variable className="h-3.5 w-3.5" />
@@ -74,7 +74,7 @@ export function VariableValueContextTrigger({
                   </Chip>
                 </div>
               </div>
-              <div className="text-muted-foreground">
+              <div className="text-fg-tertiary">
                 {context.source_column} - {context.observed_count} observed
               </div>
               {/* "Refreshed", not "seen": the timestamp tracks the last WRITE.
@@ -83,7 +83,7 @@ export function VariableValueContextTrigger({
                   the frozen-value sentences below stay the final word for an
                   excluded context. */}
               {lastRefreshed && (
-                <div className="text-muted-foreground">Last refreshed {lastRefreshed}</div>
+                <div className="text-fg-tertiary">Last refreshed {lastRefreshed}</div>
               )}
               {context.values.length > 0 ? (
                 <div className="flex max-h-36 flex-wrap gap-1 overflow-auto">
@@ -94,11 +94,11 @@ export function VariableValueContextTrigger({
                   ))}
                 </div>
               ) : nothingStored ? (
-                <div className="text-muted-foreground">
+                <div className="text-fg-tertiary">
                   No value recorded for this field on this event
                 </div>
               ) : (
-                <div className="text-muted-foreground">No examples stored</div>
+                <div className="text-fg-tertiary">No examples stored</div>
               )}
               {/* Two sentences, because the line above them means two different
                   things. With values on screen the reader needs to know they are
@@ -107,7 +107,7 @@ export function VariableValueContextTrigger({
                   claims the values will be kept forever — Delete still removes
                   the variable and its rows with it. */}
               {isExcluded && (
-                <div className="text-muted-foreground">
+                <div className="text-fg-tertiary">
                   {context.values.length > 0
                     ? 'Last seen before this variable was excluded from scans — scans no longer refresh it.'
                     : 'This variable is excluded from scans — scans no longer record values for it.'}

@@ -32,12 +32,12 @@ export function WorkspaceWelcome({
         <h2 className="m-0 text-display font-semibold leading-tight tracking-[-0.02em]">
           Keep your product analytics honest
         </h2>
-        <p className="m-0 text-body leading-relaxed" style={{ color: 'var(--fg-muted)' }}>
+        <p className="m-0 text-body leading-relaxed text-fg-secondary">
           tripl is the single place where your team writes down what you <em>intend</em> to track,
           checks it against what your apps are <em>actually</em> sending, and gets a heads-up the
           moment the numbers start to look wrong.
         </p>
-        <p className="m-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="m-0 text-body-sm text-fg-tertiary">
           No new SDK to ship and nothing to re-instrument — tripl connects to the data warehouse
           you already have (ClickHouse, BigQuery, or PostgreSQL) and only ever reads from it.
         </p>
@@ -51,7 +51,7 @@ export function WorkspaceWelcome({
               <Sparkles className="size-3.5" aria-hidden="true" />
               {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
             </Button>
-            <p className="m-0 max-w-[280px] text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="m-0 max-w-[280px] text-caption text-fg-tertiary">
               Builds a complete example in {DEMO_PROVISION_ESTIMATE} — local synthetic data, real
               scans and alert rules. Reset or delete it any time.
             </p>
@@ -61,15 +61,14 @@ export function WorkspaceWelcome({
               <Plus className="h-3.5 w-3.5" />
               New project
             </Button>
-            <p className="m-0 max-w-[280px] text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="m-0 max-w-[280px] text-caption text-fg-tertiary">
               Start empty and connect your own warehouse.
             </p>
           </div>
         </div>
       ) : (
         <p
-          className="mx-auto max-w-md text-center text-body-sm"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="mx-auto max-w-md text-center text-body-sm text-fg-tertiary"
         >
           Ask a workspace owner or editor to create the first project — you&apos;ll see it here as
           soon as it exists.
@@ -82,20 +81,18 @@ export function WorkspaceWelcome({
             <CardContent className="space-y-2">
               <div className="flex items-center gap-2.5">
                 <div
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
-                  style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent-soft text-accent"
                 >
                   <pillar.icon className="h-4 w-4" />
                 </div>
                 <p
-                  className="m-0 micro-label"
-                  style={{ color: 'var(--fg-subtle)' }}
+                  className="m-0 micro-label text-fg-tertiary"
                 >
                   {pillar.eyebrow}
                 </p>
               </div>
               <h3 className="m-0 text-body font-semibold tracking-tight">{pillar.title}</h3>
-              <p className="m-0 text-body-sm leading-[1.5]" style={{ color: 'var(--fg-muted)' }}>
+              <p className="m-0 text-body-sm leading-[1.5] text-fg-secondary">
                 {pillar.description}
               </p>
             </CardContent>
@@ -104,12 +101,7 @@ export function WorkspaceWelcome({
       </div>
 
       <div
-        className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-card border px-4 py-3 text-center text-body-sm"
-        style={{
-          background: 'var(--surface)',
-          borderColor: 'var(--border)',
-          color: 'var(--fg-muted)',
-        }}
+        className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-card border px-4 py-3 text-center text-body-sm bg-surface border-border text-fg-secondary"
       >
         <span>
           Scan the warehouse → collect metrics → watch the charts — the same loop your real
@@ -119,8 +111,7 @@ export function WorkspaceWelcome({
           href="https://vladenisov.github.io/tripl/"
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center gap-1 font-medium hover:underline"
-          style={{ color: 'var(--accent)' }}
+          className="inline-flex items-center gap-1 font-medium hover:underline text-accent"
           // It leaves the app, so it says so — visibly with the icon, and to a
           // screen reader in a name that starts with the visible label (WS-46).
           aria-label="Read the concepts (opens in a new tab)"

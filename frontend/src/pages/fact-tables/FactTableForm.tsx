@@ -1,4 +1,3 @@
-import { DEFAULT_ENTITY_COLOR } from '@/types'
 import { PageHeader } from '@/components/primitives/page-header'
 import { PageContainer } from '@/components/primitives/page-container'
 import { SaveBar } from '@/components/forms/SaveBar'
@@ -33,6 +32,7 @@ import type {
   FactTable,
   FactTableColumn,
   FactTableCreate,
+  FactTableListResponse,
   FactTablePreviewResponse,
   FactTableRowFilter,
   FactTableUpdate,
@@ -49,6 +49,9 @@ import { toIdentifier } from '@/lib/identifier'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { PageSkeleton, QueryErrorState, ReadOnlyNotice } from '@/components/states'
 import { FactTableReadView } from './FactTableReadView'
+import { ColorSwatches } from '@/pages/metrics/ColorSwatches'
+import { nextMetricColor } from '@/pages/metrics/metricDraft'
+import { useDebouncedRerun } from '@/pages/metrics/useDebouncedRerun'
 import { uid } from '@/lib/uid'
 // The shared settings field row and error wiring: the metric and fact-table
 // editors report validation the same way — inline under the field, linked from
@@ -214,7 +217,15 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     setName(value)
   }
   const [description, setDescription] = useState(factTable?.description ?? '')
-  const [color, setColor] = useState(factTable?.color ?? DEFAULT_ENTITY_COLOR)
+  // A new table takes the first palette colour no listed table uses, as a new
+  // metric does (MT-35).
+  const [color, setColor] = useState(
+    () =>
+      factTable?.color
+      ?? nextMetricColor(
+        (qc.getQueryData<FactTableListResponse>(factTablesKey(slug))?.items ?? []).map(t => t.color),
+      ),
+  )
   const [dataSourceId, setDataSourceId] = useState(factTable?.data_source_id ?? '')
   const [sql, setSql] = useState(factTable?.sql ?? '')
   const [timestampColumn, setTimestampColumn] = useState(factTable?.timestamp_column ?? '')
@@ -322,10 +333,37 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
 
   const currentPreviewRequest = (): PreviewRequest => ({ dataSourceId, sql, timestampColumn })
 
-  const runPreview = () => {
+  // The source + SQL last sent for introspection, whatever came back: a failed
+  // read is not retried on a timer, only after the next edit or click.
+  const [attemptedFor, setAttemptedFor] = useState<string | null>(null)
+  // Set by the first Preview click: from then on an edit to the SQL or the
+  // source re-reads the columns by itself once typing pauses (MT-19). Never
+  // before it — each read runs the query against the warehouse.
+  const [autoPreview, setAutoPreview] = useState(false)
+
+  const startPreview = () => {
     const request = currentPreviewRequest()
+    setAttemptedFor(introspectionKey(request.dataSourceId, request.sql))
     previewMut.mutate(request, { onSuccess: res => applyPreview(res, request) })
   }
+  const runPreview = () => {
+    setAutoPreview(true)
+    startPreview()
+  }
+  const currentInputKey = introspectionKey(dataSourceId, sql)
+  const autoPreviewPending =
+    canWrite
+    && autoPreview
+    && !columnsAreCurrent
+    && !!sql.trim()
+    && !!dataSourceId
+    && attemptedFor !== currentInputKey
+  useDebouncedRerun({
+    armed: autoPreview && canWrite,
+    stale: autoPreviewPending && !previewMut.isPending,
+    inputKey: currentInputKey,
+    run: startPreview,
+  })
 
   function cleanRowFilters(): FactTableRowFilter[] {
     return rowFilters
@@ -486,6 +524,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     let introspection: Introspection = { columns, identifierColumns }
     if (!columnsAreCurrent) {
       const request = currentPreviewRequest()
+      setAttemptedFor(introspectionKey(request.dataSourceId, request.sql))
       let res: FactTablePreviewResponse
       try {
         res = await previewMut.mutateAsync(request)
@@ -616,7 +655,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                   {...errorAria(fieldErrors, 'fact-name')}
                 />
               ) : (
-                <div className="mono text-body" style={{ color: 'var(--fg)' }}>
+                <div className="mono text-body text-fg">
                   {name}
                 </div>
               )}
@@ -630,15 +669,10 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 placeholder="What does this fact table represent?"
               />
             </Field>
-            <Field label="Color" htmlFor="fact-color" last>
-              <input
-                id="fact-color"
-                type="color"
-                value={color}
-                onChange={e => setColor(e.target.value)}
-                className="h-8 w-12 cursor-pointer rounded-sm border bg-transparent"
-                style={{ borderColor: 'var(--border)' }}
-              />
+            {/* Palette swatches plus a custom picker, as on the metric form
+                (MT-35). No single control for a <label>: the row names the group. */}
+            <Field label="Color" htmlFor={false} last>
+              <ColorSwatches value={color} onChange={setColor} inputId="fact-color" />
             </Field>
           </SCard>
 
@@ -690,14 +724,13 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
             title="Columns"
             description="Detected from your query. Mark ID columns (user, order) to count them distinct. Saving reads them again if the query changed."
           >
-            <div className="px-4 py-[15px]" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+            <div className="px-4 py-[15px] border-b border-border-subtle">
               <button
                 id="fact-preview-columns"
                 type="button"
                 onClick={runPreview}
                 disabled={previewMut.isPending || !sql.trim() || !dataSourceId}
-                className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
-                style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+                className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60 border-border text-fg"
               >
                 {previewMut.isPending ? (
                   <Loader2 className="animate-spin" size={12} />
@@ -714,10 +747,12 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               )}
 
               {canWrite && !columnsAreCurrent && !previewMut.isPending && (
-                <p className="mt-3 text-body-sm" style={{ color: 'var(--warning)' }}>
-                  {columns.length > 0
-                    ? 'The SQL or data source changed since these columns were read. They refresh when you preview or save.'
-                    : 'No columns yet. They are read from the SQL when you preview or save.'}
+                <p className="mt-3 text-body-sm text-warning">
+                  {autoPreviewPending
+                    ? 'The SQL or data source changed. The columns are read again in a moment.'
+                    : columns.length > 0
+                      ? 'The SQL or data source changed since these columns were read. They refresh when you preview or save.'
+                      : 'No columns yet. They are read from the SQL when you preview or save.'}
                 </p>
               )}
 
@@ -727,8 +762,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                       this column", it is "count this one distinct" (MT-20). */}
                   <div
                     aria-hidden="true"
-                    className="mb-2 grid grid-cols-[minmax(0,1fr)_auto_72px] items-center gap-3 px-3 micro-label"
-                    style={{ color: 'var(--fg-faint)' }}
+                    className="mb-2 grid grid-cols-[minmax(0,1fr)_auto_72px] items-center gap-3 px-3 micro-label text-fg-tertiary"
                   >
                     <span>Column</span>
                     <span>Type</span>
@@ -743,10 +777,9 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                     {columns.map(column => (
                       <li
                         key={column.name}
-                        className="grid grid-cols-[minmax(0,1fr)_auto_72px] items-center gap-3 rounded-md border px-3 py-2"
-                        style={{ borderColor: 'var(--border-subtle)' }}
+                        className="grid grid-cols-[minmax(0,1fr)_auto_72px] items-center gap-3 rounded-md border px-3 py-2 border-border-subtle"
                       >
-                        <span className="mono truncate text-body-sm" style={{ color: 'var(--fg)' }}>
+                        <span className="mono truncate text-body-sm text-fg">
                           {column.name}
                         </span>
                         <Chip tone={typeTone(column.type)} size="xs">
@@ -768,10 +801,10 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               )}
 
               {unusedSuggestions.length > 0 && (
-                <div className="mt-3 flex flex-wrap items-center gap-2 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-body-sm text-fg-tertiary">
                   <span>
                     Suggested identifiers:{' '}
-                    <span className="mono" style={{ color: 'var(--fg)' }}>
+                    <span className="mono text-fg">
                       {unusedSuggestions.join(', ')}
                     </span>
                   </span>
@@ -814,7 +847,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
           >
             <div className="px-4 py-[15px]">
               {rowFilters.length === 0 ? (
-                <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="text-body-sm text-fg-tertiary">
                   No row filters yet.
                 </div>
               ) : (
@@ -824,8 +857,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                       inputs carry the same words in their names. */}
                   <div
                     aria-hidden="true"
-                    className="mb-2 hidden grid-cols-[180px_minmax(0,1fr)_32px] gap-2 micro-label sm:grid"
-                    style={{ color: 'var(--fg-faint)' }}
+                    className="mb-2 hidden grid-cols-[180px_minmax(0,1fr)_32px] gap-2 micro-label sm:grid text-fg-tertiary"
                   >
                     <span>Name</span>
                     <span>Condition (SQL WHERE)</span>
@@ -873,8 +905,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                               type="button"
                               onClick={() => removeRowFilter(filter.id)}
                               aria-label={`Remove row filter ${index + 1}`}
-                              className="col-start-2 row-start-1 inline-flex h-8 w-8 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)] sm:col-start-3"
-                              style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
+                              className="col-start-2 row-start-1 inline-flex h-8 w-8 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)] sm:col-start-3 border-border text-fg-secondary"
                             >
                               <Trash2 size={14} />
                             </button>
@@ -882,8 +913,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                           {rowError && (
                             <p
                               id={fieldErrorId(fieldErrors[nameId] ? nameId : sqlId)}
-                              className="mt-[6px] text-body-sm leading-[1.45]"
-                              style={{ color: 'var(--danger)' }}
+                              className="mt-[6px] text-body-sm leading-[1.45] text-danger"
                             >
                               {rowError}
                             </p>
@@ -897,8 +927,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               <button
                 type="button"
                 onClick={addRowFilter}
-                className="mt-3 inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)]"
-                style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+                className="mt-3 inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] border-border text-fg"
               >
                 <Plus size={12} /> Add row filter
               </button>
@@ -909,11 +938,9 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
         {errorEntries.length > 0 && (
           <div
             role="alert"
-            className="mb-[18px] rounded-card border px-4 py-3 text-body-sm"
+            className="mb-[18px] rounded-card border px-4 py-3 text-body-sm bg-danger-soft text-danger"
             style={{
-              background: 'var(--danger-soft)',
               borderColor: 'color-mix(in oklab, var(--danger) 35%, var(--border))',
-              color: 'var(--danger)',
             }}
           >
             <ul className="list-disc space-y-1 pl-4">

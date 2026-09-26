@@ -118,7 +118,8 @@ order they were created.
 
 ### Clearing what a scan has recorded
 
-**Plan › Variables › edit a variable › Clear observed values** drops that
+**Plan › Variables › open a variable › Observed › Clear observed values** (the
+quick-edit dialog has it too) drops that
 variable's contexts and keeps everything else on the row — description,
 documented values, bindings, per-event overrides, and every drift verdict. It
 is the reset that previously required deleting the whole variable, which took

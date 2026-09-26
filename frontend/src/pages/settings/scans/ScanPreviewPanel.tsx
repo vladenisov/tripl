@@ -83,11 +83,11 @@ export function ScanPreviewPanel({
           sentence: JsonValuePathsPicker expresses the same fact as a button you
           press ("Discover JSON keys"), which is where it is actionable. */}
       {eventTargetMissing && (
-        <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>{NO_EVENT_TARGET_TEXT}</p>
+        <p className="text-body-sm text-fg-tertiary">{NO_EVENT_TARGET_TEXT}</p>
       )}
       {offerFirstCheck && (
         <div className="flex flex-wrap items-center gap-2">
-          <p className="m-0 flex-1 text-body-sm text-muted-foreground">{NOT_CHECKED_YET_TEXT}</p>
+          <p className="m-0 flex-1 text-body-sm text-fg-tertiary">{NOT_CHECKED_YET_TEXT}</p>
           {/* Names what it does: "Check" read as "validate the SQL"
               (#247 DA-14). */}
           <Button type="button" variant="outline" size="sm" onClick={onRecheck}>
@@ -96,7 +96,7 @@ export function ScanPreviewPanel({
         </div>
       )}
       {!eventTargetMissing && dryRunPending && (
-        <p className="text-body-sm text-muted-foreground">Working out what this scan would create…</p>
+        <p className="text-body-sm text-fg-tertiary">Working out what this scan would create…</p>
       )}
       {!eventTargetMissing && !dryRunPending && Boolean(dryRunError) && (
         <div className="space-y-2">
@@ -115,7 +115,7 @@ export function ScanPreviewPanel({
               worse than no answer — so it says so and offers the redo. */}
           {dryRunStale && !dryRunPending && (
             <div className="flex flex-wrap items-center gap-2">
-              <p className="m-0 flex-1 text-caption" style={{ color: 'var(--warning)' }}>
+              <p className="m-0 flex-1 text-caption text-warning">
                 The form changed since this was worked out, so it no longer describes this scan.
               </p>
               <Button type="button" variant="outline" size="sm" onClick={onRecheck}>
@@ -132,7 +132,7 @@ export function ScanPreviewPanel({
           type="button"
           onClick={() => setRowsOpen(open => !open)}
           aria-expanded={rowsOpen}
-          className="text-body-sm font-medium text-muted-foreground hover:underline"
+          className="text-body-sm font-medium text-fg-tertiary hover:underline"
         >
           {rowsOpen ? 'Hide sample rows' : `Show sample rows (${rows.length})`}
         </button>

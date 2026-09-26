@@ -55,13 +55,12 @@ export function ChapterPicker({ chapters, onPick, compact = false }: ChapterPick
             style={{ background: 'var(--surface)', borderColor: 'var(--border-subtle)' }}
           >
             <span
-              className="tnum w-4 shrink-0 text-center text-micro"
-              style={{ color: 'var(--fg-faint)' }}
+              className="tnum w-4 shrink-0 text-center text-micro text-fg-tertiary"
               aria-hidden="true"
             >
               {index + 1}
             </span>
-            <span className="flex shrink-0 items-center" style={{ color: 'var(--accent)' }}>
+            <span className="flex shrink-0 items-center text-accent">
               <StatusIcon status={chapter.status} />
             </span>
             <span className="min-w-0 flex-1">
@@ -70,8 +69,7 @@ export function ChapterPicker({ chapters, onPick, compact = false }: ChapterPick
                 // Whole, not cut to ~25 characters on a phone (#251 SH-7):
                 // it wraps from `sm` up, and a phone shows the titles alone.
                 <span
-                  className="hidden text-micro sm:block"
-                  style={{ color: 'var(--fg-subtle)' }}
+                  className="hidden text-micro sm:block text-fg-tertiary"
                 >
                   {chapter.blurb}
                 </span>

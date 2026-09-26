@@ -32,6 +32,9 @@ export interface VariablesTableRowProps {
   /** Where an "Observed in" event name links (AU-29). Without it — or outside
    * a router — the names are plain text. */
   eventHref?: (eventId: string) => string
+  /** Where the `${name}` token links: the variable's own page (AU-26). Without
+   * it, or outside a router, the token is plain text. */
+  detailHref?: (variableId: string) => string
 }
 
 function VariablesTableRowImpl({
@@ -46,6 +49,7 @@ function VariablesTableRowImpl({
   onExclude,
   onDelete,
   eventHref,
+  detailHref,
 }: VariablesTableRowProps) {
   // Everything the row shows ships with the list response — event names and
   // observed values included — so a row costs zero extra requests.
@@ -95,9 +99,21 @@ function VariablesTableRowImpl({
             (tripl-bb8m). `whitespace-nowrap` is the house pattern here; the same
             badge in ScansTab already carries it. */}
         <div className="flex min-w-0 items-center gap-2">
-          <code className="min-w-0 truncate rounded-sm bg-primary/10 px-1.5 py-0.5 text-primary" title={`\${${variable.name}}`}>
-            {`\${${variable.name}}`}
-          </code>
+          {detailHref && inRouter ? (
+            <Link
+              to={detailHref(variable.id)}
+              className="min-w-0 truncate rounded-sm no-underline hover:underline"
+              aria-label={`Open variable ${variable.name}`}
+            >
+              <code className="rounded-sm bg-primary/10 px-1.5 py-0.5 text-primary" title={`\${${variable.name}}`}>
+                {`\${${variable.name}}`}
+              </code>
+            </Link>
+          ) : (
+            <code className="min-w-0 truncate rounded-sm bg-primary/10 px-1.5 py-0.5 text-primary" title={`\${${variable.name}}`}>
+              {`\${${variable.name}}`}
+            </code>
+          )}
           {/* The badge taxonomy (DS-6): the type is a kind tag, the drift
               count a warning status. Both pills, in sans. */}
           <Chip variant="outline" size="xs" className="font-mono">
@@ -112,7 +128,7 @@ function VariablesTableRowImpl({
         {bindings.length > 0 && (
           <div className="mt-1 space-y-0.5">
             {bindings.map(binding => (
-              <div key={binding} className="max-w-52 truncate text-micro text-muted-foreground" title={binding}>
+              <div key={binding} className="max-w-52 truncate text-micro text-fg-tertiary" title={binding}>
                 ↳ {binding}
               </div>
             ))}
@@ -121,7 +137,7 @@ function VariablesTableRowImpl({
       </TableCell>
       <TableCell className="text-body-sm align-top">
         {eventCount === 0 ? (
-          <span className="text-muted-foreground">—</span>
+          <span className="text-fg-tertiary">—</span>
         ) : eventNames.length <= MAX_INLINE_EVENTS ? (
           // Keyed by position: two event types can each hold an event of the
           // same name, and a duplicate key made React drop one of them (PLAN-33).
@@ -132,19 +148,19 @@ function VariablesTableRowImpl({
           </ul>
         ) : (
           <details>
-            <summary className="cursor-pointer text-muted-foreground">Seen in {eventCount} events</summary>
+            <summary className="cursor-pointer text-fg-tertiary">Seen in {eventCount} events</summary>
             <ul className="mt-1 space-y-0.5">
               {eventRefs.map((ref, index) => (
                 <li key={index}>{eventLabel(ref)}</li>
               ))}
               {hiddenEvents > 0 && (
-                <li className="text-muted-foreground">+{hiddenEvents} more</li>
+                <li className="text-fg-tertiary">+{hiddenEvents} more</li>
               )}
             </ul>
           </details>
         )}
       </TableCell>
-      <TableCell className="text-body-sm text-muted-foreground align-top">{variable.description}</TableCell>
+      <TableCell className="text-body-sm text-fg-tertiary align-top">{variable.description}</TableCell>
       <TableCell className="align-top">
         {documentedValues.length > 0 ? (
           <div className="flex max-w-sm flex-wrap gap-1">
@@ -152,11 +168,11 @@ function VariablesTableRowImpl({
               <CodeToken key={value} className="max-w-28" title={value}>{value}</CodeToken>
             ))}
             {documentedValues.length > MAX_CHIPS && (
-              <span className="text-micro text-muted-foreground">+{documentedValues.length - MAX_CHIPS}</span>
+              <span className="text-micro text-fg-tertiary">+{documentedValues.length - MAX_CHIPS}</span>
             )}
           </div>
         ) : (
-          <span className="text-body-sm text-muted-foreground">—</span>
+          <span className="text-body-sm text-fg-tertiary">—</span>
         )}
       </TableCell>
       <TableCell>
@@ -172,18 +188,18 @@ function VariablesTableRowImpl({
               <CodeToken key={value} className="max-w-28" title={value}>{value}</CodeToken>
             ))}
             {observedValues.length > MAX_CHIPS && (
-              <span className="text-micro text-muted-foreground">+{observedValues.length - MAX_CHIPS}</span>
+              <span className="text-micro text-fg-tertiary">+{observedValues.length - MAX_CHIPS}</span>
             )}
           </div>
         ) : contextCount > 0 ? (
           <span
-            className="text-body-sm text-muted-foreground"
+            className="text-body-sm text-fg-tertiary"
             title={`${contextCount} value context${contextCount === 1 ? '' : 's'}, none holding a value`}
           >
             No values stored
           </span>
         ) : (
-          <span className="text-body-sm text-muted-foreground">—</span>
+          <span className="text-body-sm text-fg-tertiary">—</span>
         )}
       </TableCell>
       {/* Pinned to the right edge like its header, so a phone reader can act
@@ -202,10 +218,10 @@ function VariablesTableRowImpl({
           </ScenarioCoachMark>
           {canWrite && (
             <>
-              <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-warning" label={`Exclude variable ${variable.name} from scans`} tooltip="Exclude from scans" onClick={() => onExclude(variable)}>
+              <IconButton variant="ghost" className="h-7 w-7 text-fg-tertiary hover:text-warning" label={`Exclude variable ${variable.name} from scans`} tooltip="Exclude from scans" onClick={() => onExclude(variable)}>
                 <Ban className="h-3 w-3" aria-hidden="true" />
               </IconButton>
-              <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" label={`Delete variable ${variable.name}`} tooltip="Delete" onClick={() => onDelete(variable)}>
+              <IconButton variant="ghost" className="h-7 w-7 text-fg-tertiary hover:text-destructive" label={`Delete variable ${variable.name}`} tooltip="Delete" onClick={() => onDelete(variable)}>
                 <Trash2 className="h-3 w-3" aria-hidden="true" />
               </IconButton>
             </>

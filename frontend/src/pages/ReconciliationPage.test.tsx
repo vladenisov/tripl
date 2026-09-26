@@ -316,6 +316,51 @@ describe('ReconciliationPage', () => {
     expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
   })
 
+  it('expands a shadow row to the sample properties the collector kept (DA-32)', async () => {
+    const withSamples = {
+      ...shadowNew,
+      items: [{
+        ...shadowNew.items[0],
+        sample_properties: [
+          { 'event.category': 'product', color: 'red' },
+          { 'event.category': 'product', color: 'blue' },
+        ],
+      }],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(coverage)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(dead)
+      if (url.includes('/reconciliation/shadow-events')) {
+        return jsonResponse(statusFromUrl(url) === 'new' ? withSamples : emptyShadow)
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.endsWith('/projects/demo')) return jsonResponse(projectWith('completed'))
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderPage()
+
+    const toggle = await screen.findByRole('button', { name: 'Show 2 samples' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('list', { name: 'Sample properties' })).not.toBeInTheDocument()
+
+    fireEvent.click(toggle)
+
+    const list = screen.getByRole('list', { name: 'Sample properties' })
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2)
+    expect(within(list).getByText('red')).toBeInTheDocument()
+    expect(within(list).getByText('blue')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Hide samples' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('offers no samples toggle for a candidate with none', async () => {
+    mockFetch()
+    renderPage()
+
+    expect(await screen.findByText('variant_color_selected')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /samples/ })).not.toBeInTheDocument()
+  })
+
   it('renders the dead-events explanation and a calm amber (not danger-red) never marker', async () => {
     mockFetch()
     renderPage()

@@ -37,6 +37,7 @@ import {
   jobScanned,
   metricsFreshness,
   scanJobsHaveActiveWork,
+  type MetricsSchedule,
 } from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 import {
@@ -101,13 +102,13 @@ function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfi
     )
   } else if (!data?.platform_column) {
     body = (
-      <p className="px-4 py-3 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="px-4 py-3 text-caption text-fg-tertiary">
         No platform column configured. Set one in Configuration › App version.
       </p>
     )
   } else if (data.items.length === 0 || data.platforms.length === 0) {
     body = (
-      <p className="px-4 py-3 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="px-4 py-3 text-caption text-fg-tertiary">
         No platform data yet. It fills in as runs see each event.
       </p>
     )
@@ -164,11 +165,14 @@ export function ScanDetail({
   scanConfig,
   eventTypes,
   dataSource,
+  metricsSchedule = null,
 }: {
   slug: string
   scanConfig: ScanConfig
   eventTypes: EventType[]
   dataSource?: DataSource | null
+  /** The server's metrics schedule (i9mt.16); the job list stands in without it. */
+  metricsSchedule?: MetricsSchedule | null
 }) {
   const qc = useQueryClient()
   const canApplyGroups = useIsOwner()
@@ -266,7 +270,8 @@ export function ScanDetail({
   const mode = scanModeOf(scanConfig)
   // The newest METRICS run, not the newest run: a catalog Run now on top of the
   // list left this card "—" on every monitoring scan (#247 DA-5).
-  const freshness = metricsFreshness(jobs, scanConfig.interval)
+  // The next run is the scheduler's own due check when the server sent it.
+  const freshness = metricsFreshness(jobs, scanConfig.interval, undefined, metricsSchedule)
   const lastMetricsJob = freshness.job
   // One formula, shared with the list chip (scanUtils.jobMetricPoints). The old
   // `breakdown_event_metrics ?? event_metrics` fallback disagreed with the chip
@@ -384,9 +389,9 @@ export function ScanDetail({
             </span>
           }
         />
-        <div className="border-t px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-          <div className="mb-1.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-            Base query <span style={{ color: 'var(--fg-faint)' }}>· used as subquery</span>
+        <div className="border-t px-4 py-3 border-border-subtle">
+          <div className="mb-1.5 text-body-sm text-fg-tertiary">
+            Base query <span className="text-fg-tertiary">· used as subquery</span>
           </div>
           {/* Wrap the query; do not scroll it sideways. The demo's own base
               query is one 130-character line — `SELECT …, app_version FROM
@@ -401,8 +406,7 @@ export function ScanDetail({
               same treatment the alert payload `<pre>`s already use, and a
               vertical scrollbar is one a reader can actually see. */}
           <pre
-            className="mono m-0 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-3 text-body-sm"
-            style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)', color: 'var(--fg)' }}
+            className="mono m-0 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border p-3 text-body-sm bg-bg-sunken border-border-subtle text-fg"
           >{scanConfig.base_query}</pre>
         </div>
         <KV label="Mode" value={SCAN_MODE_DETAIL_LABEL[scanModeOf(scanConfig)]} />
@@ -422,7 +426,7 @@ export function ScanDetail({
             value={
               etName
               ?? (scanConfig.event_type_column
-                ? <span style={{ color: 'var(--fg-faint)' }}>Named from a column</span>
+                ? <span className="text-fg-tertiary">Named from a column</span>
                 : <NoneTag />)
             }
           />
@@ -445,7 +449,7 @@ export function ScanDetail({
               value={
                 <span className="inline-flex flex-wrap items-center gap-x-1.5">
                   <NoneTag />
-                  <span className="text-caption" style={{ color: 'var(--fg-faint)' }}>
+                  <span className="text-caption text-fg-tertiary">
                     Set in Configuration › App version
                   </span>
                 </span>
@@ -477,7 +481,7 @@ export function ScanDetail({
             }
           />
           {applyGroupsMut.isError && (
-            <p className="border-t px-4 py-2 text-body-sm" style={{ color: 'var(--danger)', borderColor: 'var(--border-subtle)' }}>
+            <p className="border-t px-4 py-2 text-body-sm text-danger border-border-subtle">
               {getErrorMessage(applyGroupsMut.error)}
             </p>
           )}
@@ -487,8 +491,7 @@ export function ScanDetail({
             role="status"
             aria-live="polite"
             aria-atomic="true"
-            className={applyGroupsMessage ? 'border-t px-4 py-2 text-body-sm' : 'sr-only'}
-            style={{ color: 'var(--fg-subtle)', borderColor: 'var(--border-subtle)' }}
+            className={applyGroupsMessage ? 'border-t border-border-subtle px-4 py-2 text-body-sm text-fg-tertiary' : 'sr-only'}
           >
             {applyGroupsMessage}
           </p>
@@ -500,7 +503,7 @@ export function ScanDetail({
             // Unset keeps every value, and the form's placeholder calls that
             // "Unlimited": one word on both screens, not a "default" that
             // names no value (#247 DA-15).
-            value={scanConfig.metric_breakdown_values_limit ?? <span style={{ color: 'var(--fg-faint)' }}>Unlimited</span>}
+            value={scanConfig.metric_breakdown_values_limit ?? <span className="text-fg-tertiary">Unlimited</span>}
             mono
           />
           <KV label="Distribution drift" value={chipList(scanConfig.distribution_drift_fields)} />
@@ -516,18 +519,17 @@ export function ScanDetail({
       {/* Recent runs */}
       <Panel title="Recent runs" subtitle={recentJobsSubtitle}>
         {cancelMut.isError && (
-          <p className="px-4 py-2 text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(cancelMut.error)}</p>
+          <p className="px-4 py-2 text-body text-danger">{getErrorMessage(cancelMut.error)}</p>
         )}
         {retryMut.isError && (
-          <p className="px-4 py-2 text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(retryMut.error)}</p>
+          <p className="px-4 py-2 text-body text-danger">{getErrorMessage(retryMut.error)}</p>
         )}
         {failingStreak >= 2 && (
           <div
-            className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border p-3"
-            style={{ borderColor: 'var(--danger)', background: 'var(--danger-soft)' }}
+            className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border p-3 border-danger bg-danger-soft"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 text-body font-semibold" style={{ color: 'var(--danger)' }}>
+              <span className="inline-flex items-center gap-1.5 text-body font-semibold text-danger">
                 <XCircle className="size-3.5" aria-hidden="true" />
                 Failed last {failingStreakShown} runs
               </span>
@@ -542,7 +544,7 @@ export function ScanDetail({
               </Button>
             </div>
             {streakError && (
-              <div className="text-body-sm" style={{ color: 'var(--danger)' }}>
+              <div className="text-body-sm text-danger">
                 <p>{streakError.message}</p>
                 <ScanErrorTechnicalDetails technical={streakError.technical} />
               </div>
@@ -565,7 +567,7 @@ export function ScanDetail({
           </div>
         )}
         {jobs.length === 0 && !isLoading && !jobsError && (
-          <p className="px-4 py-3 text-body text-muted-foreground">No runs yet. Use “Run now” to start.</p>
+          <p className="px-4 py-3 text-body text-fg-tertiary">No runs yet. Use “Run now” to start.</p>
         )}
         {jobs.length > 0 && (
           <Table>
@@ -590,8 +592,7 @@ export function ScanDetail({
                         type="button"
                         onClick={() => setStreakExpanded((v) => !v)}
                         aria-expanded={streakExpanded}
-                        className="text-body-sm font-medium hover:underline"
-                        style={{ color: 'var(--fg-subtle)' }}
+                        className="text-body-sm font-medium hover:underline text-fg-tertiary"
                       >
                         {streakExpanded ? 'Hide' : 'Show'} {failingStreak} repeated failed runs
                       </button>
@@ -689,7 +690,7 @@ function JobRow({
               : undefined
           }
         >
-          <TableCell className="px-4 text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+          <TableCell className="px-4 text-body-sm text-fg-secondary">
             {/* A queued run has no start yet; its queue time says more than a
                 dash, and it is what the scans list shows for it (DATA-23). */}
             {job.started_at
@@ -698,14 +699,14 @@ function JobRow({
           </TableCell>
           {/* Durations and counts are figures: sans with tabular digits, not
               mono (DS-17). */}
-          <TableCell className={`tnum px-4 text-right text-caption ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-subtle)' }}>{duration}</TableCell>
+          <TableCell className={`tnum px-4 text-right text-caption ${LOW_VALUE_COLUMN} text-fg-tertiary`}>{duration}</TableCell>
           {/* A catalog run and a metrics run count different populations
               under different caps: the unit rides on the figure ("153 combos",
               "4,428 rows"), the cap in the title (#247 DA-4). */}
           <TableCell className="tnum whitespace-nowrap px-4 text-right text-caption" title={jobRowsReadTitle(job)}>
             {formatJobScanned(scanned)}
           </TableCell>
-          <TableCell className={`tnum px-4 text-right text-caption ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-muted)' }}>
+          <TableCell className={`tnum px-4 text-right text-caption ${LOW_VALUE_COLUMN} text-fg-secondary`}>
             {events == null ? '—' : events.toLocaleString()}
           </TableCell>
           <TableCell className="px-4">
@@ -714,7 +715,7 @@ function JobRow({
                 title or after expanding the row, as the Scans list does
                 (#247 DA-20). */}
             {failedMessage && (
-              <span className="mt-0.5 block max-w-64 truncate text-caption" style={{ color: 'var(--danger)' }}>
+              <span className="mt-0.5 block max-w-64 truncate text-caption text-danger">
                 {failedMessage}
               </span>
             )}
@@ -724,7 +725,7 @@ function JobRow({
               {isActive && onCancel && (
                 <IconButton
                   variant="ghost"
-                  className={`${RUN_CONTROL_SIZE} text-muted-foreground hover:text-[var(--danger)]`}
+                  className={`${RUN_CONTROL_SIZE} text-fg-tertiary hover:text-[var(--danger)]`}
                   label="Stop run"
                   disabled={cancelPending}
                   onClick={onCancel}
@@ -735,7 +736,7 @@ function JobRow({
               {job.status === 'failed' && onRetry && (
                 <IconButton
                   variant="ghost"
-                  className={`${RUN_CONTROL_SIZE} text-muted-foreground hover:text-[var(--accent)]`}
+                  className={`${RUN_CONTROL_SIZE} text-fg-tertiary hover:text-[var(--accent)]`}
                   label="Retry scan"
                   disabled={retryPending}
                   onClick={onRetry}

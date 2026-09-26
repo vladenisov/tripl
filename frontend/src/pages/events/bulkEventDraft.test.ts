@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { bulkUnsupportedReason, parseBulkDraft } from './bulkEventDraft'
+import { bulkExtraColumns, bulkUnsupportedReason, parseBulkDraft } from './bulkEventDraft'
 import { at } from '@/test/at'
+import type { FieldDefinition } from '@/types'
 
 describe('parseBulkDraft', () => {
   it('names each line by the scan rule, in the order the format reads its columns', () => {
@@ -114,32 +115,127 @@ describe('parseBulkDraft', () => {
   })
 })
 
+describe('parseBulkDraft extra columns (tripl-hhw3)', () => {
+  const SCREEN = [{ name: 'screen_name' }]
+
+  it('reads a required field after the identity columns and the title after it', () => {
+    const rows = parseBulkDraft('settings,open,home,Home settings opened', {
+      columns: ['category', 'action'],
+      nameFormat: '{category}:{action}',
+      extraColumns: SCREEN,
+    })
+
+    expect(at(rows, 0)).toMatchObject({
+      name: 'settings:open',
+      values: ['settings', 'open'],
+      extras: ['home'],
+      title: 'Home settings opened',
+      status: 'ready',
+    })
+  })
+
+  it('splits a free name from its extra columns on a tab only', () => {
+    const rows = parseBulkDraft('Home Screen View\thome\tHome\n/buoy/1,Tregde', {
+      columns: [],
+      nameFormat: null,
+      extraColumns: SCREEN,
+    })
+
+    expect(at(rows, 0)).toMatchObject({ name: 'Home Screen View', extras: ['home'], title: 'Home', status: 'ready' })
+    // No tab: the comma stays in the name, and the line names what it lacks.
+    expect(at(rows, 1)).toMatchObject({ name: '/buoy/1,Tregde', status: 'incomplete', missing: ['screen_name'] })
+  })
+
+  it('names an empty extra column alongside an empty naming column', () => {
+    const rows = parseBulkDraft('settings', {
+      columns: ['category', 'action'],
+      nameFormat: '{category}:{action}',
+      extraColumns: SCREEN,
+    })
+
+    expect(at(rows, 0).status).toBe('incomplete')
+    expect(at(rows, 0).missing).toEqual(['action', 'screen_name'])
+  })
+
+  it('refuses an enum value the field does not allow, before the server does', () => {
+    const rows = parseBulkDraft('sign_up\tweb\nsign_in\tfax', {
+      columns: [],
+      nameFormat: null,
+      extraColumns: [{ name: 'platform', enumOptions: ['web', 'ios'] }],
+    })
+
+    expect(rows.map(row => row.status)).toEqual(['ready', 'invalid'])
+    expect(at(rows, 1).problems).toEqual(['platform must be one of web, ios'])
+  })
+})
+
+describe('bulkExtraColumns', () => {
+  const field = (
+    name: string,
+    extra: Partial<Pick<FieldDefinition, 'field_type' | 'is_required' | 'enum_options' | 'order'>> = {},
+  ): Pick<FieldDefinition, 'name' | 'field_type' | 'is_required' | 'enum_options' | 'order'> => ({
+    name,
+    field_type: 'string',
+    is_required: true,
+    enum_options: null,
+    order: 0,
+    ...extra,
+  })
+
+  it('takes the required fields the name is not built from, in field order', () => {
+    expect(
+      bulkExtraColumns(
+        [
+          field('title_text', { order: 2 }),
+          field('action', { order: 0 }),
+          field('screen_name', { order: 1 }),
+          field('note', { is_required: false }),
+          field('payload', { field_type: 'json' }),
+        ],
+        ['action'],
+      ).map(column => column.name),
+    ).toEqual(['screen_name', 'title_text'])
+  })
+
+  it("carries an enum field's options, and no others'", () => {
+    expect(
+      bulkExtraColumns(
+        [field('platform', { field_type: 'enum', enum_options: ['web', 'ios'] }), field('screen', { order: 1 })],
+        [],
+      ),
+    ).toEqual([
+      { name: 'platform', enumOptions: ['web', 'ios'] },
+      { name: 'screen', enumOptions: null },
+    ])
+  })
+})
+
 describe('bulkUnsupportedReason', () => {
   it('refuses a format that reads inside a JSON field', () => {
     const reason = bulkUnsupportedReason({
       nameFormat: 'pv:{page_data.variant}',
       namingColumns: ['page_data'],
-      requiredFields: [],
+      requiredJsonFields: [],
     })
     expect(reason).toMatch(/inside a JSON field/)
   })
 
-  it('refuses a type whose required fields the paste cannot fill', () => {
+  it('refuses a type with a required JSON field the paste cannot fill', () => {
     const reason = bulkUnsupportedReason({
       nameFormat: '{action}',
       namingColumns: ['action'],
-      requiredFields: ['action', 'platform'],
+      requiredJsonFields: ['payload'],
     })
-    // Only the one the paste cannot supply is named; `action` is a naming column.
-    expect(reason).toMatch(/needs platform/)
+    expect(reason).toMatch(/needs payload, a JSON value/)
   })
 
-  it('allows a type whose required fields are exactly the naming columns', () => {
+  it('allows a type whose other required fields the paste carries as columns', () => {
+    // A required string field is an extra column now (tripl-hhw3), not a refusal.
     expect(
       bulkUnsupportedReason({
         nameFormat: '{action}',
         namingColumns: ['action'],
-        requiredFields: ['action'],
+        requiredJsonFields: [],
       }),
     ).toBeNull()
   })

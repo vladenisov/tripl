@@ -102,19 +102,19 @@ export default function SecuritySection() {
           )}
           <div aria-live="polite" className="text-body-sm leading-[1.45]">
             {resetMut.isSuccess && resetMut.data.email_configured && (
-              <span style={{ color: 'var(--success)' }}>
+              <span className="text-success">
                 Sent — check {email} for a link to choose a new password.
               </span>
             )}
             {resetMut.isSuccess && !resetMut.data.email_configured && (
-              <span style={{ color: 'var(--warning)' }}>
+              <span className="text-warning">
                 This instance can't send email, so no link went out.{' '}
                 {isOwner ? setUpEmail : 'Ask an owner to set it up.'}
               </span>
             )}
           </div>
           {resetMut.isError && (
-            <p role="alert" className="m-0 text-body-sm" style={{ color: 'var(--danger)' }}>
+            <p role="alert" className="m-0 text-body-sm text-danger">
               Could not request a reset link: {getErrorMessage(resetMut.error)}
             </p>
           )}

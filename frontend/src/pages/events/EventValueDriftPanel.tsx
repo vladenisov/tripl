@@ -79,7 +79,7 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
 
   return (
     <div className={hasActive ? 'rounded-md border border-warning/40 bg-warning-soft p-3' : 'rounded-md border bg-muted/30 p-3'}>
-      <div className={`mb-1 text-body-sm font-semibold uppercase tracking-wide ${hasActive ? 'text-warning' : 'text-muted-foreground'}`}>
+      <div className={`mb-1 text-body-sm font-semibold uppercase tracking-wide ${hasActive ? 'text-warning' : 'text-fg-tertiary'}`}>
         Value drift — observed values outside the documented lists
       </div>
       {visibleDrifts.length > 0 && (
@@ -122,7 +122,7 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
                       <Button type="button" size="xs" variant="ghost" disabled={actionMut.isPending} onClick={() => snooze(drift.id)}>
                         Snooze 7d
                       </Button>
-                      <Button type="button" size="xs" variant="ghost" className="text-muted-foreground" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
+                      <Button type="button" size="xs" variant="ghost" className="text-fg-tertiary" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ driftId: drift.id, action: 'false_positive' })}>
                         False positive
                       </Button>
                     </>
@@ -138,7 +138,7 @@ export function EventValueDriftPanel({ slug, eventId }: { slug: string; eventId:
         </ul>
       )}
       {quietDrifts.length > 0 && (
-        <Button type="button" size="xs" variant="ghost" className="mt-1.5 text-muted-foreground" onClick={() => setShowQuiet(value => !value)}>
+        <Button type="button" size="xs" variant="ghost" className="mt-1.5 text-fg-tertiary" onClick={() => setShowQuiet(value => !value)}>
           {showQuiet ? 'Hide' : 'Show'} {quietDrifts.length}{' '}
           {collapsedDriftLabel({ snoozed: snoozedDrifts.length, resolved: resolvedDrifts.length })}
         </Button>

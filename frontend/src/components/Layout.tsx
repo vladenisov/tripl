@@ -31,7 +31,9 @@ import {
   ShellChromeContext,
 } from '@/components/shell-chrome-context'
 import { ProjectEventStreamProvider } from '@/realtime/ProjectEventStreamProvider'
-import { resolveNavLocation } from '@/lib/navigation'
+import { projectHomePath, resolveNavLocation } from '@/lib/navigation'
+import { navCrumb, type Crumb } from '@/components/shell/crumbs'
+import { useShellShortcuts } from '@/components/shell/shell-shortcuts'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { projectQueryOptions, projectsQueryOptions } from '@/lib/queryKeys'
 import { lazyWithReload } from '@/lib/lazyWithReload'
@@ -56,6 +58,8 @@ const OnboardingReturnBar = lazyWithReload(() =>
 const ActivityPanel = lazyWithReload(() =>
   import('@/components/activity-panel').then((m) => ({ default: m.ActivityPanel })),
 )
+// The `?` shortcut sheet (JR-21), fetched on the first `?` alone.
+const ShortcutsDialog = lazyWithReload(() => import('@/components/shell/shortcuts-dialog'))
 
 const ACTIVITY_STORAGE_KEY = 'tripl-activity-open'
 
@@ -135,7 +139,7 @@ function firstFocusable(root: HTMLElement | null): HTMLElement | null {
 }
 
 type Crumbs = {
-  crumbs: string[]
+  crumbs: Crumb[]
   title: string
   /**
    * An editor route: once the page names itself `editPageTitle(name)`, the
@@ -172,8 +176,14 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   // No invented root crumb: a path outside any project simply has no project
   // segment. The literal placeholder this used to emit read as an untranslated
   // template leaking into the UI (tripl-jfm3.34).
-  const withProject = (...rest: string[]): string[] =>
-    projectName ? [projectName, ...rest] : rest
+  // Plain strings are nav groups (not pages); a surface passes a Crumb with
+  // its link (MO-13). The project crumb opens the project's home.
+  const withProject = (...rest: (string | Crumb)[]): Crumb[] => {
+    const trail = rest.map((crumb) => (typeof crumb === 'string' ? { label: crumb } : crumb))
+    if (!projectName) return trail
+    return [{ label: projectName, ...(slug ? { to: projectHomePath(slug) } : {}) }, ...trail]
+  }
+  const nav = (label: string): Crumb => navCrumb(slug, label)
 
   // Detail surfaces carry their nav area so the breadcrumb reads
   // "project › Area › Page › <entity>"; the page names the entity through
@@ -184,13 +194,13 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   // Plan › Events — only project-total/event-type signal detail falls through
   // to the generic branch. Check the event scope first.
   if (pathname.includes('/monitoring/event/') || pathname.includes('/events/detail/')) {
-    return { crumbs: withProject('Plan', 'Events'), title: DETAIL_PENDING_TITLE }
+    return { crumbs: withProject('Plan', nav('Events')), title: DETAIL_PENDING_TITLE }
   }
   // Catalog-metric drilldowns belong to the Metrics surface, so their
   // breadcrumb reads "… › Observe › Metrics" (matching the metrics list nav).
   // Check before the generic /monitoring/ branch.
   if (pathname.includes('/monitoring/metric/')) {
-    return { crumbs: withProject('Observe', 'Metrics'), title: DETAIL_PENDING_TITLE }
+    return { crumbs: withProject('Observe', nav('Metrics')), title: DETAIL_PENDING_TITLE }
   }
   // What is left — event-type and project-total volume drilldowns — is named
   // from the entity, not from the route the reader happened to arrive by: the
@@ -199,7 +209,7 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   // "Plan › Event types", where the nav files Event types; the project total
   // is its own page ("Total volume").
   if (pathname.includes('/monitoring/event-type/')) {
-    return { crumbs: withProject('Plan', 'Event types'), title: DETAIL_PENDING_TITLE }
+    return { crumbs: withProject('Plan', nav('Event types')), title: DETAIL_PENDING_TITLE }
   }
   if (pathname.includes('/monitoring/')) {
     return { crumbs: withProject('Observe'), title: DETAIL_PENDING_TITLE }
@@ -207,32 +217,37 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   // One branch: "Plan › Plan branches › <name>", the page naming the branch
   // once it has loaded (#243 PL-17). The bare list keeps its nav crumb.
   if (/^\/p\/[^/]+\/settings\/branches\/[^/]+/.test(pathname)) {
-    return { crumbs: withProject('Plan', 'Plan branches'), title: DETAIL_PENDING_TITLE }
+    return { crumbs: withProject('Plan', nav('Plan branches')), title: DETAIL_PENDING_TITLE }
   }
   // An alert rule's history: "Observe › Alerting › Rules › <rule>", the tab
   // the rule lives on, instead of "Observe › <rule>" (#241 MO-13, #238 JR-28).
   if (/^\/p\/[^/]+\/monitors\/[^/]+/.test(pathname)) {
-    return { crumbs: withProject('Observe', 'Alerting', 'Rules'), title: DETAIL_PENDING_TITLE }
+    const alerting = nav('Alerting')
+    const rules: Crumb = alerting.to ? { label: 'Rules', to: `${alerting.to}?section=monitors` } : { label: 'Rules' }
+    return { crumbs: withProject('Observe', alerting, rules), title: DETAIL_PENDING_TITLE }
   }
   // Metric and fact-table editors name themselves under the Metrics surface
   // instead of passing for the list: "Metrics › New metric", "Metrics › Edit
   // metric", "Metrics › Fact tables › Edit fact table" (#246 MT-31).
   const metricsSub = /^\/p\/[^/]+\/metrics\/(.+)$/.exec(pathname)?.[1]
+  const factTables: Crumb = slug
+    ? { label: 'Fact tables', to: `/p/${slug}/metrics/fact-tables` }
+    : { label: 'Fact tables' }
   if (metricsSub === 'new') {
-    return { crumbs: withProject('Observe', 'Metrics'), title: 'New metric' }
+    return { crumbs: withProject('Observe', nav('Metrics')), title: 'New metric' }
   }
   if (metricsSub === 'fact-tables/new') {
-    return { crumbs: withProject('Observe', 'Metrics', 'Fact tables'), title: 'New fact table' }
+    return { crumbs: withProject('Observe', nav('Metrics'), factTables), title: 'New fact table' }
   }
   if (metricsSub && /^fact-tables\/[^/]+\/edit$/.test(metricsSub)) {
     return {
-      crumbs: withProject('Observe', 'Metrics', 'Fact tables'),
+      crumbs: withProject('Observe', nav('Metrics'), factTables),
       title: 'Edit fact table',
       entityAction: 'Edit',
     }
   }
   if (metricsSub && /^[^/]+\/edit$/.test(metricsSub)) {
-    return { crumbs: withProject('Observe', 'Metrics'), title: 'Edit metric', entityAction: 'Edit' }
+    return { crumbs: withProject('Observe', nav('Metrics')), title: 'Edit metric', entityAction: 'Edit' }
   }
 
   // Map the route to its grouped-nav area (Plan / Observe / Govern / Connect)
@@ -243,7 +258,7 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
     // page. Without the leaf, Detection settings presented itself as Anomalies
     // (tripl-34tw). `leaf` is absent everywhere else, so nothing else moves.
     return navLocation.leaf
-      ? { crumbs: withProject(navLocation.area, navLocation.label), title: navLocation.leaf }
+      ? { crumbs: withProject(navLocation.area, nav(navLocation.label)), title: navLocation.leaf }
       : { crumbs: withProject(navLocation.area), title: navLocation.label }
   }
 
@@ -268,8 +283,7 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
 function ShellFallback({ children }: { children: ReactNode }) {
   return (
     <div
-      className="flex h-screen flex-col items-center justify-center-safe overflow-y-auto px-6 py-8 text-body supports-[height:100dvh]:h-dvh"
-      style={{ background: 'var(--bg)', color: 'var(--fg-muted)' }}
+      className="flex h-screen flex-col items-center justify-center-safe overflow-y-auto px-6 py-8 text-body supports-[height:100dvh]:h-dvh bg-background text-fg-secondary"
     >
       {children}
     </div>
@@ -283,6 +297,10 @@ export default function Layout() {
 
   // A page may ask for the rail to stay out of its way (the 404, LIVE-35).
   const [railSuppressed, setRailSuppressed] = useState(false)
+  // `?` opens the shortcut sheet; `c` presses the page's "New …" (JR-21).
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const openShortcuts = useCallback(() => setShortcutsOpen(true), [])
+  useShellShortcuts({ onOpenHelp: openShortcuts })
   // A detail page names its entity here (usePageTitle); null keeps the route's.
   const [pageTitle, setPageTitle] = useState<string | null>(null)
   // The same name reaches the browser-tab title (JR-33).
@@ -466,11 +484,11 @@ export default function Layout() {
       ? pageTitle.slice(EDIT_PAGE_TITLE_PREFIX.length)
       : null
   const headerCrumbs = editedEntity
-    ? [...crumbs, editedEntity]
+    ? [...crumbs, { label: editedEntity }]
     : entityTitle ? crumbs : crumbs.slice(0, -1)
   const headerTitle = editedEntity && entityAction
     ? entityAction
-    : entityTitle || (crumbs[crumbs.length - 1] ?? '')
+    : entityTitle || (crumbs[crumbs.length - 1]?.label ?? '')
 
   // Hold the shell until the slug is resolved. Everything below fans out
   // project-scoped requests the moment it mounts, so rendering optimistically is
@@ -519,8 +537,7 @@ export default function Layout() {
             viewport, so the sidebar footer (Sign out) and the last rows of every
             page sat under the browser toolbar (SHELL-22). */}
         <div
-          className="relative flex h-screen overflow-hidden supports-[height:100dvh]:h-dvh"
-          style={{ background: 'var(--bg)', color: 'var(--fg)' }}
+          className="relative flex h-screen overflow-hidden supports-[height:100dvh]:h-dvh bg-background text-fg"
         >
           {/* First tab stop on every page: without it a keyboard-only user
               walks all 27 sidebar stops before reaching page content. */}
@@ -685,8 +702,7 @@ export default function Layout() {
               />
               <div
                 ref={activityDrawerRef}
-                className="fixed inset-y-0 right-0 z-(--z-drawer) pb-[env(safe-area-inset-bottom)] shadow-xl"
-                style={{ background: 'var(--bg-sunken)' }}
+                className="fixed inset-y-0 right-0 z-(--z-drawer) pb-[env(safe-area-inset-bottom)] shadow-xl bg-bg-sunken"
               >
                 <Suspense fallback={null}>
                   <ActivityPanel open slug={slug} onClose={closeDrawers} />
@@ -695,6 +711,13 @@ export default function Layout() {
             </>
           )}
         </div>
+        {shortcutsOpen && (
+          <ErrorBoundary fallback={() => null}>
+            <Suspense fallback={null}>
+              <ShortcutsDialog open onOpenChange={setShortcutsOpen} />
+            </Suspense>
+          </ErrorBoundary>
+        )}
       </CommandPaletteProvider>
     </TweaksPanelProvider>
     </ShellChromeContext.Provider>

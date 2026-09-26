@@ -132,12 +132,11 @@ export function entityPath(slug: string, entry: PlanDiffEntry): string | null {
  * first-class one, so this skips the list route that would otherwise bounce
  * through EventsPage.
  *
- * A variable has an editor too — the Variables tab's dialog — but no address of
- * its own, so the row asks the tab to open it with `?edit=1` on the same link
- * that already focuses the row (tripl-htfn.2). Without it, fixing a variable
- * from a branch review cost exactly the clicks tripl-h2sx.1 removed for events:
- * expand the row, find the 11px link after Revert, land on a highlighted row
- * that is not open.
+ * A variable's editor is its own page now (AU-26), Definition tab first — the
+ * same address `entityPath` focuses. The row keeps the Edit action anyway
+ * (tripl-htfn.2): without it, fixing a variable from a branch review cost
+ * exactly the clicks tripl-h2sx.1 removed for events: expand the row, find the
+ * small link after Revert.
  *
  * Event types are deliberately absent. `entityPath` already lands them on
  * EventTypeDetail, which IS their editor, so a second affordance to the same
@@ -152,7 +151,7 @@ export function entityEditPath(
     case 'event':
       return `/p/${slug}/events/all/${entityId}/edit`
     case 'variable':
-      return `/p/${slug}/settings/variables/${entityId}?edit=1`
+      return `/p/${slug}/settings/variables/${entityId}`
     default:
       return null
   }

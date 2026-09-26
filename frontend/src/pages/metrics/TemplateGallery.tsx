@@ -31,29 +31,22 @@ export function TemplateGallery({ onPick, onSkip }: TemplateGalleryProps) {
                 key={template.id}
                 type="button"
                 onClick={() => onPick(template)}
-                className="flex items-start gap-2.5 rounded-card px-[13px] py-[11px] text-left transition-colors hover:bg-[var(--surface-hover)]"
-                style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}
+                className="flex items-start gap-2.5 rounded-card px-[13px] py-[11px] text-left transition-colors hover:bg-[var(--surface-hover)] border border-border"
+                style={{ background: 'var(--bg)' }}
               >
                 <span
-                  className="mt-px flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-lg"
-                  style={{
-                    background: 'var(--bg-sunken)',
-                    border: '1px solid var(--border-subtle)',
-                    color: 'var(--fg-muted)',
-                  }}
+                  className="mt-px flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-lg bg-bg-sunken border border-border-subtle text-fg-secondary"
                 >
                   <Icon size={16} />
                 </span>
                 <span className="min-w-0">
                   <span
-                    className="block text-body-sm font-semibold"
-                    style={{ color: 'var(--fg)' }}
+                    className="block text-body-sm font-semibold text-fg"
                   >
                     {template.label}
                   </span>
                   <span
-                    className="mt-0.5 block text-caption leading-[1.4]"
-                    style={{ color: 'var(--fg-subtle)' }}
+                    className="mt-0.5 block text-caption leading-[1.4] text-fg-tertiary"
                   >
                     {template.description}
                   </span>
@@ -66,8 +59,7 @@ export function TemplateGallery({ onPick, onSkip }: TemplateGalleryProps) {
           <button
             type="button"
             onClick={onSkip}
-            className="inline-flex h-8 items-center rounded-control px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ border: '1px solid var(--border)', color: 'var(--fg-muted)' }}
+            className="inline-flex h-8 items-center rounded-control px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] border border-border text-fg-secondary"
           >
             Start from scratch
           </button>

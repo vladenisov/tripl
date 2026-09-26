@@ -165,6 +165,9 @@ export type EventRowProps = {
   /** Virtualizer hooks: measure this row's real height at this index. */
   measureRef?: (el: HTMLTableRowElement | null) => void
   virtualIndex?: number
+  /** Created by the form the reader just left: marked so it can be found in a
+   *  long list (AU-20, AU-21, JR-13). */
+  justCreated?: boolean
 }
 
 export const EventRow = memo(function EventRow({
@@ -198,6 +201,7 @@ export const EventRow = memo(function EventRow({
   reorderable = true,
   measureRef,
   virtualIndex,
+  justCreated = false,
 }: EventRowProps) {
   // Reorder, select-for-bulk and edit are all editor actions; a viewer gets
   // the row without them (the cells stay, so the columns line up).
@@ -293,7 +297,8 @@ export const EventRow = memo(function EventRow({
       data-index={virtualIndex}
       style={dragStyle}
       data-state={selected ? 'selected' : undefined}
-      className={`group/row cursor-pointer ${PHONE_ROW}`}
+      data-created={justCreated || undefined}
+      className={`group/row cursor-pointer ${PHONE_ROW}${justCreated ? ' bg-success-soft' : ''}`}
       onClick={onRowClick}
     >
       {/* The handle and checkbox cells are hit targets of their own: a click
@@ -304,7 +309,7 @@ export const EventRow = memo(function EventRow({
           // an invisible handle cannot be found at all (EVT-21).
           <button
             type="button"
-            className="flex h-6 w-6 cursor-grab touch-none items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 active:cursor-grabbing"
+            className="flex h-6 w-6 cursor-grab touch-none items-center justify-center rounded-sm text-fg-tertiary opacity-0 transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 active:cursor-grabbing"
             aria-label={`Drag to reorder ${nameLabel}`}
             {...attributes}
             {...listeners}
@@ -380,12 +385,18 @@ export const EventRow = memo(function EventRow({
               so an untitled row gains no blank gap either. */}
           {ev.title && (
             <span
-              className="min-w-0 truncate text-caption"
-              style={{ color: 'var(--fg-subtle)' }}
+              className="min-w-0 truncate text-caption text-fg-tertiary"
               title={ev.title}
             >
               {ev.title}
             </span>
+          )}
+          {/* The pinned cell paints its own background over the row's tint, so
+              the mark that survives the sticky column is a word, not a colour. */}
+          {justCreated && (
+            <Chip tone="success" size="xs">
+              New
+            </Chip>
           )}
           {/* An unanswered question on this event's discussion. A count, not a
               dot: the filter beside it says "open questions", and a marker that
@@ -408,7 +419,7 @@ export const EventRow = memo(function EventRow({
                 aria-label={`Edit ${nameLabel}`}
                 // Always there, quiet until the row is hovered or focused: a
                 // hover-only pencil was the one way to the edit form (EV-27).
-                className={`flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 ${
+                className={`flex size-6 shrink-0 items-center justify-center rounded-sm text-fg-tertiary transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 ${
                   coachEdit ? 'opacity-100' : 'opacity-40'
                 }`}
               >
@@ -554,15 +565,13 @@ export const EventRow = memo(function EventRow({
         >
           {ev.reviewed ? (
             <Check
-              className="mx-auto h-3.5 w-3.5"
+              className="mx-auto h-3.5 w-3.5 text-success"
               aria-hidden="true"
-              style={{ color: 'var(--success)' }}
             />
           ) : (
             <span
               aria-hidden="true"
-              className="text-caption"
-              style={{ color: 'var(--fg-faint)' }}
+              className="text-caption text-fg-tertiary"
               title="Not verified"
             >
               —
@@ -585,7 +594,7 @@ export const EventRow = memo(function EventRow({
           {(() => {
             const u = ev.owner_id ? usersById.get(ev.owner_id) : undefined
             return u ? (
-              <span style={{ color: 'var(--fg-subtle)' }}>{u.name ?? u.email}</span>
+              <span className="text-fg-tertiary">{u.name ?? u.email}</span>
             ) : (
               <NoData title="No owner" />
             )
@@ -662,7 +671,7 @@ export const EventRow = memo(function EventRow({
         return (
           <TableCell
             key={mf.id}
-            className={`text-muted-foreground max-w-40 truncate text-body-sm ${PHONE_DROPPED_CELL}`}
+            className={`text-fg-tertiary max-w-40 truncate text-body-sm ${PHONE_DROPPED_CELL}`}
           >
             {values.length === 0 ? (
               <NoData title="No data" />

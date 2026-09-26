@@ -563,7 +563,7 @@ Backend:
 
 Frontend:
 - `pnpm install`
-- `pnpm lint` (oxlint, then eslint for the rules oxlint lacks)
+- `pnpm lint` (oxlint with the project rules in `oxlint-plugins/`, then their tests)
 - `pnpm test`
 - `pnpm exec tsc -b` (TypeScript 7)
 

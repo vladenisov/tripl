@@ -351,14 +351,15 @@ export function ScansTab({ slug }: { slug: string }) {
                 value={failingCount == null ? <StatValueSkeleton /> : failingCount}
                 valueTone={failingCount ? 'danger' : undefined}
               />
-              {/* Warehouse rows only: a catalog run reads back grouped column
-                  combinations, a different unit, so those are named in the
-                  title instead of being added in (#247 DA-4). */}
+              {/* Warehouse rows only: metrics runs, and catalog runs that report
+                  the rows behind their breakdown. An older catalog run reports
+                  only grouped column combinations, a different unit, so those
+                  are named in the title instead of being added in (#247 DA-4). */}
               <div
                 title={
                   catalogCombinations24h
-                    ? `Warehouse rows read by metrics runs in the last 24 hours. Catalog runs also read back ${formatCount(catalogCombinations24h)} column combinations.`
-                    : 'Warehouse rows read by metrics runs in the last 24 hours.'
+                    ? `Warehouse rows read by runs in the last 24 hours. Catalog runs that report no warehouse rows also read back ${formatCount(catalogCombinations24h)} column combinations.`
+                    : 'Warehouse rows read by runs in the last 24 hours.'
                 }
               >
                 <MiniStat label="Warehouse rows · 24h" value={formatCount(warehouseRows24h)} />
@@ -418,7 +419,7 @@ export function ScansTab({ slug }: { slug: string }) {
               user read on the page this epic exists to make comprehensible. */}
           <Panel title="All scans" subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
             {failedRunScanName && (
-              <p role="alert" className="border-b px-4 py-2 text-body" style={{ color: 'var(--danger)', borderColor: 'var(--border-subtle)' }}>
+              <p role="alert" className="border-b px-4 py-2 text-body text-danger border-border-subtle">
                 Could not start {failedRunScanName}: {getErrorMessage(runScan.error)}
               </p>
             )}
@@ -444,12 +445,11 @@ export function ScansTab({ slug }: { slug: string }) {
                 {/* Phones get the rows as stacked cards (ScanListRow), so the
                     column headings have nothing to head there. */}
                 <thead className="hidden sm:table-header-group">
-                  <tr style={{ background: 'var(--bg-sunken)' }}>
+                  <tr className="bg-bg-sunken">
                     {['Scan', 'Last run'].map(h => (
                       <th
                         key={h}
-                        className="px-3.5 py-2 text-left micro-label"
-                        style={{ color: 'var(--fg-subtle)' }}
+                        className="px-3.5 py-2 text-left micro-label text-fg-tertiary"
                       >
                         {h}
                       </th>
@@ -510,19 +510,18 @@ export function ScansTab({ slug }: { slug: string }) {
                           375px screen nothing for the rest, and "3h ago" ran into
                           "4.8K rows" (DATA-10). */}
                       <div
-                        className="flex min-h-(--row-h) flex-wrap items-center gap-x-3 gap-y-1.5 border-t px-4 py-2.5 first:border-t-0 sm:flex-nowrap"
-                        style={{ borderColor: 'var(--border-subtle)' }}
+                        className="flex min-h-(--row-h) flex-wrap items-center gap-x-3 gap-y-1.5 border-t px-4 py-2.5 first:border-t-0 sm:flex-nowrap border-border-subtle"
                       >
                         <RunStatusPill status={runPillStatus(run.status)} title={friendly ?? undefined} />
                         <span className="min-w-0 flex-1 truncate text-body-sm font-medium sm:w-[150px] sm:flex-none sm:shrink-0">
                           {run.scanName}
                         </span>
                         <div className="order-last flex min-w-0 basis-full flex-col gap-1 sm:order-none sm:basis-auto sm:flex-1">
-                          <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                          <span className="text-caption text-fg-tertiary">
                             {run.startedAt ? formatRelativeTime(run.startedAt) : '—'}
                           </span>
                           {friendly && (
-                            <span className="truncate text-caption" style={{ color: 'var(--danger)' }}>{friendly}</span>
+                            <span className="truncate text-caption text-danger">{friendly}</span>
                           )}
                           {/* What this completed run changed — surfaced inline so a
                               finished scan/collection shows its impact, not just a
@@ -562,10 +561,10 @@ export function ScansTab({ slug }: { slug: string }) {
                             {/* Full digits and the unit, the same as the scan's
                                 own page ("4,428 rows", "153 combos"), in a fixed
                                 right-aligned column (#247 DA-24, DA-4). */}
-                            <span className="tnum shrink-0 whitespace-nowrap text-right text-caption sm:w-[104px]" style={{ color: 'var(--fg-subtle)' }}>
+                            <span className="tnum shrink-0 whitespace-nowrap text-right text-caption sm:w-[104px] text-fg-tertiary">
                               {formatJobScanned(run.scanned)}
                             </span>
-                            <span className="tnum shrink-0 whitespace-nowrap text-right text-caption sm:w-[52px]" style={{ color: 'var(--fg-faint)' }}>
+                            <span className="tnum shrink-0 whitespace-nowrap text-right text-caption sm:w-[52px] text-fg-tertiary">
                               {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}
                             </span>
                           </>

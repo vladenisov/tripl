@@ -16,15 +16,18 @@ from tripl import cache
 from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.crypto import encrypt_value
 from tripl.models.data_source import DataSource, DBType, TestStatus
+from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.models.scan_job import ScanJob
 from tripl.schemas.data_source import (
+    DATA_SOURCE_SCAN_REFS_LIMIT,
     SSLKEY_STORAGE_KEY,
     ConnectionSettingsError,
     DataSourceConnectionTest,
     DataSourceConnectionTestResponse,
     DataSourceCreate,
     DataSourceResponse,
+    DataSourceScanRef,
     DataSourceTestResponse,
     DataSourceUpdate,
     connection_settings_response,
@@ -62,7 +65,7 @@ async def get_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSource
 async def _with_usage(
     session: AsyncSession, sources: list[DataSourceResponse]
 ) -> list[DataSourceResponse]:
-    """Merge each source's scan and scan-run counts in (DA-40).
+    """Merge each source's scan and scan-run counts, and its scans, in (DA-40).
 
     Every path that hands a source back goes through here, not only list and
     get: the page writes the create / update / test responses straight into its
@@ -100,11 +103,55 @@ async def _with_usage(
         .tuples()
         .all()
     )
+    # Capped per source in SQL, not in the loop: this runs on every data-source
+    # list and detail response, and a source shared by many projects would
+    # otherwise ship all its scans over the wire to keep twenty.
+    ranked = (
+        select(
+            ScanConfig.data_source_id.label("data_source_id"),
+            ScanConfig.id.label("scan_id"),
+            ScanConfig.name.label("scan_name"),
+            Project.slug.label("project_slug"),
+            Project.name.label("project_name"),
+            func.row_number()
+            .over(
+                partition_by=ScanConfig.data_source_id,
+                order_by=(Project.name, ScanConfig.name, ScanConfig.id),
+            )
+            .label("position"),
+        )
+        .join(Project, Project.id == ScanConfig.project_id)
+        .where(ScanConfig.data_source_id.in_(ids))
+        .subquery()
+    )
+    scan_refs: dict[uuid.UUID, list[DataSourceScanRef]] = {}
+    for data_source_id, scan_id, scan_name, project_slug, project_name in (
+        await session.execute(
+            select(
+                ranked.c.data_source_id,
+                ranked.c.scan_id,
+                ranked.c.scan_name,
+                ranked.c.project_slug,
+                ranked.c.project_name,
+            )
+            .where(ranked.c.position <= DATA_SOURCE_SCAN_REFS_LIMIT)
+            .order_by(ranked.c.data_source_id, ranked.c.position)
+        )
+    ).all():
+        scan_refs.setdefault(data_source_id, []).append(
+            DataSourceScanRef(
+                id=scan_id,
+                name=scan_name,
+                project_slug=project_slug,
+                project_name=project_name,
+            )
+        )
     return [
         source.model_copy(
             update={
                 "scan_count": int(scan_counts.get(source.id, 0) or 0),
                 "scan_run_count": int(run_counts.get(source.id, 0) or 0),
+                "scans": scan_refs.get(source.id, []),
             }
         )
         for source in sources

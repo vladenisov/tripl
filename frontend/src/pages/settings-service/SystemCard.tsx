@@ -210,7 +210,7 @@ export function SystemCard({ system }: { system: SystemSettings }) {
     <SCard description="Read from this instance's environment when the API started. None of it can be changed from the app — set the variable where the process gets its environment, then restart. The schema revision is the exception: it is read from the database each time this page loads.">
       <div className="space-y-3 p-4">
         {problems.length > 0 && (
-          <p className="m-0 text-body-sm font-medium" style={{ color: 'var(--fg)' }}>
+          <p className="m-0 text-body-sm font-medium text-fg">
             {problems.length === 1 ? '1 item needs attention' : `${problems.length} items need attention`}
             :{' '}
             {problems.map(row => row.problem ?? `${row.label} needs a look`).join(', ')}.
@@ -242,14 +242,14 @@ export function SystemCard({ system }: { system: SystemSettings }) {
                   size={7}
                 />
                 {/* Sentence case, not an uppercase eyebrow (ST-33). */}
-                <span className="text-caption font-medium" style={{ color: 'var(--fg-muted)' }}>
+                <span className="text-caption font-medium text-fg-secondary">
                   {row.label}
                 </span>
               </div>
               <span className="text-body-sm font-medium" style={{ color: VALUE_COLOR[row.tone] }}>
                 {row.value}
               </span>
-              <span className="text-caption leading-[1.4]" style={{ color: 'var(--fg-subtle)' }}>
+              <span className="text-caption leading-[1.4] text-fg-tertiary">
                 {row.note}
               </span>
             </div>

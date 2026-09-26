@@ -53,13 +53,12 @@ export default function PlanRulesSection({ slug }: { slug?: string } = {}) {
       />
 
       {/* What exists today, so the page is not a dead end (PL-26). */}
-      <p className="mb-4 text-body-sm" style={{ color: 'var(--fg-secondary)' }}>
+      <p className="mb-4 text-body-sm text-fg-secondary">
         Approvals for plan changes already work: they are set in{' '}
         {slug ? (
           <Link
             to={`/p/${slug}/settings/branches`}
-            className="font-medium underline underline-offset-2"
-            style={{ color: 'var(--accent)' }}
+            className="font-medium underline underline-offset-2 text-accent"
           >
             Plan branches › Merge policy
           </Link>
@@ -83,8 +82,7 @@ export default function PlanRulesSection({ slug }: { slug?: string } = {}) {
                 {group.title}
               </h3>
               <ul
-                className="m-0 mt-1 list-disc space-y-0.5 pl-5 text-body-sm leading-[1.5]"
-                style={{ color: 'var(--fg-subtle)' }}
+                className="m-0 mt-1 list-disc space-y-0.5 pl-5 text-body-sm leading-[1.5] text-fg-tertiary"
               >
                 {group.items.map((item) => (
                   <li key={item}>{item}</li>

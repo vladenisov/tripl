@@ -199,8 +199,8 @@ export function MiniStatStrip({
           reaches past its row (the Metrics catalog's filter toggles). */}
       <div
         className="-m-1 p-1"
-        data-slot="mini-stat-clip"
         style={{ overflowX: 'clip', overflowY: 'visible' }}
+        data-slot="mini-stat-clip"
       >
         <div
           data-phone-grid={phoneGrid || undefined}
@@ -220,8 +220,8 @@ export function MiniStatStrip({
                   className={cn(
                     'absolute -left-3 top-1/2 h-6 w-px -translate-y-1/2',
                     phoneGrid && 'max-sm:hidden',
+                    'bg-border',
                   )}
-                  style={{ background: 'var(--border)' }}
                 />
               )}
               {item}

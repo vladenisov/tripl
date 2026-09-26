@@ -20,6 +20,7 @@ from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.schemas.event_metric import PlatformPresenceResponse
 from tripl.schemas.scan_config import (
     ScanConfigCreate,
+    ScanConfigDetailResponse,
     ScanConfigPreviewRequest,
     ScanConfigResponse,
     ScanConfigUpdate,
@@ -32,7 +33,13 @@ from tripl.schemas.scan_job import (
     ScanJobResponse,
     ScanPreviewJobResponse,
 )
-from tripl.services import audit_service, metrics_service, scan_activity_service, scan_service
+from tripl.services import (
+    audit_service,
+    metrics_service,
+    scan_activity_service,
+    scan_config_service,
+    scan_service,
+)
 
 # Handlers return ORM models; FastAPI serializes them through each route's
 # ``response_model=...Response`` (the OpenAPI contract). The return annotations
@@ -159,9 +166,11 @@ async def get_scan_dry_run_job(
     return await scan_service.get_dry_run_job(session, slug, job_id)
 
 
-@router.get("/{scan_id}", response_model=ScanConfigResponse)
-async def get_scan_config(session: SessionDep, slug: str, scan_id: uuid.UUID) -> ScanConfig:
-    return await scan_service.get_scan_config(session, slug, scan_id)
+@router.get("/{scan_id}", response_model=ScanConfigDetailResponse)
+async def get_scan_config(
+    session: SessionDep, slug: str, scan_id: uuid.UUID
+) -> ScanConfigDetailResponse:
+    return await scan_config_service.get_scan_config_detail(session, slug, scan_id)
 
 
 @router.get("/{scan_id}/platform-presence", response_model=PlatformPresenceResponse)

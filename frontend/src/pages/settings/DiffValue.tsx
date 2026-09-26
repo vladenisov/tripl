@@ -53,7 +53,7 @@ function ValueCell({ value }: { value: unknown }) {
 
   if (parsed === null) {
     return (
-      <span className="mono wrap-anywhere text-caption" style={{ color: 'var(--fg)' }}>
+      <span className="mono wrap-anywhere text-caption text-fg">
         {text}
       </span>
     )
@@ -72,14 +72,13 @@ function ValueCell({ value }: { value: unknown }) {
           style={{ color: 'var(--fg-faint)', transform: open ? 'rotate(90deg)' : 'none' }}
           aria-hidden="true"
         />
-        <span className="mono truncate text-caption" style={{ color: 'var(--fg)' }}>
+        <span className="mono truncate text-caption text-fg">
           {text}
         </span>
       </button>
       {open ? (
         <pre
-          className="mono max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-sm px-2 py-1 text-caption"
-          style={{ color: 'var(--fg)', background: 'color-mix(in oklab, var(--fg) 5%, transparent)' }}
+          className="mono max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-sm px-2 py-1 text-caption text-fg bg-fg/5"
         >
           {JSON.stringify(parsed, null, 2)}
         </pre>
@@ -165,7 +164,7 @@ export function DiffValue({
     value === null || value === undefined || value === '' || (Array.isArray(value) && !value.length)
   if (isEmpty) {
     return (
-      <span className="mono text-caption" style={{ color: 'var(--fg-faint)' }}>
+      <span className="mono text-caption text-fg-tertiary">
         ∅
       </span>
     )
@@ -229,8 +228,7 @@ function WordDiffText({ segments, side }: { segments: WordSegment[]; side: 'befo
   const Mark = side === 'before' ? 'del' : 'ins'
   return (
     <span
-      className="mono wrap-anywhere whitespace-pre-wrap text-caption"
-      style={{ color: 'var(--fg)' }}
+      className="mono wrap-anywhere whitespace-pre-wrap text-caption text-fg"
     >
       {segments.map((segment, index) =>
         segment.changed ? (
@@ -258,7 +256,7 @@ function WordDiffText({ segments, side }: { segments: WordSegment[]; side: 'befo
  * is prose; the marks are real <del>/<ins>. */
 function InlineWordDiff({ segments }: { segments: InlineSegment[] }) {
   return (
-    <span className="whitespace-pre-wrap break-words text-body-sm" style={{ color: 'var(--fg)' }}>
+    <span className="whitespace-pre-wrap break-words text-body-sm text-fg">
       {segments.map((segment, index) => {
         if (segment.kind === 'same') return <span key={index}>{segment.text}</span>
         const tone = segment.kind === 'removed' ? 'danger' : 'success'
@@ -311,8 +309,7 @@ export function DiffPair({ before, after }: { before: unknown; after: unknown })
         <button
           type="button"
           onClick={() => setSideBySide(true)}
-          className="text-caption hover:underline"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="text-caption hover:underline text-fg-tertiary"
         >
           Show before / after
         </button>
@@ -327,7 +324,7 @@ export function DiffPair({ before, after }: { before: unknown; after: unknown })
       ) : (
         <DiffValue value={before} tone="danger" />
       )}
-      <span className="text-body-sm" style={{ color: 'var(--fg-faint)' }} aria-hidden="true">
+      <span className="text-body-sm text-fg-tertiary" aria-hidden="true">
         →
       </span>
       <span className="sr-only">after:</span>

@@ -207,14 +207,14 @@ export function HistoryTab({ slug }: { slug: string }) {
                 />
               </div>
             ) : revisions.length === 0 ? (
-              <div className="p-4 text-body text-muted-foreground">
+              <div className="p-4 text-body text-fg-tertiary">
                 No revisions yet. Revisions are recorded when a branch merges or opens, or when
                 you save a snapshot.
               </div>
             ) : (
               <>
                 {baseCount > 0 && baseCount < revisions.length ? (
-                  <div className="flex items-center justify-between gap-2 border-b px-3 py-2 text-caption text-muted-foreground">
+                  <div className="flex items-center justify-between gap-2 border-b px-3 py-2 text-caption text-fg-tertiary">
                     <span>
                       {showBases
                         ? 'Showing every revision'
@@ -246,7 +246,7 @@ export function HistoryTab({ slug }: { slug: string }) {
             )}
             {(hasNewer || hasOlder) && (
               <div className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2">
-                <p className="text-body-sm text-muted-foreground">
+                <p className="text-body-sm text-fg-tertiary">
                   {`Showing ${offset + 1}–${offset + revisions.length} of ${countOf(total, 'revision', 'revisions')}.`}
                 </p>
                 <div className="flex items-center gap-2">
@@ -394,18 +394,18 @@ function RevisionRow({
             className="line-clamp-2 break-words text-body-sm font-medium"
             title={rev.summary || undefined}
           >
-            {rev.summary || <span className="text-muted-foreground">(no summary)</span>}
+            {rev.summary || <span className="text-fg-tertiary">(no summary)</span>}
           </div>
           {/* One `truncate` line rather than a wrapping one: as flowing text the
               metadata broke mid-list and left a dangling "·" as the last glyph
               of a line, which reads as a formatting fault (tripl-lzge). At
               ~10px the whole string is ~280px and fits; the ellipsis is the
               fallback, and `title` keeps it readable either way. */}
-          <div className="truncate text-micro text-muted-foreground tnum" title={metaLine}>
+          <div className="truncate text-micro text-fg-tertiary tnum" title={metaLine}>
             {metaLine}
           </div>
         </div>
-        {selected && <ChevronRight className="mt-1 size-3 text-muted-foreground" aria-hidden="true" />}
+        {selected && <ChevronRight className="mt-1 size-3 text-fg-tertiary" aria-hidden="true" />}
       </button>
     </li>
   )
@@ -427,11 +427,11 @@ function DiffPanel({
   error: unknown
 }) {
   if (!effectiveSelected) {
-    return <p className="text-body text-muted-foreground">Pick a revision to view its diff.</p>
+    return <p className="text-body text-fg-tertiary">Pick a revision to view its diff.</p>
   }
   if (!compareTo) {
     return (
-      <p className="text-body text-muted-foreground">
+      <p className="text-body text-fg-tertiary">
         This is the oldest revision, so there is nothing to compare it with. The next merge
         or snapshot will show what changed.
       </p>
@@ -455,7 +455,7 @@ function DiffPanel({
   }
   if (diff.entries.length === 0) {
     return (
-      <p className="text-body text-muted-foreground">
+      <p className="text-body text-fg-tertiary">
         No schema changes between these two revisions.
       </p>
     )
@@ -542,7 +542,7 @@ function HistoryDiff({ diff }: { diff: PlanDiff }) {
             </Chip>
           </button>
         ))}
-        <span className="text-muted-foreground">
+        <span className="text-fg-tertiary">
           {countOf(diff.entries.length, 'entry', 'entries')}
         </span>
       </div>
@@ -574,7 +574,7 @@ function HistoryEntryRow({ entry, defaultOpen }: { entry: PlanDiffEntry; default
   const meta = KIND_META[entry.kind]
   const hasDetail = (entry.field_changes?.length ?? 0) > 0 || entry.changes.length > 0
   return (
-    <li className="border-b last:border-b-0" style={{ borderColor: 'var(--border-subtle)' }}>
+    <li className="border-b last:border-b-0 border-border-subtle">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -614,7 +614,7 @@ function HistoryEntryRow({ entry, defaultOpen }: { entry: PlanDiffEntry; default
           {(entry.field_changes?.length ?? 0) > 0 ? (
             <PlanFieldChangeList changes={entry.field_changes ?? []} />
           ) : (
-            <ul className="space-y-0.5 text-caption text-muted-foreground">
+            <ul className="space-y-0.5 text-caption text-fg-tertiary">
               {entry.changes.map((change) => (
                 <li key={change} className="font-mono">{change}</li>
               ))}
@@ -648,8 +648,7 @@ function RevisionHeader({
         branchId ? (
           <Link
             to={`/p/${slug}/settings/branches/${branchId}`}
-            className="mono font-medium hover:underline"
-            style={{ color: 'var(--accent)' }}
+            className="mono font-medium hover:underline text-accent"
           >
             {branch}
           </Link>
@@ -659,7 +658,7 @@ function RevisionHeader({
       ) : (
         <span className="font-medium">{rev.summary || 'Snapshot'}</span>
       )}
-      <span className="text-caption text-muted-foreground">
+      <span className="text-caption text-fg-tertiary">
         {formatDateTime(rev.created_at)}
       </span>
     </div>

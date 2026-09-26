@@ -82,12 +82,17 @@ function makeVariable(overrides: Partial<Variable> & { id: string; name: string 
 /** The header checkbox names how many matches it selects (PLAN-33). */
 const SELECT_ALL = /^Select all \d+ matching variables$/
 
+/** A bulk verb opens a popover holding its field and Apply (AU-31). */
+function openBulk(label: 'Set type…' | 'Set description…' | 'Add values…') {
+  fireEvent.click(screen.getByRole('button', { name: label }))
+}
+
 /** The list endpoint returns a page envelope; every test seeds it through here. */
 function mockList(items: Variable[], total = items.length) {
   vi.mocked(variablesApi.listPage).mockResolvedValue({ items, total })
 }
 
-function renderVariablesTab(props: { focusId?: string; openEditor?: boolean } = {}) {
+function renderVariablesTab(props: { focusId?: string } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -647,6 +652,7 @@ describe('VariablesTab', () => {
     fireEvent.click(screen.getByLabelText('Select variable two'))
     expect(screen.getByText('2')).toBeInTheDocument()
 
+    openBulk('Set type…')
     fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
     fireEvent.click(screen.getByRole('button', { name: 'Set type' }))
     fireEvent.click(
@@ -660,6 +666,7 @@ describe('VariablesTab', () => {
       ),
     )
 
+    openBulk('Add values…')
     fireEvent.change(screen.getByLabelText('Bulk add values'), { target: { value: 'a, b' } })
     fireEvent.keyDown(screen.getByLabelText('Bulk add values'), { key: 'Enter' })
     await waitFor(() =>
@@ -677,6 +684,7 @@ describe('VariablesTab', () => {
     renderVariablesTab()
     fireEvent.click(await screen.findByLabelText('Select variable payload'))
 
+    openBulk('Add values…')
     const input = screen.getByLabelText('Bulk add values')
     // The splitting rule is announced with the box, not only on hover.
     expect(input).toHaveAccessibleDescription(/comma inside a JSON object or array/)
@@ -705,6 +713,7 @@ describe('VariablesTab', () => {
     fireEvent.click(screen.getByLabelText(SELECT_ALL))
     expect(screen.getByText('60')).toBeInTheDocument()
 
+    openBulk('Set type…')
     fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
     fireEvent.click(screen.getByRole('button', { name: 'Set type' }))
     fireEvent.click(
@@ -1070,7 +1079,7 @@ describe('VariablesTab', () => {
     // toast fired. Set type, Set description and Add values hit the same rows.
     expect(await screen.findByText('${payment_method}')).toBeInTheDocument()
     expect(screen.queryByLabelText('Clear selection')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Bulk set type')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Bulk actions' })).not.toBeInTheDocument()
 
     // The guard the usage filter already carried, now shared by both controls
     // rather than copy-pasted onto one of them.
@@ -1120,6 +1129,7 @@ describe('VariablesTab', () => {
 
     // ONLY that id. Exclude is a one-row action and does not route through
     // changeMatchSet, which would clear the whole batch and jump to page 0.
+    openBulk('Set type…')
     fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
     fireEvent.click(screen.getByRole('button', { name: 'Set type' }))
     fireEvent.click(
@@ -1183,7 +1193,7 @@ describe('VariablesTab', () => {
     switchBranch('branch-9')
 
     expect(screen.queryByLabelText('Clear selection')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Bulk set type')).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Bulk actions' })).not.toBeInTheDocument()
     // The rows on screen really are the other branch's now.
     await waitFor(() =>
       expect(variablesApi.listPage).toHaveBeenCalledWith('demo', 'branch-9', { usage: 'all' }),
@@ -1214,6 +1224,7 @@ describe('VariablesTab', () => {
     fireEvent.click(await screen.findByLabelText(SELECT_ALL))
     expect(screen.getByText('2')).toBeInTheDocument()
 
+    openBulk('Add values…')
     fireEvent.change(screen.getByLabelText('Bulk add values'), { target: { value: 'a, b' } })
     fireEvent.keyDown(screen.getByLabelText('Bulk add values'), { key: 'Enter' })
     await waitFor(() => expect(variablesApi.bulkUpdate).toHaveBeenCalled())
@@ -1476,49 +1487,27 @@ describe('VariablesTab clear observed values (tripl-h2sx.21)', () => {
 })
 
 /**
- * tripl-htfn.2 — a variable changed on a branch had no Edit action, because its
- * editor is a dialog rather than a route. `?edit=1` is that address.
+ * `?focus=<id>` only marks a row: the variable's editor is its own page now
+ * (AU-26), so a link into the list never opens a dialog on its own.
  */
-describe('VariablesTab — opening one variable’s editor from a link', () => {
-  it('opens the linked variable’s dialog once the list holding it has arrived', async () => {
+describe('VariablesTab — focusing one variable from a link', () => {
+  it('marks and scrolls to the linked row', async () => {
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(() => {})
     mockList([
-      makeVariable({ id: 'var-1', name: 'variant', description: 'Which arm' }),
+      makeVariable({ id: 'var-1', name: 'variant' }),
       makeVariable({ id: 'var-2', name: 'spot_id' }),
     ])
 
-    renderVariablesTab({ focusId: 'var-2', openEditor: true })
+    renderVariablesTab({ focusId: 'var-2' })
 
-    // The dialog names the variable it is editing, so this asserts WHICH one
-    // opened, not merely that something did.
-    expect(await screen.findByRole('heading', { name: 'Edit: spot_id' })).toBeInTheDocument()
-  })
+    const focusedRow = (await screen.findByText('${spot_id}')).closest('tr')
+    expect(focusedRow).toHaveAttribute('data-focused', 'true')
+    expect(screen.getByText('${variant}').closest('tr')).not.toHaveAttribute('data-focused')
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
 
-  it('does not reopen the dialog after it is closed', async () => {
-    // The list refetches while the tab is open — a colleague adds a variable, or
-    // the window regains focus. Every refetch hands the effect a fresh array, so
-    // without the once-only guard the dialog reopens under a reviewer who had
-    // just closed it. Reproduced through a real refetch rather than a remount:
-    // a remount resets the guard by design and would prove nothing.
-    mockList([makeVariable({ id: 'var-2', name: 'spot_id' })])
-
-    const { queryClient } = renderVariablesTab({ focusId: 'var-2', openEditor: true })
-    expect(await screen.findByRole('heading', { name: 'Edit: spot_id' })).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    await waitFor(() =>
-      expect(screen.queryByRole('heading', { name: 'Edit: spot_id' })).not.toBeInTheDocument(),
-    )
-
-    mockList([
-      makeVariable({ id: 'var-2', name: 'spot_id' }),
-      makeVariable({ id: 'var-9', name: 'arrived_later' }),
-    ])
-    await act(async () => {
-      await queryClient.invalidateQueries()
-    })
-    await waitFor(() => expect(screen.getByText('${arrived_later}')).toBeInTheDocument())
-
-    expect(screen.queryByRole('heading', { name: 'Edit: spot_id' })).not.toBeInTheDocument()
+    scrollIntoView.mockRestore()
   })
 
   it('leaves the dialog closed when the link only focuses a row', async () => {
@@ -1600,8 +1589,13 @@ describe('VariablesTab — a viewer reads without write controls', () => {
     // Opening the variable is how its drift and observed values are read.
     fireEvent.click(edit)
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByLabelText('Name')).toBeDisabled()
+    // The definition reads as a description list, not as disabled inputs
+    // (tripl-i9mt.12), and nothing that would write is offered.
+    expect(within(dialog).queryByRole('textbox')).not.toBeInTheDocument()
+    expect(within(dialog).getByText('Name').tagName).toBe('DT')
     expect(within(dialog).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Save override' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Clear observed values' })).not.toBeInTheDocument()
     for (const close of within(dialog).getAllByRole('button', { name: 'Close' })) {
       expect(close).toBeEnabled()
     }
@@ -1677,6 +1671,7 @@ describe('VariablesTab — review batch 15 (PLAN-23 … PLAN-33)', () => {
     renderVariablesTab()
     fireEvent.click(await screen.findByLabelText(SELECT_ALL))
 
+    openBulk('Set type…')
     fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
     // Choosing is not applying.
     expect(variablesApi.bulkUpdate).not.toHaveBeenCalled()
@@ -1697,6 +1692,7 @@ describe('VariablesTab — review batch 15 (PLAN-23 … PLAN-33)', () => {
     renderVariablesTab()
     fireEvent.click(await screen.findByLabelText('Select variable one'))
 
+    openBulk('Add values…')
     fireEvent.change(screen.getByLabelText('Bulk add values'), { target: { value: 'a, b' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add values' }))
 
@@ -1799,6 +1795,7 @@ describe('VariablesTab — review 204 follow-ups', () => {
     renderVariablesTab()
     fireEvent.click(await screen.findByLabelText('Select variable count'))
 
+    openBulk('Add values…')
     fireEvent.change(screen.getByLabelText('Bulk add values'), { target: { value: 'abc, 2' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add values' }))
 
@@ -1817,6 +1814,7 @@ describe('VariablesTab — review 204 follow-ups', () => {
     renderVariablesTab()
     fireEvent.click(await screen.findByLabelText('Select variable one'))
 
+    openBulk('Set type…')
     fireEvent.change(screen.getByLabelText('Bulk set type'), { target: { value: 'number' } })
     fireEvent.click(screen.getByRole('button', { name: 'Set type' }))
     fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Cancel' }))

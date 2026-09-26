@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tripl.models.domain_enums import (
     AlertInboxStatus,
@@ -192,6 +192,21 @@ class EventMetricsResponse(BaseModel):
     # carry no ``expected_count``/``stddev``, so no band is drawn from it
     # (tripl-0zpq.119 follow-up).
     sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD
+    # When the scan's newest completed metrics collection finished, and the
+    # earliest moment the scheduler will dispatch the next one — the bucket half
+    # of its due check (``schedule.scan_config_collection_schedule``), so a live
+    # job, the failure backoff or a demo's cooldown can still defer it. Equal to
+    # the response time when collection is due now. Both NULL on a path with no
+    # scan config or no interval; ``last_collected_at`` is also NULL before the
+    # first scheduled or manual collection completes (L4).
+    last_collected_at: datetime | None = None
+    next_collection_at: datetime | None = None
+    # The Events tab's series only (``scope == "events_total"``): its volume over
+    # the 7 days ending at the requested upper bound (or now) and the 7 before,
+    # independent of the chart's range, for "612K in 7d · +4% vs prior week"
+    # (EV-21). NULL on every other scope.
+    week_total: int | None = None
+    prior_week_total: int | None = None
     data: list[EventMetricPoint]
     forecast: list[ForecastPoint] = []
 
@@ -366,6 +381,41 @@ class EventWindowMetricsRequest(BaseModel):
 
 class ActiveSignalsQuery(BaseModel):
     event_ids: list[uuid.UUID] = []
+
+
+# Longest batch ``POST /anomalies/signals/series`` accepts. The Anomalies page
+# asks for the rows it renders; a flooded project has ~200 open signals.
+SIGNAL_SERIES_MAX_SCOPES = 500
+
+
+class SignalSeriesScope(BaseModel):
+    """One open signal whose recent series a row sparkline draws (MO-19)."""
+
+    scan_config_id: uuid.UUID
+    scope_type: MetricScopeType
+    scope_ref: str
+    bucket: datetime
+
+
+class SignalSeriesQuery(BaseModel):
+    scopes: list[SignalSeriesScope] = Field(max_length=SIGNAL_SERIES_MAX_SCOPES)
+
+
+class SignalSeriesResponse(BaseModel):
+    """Up to ``SIGNAL_SERIES_BUCKETS`` buckets around one signal's flagged bucket.
+
+    The window opens 20 buckets before ``bucket`` and closes 4 after it, so the
+    row shows the run-up and whether the move held. Gaps inside the stored range
+    are zero-filled (an absent row is a zero count); buckets past the newest
+    stored one are simply absent.
+    """
+
+    scan_config_id: uuid.UUID
+    scope_type: MetricScopeType
+    scope_ref: str
+    bucket: datetime
+    interval: ScanInterval | None = None
+    data: list[BreakdownTimelinePoint]
 
 
 class EventWindowMetricsResponse(BaseModel):

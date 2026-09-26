@@ -379,16 +379,14 @@ export function DemoBanner({
         // element's trimmed text, so a span's " workspace tools" came out as
         // "Demoworkspace tools". It starts with the visible word.
         aria-label="Demo workspace tools"
-        className="inline-flex min-h-8 items-center gap-1.5 rounded-full border px-3 py-1 text-body-sm font-medium lg:hidden"
-        style={{ background: 'var(--warning-soft)', borderColor: 'var(--warning)' }}
+        className="inline-flex min-h-8 items-center gap-1.5 rounded-full border px-3 py-1 text-body-sm font-medium lg:hidden bg-warning-soft border-warning"
       >
         <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />
         Demo
         {/* A chapter is in progress behind the fold: say so without words. */}
         <span
           aria-hidden="true"
-          className="hidden h-1.5 w-1.5 rounded-full group-has-[[data-demo-scenario]]/demo:inline-block"
-          style={{ background: 'var(--accent)' }}
+          className="hidden h-1.5 w-1.5 rounded-full group-has-[[data-demo-scenario]]/demo:inline-block bg-accent"
         />
         <ChevronDown
           className="h-3 w-3 transition-transform"
@@ -399,8 +397,7 @@ export function DemoBanner({
 
       <div
         id={panelId}
-        className={cn('rounded-lg border lg:mt-0 lg:block', expanded ? 'mt-2' : 'hidden')}
-        style={{ background: 'var(--warning-soft)', borderColor: 'var(--warning)' }}
+        className={cn('rounded-lg border lg:mt-0 lg:block', expanded ? 'mt-2' : 'hidden', 'bg-warning-soft border-warning')}
       >
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-1.5 lg:min-h-11 lg:flex-nowrap">
           {/* Both groups wrap below `lg` (#251 SH-1): held to one line, the
@@ -419,8 +416,7 @@ export function DemoBanner({
               </span>
             )}
             <span
-              className={cn('inline-flex text-caption whitespace-nowrap', DETAIL_WHEN_ROOMY)}
-              style={{ color: 'var(--fg-muted)' }}
+              className={cn('inline-flex text-caption whitespace-nowrap', DETAIL_WHEN_ROOMY, 'text-fg-secondary')}
             >
               {freshnessLabel}
             </span>
@@ -437,8 +433,7 @@ export function DemoBanner({
               }}
               aria-expanded={limitsOpen}
               title="What’s simulated"
-              className="flex items-center gap-1 rounded-sm px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
-              style={{ color: 'var(--fg-muted)' }}
+              className="flex items-center gap-1 rounded-sm px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)] text-fg-secondary"
             >
               <Info className="h-3.5 w-3.5" aria-hidden="true" />
               <BannerLabel>What’s simulated</BannerLabel>
@@ -510,8 +505,7 @@ export function DemoBanner({
 
         {limitsOpen && (
           <ul
-            className="space-y-1 border-t px-3 py-2 text-caption leading-[1.45]"
-            style={{ borderColor: 'var(--warning)', color: 'var(--fg-muted)' }}
+            className="space-y-1 border-t px-3 py-2 text-caption leading-[1.45] border-warning text-fg-secondary"
           >
             {DEMO_LIMITS.map((limit) => (
               <li key={limit} className="flex gap-1.5">
@@ -526,7 +520,7 @@ export function DemoBanner({
       {/* Outside the folding panel: a failure is shown with the pill closed
           too. */}
       {mutationError && (
-        <p className="mt-1.5 px-1 text-caption" style={{ color: 'var(--danger)' }} role="alert">
+        <p className="mt-1.5 px-1 text-caption text-danger" role="alert">
           {getErrorMessage(mutationError)}
         </p>
       )}

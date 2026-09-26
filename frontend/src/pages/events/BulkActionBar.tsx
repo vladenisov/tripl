@@ -74,20 +74,18 @@ export function BulkActionBar({
     // so at 375px both ends were cut off and Delete and Clear were unreachable
     // (EVT-5). The page reserves room under the table while it is open.
     <div
-      className="fixed bottom-[18px] left-1/2 z-(--z-bar) flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2.5 rounded-card border py-1.5 pl-3.5 pr-2"
+      className="fixed bottom-[18px] left-1/2 z-(--z-bar) flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2.5 rounded-card border py-1.5 pl-3.5 pr-2 bg-bg-elevated border-border-strong"
       style={{
-        background: 'var(--bg-elevated)',
-        borderColor: 'var(--border-strong)',
         boxShadow: 'var(--shadow-lg)',
       }}
     >
-      <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+      <span className="text-body-sm text-fg-secondary">
         {/* Sans + tabular figures: a count is not code, and mono has no
             real semibold (DS-17). */}
-        <span className="tnum font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
+        <span className="tnum font-semibold text-fg">{selectedCount}</span> selected
       </span>
       {selectedVisibleCount !== undefined && selectedVisibleCount < selectedCount && (
-        <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <span className="text-body-sm text-fg-tertiary">
           · <span className="tnum">{selectedVisibleCount}</span> on screen
         </span>
       )}
@@ -95,7 +93,7 @@ export function BulkActionBar({
         <>
         {/* A rule between the count and the widening action: run together,
             "2 selected Select all 17" read as one phrase (EV-31). */}
-        <div className="hidden h-5 w-px sm:block" style={{ background: 'var(--border)' }} />
+        <div className="hidden h-5 w-px sm:block bg-border" />
         <Button
           type="button"
           variant="ghost"
@@ -112,7 +110,7 @@ export function BulkActionBar({
         </Button>
         </>
       )}
-      <div className="hidden h-5 w-px sm:block" style={{ background: 'var(--border)' }} />
+      <div className="hidden h-5 w-px sm:block bg-border" />
       <Select
         value=""
         onValueChange={v => { if (v) onSetStatus(v as EventStatus) }}
@@ -179,7 +177,7 @@ export function BulkActionBar({
         <Trash2 />
         Delete selected
       </Button>
-      <div className="hidden h-5 w-px sm:block" style={{ background: 'var(--border)' }} />
+      <div className="hidden h-5 w-px sm:block bg-border" />
       <button
         type="button"
         onClick={onClear}

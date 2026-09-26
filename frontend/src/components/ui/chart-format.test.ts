@@ -319,11 +319,11 @@ describe('SERIES_COLORS', () => {
   })
 
   // The By version chart draws the latest release in --primary (the accent), a
-  // pre-release in --warning and "Other" in --muted-foreground (= --fg-subtle):
+  // pre-release in --warning and "Other" in --fg-tertiary (once --muted-foreground):
   // a slot built from any of those drew two lines in one colour, and under the
   // rose accent --chart-1 was the anomaly red.
   it('builds no fallback from a neutral, accent or status token', () => {
-    const reserved = /--(primary|accent|chart-\d|warning|danger|destructive|success|info|muted-foreground|fg-subtle|fg)\b/
+    const reserved = /--(primary|accent|chart-\d|warning|danger|destructive|success|info|muted-foreground|fg-tertiary|fg-subtle|fg)\b/
     SERIES_COLORS.forEach(color => {
       const fallback = color.replace(/^var\(--series-\d+,\s*/, '')
       expect(fallback).not.toMatch(reserved)

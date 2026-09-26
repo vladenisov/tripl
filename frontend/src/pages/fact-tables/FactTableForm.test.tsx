@@ -74,6 +74,7 @@ vi.mock('@/hooks/useDataSourceSchema', () => ({
 import { factTablesApi } from '@/api/factTables'
 import { ApiError } from '@/api/client'
 import { at } from '@/test/at'
+import { factTablesKey } from '@/lib/queryKeys'
 
 const DATA_SOURCES = [{ id: 'ds-1', name: 'Warehouse' }] as unknown as DataSource[]
 
@@ -734,5 +735,50 @@ describe('FactTableForm columns card (MT-19, MT-20)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Use suggestions' }))
     expect(userId).toBeChecked()
+  })
+})
+
+describe('FactTableForm follow-ups (MT-19, MT-35)', () => {
+  it('re-reads the columns by itself after the first Preview once typing pauses (MT-19)', async () => {
+    renderForm()
+    fillRequired()
+    fireEvent.click(screen.getByRole('button', { name: /Preview columns/ }))
+    await waitFor(() => expect(factTablesApi.preview).toHaveBeenCalledTimes(1))
+    await screen.findByLabelText('Use user_id as an identifier column')
+
+    fireEvent.change(screen.getByLabelText('Fact table SQL'), {
+      target: { value: 'SELECT id, user_id, created_at, amount FROM orders' },
+    })
+    expect(screen.getByText(/The columns are read again in a moment/)).toBeInTheDocument()
+
+    await waitFor(() => expect(factTablesApi.preview).toHaveBeenCalledTimes(2), { timeout: 3000 })
+    expect(at(vi.mocked(factTablesApi.preview).mock.calls, 1)[1]).toEqual(
+      expect.objectContaining({ sql: 'SELECT id, user_id, created_at, amount FROM orders' }),
+    )
+  })
+
+  it('never reads the columns on its own before the first Preview', async () => {
+    renderForm()
+    fillRequired()
+    fireEvent.change(screen.getByLabelText('Fact table SQL'), {
+      target: { value: 'SELECT id, created_at FROM orders' },
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    expect(factTablesApi.preview).not.toHaveBeenCalled()
+    expect(screen.getByText(/They are read from the SQL when you preview or save/)).toBeInTheDocument()
+  })
+
+  it('gives a new table the first palette colour no listed table uses (MT-35)', () => {
+    queryClient.setQueryData(factTablesKey('demo'), {
+      total: 1,
+      items: [{ id: 'ft-1', color: '#6366f1' }],
+    })
+    renderForm()
+
+    expect(screen.getByRole('button', { name: 'Indigo' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: 'Sky' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Emerald' }))
+    expect(document.getElementById('fact-color')).toHaveValue('#10b981')
   })
 })

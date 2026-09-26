@@ -131,10 +131,10 @@ export function DestinationCard({
               <ChannelGlyph
                 type={destination.type}
                 aria-hidden="true"
-                className="size-4 shrink-0 text-muted-foreground"
+                className="size-4 shrink-0 text-fg-tertiary"
               />
               <span className="font-semibold">{destination.name}</span>
-              <span className="text-body-sm text-muted-foreground">{channelLabel(destination.type)}</span>
+              <span className="text-body-sm text-fg-tertiary">{channelLabel(destination.type)}</span>
               {!destination.enabled && <Chip size="xs">Disabled</Chip>}
               {destination.is_local && (
                 <Chip variant="outline">
@@ -152,7 +152,7 @@ export function DestinationCard({
             </div>
             {destination.delivery_schedule_cron && (
               <p
-                className="text-body-sm text-muted-foreground"
+                className="text-body-sm text-fg-tertiary"
                 title={
                   destination.next_digest_at
                     ? `Next digest ${formatInProjectZone(destination.next_digest_at, destination.project_timezone)}`
@@ -172,7 +172,7 @@ export function DestinationCard({
                 rule count stays after the rules themselves moved to Monitors:
                 "enabled, wired up, and nothing routes here" is a state worth
                 reading off the channel. */}
-            <p className="text-body-sm text-muted-foreground">
+            <p className="text-body-sm text-fg-tertiary">
               <span>
                 {countOf(destination.rules.length, 'rule', 'rules')}
                 {' · '}
@@ -237,7 +237,7 @@ export function DestinationCard({
             {onDeleteDestination && (
               <IconButton
                 variant="ghost"
-                className="text-muted-foreground hover:text-destructive"
+                className="text-fg-tertiary hover:text-destructive"
                 label={`Delete destination ${destination.name}`}
                 tooltip={`Deletes "${destination.name}", its rules, and their history. ${describeDeletionImpact(destination.delivery_count, destination.incident_count)}`}
                 disabled={isDeleting}
@@ -269,7 +269,7 @@ export function DestinationCard({
             )}
           >
             {testTone === 'pending' ? (
-              <Loader2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 animate-spin text-muted-foreground" />
+              <Loader2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 animate-spin text-fg-tertiary" />
             ) : testTone === 'ok' ? (
               <CheckCircle2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-success" />
             ) : (
@@ -282,7 +282,7 @@ export function DestinationCard({
                   testTone === 'ok'
                     ? 'text-success'
                     : testTone === 'pending'
-                      ? 'text-muted-foreground'
+                      ? 'text-fg-tertiary'
                       : 'text-destructive'
                 }
               >
@@ -304,7 +304,7 @@ export function DestinationCard({
               {/* The transport's own words, for whoever has to fix the proxy
                   or the firewall — kept, just not as the headline. */}
               {!testDestinationMut.isPending && refusal?.detail && (
-                <details className="text-caption text-muted-foreground">
+                <details className="text-caption text-fg-tertiary">
                   <summary className="cursor-pointer">Details</summary>
                   <p className="mt-1 whitespace-pre-wrap break-words font-mono">{refusal.detail}</p>
                 </details>

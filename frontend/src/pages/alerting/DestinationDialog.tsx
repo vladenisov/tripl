@@ -1,6 +1,6 @@
 import { useRef, useState, type ComponentProps } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Eye, EyeOff } from 'lucide-react'
+import { Eye, EyeOff, Send } from 'lucide-react'
 
 import { alertingApi } from '@/api/alerting'
 import { Button } from '@/components/ui/button'
@@ -26,8 +26,10 @@ import {
   DESTINATION_FIELD_MAX_LENGTH,
   destinationFormProblems,
   destinationFormToPayload,
+  destinationFormToTestBody,
   destinationToForm,
 } from './destinationForm'
+import { DestinationTestResult } from './DestinationTestResult'
 import { attachDestinationServerErrors } from './destinationServerErrors'
 import { fieldErrorProps, splitApiFieldErrors } from './fieldErrors'
 
@@ -157,6 +159,33 @@ export function DestinationDialog({
     },
   })
   const mutation = existing ? updateMut : createMut
+
+  // "Send test" before saving (AL-30): setting up Slack used to take Create,
+  // close, find the card, then Test. The result describes the settings it was
+  // sent with, so it is shown only while the form still holds exactly those —
+  // `setForm` makes a new object on every edit, so identity is the check.
+  const [testedWith, setTestedWith] = useState<{
+    form: DestinationFormState
+    removeWebhookHeader: boolean
+  } | null>(null)
+  const testMut = useMutation({
+    // Its outcome renders inline, transport failure included.
+    meta: SILENT_ERROR_META,
+    mutationFn: (sent: { form: DestinationFormState; removeWebhookHeader: boolean }) =>
+      alertingApi.testDestinationDraft(
+        slug,
+        destinationFormToTestBody(sent.form, existing, { removeWebhookHeader: sent.removeWebhookHeader }),
+      ),
+  })
+  const sendTest = () => {
+    const sent = { form, removeWebhookHeader }
+    setTestedWith(sent)
+    testMut.mutate(sent)
+  }
+  const testIsCurrent =
+    testedWith !== null
+    && testedWith.form === form
+    && testedWith.removeWebhookHeader === removeWebhookHeader
 
   // Same as the rule dialog (ALR-17): a close that would drop typed-in
   // credentials or templates asks first.
@@ -306,7 +335,7 @@ export function DestinationDialog({
               {/* The channel's icon beside the title, so the choice made on the
                   button that opened this reads as made (AL-32). */}
               <DialogTitle className="flex items-center gap-2">
-                <ChannelGlyph type={form.type} aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+                <ChannelGlyph type={form.type} aria-hidden="true" className="size-4 shrink-0 text-fg-tertiary" />
                 {existing ? 'Edit destination' : `New ${channelLabel(form.type)} destination`}
               </DialogTitle>
             </DialogHeader>
@@ -320,7 +349,7 @@ export function DestinationDialog({
                   {textField('name', 'dest-name', 'Name')}
                   <div className="grid gap-2">
                     <span className="text-body leading-none font-medium">Channel</span>
-                    <p className="flex h-9 items-center gap-2 text-body text-muted-foreground" data-testid="dest-channel">
+                    <p className="flex h-9 items-center gap-2 text-body text-fg-tertiary" data-testid="dest-channel">
                       <ChannelGlyph type={form.type} aria-hidden="true" className="size-4 shrink-0" />
                       {channelLabel(form.type)}
                     </p>
@@ -336,7 +365,7 @@ export function DestinationDialog({
                     placeholder: existing?.webhook_set ? 'Leave empty to keep current webhook' : examplePlaceholder('https://hooks.slack.com/...'),
                   })}
                   {/* Where the URL comes from, which the form never said (AL-31). */}
-                  <p className="text-body-sm text-muted-foreground">
+                  <p className="text-body-sm text-fg-tertiary">
                     Create an Incoming Webhook in Slack (Apps → Incoming Webhooks),
                     pick the channel, and paste its URL here.{' '}
                     <a
@@ -366,7 +395,7 @@ export function DestinationDialog({
                     placeholder: existing?.target_url_set ? 'Leave empty to keep current URL' : examplePlaceholder('https://example.com/webhook'),
                   })}
                   {removeWebhookHeader ? (
-                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed p-3 text-body-sm text-muted-foreground">
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed p-3 text-body-sm text-fg-tertiary">
                       <span role="status">
                         The secret header {existing?.webhook_header_name ? `"${existing.webhook_header_name}" ` : ''}will be removed on save.
                       </span>
@@ -398,7 +427,7 @@ export function DestinationDialog({
                       )}
                     </>
                   )}
-                  <p className="text-body-sm text-muted-foreground">
+                  <p className="text-body-sm text-fg-tertiary">
                     Alerts POST a JSON payload (project, rule, scan, message, items). The optional secret header is sent with every request — use it for auth (e.g. Authorization).
                   </p>
                 </div>
@@ -419,7 +448,7 @@ export function DestinationDialog({
                       optional: true,
                     })}
                   </div>
-                  <p className="text-body-sm text-muted-foreground">
+                  <p className="text-body-sm text-fg-tertiary">
                     SMTP settings (host/port/credentials) come from the instance config. Recipients are comma-separated. Subject supports {`\${project_name}`}, {`\${rule_name}`}, {`\${destination_name}`}, {`\${matched_count}`}.
                   </p>
                 </div>
@@ -446,7 +475,7 @@ export function DestinationDialog({
                     {textField('jira_issue_type', 'dest-jira-issue-type', 'Issue type', { placeholder: examplePlaceholder('Task') })}
                   </div>
                   {/* What happens, not how the API is called (AL-31). */}
-                  <p className="text-body-sm text-muted-foreground">
+                  <p className="text-body-sm text-fg-tertiary">
                     Each alert opens a new issue in this Jira project. Sign in with your Atlassian
                     email and an API token from id.atlassian.com → Security → API tokens.
                   </p>
@@ -474,7 +503,7 @@ export function DestinationDialog({
                   {/* Where each value lives, not which GraphQL mutation runs
                       (AL-31). Pickers that fetch teams, states and labels once
                       the key is in are the longer-term fix. */}
-                  <p className="text-body-sm text-muted-foreground">
+                  <p className="text-body-sm text-fg-tertiary">
                     Each alert opens a new issue in this Linear team. Create the API key in Linear
                     under Settings → API; the team ID is the team's UUID, shown in that team's
                     settings. Leave State ID empty to use the team's default state.
@@ -487,7 +516,7 @@ export function DestinationDialog({
                   are the whole form. It used to fall through to the Linear
                   fields, whose required API key blocked every save (ALR-2). */}
               {form.type === 'demo_sink' && (
-                <p className="text-body-sm text-muted-foreground">
+                <p className="text-body-sm text-fg-tertiary">
                   A local sink records deliveries on this instance and sends nothing, so it has no channel settings.
                 </p>
               )}
@@ -512,8 +541,32 @@ export function DestinationDialog({
               {alertMessage && (
                 <p role="alert" className="text-body text-destructive">{alertMessage}</p>
               )}
+
+              {testIsCurrent && (
+                <DestinationTestResult
+                  pending={testMut.isPending}
+                  result={testMut.data ?? null}
+                  error={testMut.error}
+                  onDismiss={() => setTestedWith(null)}
+                />
+              )}
             </DialogBody>
             <DialogFooter>
+              {/* Left of the pair, and secondary: a check, not the action the
+                  dialog is for (AL-30). It sends one real message, so it
+                  waits for nothing but the channel's own fields. */}
+              {form.type !== 'demo_sink' && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="sm:mr-auto"
+                  disabled={testMut.isPending}
+                  onClick={sendTest}
+                >
+                  <Send aria-hidden="true" className="size-3.5" />
+                  {testMut.isPending ? 'Sending…' : 'Send test'}
+                </Button>
+              )}
               <Button type="button" variant="outline" onClick={requestClose}>Cancel</Button>
               <Button type="submit" disabled={mutation.isPending}>
                 {existing ? 'Save' : 'Create'}

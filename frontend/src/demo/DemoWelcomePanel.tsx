@@ -68,18 +68,17 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
     // measures about 4.05:1 on it, below AA (DEMO-24).
     <section
       aria-labelledby="demo-welcome-heading"
-      className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border px-3 py-1.5"
-      style={{ background: 'var(--accent-soft)', borderColor: 'var(--accent)' }}
+      className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border px-3 py-1.5 bg-accent-soft border-accent"
     >
       <div className="flex min-w-0 items-center gap-2">
-        <Sparkles className="h-4 w-4 shrink-0" style={{ color: 'var(--accent)' }} aria-hidden="true" />
+        <Sparkles className="h-4 w-4 shrink-0 text-accent" aria-hidden="true" />
         <h2 id="demo-welcome-heading" className="text-body-sm font-semibold">
           Welcome to your demo workspace
         </h2>
       </div>
       {/* No "Local synthetic data" badge here: the demo banner right above
           already carries it on every surface (LIVE-9). */}
-      <p className="hidden min-w-0 text-caption md:block" style={{ color: 'var(--fg-muted)' }}>
+      <p className="hidden min-w-0 text-caption md:block text-fg-secondary">
         Everything runs on a local, synthetic warehouse — nothing outside is touched.
       </p>
 
@@ -107,8 +106,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
           type="button"
           onClick={dismiss}
           aria-label="Dismiss demo welcome"
-          className="-my-1 -mr-2 flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="-my-1 -mr-2 flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] text-fg-tertiary"
         >
           <X className="h-4 w-4" aria-hidden="true" />
         </button>

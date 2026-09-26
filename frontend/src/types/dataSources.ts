@@ -85,10 +85,21 @@ export interface DataSource {
   created_at: string
   updated_at: string
   // What depends on the source across the workspace, deleted with it (DA-40).
-  // Counts, not names: a scan can sit in a project the reader does not work
-  // in. Always sent; optional so fixtures written before them still type.
+  // Always sent; optional so fixtures written before them still type.
   scan_count?: number
   scan_run_count?: number
+  // The scans behind `scan_count`, for the card's "Used by" links: capped by
+  // the server (`scan_count` keeps the total), and only scans in projects the
+  // reader can read.
+  scans?: DataSourceScanRef[]
+}
+
+/** One scan reading a data source (DA-40). */
+export interface DataSourceScanRef {
+  id: string
+  name: string
+  project_slug: string
+  project_name: string
 }
 
 /** POST /data-sources/test: a probe of an unsaved config, which stores nothing. */

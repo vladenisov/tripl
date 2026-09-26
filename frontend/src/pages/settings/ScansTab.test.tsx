@@ -491,7 +491,7 @@ describe('ScansTab', () => {
     // The catalog runs' combinations are named beside it, not added in (DA-4).
     expect(label.closest('[title]')).toHaveAttribute(
       'title',
-      'Warehouse rows read by metrics runs in the last 24 hours. Catalog runs also read back 153 column combinations.',
+      'Warehouse rows read by runs in the last 24 hours. Catalog runs that report no warehouse rows also read back 153 column combinations.',
     )
   })
 

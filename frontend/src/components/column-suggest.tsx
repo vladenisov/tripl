@@ -158,8 +158,7 @@ export function ColumnSuggestInput({
         onInteractOutside={e => {
           if (inputRef.current?.contains(e.target as Node)) e.preventDefault()
         }}
-        className="max-h-[220px] w-(--radix-popover-trigger-width) overflow-y-auto rounded-control p-1"
-        style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+        className="max-h-[220px] w-(--radix-popover-trigger-width) overflow-y-auto rounded-control p-1 bg-surface border-border"
       >
         {filtered.map((name, i) => (
           <button

@@ -501,6 +501,68 @@ describe('TopBar notifications', () => {
   })
 })
 
+describe('TopBar notifications — all projects (i9mt.19 / SH-17)', () => {
+  function project(slug: string, name: string, openIncidents: number, signals: number) {
+    return {
+      id: `id-${slug}`,
+      slug,
+      name,
+      summary: { open_incident_count: openIncidents, monitoring_signal_count: signals },
+    }
+  }
+
+  function renderWorkspaceBar(projects: unknown[]) {
+    const calls: string[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      calls.push(url)
+      if (url.endsWith('/api/v1/projects')) return mockJsonResponse(projects)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <TopBar title="All projects" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    return calls
+  }
+
+  it('badges every project\'s open incidents and lists the projects that need attention', async () => {
+    const calls = renderWorkspaceBar([
+      project('quiet', 'Quiet project', 0, 0),
+      project('noisy', 'Noisy project', 0, 3),
+      project('burning', 'Burning project', 2, 1),
+    ])
+
+    const bell = await screen.findByRole('button', { name: 'Alerts — 2 open incidents' })
+    fireEvent.click(bell)
+
+    const section = await screen.findByRole('region', { name: 'Projects needing attention' })
+    const rows = within(section).getAllByRole('link')
+    // Worst first; a project with nothing open is left out.
+    expect(rows.map((row) => row.textContent)).toEqual([
+      'Burning project2 open incidents · 1 signal',
+      'Noisy project3 signals',
+    ])
+    // Open incidents lead to the inbox, signals alone to Anomalies.
+    expect(rows[0]).toHaveAttribute('href', '/p/burning/settings/alerting?section=inbox')
+    expect(rows[1]).toHaveAttribute('href', '/p/noisy/anomalies')
+    expect(screen.getByRole('link', { name: 'All projects →' })).toHaveAttribute('href', '/workspace')
+    expect(screen.queryByText(/Open a project/)).toBeNull()
+    // No per-project signal or delivery lists are fetched off a workspace route.
+    expect(calls.every((url) => url.endsWith('/api/v1/projects'))).toBe(true)
+  })
+
+  it('says so when no project needs attention', async () => {
+    renderWorkspaceBar([project('quiet', 'Quiet project', 0, 0)])
+    fireEvent.click(screen.getByRole('button', { name: 'Alerts' }))
+    expect(await screen.findByText('No open incidents or signals in any project.')).toBeInTheDocument()
+  })
+})
+
 describe('TopBar notifications — scope names (tripl-9tyr, tripl-y4wt)', () => {
   it('names the scope off the signal, fetching no catalog to do it', async () => {
     // The bell used to read "Spike on Event type type-123" while the Overview

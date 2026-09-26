@@ -235,7 +235,7 @@ export default function ServiceSettingsSection({
         <Card>
           <CardContent>
             <PageHeader title="Instance settings" />
-            <p className="mt-2 text-body text-muted-foreground">
+            <p className="mt-2 text-body text-fg-tertiary">
               Owner role is required to view or change instance-level settings.
             </p>
           </CardContent>
@@ -270,7 +270,7 @@ export default function ServiceSettingsSection({
       {section !== 'system' && (
         // The badge legend and the fallback rule, once, above the fields
         // rather than inside the sticky bar (ST-25, ST-28).
-        <p className="m-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="m-0 text-body-sm text-fg-tertiary">
           {SOURCE_LEGEND}
         </p>
       )}

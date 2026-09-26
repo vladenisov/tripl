@@ -104,7 +104,7 @@ export function FilterEditor({
         </Button>
       </div>
       {filters.length === 0 ? (
-        <p className="text-body-sm text-muted-foreground">
+        <p className="text-body-sm text-fg-tertiary">
           No filters: every signal ticked above can alert.
         </p>
       ) : (
@@ -432,7 +432,7 @@ function FilterRow({
             unnamed "button" gave no hint which filter it removes (ALR-23). */}
         <IconButton
           label={`Remove filter ${position}: ${fieldLabel}`}
-          className="h-8 w-8 text-muted-foreground hover:text-destructive ml-auto"
+          className="h-8 w-8 text-fg-tertiary hover:text-destructive ml-auto"
           onClick={onRemove}
         >
           <Trash2 className="h-4 w-4" aria-hidden="true" />
@@ -527,7 +527,7 @@ function FilterValuePicker({
             onChange={event => onSearchChange(event.target.value)}
           />
           {loading && (
-            <Loader2 className="absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+            <Loader2 className="absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-fg-tertiary" />
           )}
         </div>
         <div className="max-h-64 overflow-y-auto space-y-1">
@@ -556,13 +556,13 @@ function FilterValuePicker({
             )
           })}
           {options.length === 0 && (
-            <p className="text-body text-muted-foreground px-2 py-1">
+            <p className="text-body text-fg-tertiary px-2 py-1">
               {loading ? 'Searching…' : 'No matches.'}
             </p>
           )}
         </div>
         {hiddenCount > 0 && (
-          <p className="text-body-sm text-muted-foreground">
+          <p className="text-body-sm text-fg-tertiary">
             {hiddenCount} more match — keep typing to narrow the list.
           </p>
         )}

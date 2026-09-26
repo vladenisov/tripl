@@ -178,6 +178,31 @@ async def _build_coverage(session: AsyncSession, ctx: DemoContext) -> None:
     await session.flush()
 
 
+# Sample rows for the open shadow candidate, in the warehouse's own columns
+# (``SCAN_COLUMNS`` minus the time column the collector leaves out), with the
+# synthetic adapter's app versions.
+_HEARTBEAT_SAMPLES: list[dict[str, str]] = [
+    {
+        "event_type": "click",
+        "event_name": "app_heartbeat_v1",
+        "platform": "ios",
+        "app_version": "1.4.0",
+    },
+    {
+        "event_type": "click",
+        "event_name": "app_heartbeat_v1",
+        "platform": "android",
+        "app_version": "1.4.0",
+    },
+    {
+        "event_type": "click",
+        "event_name": "app_heartbeat_v1",
+        "platform": "android",
+        "app_version": "1.3.0",
+    },
+]
+
+
 async def _build_shadow_candidates(session: AsyncSession, ctx: DemoContext) -> None:
     """Warehouse identities with no plan event. Names are OUTSIDE the authored
     plan so accepting one cannot collide with an existing source identity."""
@@ -195,6 +220,9 @@ async def _build_shadow_candidates(session: AsyncSession, ctx: DemoContext) -> N
             event_type_id=click_type_id,
             event_name="app_heartbeat_v1",
             observed_count=1840,
+            # What the collector would have kept (DA-32), so the demo's inbox
+            # shows its "Show N samples" rather than an empty toggle.
+            sample_properties=_HEARTBEAT_SAMPLES,
             first_seen_at=week_ago,
             last_seen_at=recent,
             status=SHADOW_STATUS_NEW,

@@ -75,8 +75,7 @@ export function ImplementationTicketsPanel({
       <Panel title="Implementation ticket" subtitle="opening in the tracker">
         <p
           role="status"
-          className="px-4 py-3 text-body-sm"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="px-4 py-3 text-body-sm text-fg-tertiary"
         >
           Creating the tracker ticket for this merge…
         </p>

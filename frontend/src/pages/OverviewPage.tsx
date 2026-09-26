@@ -380,8 +380,7 @@ export default function OverviewPage() {
                 title="New events added per day over the last 14 days"
               >
                 <span
-                  className="micro-label"
-                  style={{ color: 'var(--fg-faint)' }}
+                  className="micro-label text-fg-tertiary"
                 >
                   New events · 14d
                 </span>
@@ -412,8 +411,7 @@ export default function OverviewPage() {
           slug && signals.length > 0 ? (
             <Link
               to={`/p/${slug}/anomalies`}
-              className="rounded-md px-2 py-1 text-body-sm no-underline transition-colors hover:bg-[var(--surface-hover)]"
-              style={{ color: 'var(--accent)' }}
+              className="rounded-md px-2 py-1 text-body-sm no-underline transition-colors hover:bg-[var(--surface-hover)] text-accent"
             >
               View all ({formatNumber(signals.length)})
             </Link>
@@ -436,12 +434,12 @@ export default function OverviewPage() {
           <RowsSkeleton rows={3} label="Loading signals…" />
         )}
         {!signalsQuery.isError && !isSignalsPending && signals.length === 0 && (
-          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-body-sm text-fg-tertiary">
             No active monitoring signals.
           </div>
         )}
         {signals.length > 0 && slug && (
-          <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div className="divide-y border-border-subtle">
             {signals.slice(0, SIGNAL_LIMIT).map((signal) => (
               <SignalRow
                 // Signals are per scan config: two scans watching one event
@@ -475,8 +473,7 @@ export default function OverviewPage() {
           projectTotalPath && volumePoints.length > 0 ? (
             <Link
               to={projectTotalPath}
-              className="rounded-md px-2 py-1 text-body-sm no-underline transition-colors hover:bg-[var(--surface-hover)]"
-              style={{ color: 'var(--accent)' }}
+              className="rounded-md px-2 py-1 text-body-sm no-underline transition-colors hover:bg-[var(--surface-hover)] text-accent"
             >
               Open chart
             </Link>
@@ -502,13 +499,12 @@ export default function OverviewPage() {
           // and nothing here — that is a scan that stopped, the state the
           // failing-scan chip above exists to surface, not an empty project.
           // The drilldown carries a range selector, so it can show the rest.
-          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-body-sm text-fg-tertiary">
             {projectTotalPath ? (
               <>
                 No volume in the last {VOLUME_WINDOW_DAYS} days.{' '}
                 <Link
-                  to={projectTotalPath}
-                  style={{ color: 'var(--accent)' }}
+                  to={projectTotalPath} className="text-accent"
                 >
                   See this scan’s full history
                 </Link>
@@ -537,15 +533,14 @@ export default function OverviewPage() {
                 </span>
                 {volumeSummary.changePct != null && (
                   <span
-                    className="tnum text-caption"
-                    style={{ color: 'var(--fg-subtle)' }}
+                    className="tnum text-caption text-fg-tertiary"
                     title="Against the 24 hours before"
                   >
                     {formatVolumeChange(volumeSummary.changePct)}
                   </span>
                 )}
               </span>
-              <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+              <span className="text-caption text-fg-tertiary">
                 last 24h
               </span>
             </div>
@@ -568,8 +563,7 @@ export default function OverviewPage() {
                   in place of "167 buckets" (MO-16). */}
               <div
                 aria-hidden="true"
-                className="mt-1 flex justify-between text-micro"
-                style={{ color: 'var(--fg-faint)' }}
+                className="mt-1 flex justify-between text-micro text-fg-tertiary"
               >
                 <span>{volumeSummary.firstLabel}</span>
                 <span>{volumeCadence ? `now · ${volumeCadence}` : 'now'}</span>
@@ -603,7 +597,7 @@ export default function OverviewPage() {
           <RowsSkeleton rows={4} label="Loading top events…" />
         )}
         {!topEventsQuery.isError && !isTopEventsPending && topEvents.length === 0 && (
-          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-body-sm text-fg-tertiary">
             No event volume in the last 48 hours.
           </div>
         )}
@@ -636,8 +630,7 @@ export default function OverviewPage() {
                   <span className="flex min-w-0 flex-1 items-center gap-3">
                     <span
                       aria-hidden="true"
-                      className="relative h-2 flex-1 overflow-hidden rounded-full"
-                      style={{ background: 'var(--surface-active)' }}
+                      className="relative h-2 flex-1 overflow-hidden rounded-full bg-surface-active"
                     >
                       <span
                         className="absolute inset-y-0 left-0 rounded-full"
@@ -649,13 +642,12 @@ export default function OverviewPage() {
                     </span>
                     {/* The counts are the data: body ink, not the faintest
                         text on the card (MO-25). */}
-                    <span className="tnum w-20 shrink-0 text-right text-caption" style={{ color: 'var(--fg)' }}>
+                    <span className="tnum w-20 shrink-0 text-right text-caption text-fg">
                       {formatNumber(e.total_count)}
                     </span>
                     {shareLabel && (
                       <span
-                        className="tnum w-10 shrink-0 text-right text-caption"
-                        style={{ color: 'var(--fg-subtle)' }}
+                        className="tnum w-10 shrink-0 text-right text-caption text-fg-tertiary"
                         title="Share of the project's volume in the same window"
                       >
                         {shareLabel}
@@ -675,8 +667,7 @@ export default function OverviewPage() {
                   {slug ? (
                     <Link
                       to={getMonitoringPath(slug, { scope_type: 'event', scope_ref: e.event_id })}
-                      className={`${rowClass} no-underline transition-colors hover:bg-[var(--surface-hover)]`}
-                      style={{ color: 'inherit' }}
+                      className={`${rowClass} no-underline transition-colors hover:bg-[var(--surface-hover)] text-inherit`}
                     >
                       {row}
                     </Link>
@@ -710,12 +701,12 @@ export default function OverviewPage() {
           <RowsSkeleton rows={3} label="Loading activity…" />
         )}
         {!activityQuery.isError && !activityQuery.isLoading && activity.length === 0 && (
-          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-body-sm text-fg-tertiary">
             No recent activity.
           </div>
         )}
         {activity.length > 0 && (
-          <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div className="divide-y border-border-subtle">
             {activity.map((item) => (
               <ActivityRow key={item.id} item={item} />
             ))}
@@ -743,12 +734,12 @@ export default function OverviewPage() {
           <RowsSkeleton rows={2} label="Loading data sources…" />
         )}
         {!sourcesQuery.isError && !sourcesQuery.isLoading && sources.length === 0 && (
-          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-body-sm text-fg-tertiary">
             No data sources connected.
           </div>
         )}
         {sources.length > 0 && (
-          <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div className="divide-y border-border-subtle">
             {sources.map((source) => (
               <SourceRow key={source.id} source={source} />
             ))}
@@ -817,8 +808,7 @@ function KpiLink({ to, children }: { to?: string; children: ReactNode }) {
   return (
     <Link
       to={to}
-      className="-m-1 block rounded-sm p-1 no-underline outline-none transition-colors hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-      style={{ color: 'inherit' }}
+      className="-m-1 block rounded-sm p-1 no-underline outline-none transition-colors hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] text-inherit"
     >
       {children}
     </Link>
@@ -1015,8 +1005,7 @@ function SignalRow({
   return (
     <Link
       to={getMonitoringPath(slug, signal)}
-      className="flex min-h-(--row-h) items-center gap-2 py-1 no-underline transition-colors hover:bg-[var(--surface-hover)]"
-      style={{ color: 'inherit' }}
+      className="flex min-h-(--row-h) items-center gap-2 py-1 no-underline transition-colors hover:bg-[var(--surface-hover)] text-inherit"
     >
       {/* Static: only the Open signals KPI pulses, so motion still means
           "live" rather than shimmering down every row (MO-18). */}
@@ -1024,7 +1013,7 @@ function SignalRow({
       <span className="flex-1 truncate text-body-sm font-medium" title={signalTitle}>
         {signalSummary}
       </span>
-      <span className="tnum hidden shrink-0 text-caption sm:inline" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="tnum hidden shrink-0 text-caption sm:inline text-fg-tertiary">
         {formatSignalValues(signal)}
       </span>
       {/* "+203%", not z=40.7: the change in the reader's terms, with the
@@ -1076,11 +1065,11 @@ function ActivityRow({ item }: { item: ActivityItem }) {
       </div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-body-sm font-medium leading-[1.35]" title={item.title}>{item.title}</div>
-        <div className="mt-0.5 truncate text-caption leading-[1.3]" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="mt-0.5 truncate text-caption leading-[1.3] text-fg-tertiary">
           {detail}
         </div>
       </div>
-      <span className="tnum shrink-0 text-micro" style={{ color: 'var(--fg-faint)' }}>
+      <span className="tnum shrink-0 text-micro text-fg-tertiary">
         {formatRelativeTime(item.occurred_at)}
       </span>
     </>
@@ -1089,7 +1078,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
     'flex min-h-(--row-h) items-start gap-2.5 py-2 no-underline transition-colors hover:bg-[var(--surface-hover)]'
   if (item.target_path) {
     return (
-      <Link to={item.target_path} className={className} style={{ color: 'inherit' }}>
+      <Link to={item.target_path} className={`${className} text-inherit`}>
         {content}
       </Link>
     )
@@ -1128,18 +1117,16 @@ function SourceRow({ source }: { source: DataSource }) {
   return (
     <Link
       to={`/settings/data-sources/${source.id}`}
-      className="flex min-h-(--row-h) flex-wrap items-center gap-x-2 gap-y-0.5 py-2 no-underline transition-colors hover:bg-[var(--surface-hover)]"
-      style={{ color: 'inherit' }}
+      className="flex min-h-(--row-h) flex-wrap items-center gap-x-2 gap-y-0.5 py-2 no-underline transition-colors hover:bg-[var(--surface-hover)] text-inherit"
     >
-      <Database aria-hidden="true" className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+      <Database aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-fg-tertiary" />
       <span className="min-w-0 flex-1 basis-32 truncate text-body-sm font-medium" title={source.name}>
         {source.name}
       </span>
       {source.is_synthetic && <SyntheticSourceBadge />}
       {showEngine && (
         <span
-          className="mono hidden shrink-0 text-micro sm:inline"
-          style={{ color: 'var(--fg-faint)' }}
+          className="mono hidden shrink-0 text-micro sm:inline text-fg-tertiary"
         >
           {source.db_type}
         </span>
@@ -1148,8 +1135,7 @@ function SourceRow({ source }: { source: DataSource }) {
         {label}
       </Chip>
       <span
-        className="ml-auto shrink-0 truncate text-right text-caption sm:ml-0 sm:w-[104px]"
-        style={{ color: 'var(--fg-faint)' }}
+        className="ml-auto shrink-0 truncate text-right text-caption sm:ml-0 sm:w-[104px] text-fg-tertiary"
         title={checkedTitle}
       >
         {checkedLabel}

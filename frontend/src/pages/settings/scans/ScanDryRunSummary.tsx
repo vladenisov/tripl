@@ -148,15 +148,14 @@ function NameFormatErrors({ errors }: { errors: string[] }) {
     <div
       role="alert"
       data-testid="dry-run-errors"
-      className="rounded-lg border p-3"
-      style={{ borderColor: 'var(--danger)', background: 'var(--danger-soft)' }}
+      className="rounded-lg border p-3 border-danger bg-danger-soft"
     >
       {errors.map(message => (
-        <p key={message} className="m-0 text-body-sm font-medium" style={{ color: 'var(--danger)' }}>
+        <p key={message} className="m-0 text-body-sm font-medium text-danger">
           Event name format error: {message}
         </p>
       ))}
-      <p className="m-0 mt-1 text-caption" style={{ color: 'var(--danger)' }}>
+      <p className="m-0 mt-1 text-caption text-danger">
         {NAME_FORMAT_FIX}
       </p>
     </div>
@@ -191,8 +190,7 @@ function NameExplosionWarning({
   return (
     <div
       data-testid="dry-run-explosion"
-      className="rounded-card border p-3 text-body-sm"
-      style={{ borderColor: 'var(--warning)', background: 'var(--warning-soft)', color: 'var(--fg)' }}
+      className="rounded-card border p-3 text-body-sm border-warning bg-warning-soft text-fg"
     >
       <p className="m-0">
         This draft would add{' '}
@@ -225,7 +223,7 @@ function EventList({ events }: { events: ScanDryRunResponse['events'] }) {
             key={`${event.event_type}.${event.source_name}`}
             className="flex items-baseline gap-2 text-body-sm"
           >
-            <span className="min-w-0 flex-1 truncate font-medium" style={{ color: 'var(--fg)' }}>
+            <span className="min-w-0 flex-1 truncate font-medium text-fg">
               {event.name}
             </span>
             {/* Only when the answer spans more than one event type. A grouped
@@ -234,21 +232,20 @@ function EventList({ events }: { events: ScanDryRunResponse['events'] }) {
                 is ordinary — and two identical rows differing only in a row
                 count read as double-counting rather than as two real events. */}
             {showEventType && (
-              <span style={{ color: 'var(--fg-faint)' }} className="shrink-0 text-caption">
+              <span className="shrink-0 text-caption text-fg-tertiary">
                 {event.event_type || NO_EVENT_TYPE_LABEL}
               </span>
             )}
             {event.grouped_by_rule && (
-              <span style={{ color: 'var(--fg-faint)' }} className="shrink-0 text-caption">
+              <span className="shrink-0 text-caption text-fg-tertiary">
                 merged by {event.grouped_by_rule}
               </span>
             )}
-            <span className="shrink-0 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="shrink-0 text-caption text-fg-tertiary">
               {event.status === 'new' ? 'new' : 'already in your plan'}
             </span>
             <span
-              className="shrink-0 text-caption tabular-nums"
-              style={{ color: 'var(--fg-subtle)' }}
+              className="shrink-0 text-caption tabular-nums text-fg-tertiary"
               title="Sampled warehouse rows behind this name."
             >
               {countOf(event.approx_row_count, 'row', 'rows')} · {share(event.share_of_sample)}
@@ -277,18 +274,18 @@ function FieldList({ fields }: { fields: ScanDryRunResponse['fields'] }) {
       <ul className="m-0 mt-1.5 list-none space-y-1 p-0">
         {shown.map(field => (
           <li key={`${field.event_type}.${field.name}`} className="flex items-baseline gap-2 text-body-sm">
-            <span className="min-w-0 flex-1 truncate font-medium" style={{ color: 'var(--fg)' }}>
+            <span className="min-w-0 flex-1 truncate font-medium text-fg">
               {field.name}
             </span>
             {showEventType && (
-              <span style={{ color: 'var(--fg-faint)' }} className="max-w-[40%] shrink-0 truncate text-caption">
+              <span className="max-w-[40%] shrink-0 truncate text-caption text-fg-tertiary">
                 {field.event_type || NO_EVENT_TYPE_LABEL}
               </span>
             )}
-            <span className="shrink-0 font-mono text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="shrink-0 font-mono text-caption text-fg-tertiary">
               {field.type}
             </span>
-            <span className="shrink-0 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="shrink-0 text-caption text-fg-tertiary">
               {field.status === 'new' ? 'new' : 'already in your plan'}
             </span>
           </li>
@@ -338,7 +335,7 @@ export function ScanDryRunSummary({
       {explosion && <NameExplosionWarning explosion={explosion} onFixNaming={onFixNaming} />}
 
       <div>
-        <h4 className="m-0 text-body font-semibold" style={{ color: 'var(--fg)' }}>
+        <h4 className="m-0 text-body font-semibold text-fg">
           What this scan would create
         </h4>
         <Note>
@@ -373,9 +370,9 @@ export function ScanDryRunSummary({
         <>
           <div>
             <div className="flex flex-wrap items-baseline gap-x-2 text-body">
-              <span className="font-medium" style={{ color: 'var(--fg)' }}>{eventsHeadline}</span>
+              <span className="font-medium text-fg">{eventsHeadline}</span>
               {events.length > 0 && (
-                <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                <span className="text-body-sm text-fg-tertiary">
                   · {newEvents} new · {existingEvents} already in your plan
                 </span>
               )}
@@ -392,7 +389,7 @@ export function ScanDryRunSummary({
           </div>
 
           <div>
-            <div className="text-body font-medium" style={{ color: 'var(--fg)' }}>
+            <div className="text-body font-medium text-fg">
               {newFields.length > 0
                 ? newFieldTypes > 1
                   ? `Would add ${countOf(newFields.length, 'field', 'fields')} across ${newFieldTypes} event types`

@@ -22,6 +22,7 @@ from tripl.schemas.metric_definition import (
     MetricGeneratedSqlResponse,
     MetricPreviewRequest,
     MetricPreviewResponse,
+    MetricSeriesPreviewRequest,
 )
 from tripl.schemas.metric_series import (
     MetricBreakdownsResponse,
@@ -82,6 +83,8 @@ async def list_metric_definitions(
     search: FreeTextFilter | None = None,
     reviewed: bool | None = None,
     owner_id: uuid.UUID | None = None,
+    # Metrics that read this fact table, as either operand (F7).
+    fact_table_id: uuid.UUID | None = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=1000),
 ) -> MetricDefinitionListResponse:
@@ -93,6 +96,7 @@ async def list_metric_definitions(
         search=search,
         reviewed=reviewed,
         owner_id=owner_id,
+        fact_table_id=fact_table_id,
         offset=offset,
         limit=limit,
     )
@@ -222,6 +226,37 @@ async def preview_fact_operand(
         payload=data.model_dump(mode="json"),
     )
     return await metric_preview_service.preview_fact_operand(session, slug, data)
+
+
+@router.post("/series-preview", response_model=MetricPreviewResponse)
+async def preview_metric_series(
+    session: SessionDep,
+    slug: str,
+    data: MetricSeriesPreviewRequest,
+    current_user: EditorUserDep,
+) -> MetricPreviewResponse:
+    """Stateless dry-run of a fact or event-composition metric's series (editor-gated).
+
+    The body is the definition a save would send. A fact metric is aggregated by
+    the collector's own code over its last closed buckets (up to 50, capped at
+    a month of wall clock); an event
+    composition is composed from already-collected event counts on its newest
+    scan grid. Nothing is persisted. Expected mistakes and warehouse errors
+    return 200 with ``error`` set; an unknown fact table or data source is a
+    404, an event outside the project a 422.
+    """
+    # Audited with the other previews: a fact draft's filters run under a
+    # warehouse credential and leave no stored object behind.
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="metric.series_preview",
+        target_type="metric_definition",
+        target_id=None,
+        project_slug=slug,
+        payload=data.model_dump(mode="json"),
+    )
+    return await metric_preview_service.preview_metric_series(session, slug, data)
 
 
 @router.patch(

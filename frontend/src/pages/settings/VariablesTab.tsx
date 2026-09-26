@@ -23,6 +23,7 @@ import { bindingExample } from "./bindingExample"
 import { VariablesBulkBar } from "./VariablesBulkBar"
 import { VariablesCreateDialog } from "./VariablesCreateDialog"
 import { VariablesEditDialog } from "./VariablesEditDialog"
+import { variableDetailPath } from "./variable-detail/variableDetailPath"
 import { VariablesTableRow } from "./VariablesTableRow"
 import { TYPE_LABELS } from "./variablesShared"
 import { useVariableSelection } from "./useVariableSelection"
@@ -77,11 +78,9 @@ function useStableCallback<Args extends unknown[]>(fn: (...args: Args) => void) 
   return useCallback((...args: Args) => ref.current(...args), [])
 }
 
-/** `focusId` scrolls to and highlights one variable — the landing spot for a
- * branch-diff link, which knows the variable's id but has no detail page to
- * send the reviewer to. `openEditor` goes one step further and opens that
- * variable's edit dialog, which is what makes the diff row's Edit action
- * possible for a variable at all (tripl-htfn.2).
+/** `focusId` (the `?focus=` param) scrolls to and highlights one variable —
+ * where the variable sits in the list. Editing it is its own page now
+ * (AU-26), so a link that wants the editor goes there rather than here.
  *
  * The create and edit dialogs are their own components, each owning its form
  * state and queries, and the selection lives in `useVariableSelection`: this
@@ -90,16 +89,16 @@ function useStableCallback<Args extends unknown[]>(fn: (...args: Args) => void) 
 export function VariablesTab({
   slug,
   focusId,
-  openEditor = false,
 }: {
   slug: string
   focusId?: string
-  openEditor?: boolean
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   // Stable, so the memoized rows do not all re-render for a new function (AU-29).
   const eventHref = useCallback((eventId: string) => `/p/${slug}/events/all/${eventId}`, [slug])
+  // The `${name}` token opens the variable's own page (AU-26).
+  const detailHref = useCallback((variableId: string) => variableDetailPath(slug, variableId), [slug])
   const canWrite = useCanWriteProject()
   const focusRef = useRef<HTMLTableRowElement | null>(null)
   // The excluded panel renders <li>s, not table rows, so the focused variable
@@ -373,20 +372,6 @@ export function VariablesTab({
   const editingVariable = editing
     ? variables.find(v => v.id === editing.id) ?? editing.snapshot
     : null
-
-  // Open the linked variable's editor once, when the list that holds it has
-  // arrived. ONCE is the whole subtlety: the list refetches, and without the
-  // guard a reviewer who closed the dialog would have it reopened under them on
-  // the next poll. A ref rather than state because nothing renders from it —
-  // and it is keyed on the id, so following a second Edit link still opens.
-  const autoOpenedVariableId = useRef<string | null>(null)
-  useEffect(() => {
-    if (!openEditor || !focusId || autoOpenedVariableId.current === focusId) return
-    const target = variables.find(v => v.id === focusId)
-    if (!target) return
-    autoOpenedVariableId.current = focusId
-    startEdit(target)
-  }, [openEditor, focusId, variables, startEdit])
 
   // A branch-diff link points at one variable, which may sit on any page. The
   // page is DERIVED rather than synced in an effect: until the reviewer picks a
@@ -676,11 +661,12 @@ export function VariablesTab({
                         onExclude={handleExclude}
                         onDelete={handleDelete}
                         eventHref={eventHref}
+                        detailHref={detailHref}
                       />
                     ))}
                     {pageVariables.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={7} className="py-6 text-center text-body-sm text-muted-foreground">
+                        <TableCell colSpan={7} className="py-6 text-center text-body-sm text-fg-tertiary">
                           No variables match “{filterText}”.
                         </TableCell>
                       </TableRow>
@@ -697,7 +683,7 @@ export function VariablesTab({
                     >
                       Previous
                     </Button>
-                    <span className="text-body-sm text-muted-foreground">Page {currentPage + 1} of {pageCount}</span>
+                    <span className="text-body-sm text-fg-tertiary">Page {currentPage + 1} of {pageCount}</span>
                     <Button
                       type="button" variant="outline" size="sm"
                       aria-label="Next page"
@@ -782,7 +768,7 @@ export function VariablesTab({
                 <div className="min-w-0">
                   <CodeToken>{`\${${v.name}}`}</CodeToken>
                   {(v.bindings ?? []).length > 0 && (
-                    <span className="ml-2 truncate font-mono text-micro text-muted-foreground">{(v.bindings ?? []).join(' · ')}</span>
+                    <span className="ml-2 truncate font-mono text-micro text-fg-tertiary">{(v.bindings ?? []).join(' · ')}</span>
                   )}
                 </div>
                 {canWrite && <div className="flex shrink-0 gap-1">
@@ -798,7 +784,7 @@ export function VariablesTab({
                   >
                     <RotateCcw className="mr-1 h-3 w-3" aria-hidden="true" />Restore
                   </Button>
-                  <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" label={`Delete variable ${v.name}`} onClick={() => handleDelete(v)}>
+                  <IconButton variant="ghost" className="h-7 w-7 text-fg-tertiary hover:text-destructive" label={`Delete variable ${v.name}`} onClick={() => handleDelete(v)}>
                     <Trash2 className="h-3 w-3" aria-hidden="true" />
                   </IconButton>
                 </div>}

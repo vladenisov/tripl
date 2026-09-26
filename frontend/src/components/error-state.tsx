@@ -82,7 +82,7 @@ export function ErrorState({
               compact, so it no longer out-sizes the panel around it (DS-21). */}
           <Heading className={cn('font-semibold text-foreground', compact ? 'text-body-sm' : 'text-heading')}>{title}</Heading>
           {description && (
-            <p className={cn('mt-1 text-muted-foreground', compact ? 'text-caption' : 'text-body')}>
+            <p className={cn('mt-1 text-fg-secondary', compact ? 'text-caption' : 'text-body')}>
               {description}
             </p>
           )}

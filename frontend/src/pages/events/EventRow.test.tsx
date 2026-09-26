@@ -123,8 +123,10 @@ function renderRow(
     metaFields = [] as MetaFieldDefinition[],
     metaValueMap,
     reorderable,
+    justCreated,
   }: {
     reorderable?: boolean
+    justCreated?: boolean
     variables?: Variable[]
     fieldColumns?: FieldDefinition[]
     metaFields?: MetaFieldDefinition[]
@@ -175,6 +177,7 @@ function renderRow(
                   onToggleExpanded={() => {}}
                   onRowAction={() => {}}
                   reorderable={reorderable}
+                  justCreated={justCreated}
                 />
               </tbody>
             </table>
@@ -379,6 +382,18 @@ describe('EventRow name and type cells', () => {
     renderRow(makeEvent({ title: '' }), windowSeries(10, 20))
     expect(screen.queryByTitle('')).not.toBeInTheDocument()
     expect(screen.queryByText('Purchase finished')).not.toBeInTheDocument()
+  })
+
+  it('marks a row the reader has just created, in words as well as colour (AU-21)', () => {
+    const { unmount } = renderRow(makeEvent(), windowSeries(10, 20), undefined, { justCreated: true })
+
+    expect(screen.getByText('New')).toBeInTheDocument()
+    expect(document.querySelector('tr')).toHaveAttribute('data-created', 'true')
+    unmount()
+
+    renderRow(makeEvent(), windowSeries(10, 20))
+    expect(screen.queryByText('New')).not.toBeInTheDocument()
+    expect(document.querySelector('tr')).not.toHaveAttribute('data-created')
   })
 })
 

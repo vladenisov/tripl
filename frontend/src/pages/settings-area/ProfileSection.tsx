@@ -58,8 +58,7 @@ export default function ProfileSection() {
           in the body font — mono is for machine identifiers. */}
       <SCard title="Your details">
         <div
-          className="flex items-center gap-3 px-4 py-[13px]"
-          style={{ borderBottom: '1px solid var(--border-subtle)' }}
+          className="flex items-center gap-3 px-4 py-[13px] border-b border-b-border-subtle"
         >
           {/* The shared avatar on --avatar-bg, the colour the sidebar shows for
               the same account. A hand-picked lighter blue here fell below AA
@@ -67,7 +66,7 @@ export default function ProfileSection() {
           <UserAvatar name={user?.name || user?.email} size={40} />
           <div className="min-w-0">
             <div className="truncate text-body font-medium">{user?.name || '—'}</div>
-            <div className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="text-caption text-fg-tertiary">
               Set when the account was created.
             </div>
           </div>
@@ -79,7 +78,7 @@ export default function ProfileSection() {
           value={
             <>
               <span>{browserTimezone()}</span>
-              <span style={{ color: 'var(--fg-subtle)' }}> · from this browser</span>
+              <span className="text-fg-tertiary"> · from this browser</span>
             </>
           }
           mono={false}

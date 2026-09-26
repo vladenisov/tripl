@@ -47,6 +47,19 @@ vi.mock('sonner', () => ({
   Toaster: () => null,
 }))
 
+/**
+ * The tab strip's counts (AL-46), stubbed. Their two probes are covered by
+ * useAlertingTabCounts.test.tsx; here they would add requests to every URL log
+ * below and a "(n)" to every tab name, so they answer nothing unless a test
+ * sets them.
+ */
+const tabCounts = vi.hoisted(() => ({
+  value: { openIncidents: undefined as number | undefined, failedDeliveries: undefined as number | undefined },
+}))
+vi.mock('./alerting/useAlertingTabCounts', () => ({
+  useAlertingTabCounts: () => tabCounts.value,
+}))
+
 function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -2907,5 +2920,61 @@ describe('ProjectAlertingTab — the Inbox when destinations will not load (ALR-
       await screen.findByText(/Could not load alert destinations and rules/),
     ).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'No alert rules yet' })).toBeNull()
+  })
+})
+
+// The strip itself as a triage signal (AL-46): "Inbox 3", "Delivery log 2".
+describe('ProjectAlertingTab — counts on the section tabs (AL-46)', () => {
+  afterEach(() => {
+    tabCounts.value = { openIncidents: undefined, failedDeliveries: undefined }
+  })
+
+  it('counts open incidents on Inbox and failed deliveries on Delivery log', async () => {
+    tabCounts.value = { openIncidents: 3, failedDeliveries: 2 }
+    mockAlertingFetch([makeDestination({ rules: [makeRule()] })], { inbox: [makeInboxGroup()] })
+    renderTab('inbox')
+
+    expect(await screen.findByRole('tab', { name: 'Inbox (3)' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Delivery log (2)' })).toBeInTheDocument()
+    // Rules and Destinations carry no count of their own.
+    expect(screen.getByRole('tab', { name: 'Rules' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Destinations' })).toBeInTheDocument()
+  })
+
+  it('leaves a zero off the tab rather than printing "Inbox 0"', async () => {
+    tabCounts.value = { openIncidents: 0, failedDeliveries: 0 }
+    mockAlertingFetch([makeDestination({ rules: [makeRule()] })], { inbox: [makeInboxGroup()] })
+    renderTab('inbox')
+
+    expect(await screen.findByRole('tab', { name: 'Inbox' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Delivery log' })).toBeInTheDocument()
+  })
+})
+
+// The counts arrived on every inbox page but the page's merged view of its
+// pages dropped them, so the Status filter never showed one (AL-14).
+describe('ProjectAlertingTab — status counts reach the Status filter (AL-14)', () => {
+  it('shows each status option with its incident count', async () => {
+    const spy = mockAlertingFetch([makeDestination({ rules: [makeRule()] })], {
+      inbox: [makeInboxGroup()],
+    })
+    const answer = spy.getMockImplementation()!
+    spy.mockImplementation(async (input, init) => {
+      if (/\/alert-inbox(\?|$)/.test(String(input))) {
+        return jsonResponse({
+          items: [makeInboxGroup()],
+          total: 1,
+          window_truncated_at: null,
+          status_counts: { open: 1, acknowledged: 2, muted: 0, resolved: 4, false_positive: 0 },
+        })
+      }
+      return answer(input, init)
+    })
+    renderTab('inbox')
+
+    await screen.findByText('payment_failed')
+    fireEvent.click(screen.getByRole('combobox', { name: /^Status filter/ }))
+    expect(await screen.findByRole('option', { name: 'Open · 1' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Resolved · 4' })).toBeInTheDocument()
   })
 })

@@ -1,5 +1,5 @@
 import type { alertingApi } from '@/api/alerting'
-import type { AlertDestination } from '@/types'
+import type { AlertDestination, AlertDestinationDraftTestRequest } from '@/types'
 
 import type { DestinationFormState } from './constants'
 
@@ -114,6 +114,27 @@ export function destinationFormToPayload(
     throw new Error('The local demo sink cannot be created from the UI')
   }
   return { ...common, type, ...channel }
+}
+
+/**
+ * The body of the dialog's "Send test" (AL-30): what Create or Save would send
+ * for the channel, plus the channel itself and, when editing, the destination
+ * whose stored secrets fill the ones the form leaves blank.
+ *
+ * The channel fields come from the same `channelFields` the save does, so a
+ * test and the save it precedes cannot read the form two ways.
+ */
+export function destinationFormToTestBody(
+  form: DestinationFormState,
+  existing: AlertDestination | null,
+  { removeWebhookHeader = false }: { removeWebhookHeader?: boolean } = {},
+): AlertDestinationDraftTestRequest {
+  return {
+    destination_id: existing?.id ?? null,
+    type: form.type,
+    name: form.name.trim() || null,
+    ...channelFields(form, existing, removeWebhookHeader),
+  }
 }
 
 function channelFields(

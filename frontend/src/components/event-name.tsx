@@ -5,7 +5,7 @@ import { NAME_SEGMENT_SEPARATOR, splitEventName } from '@/lib/eventNameSegments'
 
 function EmptySegment(): ReactNode {
   return (
-    <span title="empty segment" style={{ color: 'var(--fg-faint)' }}>
+    <span title="empty segment" className="text-fg-tertiary">
       ∅
     </span>
   )
@@ -29,7 +29,7 @@ function EmptySegment(): ReactNode {
 export function EventName({ name }: { name: string }): ReactNode {
   if (!name || name.trim() === '') {
     return (
-      <span className="italic" style={{ color: 'var(--fg-faint)' }}>
+      <span className="italic text-fg-tertiary">
         {UNNAMED_EVENT_LABEL}
       </span>
     )
@@ -39,7 +39,7 @@ export function EventName({ name }: { name: string }): ReactNode {
   return segments.map((seg, i) => (
     <Fragment key={i}>
       {i > 0 && (
-        <span aria-hidden style={{ color: 'var(--fg-faint)' }}>
+        <span aria-hidden className="text-fg-tertiary">
           {NAME_SEGMENT_SEPARATOR}
         </span>
       )}

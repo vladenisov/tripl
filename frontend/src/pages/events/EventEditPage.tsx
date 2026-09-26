@@ -27,6 +27,7 @@ import {
   variablesKey,
 } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
+import { rememberCreatedEvents } from './createdEventsHandoff'
 import { DraftDiscussionNote } from './DraftDiscussionNote'
 import { EventForm } from './EventFormView'
 
@@ -244,7 +245,11 @@ export default function EventEditPage() {
   }
   const onCreated = async (created: EventMutationResponse): Promise<boolean> => {
     const closes = await postDraftNote(created)
-    if (closes) announceCreated(created)
+    if (closes) {
+      announceCreated(created)
+      // The list scrolls to and marks the new row when it is next shown.
+      rememberCreatedEvents(slug, [created.id])
+    }
     return closes
   }
 

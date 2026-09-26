@@ -262,7 +262,7 @@ cd frontend
 pnpm install        # install deps from pnpm-lock.yaml
 pnpm dev            # Vite dev server on :5173
 pnpm test           # vitest run
-pnpm lint           # oxlint, then eslint for what oxlint lacks  (zero-warning policy)
+pnpm lint           # oxlint plus the project rule tests  (zero-warning policy)
 pnpm build          # tsc -b && vite build  (full type check with TypeScript 7 + production build)
 pnpm check:bundle   # after a build: first-load JavaScript stays inside its budget
 ```
@@ -296,38 +296,48 @@ type-check, so both must be clean before you push frontend changes.
 
 ### Linting
 
-`pnpm lint` runs [Oxlint](https://oxc.rs/docs/guide/usage/linter) first
+`pnpm lint` runs [Oxlint](https://oxc.rs/docs/guide/usage/linter)
 (`oxlint --deny-warnings --report-unused-disable-directives`, about a second)
-and then ESLint (`eslint . --max-warnings 0`). ESLint only keeps what Oxlint
-cannot do: the `no-restricted-syntax` selector rules in `eslint.config.js`
-(no bare `React.lazy`, no hand-written query keys, no raw `<select>` in pages)
-and `no-useless-assignment`. `eslint-plugin-oxlint` switches off in ESLint
-every rule `.oxlintrc.json` enables, and Oxlint reports unused
-`eslint-disable` comments, since most of them now name Oxlint's rules.
+and then the tests of the project's own lint rules
+(`node --test oxlint-plugins/*.test.js`). `.oxlintrc.json` is the whole rule
+set; edit it directly. Oxlint also reports unused disable comments, which
+still use the `eslint-disable` spelling.
 
-`eslint.config.js` is the source of the rule set; `.oxlintrc.json` is
-generated from it. After changing rules there, regenerate and re-apply the
-hand edits:
+One rule of the old ESLint set has no Oxlint counterpart and was dropped on
+purpose: `no-octal`. A legacy octal literal (`017`) is already a syntax error
+in ES modules and strict TypeScript, so the rule never had anything left to
+catch.
 
-```bash
-npx @oxlint/migrate@<oxlint version> eslint.config.js --js-plugins=false
-```
+The rules no stock plugin has live in a local JS plugin,
+`oxlint-plugins/tripl.js`, loaded through `"jsPlugins"` (an alpha Oxlint
+feature, so pin the `oxlint` version and re-run the rule tests on every bump):
 
-1. Delete the `allowCompoundComponents` option of
-   `react/only-export-components` and the `includeRoles` option of
-   `jsx-a11y/control-has-associated-label`; Oxlint does not know them.
-2. Add `"no-var"`, `"prefer-const"`, `"prefer-rest-params"` and
-   `"prefer-spread"` (all `"error"`) to the `**/*.{ts,tsx}` override. They
-   come from typescript-eslint's TypeScript-only block, whose file globs the
-   migration cannot combine with ours, so it drops them.
+- `tripl/no-bare-lazy`: code-split components go through `lazyWithReload`,
+  not `React.lazy` (off in `src/lib/lazyWithReload.ts` itself).
+- `tripl/no-query-key-literals`: query keys come from the builders in
+  `src/lib/queryKeys.ts`, not an array literal (off in that file and in tests).
+- `tripl/no-arbitrary-sizes`: text, icon and radius sizes use the named
+  scales, not `text-[Npx]`, `size-[Npx]` or `rounded-[Npx]` (off in tests).
+- `tripl/no-raw-select`: pages use `NativeSelect`, not a raw `<select>`
+  (only `src/pages/**/*.tsx`; the two files in the override that turns it off
+  say why beside their line: the event form's own select primitive and the
+  audit log's filter-bar chip).
+- `tripl/no-muted-foreground`: no `muted-foreground` class or `var()` (off in
+  tests). The alias is gone from `index.css`; use `text-fg-tertiary` for
+  captions and meta, `text-fg-secondary` for body copy (DS-22).
+
+Which files each rule covers is set in the `overrides` of `.oxlintrc.json`: a
+later override wins over an earlier one for the files both match. A new rule
+goes into `tripl.js` with valid and invalid cases in `tripl.test.js`, which
+runs them through Oxlint's `RuleTester`.
 
 ### TypeScript 6 and 7 side by side
 
 Type checking uses TypeScript 7 (the native compiler, `tsc -b` in about 4 s
-instead of about 50 s). Tools that load the TypeScript API
-(typescript-eslint, `openapi-typescript` for `pnpm gen:api`) still need
-TypeScript 6, which has no successor API until 7.1. `package.json` therefore
-installs both, as the TypeScript 7.0 release notes describe:
+instead of about 50 s). `openapi-typescript` (`pnpm gen:api`) loads the
+TypeScript API and still needs TypeScript 6, which has no successor API until
+7.1. `package.json` therefore installs both, as the TypeScript 7.0 release
+notes describe:
 `"typescript": "npm:@typescript/typescript6@…"` keeps `import 'typescript'`
 on TypeScript 6 (its command is `tsc6`), and
 `"@typescript/native": "npm:typescript@^7…"` provides `tsc`. So

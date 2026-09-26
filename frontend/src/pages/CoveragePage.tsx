@@ -201,8 +201,7 @@ export default function CoveragePage() {
             slug && deadItems.length > 0 ? (
               <Link
                 to={`/p/${slug}/reconciliation`}
-                className="flex items-center gap-1 text-caption no-underline hover:underline"
-                style={{ color: 'var(--fg-muted)' }}
+                className="flex items-center gap-1 text-caption no-underline hover:underline text-fg-secondary"
               >
                 Triage in Reconciliation
                 <ArrowRight className="h-3 w-3" />
@@ -226,19 +225,18 @@ export default function CoveragePage() {
             <SectionSkeleton variant="rows" rows={3} label="Loading coverage gaps…" />
           ) : noGaps ? (
             <div
-              className="flex items-center gap-2 px-4 py-6 text-body-sm"
-              style={{ color: 'var(--fg-muted)' }}
+              className="flex items-center gap-2 px-4 py-6 text-body-sm text-fg-secondary"
             >
-              <ShieldCheck className="h-4 w-4" style={{ color: 'var(--success)' }} />
+              <ShieldCheck className="h-4 w-4 text-success" />
               Every implemented event has recent data — no coverage gaps.
             </div>
           ) : (
-            <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div className="divide-y border-border-subtle">
               {deadItems.slice(0, GAP_LIMIT).map((item) => (
                 <GapRow key={item.event_id} item={item} slug={slug} />
               ))}
               {deadItems.length > GAP_LIMIT && (
-                <div className="px-4 py-2 text-caption" style={{ color: 'var(--fg-faint)' }}>
+                <div className="px-4 py-2 text-caption text-fg-tertiary">
                   Showing {GAP_LIMIT} of {formatNumber(deadTotal)} — see Reconciliation for the full list.
                 </div>
               )}
@@ -287,10 +285,10 @@ function CoverageBar({
     </>
   )
   return (
-    <div className="rounded-card border px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-      <div className="mb-2 flex items-center justify-between text-caption" style={{ color: 'var(--fg-muted)' }}>
+    <div className="rounded-card border px-4 py-3 border-border-subtle">
+      <div className="mb-2 flex items-center justify-between text-caption text-fg-secondary">
         <span>
-          <span className="font-semibold" style={{ color: 'var(--fg)' }}>
+          <span className="font-semibold text-fg">
             {formatNumber(implemented)}
           </span>{' '}
           implemented
@@ -300,8 +298,7 @@ function CoverageBar({
         {slug && notImplemented > 0 ? (
           <Link
             to={notImplementedEventsPath(slug)}
-            className="no-underline hover:underline"
-            style={{ color: 'inherit' }}
+            className="no-underline hover:underline text-inherit"
           >
             {notImplementedCount}
           </Link>
@@ -310,8 +307,7 @@ function CoverageBar({
         )}
       </div>
       <div
-        className="flex h-2 overflow-hidden rounded-full"
-        style={{ background: 'var(--bg-sunken)' }}
+        className="flex h-2 overflow-hidden rounded-full bg-bg-sunken"
         role="img"
         aria-label={`${coverageLabel} of active events are implemented; ${formatNumber(notImplemented)} are not implemented yet.`}
       >
@@ -319,7 +315,7 @@ function CoverageBar({
         <div style={{ width: `${100 - implementedPct}%`, background: 'var(--warning)' }} />
       </div>
       {notImplemented > 0 && (
-        <p className="tnum mt-2 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="tnum mt-2 text-caption text-fg-tertiary">
           {`Not implemented: ${formatNumber(inReviewShare)} in review, ${formatNumber(otherShare)} draft, ready for dev or deprecated.`}
         </p>
       )}
@@ -342,7 +338,7 @@ function InfoTip({ help }: { help: string }) {
             className="inline-flex shrink-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
             aria-label={help}
           >
-            <Info className="size-3" style={{ color: 'var(--fg-faint)' }} aria-hidden="true" />
+            <Info className="size-3 text-fg-tertiary" aria-hidden="true" />
           </button>
         </TooltipTrigger>
         <TooltipContent className="max-w-xs whitespace-normal">{help}</TooltipContent>
@@ -358,20 +354,18 @@ function GapRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
   return (
     // Row height follows the Density setting (DS-9).
     <div className="flex min-h-(--row-h) items-center gap-3 px-(--panel-pad) py-1">
-      <ShieldX className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--warning)' }} aria-hidden="true" />
+      <ShieldX className="h-3.5 w-3.5 shrink-0 text-warning" aria-hidden="true" />
       {slug ? (
         <Link
           to={getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id })}
-          className="min-w-0 flex-1 truncate text-body-sm font-medium hover:underline"
-          style={{ color: 'var(--fg)' }}
+          className="min-w-0 flex-1 truncate text-body-sm font-medium hover:underline text-fg"
           title={label}
         >
           <EventName name={item.name} />
         </Link>
       ) : (
         <span
-          className="min-w-0 flex-1 truncate text-body-sm font-medium"
-          style={{ color: 'var(--fg)' }}
+          className="min-w-0 flex-1 truncate text-body-sm font-medium text-fg"
           title={label}
         >
           <EventName name={item.name} />
@@ -382,7 +376,7 @@ function GapRow({ item, slug }: { item: DeadEvent; slug: string | undefined }) {
           {item.event_type_name}
         </Chip>
       )}
-      <span className="tnum w-28 shrink-0 text-right text-micro" style={{ color: 'var(--fg-faint)' }}>
+      <span className="tnum w-28 shrink-0 text-right text-micro text-fg-tertiary">
         {item.last_seen_at ? formatRelativeTime(item.last_seen_at) : 'Never seen'}
       </span>
     </div>

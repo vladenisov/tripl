@@ -210,7 +210,7 @@ export function VersionsTab({
         <ChartCardHeader
           title={(
             <>
-              <GitBranch aria-hidden="true" className="size-4 text-muted-foreground" />
+              <GitBranch aria-hidden="true" className="size-4 text-fg-tertiary" />
               <CardTitle as="h2">By version</CardTitle>
               {latestVersion && (
                 latestIsPreRelease ? (
@@ -229,7 +229,7 @@ export function VersionsTab({
                   <Chip variant="outline">
                     <span>latest {latestVersion}</span>
                     {latestAdoptionShare !== null && (
-                      <span className="text-muted-foreground">· {formatPercent(latestAdoptionShare)}</span>
+                      <span className="text-fg-tertiary">· {formatPercent(latestAdoptionShare)}</span>
                     )}
                   </Chip>
                 )
@@ -393,7 +393,7 @@ function VersionLegend({
             {item.isPreRelease && (
               <Chip tone="warning" size="xs">pre-release{shareSuffix}</Chip>
             )}
-            <span className="shrink-0 text-muted-foreground">
+            <span className="shrink-0 text-fg-tertiary">
               {valueKind === 'latest' ? `latest value: ${value}` : value}
             </span>
           </div>

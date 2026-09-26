@@ -21,7 +21,7 @@ function SetupSteps({ from }: { from: number }) {
           className="flex items-baseline gap-2"
           style={{ color: index + 1 < from ? 'var(--fg-faint)' : 'var(--fg-muted)' }}
         >
-          <span className="tnum w-3 shrink-0 text-right font-semibold" style={{ color: 'var(--fg)' }}>
+          <span className="tnum w-3 shrink-0 text-right font-semibold text-fg">
             {index + 1}
           </span>
           {step}

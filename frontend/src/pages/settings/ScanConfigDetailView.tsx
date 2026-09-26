@@ -28,6 +28,7 @@ import { ScanBadges } from './scans/ScanConfigRow'
 import { BackLink } from './scans/scanLayout'
 import { INTERVAL_LABEL, SCAN_STATUS_LABEL, STATUS_META } from './scans/scanLayoutConstants'
 import { deriveScanRunInfo } from './scans/scanUtils'
+import { useMetricsSchedule } from './scans/useMetricsSchedule'
 import { dataSourcesKey, eventTypesKey, scanActivityKey, scanJobsKey, scansKey } from '@/lib/queryKeys'
 import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -88,6 +89,9 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   })
 
   const sc = scanConfigs.find(s => s.id === scanConfigId)
+  // The scheduler's own next due moment for a monitoring scan (i9mt.16 DA-5):
+  // the header chip and the Overview's metrics card both read it.
+  const metricsSchedule = useMetricsSchedule(slug, sc)
   usePageTitle(sc?.name)
 
   const jobsRefetchInterval = useAdaptiveRefetchIntervalFn<ScanJob[]>({
@@ -194,13 +198,12 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
               {dataSource && isOwner ? (
                 <Link
                   to={`/settings/data-sources/${dataSource.id}`}
-                  className="underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-current"
-                  style={{ color: 'var(--fg-muted)' }}
+                  className="underline decoration-fg-tertiary/50 underline-offset-2 hover:decoration-current text-fg-secondary"
                 >
                   {dataSource.name}
                 </Link>
               ) : (
-                <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
+                <span className="text-fg-secondary">{dataSource?.name ?? 'Unknown source'}</span>
               )}
             </p>
             {/* One line under the header saying what this scan produces and what
@@ -267,10 +270,10 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
       )}
 
       {runMut.isError && (
-        <p className="text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(runMut.error)}</p>
+        <p className="text-body text-danger">{getErrorMessage(runMut.error)}</p>
       )}
 
-      <ScanBadges sc={sc} intervalLabel={INTERVAL_LABEL} />
+      <ScanBadges sc={sc} intervalLabel={INTERVAL_LABEL} nextRunAt={metricsSchedule?.nextRunAt ?? null} />
 
       {/* The shared Radix tabs (DS-16 / AL-46): arrow-key roving and the
           tab/tabpanel wiring come from the primitive instead of a hand-rolled
@@ -295,6 +298,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
             scanConfig={sc as ScanConfig}
             eventTypes={eventTypes}
             dataSource={dataSource}
+            metricsSchedule={metricsSchedule}
           />
         </TabsContent>
         <TabsContent value="configuration">

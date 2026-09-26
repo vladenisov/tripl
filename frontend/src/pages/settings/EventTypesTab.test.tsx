@@ -413,8 +413,11 @@ describe('EventTypeDetail tabbed page', () => {
     expect(screen.queryByRole('button', { name: 'Edit field' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete field' })).not.toBeInTheDocument()
     expect(screen.queryByText('Danger zone')).not.toBeInTheDocument()
-    // The General card still shows its values, in controls that cannot change.
-    expect(screen.getByDisplayValue('Revenue-critical.')).toBeDisabled()
+    // The General card reads as a definition, not as disabled controls
+    // (tripl-i9mt.12).
+    expect(screen.queryByDisplayValue('Revenue-critical.')).not.toBeInTheDocument()
+    expect(screen.getByText('Type name').tagName).toBe('DT')
+    expect(screen.getByText('Display name').tagName).toBe('DT')
 
     // A field row is information for a viewer, not a way into the editor.
     fireEvent.click(screen.getByText('order_id'))

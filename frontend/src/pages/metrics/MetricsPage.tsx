@@ -78,8 +78,7 @@ function MetricsTabs({ slug, tab }: { slug?: string; tab: MetricsTab }) {
   return (
     <nav
       aria-label="Metrics sections"
-      className="flex gap-1 border-b"
-      style={{ borderColor: 'var(--border)' }}
+      className="flex gap-1 border-b border-border"
     >
       {TABS.map(t => {
         const active = t.id === tab

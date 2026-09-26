@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import { formatDate } from '@/lib/datetime'
 import type { AlertDelivery, AlertDeliveryListResponse, Role } from '@/types'
 
 import { AlertAuditPanel } from './AlertAuditPanel'
@@ -155,6 +156,19 @@ function openDates() {
   fireEvent.click(screen.getByRole('button', { name: /^Sent filter:/ }))
 }
 
+/**
+ * Picks the 12th of the month the calendar opens on (AL-19: the app's
+ * DatePicker, not a native date input). With nothing picked it opens on the
+ * current month, so the day is always there; returns the day as `YYYY-MM-DD`.
+ */
+async function pickTwelfth(label: 'From' | 'To'): Promise<string> {
+  fireEvent.click(screen.getByLabelText(label))
+  const grid = await screen.findByRole('grid')
+  fireEvent.click(within(grid).getByRole('button', { name: / 12, \d{4}$/ }))
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-12`
+}
+
 // Loading and empty shared one branch, so a request that had not answered
 // rendered the same sentence as one that answered "nothing" — and the sentence
 // asserted the second (tripl-oxkt.10). IncidentDeliveries.tsx gets this right
@@ -252,12 +266,12 @@ describe('AlertAuditPanel paging', () => {
 // neither, so the only way to reach a delivery from last Tuesday was to page
 // past everything in between (tripl-oxkt.12).
 describe('AlertAuditPanel date range', () => {
-  it('pins To to the END of its day, so the day asked for is included', () => {
+  it('pins To to the END of its day, so the day asked for is included', async () => {
     const onFilters = vi.fn()
     renderPanel({ deliveries: page(2, 5), onFilters })
 
     openDates()
-    fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-08-12' } })
+    await pickTwelfth('To')
 
     const written = onFilters.mock.lastCall?.[0] as DeliveryFilters
     const bound = new Date(written.date_to)
@@ -267,12 +281,12 @@ describe('AlertAuditPanel date range', () => {
     expect(bound.getHours()).toBe(23)
   })
 
-  it('pins From to the START of its day', () => {
+  it('pins From to the START of its day', async () => {
     const onFilters = vi.fn()
     renderPanel({ deliveries: page(2, 5), onFilters })
 
     openDates()
-    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-08-12' } })
+    await pickTwelfth('From')
 
     const written = onFilters.mock.lastCall?.[0] as DeliveryFilters
     const bound = new Date(written.date_from)
@@ -280,14 +294,13 @@ describe('AlertAuditPanel date range', () => {
     expect(bound.getHours()).toBe(0)
   })
 
-  it('shows the chosen day back in the input it came from', () => {
+  it('shows the chosen day back on the picker it came from', async () => {
     renderPanel({ deliveries: page(2, 5) })
 
     openDates()
-    const input = screen.getByLabelText('From')
-    fireEvent.change(input, { target: { value: '2026-08-12' } })
+    const picked = await pickTwelfth('From')
 
-    expect(input).toHaveValue('2026-08-12')
+    expect(screen.getByLabelText('From')).toHaveAccessibleName(`From: ${formatDate(picked)}`)
   })
 })
 

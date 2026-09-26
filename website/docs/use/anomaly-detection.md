@@ -418,7 +418,15 @@ incident shows an **Incident · *status*** link to that incident's card on the
 Alerting page. Each row ends in a **⋯** menu (**Signal actions**): **Open
 detail**, **View alerts** (the Alerting page, on the signal's incident when it
 has one) and, for editors, **Annotate**, which opens the detail page's Volume tab
-with the annotation form prefilled on the signal's bucket. The *collapsed* view behind
+with the annotation form prefilled on the signal's bucket.
+
+From the `sm` breakpoint up, each row also draws a **Trend** sparkline: the 24
+buckets around the flagged one — the 19 before it, the bucket itself, and up to
+4 after — with the flagged bucket marked, so a one-off spike reads differently
+from a level that stayed put. A catalog-metric row has none, since its series
+does not live on a scan. The page fetches every row's sparkline in one request,
+`POST /projects/{slug}/anomalies/signals/series`, whose body lists up to 500
+`{scan_config_id, scope_type, scope_ref, bucket}` scopes. The *collapsed* view behind
 the sidebar and top-bar badge instead keeps the single project-total row and
 counts the incident once. Either way the underlying per-scope rows stay in the
 store for drilldown.
@@ -442,7 +450,14 @@ threshold when the page knows it; a drop to zero or a bucket with no baseline
 says so instead of quoting a σ). The signal banner offers **Annotate** (the
 Volume tab, with the annotation form prefilled on the flagged bucket),
 **Discuss** (the event's discussion thread) and **View alerts**, and the page
-header carries a **View alerts** link to the Alerting page too. An annotation
+header carries a **View alerts** link to the Alerting page too. On a
+project-total or event-type page, which has no discussion, the signal summary
+carries its own **Annotate**, and so does a metric's page. The **Volume**
+chart's caption says how fresh the series is — *Hourly · newest bucket 12m ago ·
+collected 8m ago · next Sep 26, 3:00 PM*, or *next collection due now* — from
+`last_collected_at` and `next_collection_at`, which the event, event-type and
+project-total metrics responses now carry. A metric's page leaves the caption
+out: its Definition already names the cadence and the next update. An annotation
 placed after the newest collected bucket is drawn on that newest bucket until
 the next collection catches up; the toast confirming the annotation says so.
 

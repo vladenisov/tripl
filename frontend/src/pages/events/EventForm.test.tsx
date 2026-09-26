@@ -216,6 +216,8 @@ beforeEach(() => {
   // otherwise leak into the next; start each from the empty project.
   vi.mocked(scansApi.list).mockResolvedValue([])
   vi.mocked(eventsApi.byNames).mockResolvedValue({ items: [] })
+  // Also the name-convention sample (AU-41): no events, no convention.
+  vi.mocked(eventsApi.list).mockResolvedValue({ items: [], total: 0 } as never)
 })
 
 afterEach(() => {
@@ -240,12 +242,43 @@ describe('EventForm event-type field', () => {
 })
 
 describe('EventForm name field', () => {
-  it('does not suggest a naming convention in the Name placeholder (AU-41)', () => {
+  it('suggests no invented convention when the type has no events to learn from (AU-41)', () => {
     renderForm(null)
 
-    // "e.g. checkout:completed" sat next to catalogs named another way; the one
-    // rule that holds in every project is that it must match what is sent.
+    // "e.g. checkout:completed" sat next to catalogs named another way; with no
+    // names of the type's own to show, the one rule that holds in every project
+    // is that it must match what is sent.
     expect(screen.getByLabelText(/Name/)).toHaveAttribute('placeholder', 'The exact name the app sends')
+  })
+
+  it("offers one of the type's own names as the example, and points out a name in another style (AU-41)", async () => {
+    vi.mocked(eventsApi.list).mockResolvedValue({
+      items: [
+        { id: 'ev-a', name: 'Home Screen View' },
+        { id: 'ev-b', name: 'Settings Screen View' },
+        { id: 'ev-c', name: 'Spot Screen View' },
+      ],
+      total: 3,
+    } as never)
+    renderForm(null)
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/Name/)).toHaveAttribute('placeholder', 'e.g. Home Screen View'),
+    )
+    expect(eventsApi.list).toHaveBeenCalledWith(
+      'demo',
+      { event_type_id: 'et-1', limit: 20 },
+      null,
+      expect.anything(),
+    )
+
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:completed' } })
+    expect(screen.getByText(/events look like “Home Screen View”/)).toBeInTheDocument()
+    // A pointer, never a block.
+    expect(screen.getByRole('button', { name: /Create event/i })).not.toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'Profile Screen View' } })
+    expect(screen.queryByText(/events look like/)).not.toBeInTheDocument()
   })
 })
 
@@ -1153,17 +1186,29 @@ describe('EventForm field breakdown link', () => {
     )
   })
 
-  it('offers to start splitting by a field, and says the data is not there yet', () => {
+  it('takes the reader to the breakdown toggle instead of toggling from afar (AU-23)', () => {
     renderForm(EDIT_EVENT, { eventTypes: [EDIT_EVENT_TYPE] })
 
     fireEvent.click(screen.getByRole('button', { name: 'Split volume by this field' }))
 
+    // The one switch is the chip in the Metric breakdowns row: the line under
+    // the field brings it into view and leaves it as it was.
+    const chip = screen.getByRole('button', { name: 'product_id', pressed: false })
+    expect(chip).toHaveFocus()
+  })
+
+  it('says a field is split once its chip is on, and that the data is not there yet', () => {
+    renderForm(EDIT_EVENT, { eventTypes: [EDIT_EVENT_TYPE] })
+
+    fireEvent.click(screen.getByRole('button', { name: 'product_id', pressed: false }))
+
     // Not a link: the column was added in this session, so there are no
     // collected rows behind it and the tab would open on an empty chart.
     expect(screen.queryByRole('link', { name: /every value/ })).not.toBeInTheDocument()
-    expect(screen.getByText(/Added to metric breakdowns/)).toBeInTheDocument()
-    // It is the same set the "Tags & breakdowns" chips drive, now switched on.
-    expect(screen.getByRole('button', { name: 'product_id', pressed: true })).toBeInTheDocument()
+    expect(screen.getByText(/collection starts splitting by/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Split by this field' }))
+    // A status that points at the toggle, not a second switch.
+    expect(screen.getByRole('button', { name: 'product_id', pressed: true })).toHaveFocus()
   })
 
   it('offers nothing on an event that does not exist yet', () => {

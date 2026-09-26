@@ -196,7 +196,8 @@ export default function ApiKeysSection() {
         actions={
           // Off while the form is open: pressing it again did nothing visible
           // (ST-19).
-          <Button size="sm" onClick={openForm} disabled={showForm}>
+          // Marked for the `c` shortcut, which otherwise looks for "New …".
+          <Button size="sm" onClick={openForm} disabled={showForm} data-create-action="">
             <Plus className="h-3.5 w-3.5" />
             Create key
           </Button>
@@ -301,7 +302,7 @@ export default function ApiKeysSection() {
               htmlFor="key-expires"
               hint={
                 expiryProblem ? (
-                  <span id="key-expires-error" style={{ color: 'var(--danger)' }}>
+                  <span id="key-expires-error" className="text-danger">
                     {expiryProblem}
                   </span>
                 ) : (
@@ -334,8 +335,8 @@ export default function ApiKeysSection() {
           border: '1px solid color-mix(in oklab, var(--warning) 35%, var(--border))',
         }}
       >
-        <Lock className="mt-px size-4 shrink-0" style={{ color: 'var(--warning)' }} />
-        <div className="text-body-sm leading-[1.5]" style={{ color: 'var(--fg-muted)' }}>
+        <Lock className="mt-px size-4 shrink-0 text-warning" />
+        <div className="text-body-sm leading-[1.5] text-fg-secondary">
           Keys are shown in full only once at creation. Treat them like passwords — revoke
           immediately if exposed.
         </div>
@@ -421,12 +422,7 @@ export default function ApiKeysSection() {
                   }}
                 >
                   <div
-                    className="col-start-1 row-start-1 flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg"
-                    style={{
-                      background: 'var(--bg-sunken)',
-                      border: '1px solid var(--border-subtle)',
-                      color: 'var(--fg-muted)',
-                    }}
+                    className="col-start-1 row-start-1 flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg bg-bg-sunken border border-border-subtle text-fg-secondary"
                   >
                     <Lock className="h-3.5 w-3.5" />
                   </div>
@@ -436,7 +432,7 @@ export default function ApiKeysSection() {
                     <div className="truncate text-body font-medium" title={k.name}>
                       {k.name}
                     </div>
-                    <div className="mono mt-px truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                    <div className="mono mt-px truncate text-caption text-fg-tertiary">
                       {k.key_prefix}…
                     </div>
                   </div>
@@ -449,16 +445,14 @@ export default function ApiKeysSection() {
                       {k.scope}
                     </Chip>
                     <div
-                      className="min-w-0 truncate text-caption @min-[560px]:w-[120px] @min-[560px]:shrink-0"
-                      style={{ color: 'var(--fg-subtle)' }}
+                      className="min-w-0 truncate text-caption @min-[560px]:w-[120px] @min-[560px]:shrink-0 text-fg-tertiary"
                     >
                       {k.project_id
                         ? (projectNameById[k.project_id] ?? k.project_id)
                         : 'All projects'}
                     </div>
                     <div
-                      className="text-caption @min-[560px]:w-[130px] @min-[560px]:shrink-0 @min-[560px]:text-right"
-                      style={{ color: 'var(--fg-faint)' }}
+                      className="text-caption @min-[560px]:w-[130px] @min-[560px]:shrink-0 @min-[560px]:text-right text-fg-tertiary"
                     >
                       <div>created {formatIsoDate(k.created_at)}</div>
                       <div>
@@ -539,7 +533,7 @@ export default function ApiKeysSection() {
             </DialogDescription>
             {/* Which key this is, while the overlay hides its row (ST-21). */}
             {revealed && (
-              <p className="m-0 text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+              <p className="m-0 text-body-sm text-fg-secondary">
                 {describeRevealedKey(
                   revealed,
                   revealed.project_id ? projectNameById[revealed.project_id] : undefined,
@@ -555,8 +549,7 @@ export default function ApiKeysSection() {
                 aria-label="API key"
                 value={revealed?.token ?? ''}
                 onFocus={(e) => e.currentTarget.select()}
-                className="mono h-9 min-w-0 flex-1 rounded-md border px-2 text-body-sm"
-                style={{ borderColor: 'var(--border)', background: 'var(--bg)', color: 'var(--fg)' }}
+                className="mono h-9 min-w-0 flex-1 rounded-md border px-2 text-body-sm border-border bg-background text-fg"
               />
               <Button
                 type="button"
@@ -572,17 +565,17 @@ export default function ApiKeysSection() {
             </div>
             <div aria-live="polite" aria-atomic="true">
               {copyState === 'copied' && (
-                <p className="text-caption" style={{ color: 'var(--success)' }}>
+                <p className="text-caption text-success">
                   Copied to the clipboard.
                 </p>
               )}
             </div>
             {copyState === 'failed' && (
-              <p role="alert" className="text-caption" style={{ color: 'var(--danger)' }}>
+              <p role="alert" className="text-caption text-danger">
                 Couldn’t reach the clipboard. The key above is selected — press Ctrl/⌘+C to copy it.
               </p>
             )}
-            <p className="m-0 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="m-0 text-caption text-fg-tertiary">
               Send it as <code className="mono">Authorization: Bearer &lt;key&gt;</code>.
             </p>
           </div>

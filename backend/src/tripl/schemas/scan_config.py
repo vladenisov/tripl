@@ -361,6 +361,21 @@ class ScanConfigResponse(BaseModel):
         return self.interval is not None
 
 
+class ScanConfigDetailResponse(ScanConfigResponse):
+    """One scan config with its metrics schedule (DA-5).
+
+    Only ``GET /scans/{id}`` computes these, so they are not on the list rows.
+    ``last_metrics_run_at`` is when the newest scheduled metrics collection
+    finished; ``next_metrics_run_at`` the earliest moment the scheduler
+    considers the config due again (``now`` when it is due already). Both are
+    null for a scan the scheduler never collects (no interval or no time
+    column), and ``last_metrics_run_at`` also before its first collection.
+    """
+
+    last_metrics_run_at: datetime | None = None
+    next_metrics_run_at: datetime | None = None
+
+
 class ScanPreviewColumnResponse(BaseModel):
     name: str
     type_name: str

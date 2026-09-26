@@ -201,15 +201,15 @@ export function CommentThread({
     <div className={className}>
       {dialog}
       <div className="mb-2 flex items-center gap-2 text-body font-semibold">
-        <MessageCircle className="h-4 w-4 text-muted-foreground" />
+        <MessageCircle className="h-4 w-4 text-fg-tertiary" />
         {heading}
-        <span className="text-body-sm font-normal text-muted-foreground">({comments.length})</span>
+        <span className="text-body-sm font-normal text-fg-tertiary">({comments.length})</span>
       </div>
       <div className="flex-1 space-y-3 overflow-y-auto pr-1 text-body">
         {commentsQuery.isLoading ? (
-          <div className="text-body-sm text-muted-foreground">Loading…</div>
+          <div className="text-body-sm text-fg-tertiary">Loading…</div>
         ) : topLevel.length === 0 ? (
-          <div className="text-body-sm text-muted-foreground">{emptyText}</div>
+          <div className="text-body-sm text-fg-tertiary">{emptyText}</div>
         ) : (
           topLevel.map(comment => (
             <CommentItem
@@ -247,7 +247,7 @@ export function CommentThread({
               <span>Replying to comment</span>
               <button
                 type="button"
-                className="text-muted-foreground hover:text-foreground"
+                className="text-fg-tertiary hover:text-foreground"
                 onClick={() => setReplyTo(null)}
               >
                 cancel
@@ -322,7 +322,7 @@ function CommentItem({
   return (
     <div className="space-y-2">
       <div className="rounded-md border bg-muted/30 px-2 py-1.5">
-        <div className="flex items-center justify-between gap-2 text-body-sm text-muted-foreground">
+        <div className="flex items-center justify-between gap-2 text-body-sm text-fg-tertiary">
           <span>
             {authorName ? `${authorName(comment)} · ` : ''}
             {formatDateTime(comment.created_at)}
@@ -383,7 +383,7 @@ function CommentItem({
         <div className="ml-4 space-y-2 border-l pl-3">
           {replies.map(reply => (
             <div key={reply.id} className="rounded-md border bg-muted/20 px-2 py-1.5">
-              <div className="flex items-center justify-between gap-2 text-body-sm text-muted-foreground">
+              <div className="flex items-center justify-between gap-2 text-body-sm text-fg-tertiary">
                 <span>
                   {authorName ? `${authorName(reply)} · ` : ''}
                   {formatDateTime(reply.created_at)}

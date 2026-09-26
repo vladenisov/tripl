@@ -243,6 +243,16 @@ describe('CommandPalette', () => {
     expect(screen.getByText('Alerting')).toBeInTheDocument()
     expect(screen.getByText('Scans')).toBeInTheDocument()
 
+    // The keyboard-active row wears the focus ring, the same one the settings
+    // palette's rows wear: cmdk keeps DOM focus in the input, so the ring
+    // rides on aria-selected rather than on :focus-visible.
+    const selected = await waitFor(() => {
+      const row = screen.getAllByRole('option').find(option => option.getAttribute('aria-selected') === 'true')
+      expect(row).toBeDefined()
+      return row as HTMLElement
+    })
+    expect(selected).toHaveClass('aria-selected:ring-2', 'aria-selected:ring-inset', 'aria-selected:ring-ring')
+
     fireEvent.click(screen.getByText('Project settings'))
 
     await waitFor(() => {

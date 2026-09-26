@@ -4,7 +4,7 @@ import type { FieldDefinition, MetaFieldDefinition } from '@/types'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { FilterBar, FilterSearch, FilterSelect } from '@/components/ui/filter-bar'
+import { FilterBar, FilterBarItem, FilterSearch, FilterSelect } from '@/components/ui/filter-bar'
 import {
   Select,
   SelectContent,
@@ -180,8 +180,7 @@ export function EventsToolbar({
         {isFilterPending && (
           <span
             aria-hidden="true"
-            className="pulse-dot pointer-events-none absolute right-2.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full"
-            style={{ background: 'var(--accent)' }}
+            className="pulse-dot pointer-events-none absolute right-2.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-accent"
             title="Updating results"
           />
         )}
@@ -257,7 +256,7 @@ export function EventsToolbar({
                   : 'Available once the current view has finished loading'
               }
             >
-              <Download className="size-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+              <Download className="size-3.5 shrink-0 text-fg-tertiary" />
               {isExporting ? 'Exporting…' : 'Export CSV'}
             </DropdownMenuItem>
             {onBulkNew && (
@@ -266,7 +265,7 @@ export function EventsToolbar({
                 onSelect={onBulkNew}
                 title="Create a run of events from a pasted list"
               >
-                <ListPlus className="size-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+                <ListPlus className="size-3.5 shrink-0 text-fg-tertiary" />
                 Add many events…
               </DropdownMenuItem>
             )}
@@ -286,11 +285,14 @@ export function EventsToolbar({
         onClear={onClearFilters}
       >
         <div id={filtersId} className="contents">
-        <StatusFilter
-          value={filterStatuses}
-          tabDefault={tabDefaultStatuses}
-          onChange={onFilterStatusesChange}
-        />
+        {/* Folds into the phone "Filters (n)" sheet with the chips beside it. */}
+        <FilterBarItem active={filterStatuses.length > 0}>
+          <StatusFilter
+            value={filterStatuses}
+            tabDefault={tabDefaultStatuses}
+            onChange={onFilterStatusesChange}
+          />
+        </FilterBarItem>
         <FilterSelect
           label="Activity"
           value={filterSilentDays === undefined ? ANY : String(filterSilentDays)}

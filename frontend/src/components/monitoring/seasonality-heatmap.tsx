@@ -166,7 +166,7 @@ export function SeasonalityHeatmap({
   if (!data || data.max_count === 0) {
     return (
       <Card>
-        <CardContent className="text-body-sm text-muted-foreground">
+        <CardContent className="text-body-sm text-fg-tertiary">
           Not enough data to build a seasonality heatmap for this scope yet.
         </CardContent>
       </Card>
@@ -184,7 +184,7 @@ export function SeasonalityHeatmap({
           <CardTitle as="h2">Hour × weekday heatmap</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-body-sm text-muted-foreground">
+          <p className="text-body-sm text-fg-tertiary">
             This scan collects every <span className="font-medium">{data.interval}</span>, so
             there is no hour-of-day detail to plot — every bucket falls on a few fixed hours.
             Set the scan to an hourly (or finer) interval to see this heatmap.
@@ -219,7 +219,7 @@ export function SeasonalityHeatmap({
             min and max while implying a linear count in between made a mid-tone
             unreadable — it means "middle of the pack", not the midpoint of these
             two numbers (tripl-jfm3.127). */}
-        <div className="flex items-center gap-2 text-caption text-muted-foreground">
+        <div className="flex items-center gap-2 text-caption text-fg-tertiary">
           <span className="tabular-nums">{formatCount(scale.minCount)}</span>
           <div
             className="flex h-2 w-24 overflow-hidden rounded-sm ring-1 ring-border/60"
@@ -249,14 +249,14 @@ export function SeasonalityHeatmap({
             <caption className="sr-only">{gridSummary}</caption>
             <thead>
               <tr>
-                <th scope="col" className="w-10 pb-1 pr-2 text-right font-normal text-muted-foreground">
+                <th scope="col" className="w-10 pb-1 pr-2 text-right font-normal text-fg-tertiary">
                   UTC
                 </th>
                 {HOURS_FULL.map(hour => (
                   <th
                     key={hour}
                     scope="col"
-                    className="px-0 pb-1 text-center font-normal text-muted-foreground"
+                    className="px-0 pb-1 text-center font-normal text-fg-tertiary"
                   >
                     {hour % HOUR_LABEL_EVERY === 0 ? hour.toString().padStart(2, '0') : ''}
                   </th>
@@ -266,7 +266,7 @@ export function SeasonalityHeatmap({
             <tbody>
               {WEEKDAYS_SHORT.map((label, weekday) => (
                 <tr key={label}>
-                  <th scope="row" className="pr-2 text-right font-normal text-muted-foreground">{label}</th>
+                  <th scope="row" className="pr-2 text-right font-normal text-fg-tertiary">{label}</th>
                   {HOURS_FULL.map(hour => {
                     const key = `${weekday}:${hour}`
                     const cell = cellsByKey.get(key)
@@ -343,7 +343,7 @@ export function SeasonalityHeatmap({
         <p
           aria-hidden="true"
           data-testid="heatmap-slot-detail"
-          className="min-h-4 text-caption text-muted-foreground tabular-nums"
+          className="min-h-4 text-caption text-fg-tertiary tabular-nums"
         >
           {activeSlot ?? 'Hover or tap a cell for its count.'}
         </p>

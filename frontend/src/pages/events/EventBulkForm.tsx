@@ -29,8 +29,9 @@ import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { AlertTriangle, Check, ChevronLeft, Loader2, Plus, X, type LucideIcon } from 'lucide-react'
 import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard } from './eventFormLayout'
 import { nameFormatBaseColumns } from './utils'
-import { bulkUnsupportedReason, parseBulkDraft, type BulkRow } from './bulkEventDraft'
+import { bulkExtraColumns, bulkUnsupportedReason, parseBulkDraft, type BulkRow } from './bulkEventDraft'
 import { normalizeTag } from './eventFormValues'
+import { rememberCreatedEvents } from './createdEventsHandoff'
 import { useCanWriteProject } from '@/lib/permissions'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
@@ -66,6 +67,7 @@ const CHECKING_STATUS = 'Checking the names…'
 const STATUS_LABEL: Record<BulkRow['status'], string> = {
   ready: 'will be created',
   incomplete: 'missing values',
+  invalid: 'invalid value',
   duplicate: 'repeated above',
   exists: 'already in the catalog',
 }
@@ -73,6 +75,7 @@ const STATUS_LABEL: Record<BulkRow['status'], string> = {
 const STATUS_COLOR: Record<BulkRow['status'], string> = {
   ready: 'var(--fg-muted)',
   incomplete: 'var(--warning)',
+  invalid: 'var(--warning)',
   duplicate: 'var(--warning)',
   exists: 'var(--warning)',
 }
@@ -82,6 +85,7 @@ const STATUS_COLOR: Record<BulkRow['status'], string> = {
 const STATUS_ICON: Record<BulkRow['status'], LucideIcon> = {
   ready: Check,
   incomplete: X,
+  invalid: X,
   duplicate: X,
   exists: X,
 }
@@ -162,11 +166,19 @@ export default function EventBulkForm() {
     return bulkUnsupportedReason({
       nameFormat,
       namingColumns,
-      requiredFields: selectedEt.field_definitions
-        .filter(field => field.is_required)
+      requiredJsonFields: selectedEt.field_definitions
+        .filter(field => field.is_required && field.field_type === 'json')
         .map(field => field.name),
     })
   }, [selectedEt, nameFormat, namingColumns])
+  // A required field the name is not built from used to make the whole type
+  // unpasteable (AU-19); the paste now carries it as a column of its own,
+  // after the identity columns and before the title (tripl-hhw3).
+  const extraColumns = useMemo(
+    () => bulkExtraColumns(selectedEt?.field_definitions ?? [], namingColumns),
+    [selectedEt, namingColumns],
+  )
+  const extraNames = extraColumns.map(column => column.name)
   // A naming column with no field definition cannot be written as a field value,
   // so the created event would carry the name and none of what built it.
   const unmappedColumns = namingColumns.filter(column => !fieldsByName.has(column))
@@ -177,11 +189,11 @@ export default function EventBulkForm() {
   const candidateNames = useMemo(() => {
     if (!etId || unsupported) return []
     const names = new Set<string>()
-    for (const row of parseBulkDraft(debouncedDraft, { columns: namingColumns, nameFormat })) {
+    for (const row of parseBulkDraft(debouncedDraft, { columns: namingColumns, nameFormat, extraColumns })) {
       if (row.status === 'ready') names.add(row.name)
     }
     return [...names]
-  }, [debouncedDraft, etId, unsupported, namingColumns, nameFormat])
+  }, [debouncedDraft, etId, unsupported, namingColumns, nameFormat, extraColumns])
   const probedNames = useMemo(() => candidateNames.slice(0, IDENTITY_PROBE_LIMIT), [candidateNames])
   const overLimitCount = candidateNames.length - probedNames.length
 
@@ -211,9 +223,9 @@ export default function EventBulkForm() {
   const rows = useMemo(
     () =>
       etId && !unsupported
-        ? parseBulkDraft(draft, { columns: namingColumns, nameFormat, taken })
+        ? parseBulkDraft(draft, { columns: namingColumns, nameFormat, taken, extraColumns })
         : [],
-    [draft, etId, unsupported, namingColumns, nameFormat, taken],
+    [draft, etId, unsupported, namingColumns, nameFormat, taken, extraColumns],
   )
   const ready = rows.filter(row => row.status === 'ready')
   // Until the paste has settled and every probe has answered, "will be created"
@@ -252,9 +264,11 @@ export default function EventBulkForm() {
           // exactly what it always did.
           ...(ownerId ? { owner_id: ownerId } : {}),
           ...(tags.length > 0 ? { tags } : {}),
-          field_values: namingColumns.flatMap((column, position) => {
+          field_values: [
+            ...namingColumns.map((column, position) => [column, row.values[position]] as const),
+            ...extraNames.map((column, position) => [column, row.extras[position]] as const),
+          ].flatMap(([column, value]) => {
             const field = fieldsByName.get(column)
-            const value = row.values[position]
             return field && value ? [{ field_definition_id: field.id, value }] : []
           }),
         })),
@@ -267,6 +281,8 @@ export default function EventBulkForm() {
       // The page used to step back to the list with no word (AU-20).
       const count = Array.isArray(created) && created.length > 0 ? created.length : ready.length
       toast.success(count === 1 ? 'Created 1 event' : `Created ${count} events`)
+      // And the list it returns to scrolls to and marks the new rows.
+      if (Array.isArray(created)) rememberCreatedEvents(slug!, created.map(event => event.id))
       goBack()
     },
   })
@@ -299,22 +315,37 @@ export default function EventBulkForm() {
 
   const rowVerdict = (row: BulkRow): string => {
     if (row.status === 'incomplete') return `missing ${row.missing.join(', ')}`
+    if (row.status === 'invalid') return row.problems.join('; ')
     if (row.status !== 'ready') return STATUS_LABEL[row.status]
     if (checking) return 'checking…'
     const probed = probedNames.includes(row.name)
     return probed && !probes.unchecked.has(row.name) ? STATUS_LABEL.ready : 'will be created, not checked'
   }
 
-  const columnHint = nameFormat
-    ? namingColumns.length > 1
-      ? `One event per line: ${namingColumns.join(', then ')}, separated by a tab or a comma.`
-      : `One ${namingColumns[0] ?? 'value'} per line.`
-    : 'One event name per line.'
-  // The title is what follows the identity; with a single column only a tab can
-  // follow it, because the value itself may carry commas (tripl-kjhi.3).
-  const titleHint = namingColumns.length > 1
-    ? 'Add a title after the identity columns, e.g. weather_alert,show,widget,Weather alert widget shown.'
-    : 'Add a title after a tab, e.g. sign_up, a tab, then User signs up.'
+  // The identity columns as the hint and placeholder name them: the rule's
+  // columns, or the event name where no rule governs the type.
+  const identityColumns = nameFormat ? namingColumns : ['event name']
+  // Past one identity column a comma separates too; a single one is split on
+  // a tab only, because the value itself may carry commas (tripl-kjhi.3).
+  const separators = identityColumns.length > 1 ? 'a tab or a comma' : 'a tab'
+  const columnHint = extraNames.length > 0
+    ? `One event per line: ${[...identityColumns, ...extraNames].join(', then ')}, separated by ${separators}. Every event of this type needs ${extraNames.join(' and ')}.`
+    : nameFormat
+      ? namingColumns.length > 1
+        ? `One event per line: ${namingColumns.join(', then ')}, separated by a tab or a comma.`
+        : `One ${namingColumns[0] ?? 'value'} per line.`
+      : 'One event name per line.'
+  // The title is what follows the last column.
+  const titleHint = extraNames.length > 0
+    ? `Add a title after ${extraNames[extraNames.length - 1]}.`
+    : namingColumns.length > 1
+      ? 'Add a title after the identity columns, e.g. weather_alert,show,widget,Weather alert widget shown.'
+      : 'Add a title after a tab, e.g. sign_up, a tab, then User signs up.'
+  const draftPlaceholder = extraNames.length > 0
+    ? [...(nameFormat ? namingColumns : ['name']), ...extraNames].join('\t')
+    : nameFormat && namingColumns.length > 1
+      ? namingColumns.join('\t')
+      : 'one per line'
 
   return (
     // The narrow page container (DS-3), from the shell's own left edge.
@@ -442,11 +473,7 @@ export default function EventBulkForm() {
                   className={`${EV_INPUT_CLASS} mono min-h-[180px] py-2 leading-[1.6]`}
                   value={draft}
                   onChange={e => setDraft(e.target.value)}
-                  placeholder={
-                    nameFormat && namingColumns.length > 1
-                      ? namingColumns.join('\t')
-                      : 'one per line'
-                  }
+                  placeholder={draftPlaceholder}
                 />
               </div>
             </SurfCard>
@@ -473,6 +500,9 @@ export default function EventBulkForm() {
                       <TableRow className="hover:bg-transparent">
                         <TableHead scope="col" className="hidden px-4 md:table-cell">Line</TableHead>
                         <TableHead scope="col" className="max-md:pl-4">Event</TableHead>
+                        {extraNames.length > 0 && (
+                          <TableHead scope="col" className="px-4">Fields</TableHead>
+                        )}
                         <TableHead scope="col" className="px-4">Title</TableHead>
                         <TableHead scope="col" className="px-4">Status</TableHead>
                       </TableRow>
@@ -489,6 +519,15 @@ export default function EventBulkForm() {
                           {/* Sans like the catalog's names (DS-17); the paste above stays
                               mono, since it is raw identifier input. */}
                           <TableCell className="py-[6px] max-md:pl-4">{row.name}</TableCell>
+                          {/* The extra columns as read, so a value that slid into
+                              the title (or out of it) shows before it is stored. */}
+                          {extraNames.length > 0 && (
+                            <TableCell className="px-4 py-[6px]">
+                              {extraNames
+                                .map((column, i) => `${column}: ${row.extras[i] || '—'}`)
+                                .join(', ')}
+                            </TableCell>
+                          )}
                           {/* The parse is the only place a stray fourth column
                               becomes visible before it is stored as a title. */}
                           <TableCell

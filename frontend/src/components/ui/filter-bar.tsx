@@ -1,5 +1,6 @@
 import * as React from "react"
-import { Search, X } from "lucide-react"
+import { createPortal } from "react-dom"
+import { Search, SlidersHorizontal, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,6 +11,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Sheet,
+  SheetBody,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 
 /*
  * The one filter-bar idiom for list pages (DS-15): a search box, then filter
@@ -22,7 +32,38 @@ import {
  *     <FilterSelect label="Status" value={status} onValueChange={setStatus}
  *       options={[{ value: "live", label: "live" }, ...]} />
  *   </FilterBar>
+ *
+ * Below 640px the chips fold into one "Filters (n)" button that opens a
+ * bottom sheet holding them, n being how many are set; the search box stays in
+ * the row (DS-15). Every FilterSelect folds on its own; wrap any other filter
+ * control in <FilterBarItem active={…}> to fold it too.
  */
+
+/** Below `sm` (640px) the chips fold into the sheet. */
+const COLLAPSE_QUERY = "(max-width: 639.98px)"
+
+function subscribeCollapse(onChange: () => void): () => void {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return () => {}
+  const query = window.matchMedia(COLLAPSE_QUERY)
+  query.addEventListener("change", onChange)
+  return () => query.removeEventListener("change", onChange)
+}
+
+function readCollapse(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(COLLAPSE_QUERY).matches
+    : false
+}
+
+type FilterBarContextValue = {
+  collapsed: boolean
+  /** The open sheet's body, where folded items render; null while closed. */
+  sheetBody: HTMLElement | null
+  register: (id: string, active: boolean) => void
+  unregister: (id: string) => void
+}
+
+const FilterBarContext = React.createContext<FilterBarContextValue | null>(null)
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
@@ -46,13 +87,61 @@ function FilterBar({
   onClear?: () => void
   className?: string
 }) {
+  const collapsed = React.useSyncExternalStore(subscribeCollapse, readCollapse, () => false)
+  const [sheetOpen, setSheetOpen] = React.useState(false)
+  // Growing past 640px drops an open sheet, so it does not pop back open the
+  // next time the bar folds.
+  if (!collapsed && sheetOpen) setSheetOpen(false)
+  const [sheetBody, setSheetBody] = React.useState<HTMLDivElement | null>(null)
+  // Every foldable item and whether it is set: the button's "(n)", and
+  // whether there is anything to fold at all.
+  const [items, setItems] = React.useState<ReadonlyMap<string, boolean>>(() => new Map())
+  const register = React.useCallback((id: string, itemActive: boolean) => {
+    setItems(prev => {
+      if (prev.get(id) === itemActive) return prev
+      const next = new Map(prev)
+      next.set(id, itemActive)
+      return next
+    })
+  }, [])
+  const unregister = React.useCallback((id: string) => {
+    setItems(prev => {
+      if (!prev.has(id)) return prev
+      const next = new Map(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
+  const context = React.useMemo<FilterBarContextValue>(
+    () => ({ collapsed, sheetBody: collapsed && sheetOpen ? sheetBody : null, register, unregister }),
+    [collapsed, sheetOpen, sheetBody, register, unregister],
+  )
+  const setCount = [...items.values()].filter(Boolean).length
+  const folding = collapsed && items.size > 0
+
   return (
+    <FilterBarContext.Provider value={context}>
     <div
       data-slot="filter-bar"
       className={cn("flex flex-wrap items-center gap-2", className)}
     >
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
         {children}
+        {folding && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-haspopup="dialog"
+            aria-expanded={sheetOpen}
+            onClick={() => setSheetOpen(true)}
+            data-active={setCount > 0 || undefined}
+            className={cn(setCount > 0 && "border-accent bg-accent-soft")}
+          >
+            <SlidersHorizontal aria-hidden="true" />
+            Filters{setCount > 0 && <> <span className="tnum">({setCount})</span></>}
+          </Button>
+        )}
         {active && onClear && (
           <Button type="button" variant="ghost" size="sm" onClick={onClear} className="text-fg-muted">
             <X aria-hidden="true" />
@@ -67,7 +156,53 @@ function FilterBar({
         {count}
       </div>
     </div>
+    {folding && (
+      <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+        <SheetContent side="bottom">
+          <SheetHeader>
+            <SheetTitle>Filters</SheetTitle>
+            <SheetDescription>Filters apply as you pick them.</SheetDescription>
+          </SheetHeader>
+          <SheetBody>
+            {/* FilterBarItems render here through a portal while it is open. */}
+            <div ref={setSheetBody} className="flex flex-col items-stretch gap-2 py-1" />
+          </SheetBody>
+          <SheetFooter>
+            {count != null && count !== "" && (
+              <span className="tnum mr-auto text-caption text-fg-muted">{count}</span>
+            )}
+            {active && onClear && (
+              <Button type="button" variant="ghost" size="sm" onClick={onClear}>
+                Clear filters
+              </Button>
+            )}
+            <Button type="button" size="sm" onClick={() => setSheetOpen(false)}>
+              Done
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
+    )}
+    </FilterBarContext.Provider>
   )
+}
+
+/**
+ * A filter control that folds into the "Filters (n)" sheet below 640px.
+ * `active` is whether it differs from its default, for the button's count.
+ * Outside a FilterBar, or on a wide screen, it renders in place.
+ */
+function FilterBarItem({ active, children }: { active: boolean; children: React.ReactNode }) {
+  const bar = React.useContext(FilterBarContext)
+  const id = React.useId()
+  const register = bar?.register
+  const unregister = bar?.unregister
+  React.useEffect(() => {
+    register?.(id, active)
+  }, [register, id, active])
+  React.useEffect(() => () => unregister?.(id), [unregister, id])
+  if (!bar?.collapsed) return <>{children}</>
+  return bar.sheetBody ? createPortal(children, bar.sheetBody) : null
 }
 
 /**
@@ -146,6 +281,7 @@ function FilterSelect({
   const set = value !== anyValue
   const current = set ? options.find(option => option.value === value)?.label ?? value : anyLabel
   return (
+    <FilterBarItem active={set}>
     <Select value={value} onValueChange={onValueChange}>
       <SelectTrigger
         // The value belongs in the name: a button-role combobox exposes no
@@ -174,7 +310,8 @@ function FilterSelect({
           ))}
       </SelectContent>
     </Select>
+    </FilterBarItem>
   )
 }
 
-export { FilterBar, FilterSearch, FilterSelect }
+export { FilterBar, FilterBarItem, FilterSearch, FilterSelect }

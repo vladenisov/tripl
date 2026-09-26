@@ -257,6 +257,35 @@ The reply is `{ "ok": …, "error": …, "sent_at": … }`, and:
   editor can replace a secret. Writes that leave the channel as it was keep it:
   toggling **Enabled**, or a digest being sent. **Dismiss** clears it by hand.
 
+#### Send test — before the destination is saved
+
+The destination dialog has its own **Send test**, so a channel can be checked
+while it is being set up or edited, not only after **Create**:
+`POST /api/v1/projects/{slug}/alert-destinations/test`, editor or owner only.
+The result shows inside the dialog, and it reads the same way as a card's.
+
+- **The body is the create payload**, with an optional `destination_id` when the
+  dialog is editing a saved destination. A secret left blank in the form (a bot
+  token, a webhook URL, an API key) is then taken from that destination's stored
+  one, so a stored secret can be tested without typing it again. A stored
+  secret only goes back to where it was saved for: the stored Jira API token is
+  lent only when the draft's Jira base URL has the same scheme and host (and
+  port) as the saved one, and a stored webhook header value only when the
+  draft's target URL does. Otherwise the test returns `ok: false` with
+  `error_kind: config`, and the secret has to be typed again to test the new
+  host.
+- **The channel cannot change.** A `destination_id` whose channel is not the
+  body's `type` is a **422**; another project's destination id is a **404**,
+  never a way to borrow its secrets.
+- **The same refusals apply.** A demo project refuses it with the same
+  `ok: false` and `error_kind: policy` (the local demo sink excepted), and the
+  webhook and Jira URLs go through the same private-host refusal as a real
+  delivery.
+- **Nothing is saved.** No destination is created or changed, and no delivery is
+  written. The press is audited as `alert_destination.test`, the same action as
+  the card's **Test**; its payload has `draft: true` and `target_origin`, the
+  scheme and host of the webhook or Jira URL that was tested.
+
 Whoever reads that channel did not ask for the message, so it says on its own
 line that nothing is wrong and that someone pressed Test. Use rule replay to
 validate *matching*, and confirm the first real delivery in the **Delivery
@@ -881,6 +910,12 @@ and does nothing unless an AI provider is configured — see
 | **Destinations** | The channels rules route to: configuration, a test send, and how much traffic each has carried. |
 | **Delivery log** | Every delivery in the project, filterable, for "did the message actually go out". |
 
+The **Inbox** tab carries the number of open incidents and **Delivery log** the
+number of failed deliveries, in red, whenever either is above zero. On
+**Rules**, the **Firing**, **Warning** and **Healthy** tiles above the table
+filter it to the rules in that state; pressing the lit tile again shows every
+rule.
+
 The **Rules** tab was called *Monitors* until the product settled on one name,
 **alert rule**, for this object (its `?section=` key is still `monitors`). It was
 also a separate nav item until it was merged in. It listed the same
@@ -1070,6 +1105,14 @@ deliveries**, each reading like *Failed · Slack · 3 matched · 2h ago* and
 opening that delivery. Retrying a Jira or Linear delivery from the popover asks
 first, since a retry can open a second ticket. Its footer links **All anomalies
 →** and **Alert inbox →**.
+
+Outside a project — on **All projects** and the other workspace pages — the bell
+covers the whole workspace. Its badge counts every project's open incidents, and
+the popover lists **Projects needing attention**, one row per project with open
+incidents or signals, worst first (*Checkout app · 1 open incident · 3
+signals*). A project with an open incident opens its Inbox; one with only
+signals opens its Anomalies list, since it has no incident to act on. The footer
+links **All projects →**.
 
 The **Inbox** is one row per **incident** — a rule firing in one direction on one
 scope of a scan, or on a project-wide catalog metric — over the last 30 days,
@@ -1378,7 +1421,7 @@ beside `?status=`:
 
 | Control | Parameter | What it matches |
 | --- | --- | --- |
-| Last fired (one chip; its From / To open in a popover) | `?fired_from=`, `?fired_to=` (`YYYY-MM-DD`) | When the incident **last** spoke, not when it started. Both ends are inclusive whole days, read in your own timezone, so "to the 8th" includes that evening. |
+| Last fired (one chip; its From / To open the app's calendar picker in a popover) | `?fired_from=`, `?fired_to=` (`YYYY-MM-DD`) | When the incident **last** spoke, not when it started. Both ends are inclusive whole days, read in your own timezone, so "to the 8th" includes that evening. |
 | Kind | `?scope_type=` | Any scope the incident fired on — an incident holding one release regression among ten volume firings is found by either. |
 | Direction | `?direction=drop` / `spike` | The direction of its **newest** firing, which is the one the card shows. |
 | Scope | `?scope=` | Case-insensitive substring of any scope name or reference in the incident, including the ones past the eight the card lists. |
@@ -1413,7 +1456,8 @@ reached this page and everything else linked to the event's monitoring page,
 which shows neither the deliveries nor the actions.
 
 The **Delivery log** panel below stays the whole-project delivery list, filterable by
-status, channel, destination, rule, scan and a **Sent** date chip (the table
+status, channel, destination, rule, scan and a **Sent** date chip whose From / To
+open the app's calendar picker (the table
 itself has no Channel column; each row's destination names it) — the view for "did anything fail to
 go out", rather than for acting on one incident. Deliveries too old to belong to
 an incident (written before incidents existed) appear only there.

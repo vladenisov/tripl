@@ -42,7 +42,7 @@ export function MetricBreakdownPicker({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-body font-medium">Metric breakdowns</div>
-          <p className="text-body-sm text-muted-foreground">
+          <p className="text-body-sm text-fg-tertiary">
             Each selected column gets its own series per value (e.g. one per platform), grouped in
             the warehouse.
           </p>
@@ -61,7 +61,7 @@ export function MetricBreakdownPicker({
             aria-describedby={valuesLimitError ? 'breakdown-value-limit-error' : undefined}
           />
           {valuesLimitError && (
-            <p id="breakdown-value-limit-error" className="text-body-sm" style={{ color: 'var(--danger)' }}>
+            <p id="breakdown-value-limit-error" className="text-body-sm text-danger">
               {valuesLimitError}
             </p>
           )}
@@ -99,7 +99,7 @@ export function MetricBreakdownPicker({
         })}
       </div>
       {availableColumns.length === 0 && (
-        <p className="text-body-sm text-muted-foreground">
+        <p className="text-body-sm text-fg-tertiary">
           The preview has no plain-value columns to break down by (JSON columns cannot be).
         </p>
       )}
