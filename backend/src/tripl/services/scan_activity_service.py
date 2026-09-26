@@ -9,10 +9,11 @@ one grouped query here instead, over every scan config in the project at once.
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Float, ScalarSelect, cast, func, or_, select
+from sqlalchemy import Float, ScalarSelect, case, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.scan_config import ScanConfig
@@ -103,24 +104,43 @@ async def _failing_streaks(
     return {scan_id: int(count or 0) for scan_id, count in rows.all()}
 
 
+@dataclass(frozen=True)
+class _RowsRead:
+    total: int = 0
+    warehouse_rows: int = 0
+    catalog_combinations: int = 0
+
+
 async def _rows_read_since(
     session: AsyncSession, scan_ids: list[uuid.UUID], window_from: datetime
-) -> dict[uuid.UUID, int]:
+) -> dict[uuid.UUID, _RowsRead]:
     """Sum of each job's rows read, for jobs stamped inside the window.
 
     A job's stamp is ``completed_at``, else ``started_at`` — the one the list
     used — and its rows are ``query_rows_scanned``, else ``scan_rows_processed``
     (``jobRowsScanned`` in the frontend). Extracted as floats: the counters are
     JSON numbers, and a BigQuery run can read past a 32-bit integer.
+
+    The two counters are not the same unit: ``query_rows_scanned`` is warehouse
+    rows a metrics run read, ``scan_rows_processed`` is the GROUP BY ALL
+    combinations a catalog run got back. The mixed total stays for older
+    clients; the split sums name their unit (B15).
     """
     summary = ScanJob.result_summary
-    rows_read = func.coalesce(
-        summary["query_rows_scanned"].as_float(),
-        summary["scan_rows_processed"].as_float(),
-        cast(0, Float),
-    )
+    warehouse = summary["query_rows_scanned"].as_float()
+    combinations = summary["scan_rows_processed"].as_float()
+    zero = cast(0, Float)
+    rows_read = func.coalesce(warehouse, combinations, zero)
+    # Only counted when the job reported no warehouse rows, the same precedence
+    # as the mixed total, so the two split sums add up to it.
+    catalog_only = case((warehouse.is_(None), func.coalesce(combinations, zero)), else_=zero)
     rows = await session.execute(
-        select(ScanJob.scan_config_id, func.sum(rows_read))
+        select(
+            ScanJob.scan_config_id,
+            func.sum(rows_read),
+            func.sum(func.coalesce(warehouse, zero)),
+            func.sum(catalog_only),
+        )
         .where(
             ScanJob.scan_config_id.in_(scan_ids),
             # Sargable bound first (see _JOB_LIFETIME_MARGIN); the exact stamp
@@ -130,7 +150,17 @@ async def _rows_read_since(
         )
         .group_by(ScanJob.scan_config_id)
     )
-    return {scan_id: round(total or 0) for scan_id, total in rows.all()}
+    return {
+        scan_id: _RowsRead(
+            total=round(total or 0),
+            warehouse_rows=round(warehouse_total or 0),
+            catalog_combinations=round(combination_total or 0),
+        )
+        for scan_id, total, warehouse_total, combination_total in rows.all()
+    }
+
+
+_NO_ROWS = _RowsRead()
 
 
 async def get_scan_activity(
@@ -165,7 +195,9 @@ async def get_scan_activity(
                 ScanJobResponse.model_validate(latest[scan_id]) if scan_id in latest else None
             ),
             failing_streak=streaks.get(scan_id, 0),
-            rows_read_24h=rows_read.get(scan_id, 0),
+            rows_read_24h=rows_read.get(scan_id, _NO_ROWS).total,
+            warehouse_rows_24h=rows_read.get(scan_id, _NO_ROWS).warehouse_rows,
+            catalog_combinations_24h=rows_read.get(scan_id, _NO_ROWS).catalog_combinations,
         )
         for scan_id in scan_ids
     ]

@@ -1,4 +1,4 @@
-import { useId } from 'react'
+import { useId, type ReactNode } from 'react'
 import { CheckCircle2, RotateCcw, XCircle } from 'lucide-react'
 import type { SettingSource } from '@/types'
 import { Chip, type ChipTone, type ChipVariant } from '@/components/primitives/chip'
@@ -22,7 +22,7 @@ import {
  */
 
 const SOURCE_BADGE: Record<
-  SettingSource,
+  Exclude<SettingSource, 'default'>,
   { label: string; tone: ChipTone; variant: ChipVariant; title: string }
 > = {
   override: {
@@ -38,13 +38,6 @@ const SOURCE_BADGE: Record<
     title:
       'Delivered by an environment variable or .env line: the value differs from the built-in default.',
   },
-  default: {
-    label: 'Default',
-    tone: 'neutral',
-    variant: 'soft',
-    title:
-      'The built-in default. Either nothing was delivered for this setting, or what was delivered happens to match the default — from here the two are indistinguishable.',
-  },
 }
 
 /**
@@ -54,11 +47,16 @@ const SOURCE_BADGE: Record<
  * There used to be no third state, so every field with no stored override was
  * badged "Env" — including ones nothing had ever delivered, which is how an
  * instance could assert it had been told where to send embeddings when it had
- * not (tripl-wkwv.2). "Default" is deliberately the weaker claim of the two: it
- * says the value equals the built-in default, not that nothing arrived, and the
- * tooltip says so rather than letting the label overreach.
+ * not (tripl-wkwv.2).
+ *
+ * A value at its built-in default carries no badge at all: on a fresh instance
+ * every one of ~40 rows wore a grey "Default" pill, which said nothing and hid
+ * the rare rows that matter (ST-25). The page's legend says what an unbadged
+ * row means, including that "at the default" and "delivered, but equal to the
+ * default" cannot be told apart from here.
  */
 export function SourceBadge({ source }: { source: SettingSource }) {
+  if (source === 'default') return null
   const { label, tone, variant, title } = SOURCE_BADGE[source]
   // The badge taxonomy's pill (DS-6): the size comes from `size`.
   return (
@@ -85,6 +83,38 @@ export function StatusBadge({ active, label }: { active: boolean; label: string 
       {active ? <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> : <XCircle className="h-3 w-3" aria-hidden="true" />}
       {label}
     </span>
+  )
+}
+
+/**
+ * The rows that depend on a master switch, de-emphasised while it is off
+ * (ST-26). They stay editable — preparing a config before switching it on is
+ * valid — but with every field looking live, "Test AI" and the HSTS max age
+ * read as working while their switch said otherwise. `data-inactive` lets a
+ * test (or a style) find the state without reading opacity.
+ */
+export function InactiveGroup({
+  inactive,
+  reason,
+  children,
+}: {
+  inactive: boolean
+  /** "Not used while <switch> is off." Omit when the card already says so. */
+  reason?: string
+  children: ReactNode
+}) {
+  if (!inactive) return <>{children}</>
+  return (
+    <div data-inactive="true">
+      {reason && (
+        <p className="m-0 px-4 pt-2.5 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          {reason}
+        </p>
+      )}
+      <div className="opacity-60 transition-opacity focus-within:opacity-100 hover:opacity-100">
+        {children}
+      </div>
+    </div>
   )
 }
 
@@ -187,33 +217,25 @@ export function ResetSectionCard({
   resetting: boolean
 }) {
   const label = SECTION_LABELS[section]
-  const nothingToClear = overrides === 0
+  // Nothing stored, nothing to clear: no card. On a fresh instance a full card
+  // holding a disabled button ended all six pages, as tall as Runtime's
+  // settings themselves (ST-29); red with a live button before that, it taught
+  // people to ignore the one colour kept for real consequences (tripl-5qp9).
+  if (overrides === 0) return null
   return (
     <SCard
-      // Danger tone only when there is something to destroy. On a fresh
-      // instance this card sat red, with a live button, at the bottom of all six
-      // pages to offer a no-op — which teaches people to ignore the one colour
-      // the UI keeps for real consequences (tripl-5qp9).
-      tone={nothingToClear ? undefined : 'danger'}
+      tone="danger"
       title={`Reset ${label} to defaults`}
       description={resetCardDescription(section, overrides)}
       footer={
         <>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onReset}
-            disabled={resetting || nothingToClear}
-          >
+          <Button type="button" variant="outline" size="sm" onClick={onReset} disabled={resetting}>
             <RotateCcw className="h-3.5 w-3.5" />
             Reset to defaults
           </Button>
-          {!nothingToClear && (
-            <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
-              Applies immediately — it does not wait for Save changes.
-            </span>
-          )}
+          <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            Applies immediately — it does not wait for Save changes.
+          </span>
         </>
       }
     />

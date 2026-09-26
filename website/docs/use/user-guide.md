@@ -91,8 +91,9 @@ See **[The demo workspace](./demo-workspace.md)** for exactly what is synthetic,
 what is really executed, and what is intentionally unavailable.
 :::
 
-**Start with the coached chapters.** The welcome panel lists **Coached
-chapters** — short hands-on lessons, one per product area: run the live loop
+**Start with the coached chapters.** The welcome panel's **Start: Run the live
+loop** opens the first of them, and **Browse chapters** lists them all — short
+hands-on lessons, one per product area: run the live loop
 (scan → metric → chart), edit an event, variables & value drift, review a
 branch, reconcile the plan, route an alert, and a closing explore chapter. A
 strip under the demo banner tracks which chapter and step you are on and links
@@ -504,24 +505,36 @@ shape. That detection is automatic and needs no setup.
 - **Overview** — start here for the state of the whole project.
 - **Alert rules** (Alerting › Rules) — the list of your alert rules, each attached to a scope, with
   the condition it watches for, where it routes, and its live state.
-- **Metrics** — define project-wide SQL metrics, event compositions, or fact
-  metrics. Fact tables keep a reusable read-only query, introspected columns,
+- **Metrics** — define project-wide metrics of three kinds: **From tracked
+  events**, **From a fact table**, or **Custom SQL**. A new metric starts on
+  **From tracked events**; a kind card says so when the project has no events
+  or no fact tables yet. The form opens on a template gallery — **Start from
+  scratch** skips it, and **Browse templates** brings it back. A metric can
+  have an **Owner**, shown as an avatar on its catalog row. Create one with
+  **Create and start collecting**, or **Save as draft** — a draft is not
+  collected until **Activate** on its page. Creating a Custom SQL metric whose
+  query has not previewed cleanly asks first. The top bar reads
+  **Metrics › <metric> › Edit** while you edit one. Fact tables keep a reusable read-only query, introspected columns,
   and named filters; a fact metric applies an aggregate or ratio to them. Active
   metrics collect on schedule and open the same monitoring drilldown as event
   volume. The drilldown links back to the source fact table, shows when the next
   collection is due, and can reveal the generated primary batch SQL without
   executing it — to viewers too, since it is built from configuration they can
-  already read. Running **Collect now** on a fact metric refreshes the other
+  already read. Running **Recompute** on a fact metric refreshes the other
   active metrics on that fact table in the same multi-aggregate batch rather
   than scanning it once per metric. The catalog lists every metric, keeps its
-  search, status, kind and stat filters in the address (so Back and shared links
+  search, status, kind, review-status and stat filters in the address (so Back and shared links
   return to the same view), and reports a finished **Collect now** even if you
-  have moved on to another page. Archiving, one metric or many, can be undone
-  from the confirmation toast.
+  have moved on to another page. A metric carries a reviewed mark, set with
+  **Mark reviewed**. A metric page's **⋯** menu has **Create alert…**, which
+  opens the rule form already scoped to that metric. Archiving, one metric or
+  many, can be undone from the confirmation toast.
 - **Fact tables** — saving a fact table reads its columns from the SQL whenever
   the SQL or data source changed since the last **Preview columns**, and checks
-  that the timestamp column is one of them. **Delete fact table** in the editor
-  removes one; while fact metrics still read it, the refusal names them.
+  that the timestamp column is one of them. Named row filters are written in a
+  SQL editor that completes the table's columns. **Delete fact table** in the
+  editor, or **Delete** in a row's **⋯** menu on the list, removes one; while
+  fact metrics still read it, the refusal names them.
 
 Open an event's **monitoring detail** (from the event or one of its signals) to
 see, across tabs:

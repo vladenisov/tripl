@@ -12,7 +12,7 @@ import { examplePlaceholder } from '@/components/forms/placeholders'
 import { REQUIRED_MESSAGE, focusFirstInvalid, invalidAria } from '@/components/forms/validation'
 import { NativeSelect } from '@/components/settings/kit'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { variablesKey } from '@/lib/queryKeys'
+import { projectKey, variablesKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import type { BindingExample } from './bindingExample'
 import { BindingVersusTokenNote } from './VariablesBindingNote'
@@ -79,6 +79,9 @@ export function VariablesCreateDialog({
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
+      // The sidebar's Variables count reads the project summary, which the
+      // variables list does not refresh: it kept the old number (AU-32).
+      qc.invalidateQueries({ queryKey: projectKey(slug) })
       onClose()
     },
   })

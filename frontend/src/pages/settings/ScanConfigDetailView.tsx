@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Play, Sliders } from 'lucide-react'
+import { Play, RotateCcw, Sliders } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
 import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
@@ -23,6 +23,7 @@ import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { ScanDetail } from './ScanDetail'
 import { ScanCausalNote } from './scans/ScanCausalNote'
 import { ScanConfigurationTab } from './scans/ScanConfigForm'
+import { ReplayDialog } from './scans/ReplayDialog'
 import { ScanBadges } from './scans/ScanConfigRow'
 import { BackLink } from './scans/scanLayout'
 import { INTERVAL_LABEL, SCAN_STATUS_LABEL, STATUS_META } from './scans/scanLayoutConstants'
@@ -57,6 +58,10 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   // The Configuration panel is unmounted by the tab switch, so its unsaved
   // edits are guarded here: on leaving the page, and on leaving the tab.
   const [configDirty, setConfigDirty] = useState(false)
+  // Bumped by the form's Discard: remounting it from the saved config is the
+  // reset that cannot miss a field (#247 DA-26).
+  const [configFormKey, setConfigFormKey] = useState(0)
+  const [replayOpen, setReplayOpen] = useState(false)
   const unsaved = useUnsavedChangesGuard(configDirty)
   const setTab = (next: DetailTab) => {
     if (next === tab) return
@@ -154,6 +159,9 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
   const dataSource = (dataSources as DataSource[]).find(ds => ds.id === sc.data_source_id) ?? null
   const runInfo = deriveScanRunInfo(jobs)
   const meta = STATUS_META[runInfo.status]
+  const runActive = runInfo.status === 'running'
+  // Replay re-collects metric points, so it needs both halves of monitoring.
+  const canReplay = Boolean(sc.time_column && sc.interval)
 
   return (
     <PageContainer className="space-y-4">
@@ -179,8 +187,21 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
                 two verbs for one act, one line apart, is the vocabulary drift
                 this epic opened with. "Reads" is what concepts.md already uses
                 for the warehouse side. */}
+            {/* The connection's name leads to it for the one role that can
+                manage connections (#248 DA-40). */}
             <p className="m-0">
-              Reads from <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
+              Reads from{' '}
+              {dataSource && isOwner ? (
+                <Link
+                  to={`/settings/data-sources/${dataSource.id}`}
+                  className="underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-current"
+                  style={{ color: 'var(--fg-muted)' }}
+                >
+                  {dataSource.name}
+                </Link>
+              ) : (
+                <span style={{ color: 'var(--fg-muted)' }}>{dataSource?.name ?? 'Unknown source'}</span>
+              )}
             </p>
             {/* One line under the header saying what this scan produces and what
                 reads it. Above the tab strip, so it holds for both tabs
@@ -197,15 +218,35 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
             <>
               {canRun && (
                 <ScenarioCoachMark step="live-loop/run-scan">
-                  <Button variant="secondary" size="sm" disabled={runMut.isPending} onClick={() => runMut.mutate()}>
+                  {/* Off while a run is already queued or running: a second
+                      click only earned the backend's 409. The label says why;
+                      Stop is on the run's row (#247 DA-6). */}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={runMut.isPending || runActive}
+                    onClick={() => runMut.mutate()}
+                  >
                     <Play className="size-3.5" />
-                    {runMut.isPending ? 'Starting…' : 'Run now'}
+                    {runMut.isPending ? 'Starting…' : runActive ? 'Running…' : 'Run now'}
                   </Button>
                 </ScenarioCoachMark>
               )}
+              {/* Backfill sits next to Run now, as the other way to start a
+                  run, not in the Danger zone beside Delete: it re-reads
+                  history and deletes nothing (#247 DA-8). Owner-only, and only
+                  for a scan that collects metrics. */}
+              {isOwner && canReplay && (
+                <Button variant="outline" size="sm" onClick={() => setReplayOpen(true)}>
+                  <RotateCcw className="size-3.5" aria-hidden="true" />
+                  Replay a period…
+                </Button>
+              )}
               {isOwner && (
+                // Always outline: filled on the Configuration tab it outranked
+                // Save and only repeated the selected tab (#247 DA-25).
                 <Button
-                  variant={tab === 'configuration' ? 'default' : 'outline'}
+                  variant="outline"
                   size="sm"
                   // A phone has the Configuration tab a few pixels below; a second
                   // way there only costs the title its width.
@@ -220,6 +261,10 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
           )
         }
       />
+
+      {replayOpen && (
+        <ReplayDialog slug={slug} scanConfig={sc} open={replayOpen} onOpenChange={setReplayOpen} />
+      )}
 
       {runMut.isError && (
         <p className="text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(runMut.error)}</p>
@@ -254,6 +299,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
         </TabsContent>
         <TabsContent value="configuration">
           <ScanConfigurationTab
+            key={configFormKey}
             slug={slug}
             scanConfig={sc as ScanConfig}
             onDeleted={() => {
@@ -262,6 +308,7 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
               goBack()
             }}
             onDirtyChange={setConfigDirty}
+            onDiscard={() => setConfigFormKey(key => key + 1)}
           />
         </TabsContent>
       </Tabs>

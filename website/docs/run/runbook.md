@@ -650,9 +650,9 @@ buckets use, so a weekly window now opens and closes on a Monday.
   were on the same misaligned grid, and a chunk replaces the points inside its
   own window, so each weekly point kept only the part of the week that fell in
   the last chunk touching it. Points written that way are understated and the
-  scheduled run above only reaches the newest few. Fill the rest with **Run a
-  one-off replay** over the period you care about — chunking is Monday-aligned
-  now, so the replay writes whole weeks.
+  scheduled run above only reaches the newest few. Fill the rest with **Replay a
+  period…** (in the scan page header) over the period you care about —
+  chunking is Monday-aligned now, so the replay writes whole weeks.
 - **Signals on the corrected points.** The detector scores each run against the
   points in storage at the time, so a corrected weekly point can read as a jump
   against uncorrected history behind it. Replaying that history removes the

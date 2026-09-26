@@ -84,6 +84,11 @@ export interface DataSource {
   last_test_message: string | null
   created_at: string
   updated_at: string
+  // What depends on the source across the workspace, deleted with it (DA-40).
+  // Counts, not names: a scan can sit in a project the reader does not work
+  // in. Always sent; optional so fixtures written before them still type.
+  scan_count?: number
+  scan_run_count?: number
 }
 
 /** POST /data-sources/test: a probe of an unsaved config, which stores nothing. */

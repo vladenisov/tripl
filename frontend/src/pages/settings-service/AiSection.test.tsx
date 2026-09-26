@@ -138,29 +138,40 @@ describe('Instance AI — the embeddings endpoint', () => {
   it('shows the endpoint the indexed plan text is actually sent to', () => {
     renderSection(settingsFixture({ search_embedding_base_url: 'https://llm.internal/v1' }))
 
-    expect(screen.getByLabelText('Embeddings base URL')).toHaveValue('https://llm.internal/v1')
+    expect(
+      within(screen.getByRole('group', { name: 'Embeddings base URL' })).getByText(
+        'https://llm.internal/v1',
+      ),
+    ).toBeInTheDocument()
   })
 
   it('never lets it be edited, because repointing it poisons the existing index', () => {
     renderSection(settingsFixture())
 
-    expect(screen.getByLabelText('Embeddings base URL')).toBeDisabled()
+    // Reported as text, not a dashed input that cannot move (ST-30).
+    const row = screen.getByRole('group', { name: 'Embeddings base URL' })
+    expect(within(row).queryByRole('textbox')).toBeNull()
   })
 
   it('says which variable sets it and what changing it really costs', () => {
     renderSection(settingsFixture())
 
-    const hint = screen.getByText(/SEARCH_EMBEDDING_BASE_URL/)
-    expect(hint).toHaveTextContent(/POSTed here/i)
-    expect(hint).toHaveTextContent(/re-embed and a deploy, not a setting/i)
+    const row = screen.getByRole('group', { name: 'Embeddings base URL' })
+    expect(within(row).getByText('SEARCH_EMBEDDING_BASE_URL')).toBeInTheDocument()
+    // The reasoning sits behind a "Why?" rather than eight lines of hint (ST-30).
+    const why = within(row).getByText('Why?').closest('details')
+    expect(why).toHaveTextContent(/POSTed here/i)
+    expect(why).toHaveTextContent(/re-embed and a deploy, not a setting/i)
   })
 
-  it('badges the built-in default as Default rather than asserting an env variable', () => {
+  it('does not assert an env variable for a value at its built-in default', () => {
     // The prod state the issue documents: the value is bit-identical to the
-    // shipped default and nothing was ever delivered for it.
+    // shipped default and nothing was ever delivered for it. No badge at all
+    // (ST-25); the page legend says what an unmarked row means.
     renderSection(settingsFixture({}, { 'ai.search_embedding_base_url': 'default' }))
 
-    expect(within(labelRow('Embeddings base URL')).getByText('Default')).toBeInTheDocument()
+    expect(within(labelRow('Embeddings base URL')).queryByText('Env')).toBeNull()
+    expect(within(labelRow('Embeddings base URL')).queryByText('Default')).toBeNull()
   })
 
   it('badges a delivered endpoint as Env, which is the evidence the issue asked for', () => {
@@ -242,15 +253,33 @@ describe('Instance AI — connection test (WS-26)', () => {
     vi.restoreAllMocks()
   })
 
-  it('says the test runs against the saved settings', () => {
+  it('says the test runs against the saved settings, without shouting', () => {
     renderSection(settingsFixture())
 
-    expect(screen.getByText(/Tests the SAVED settings/)).toBeInTheDocument()
+    expect(screen.getByText('Uses the saved settings, so save your changes first.')).toBeInTheDocument()
+    expect(screen.queryByText(/SAVED/)).toBeNull()
+  })
+
+  it('holds the test, and says why, while AI is off in the saved settings (ST-26)', () => {
+    renderSection(settingsFixture({ ai_enabled: false }))
+
+    expect(screen.getByRole('button', { name: 'Test AI' })).toBeDisabled()
+    expect(screen.getByText(/AI is off in the saved settings/)).toBeInTheDocument()
+    // The dependent rows stay editable, only de-emphasised.
+    expect(screen.getByText('Not used while AI is off.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Model')).toBeEnabled()
+  })
+
+  it('holds the test while no API key is saved (ST-26)', () => {
+    renderSection(settingsFixture({ ai_enabled: true, ai_api_key_configured: false }))
+
+    expect(screen.getByRole('button', { name: 'Test AI' })).toBeDisabled()
+    expect(screen.getByText('No API key is saved. Add one and save first.')).toBeInTheDocument()
   })
 
   it('reports a failed test request instead of showing nothing', async () => {
     vi.spyOn(serviceSettingsApi, 'testAi').mockRejectedValue(new Error('Gateway timeout'))
-    renderSection(settingsFixture())
+    renderSection(settingsFixture({ ai_enabled: true, ai_api_key_configured: true }))
 
     fireEvent.click(screen.getByRole('button', { name: 'Test AI' }))
 
@@ -297,5 +326,29 @@ describe('Instance AI — numeric fields (WS-25)', () => {
     expect(numberFieldError('email', 'smtp_port', '65536')).not.toBeNull()
     expect(numberFieldError('security', 'hsts_max_age_seconds', '0')).toBeNull()
     expect(numberFieldError('ai', 'ai_model', '')).toBeNull()
+  })
+})
+
+describe('Instance AI — restore a default prompt (ST-30)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('offers the built-in prompt beside one that differs, and fills the editor with it', async () => {
+    vi.spyOn(serviceSettingsApi, 'aiPromptDefaults').mockResolvedValue({
+      describe_system_prompt: 'built-in describe',
+      ask_system_prompt: 'ask',
+      alert_explanation_system_prompt: 'explain',
+    })
+    const setField = vi.fn()
+    const settings = settingsFixture()
+    renderSection(settings, editableFromSettings(settings), setField)
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Restore the default describe prompt' }),
+    )
+    expect(setField).toHaveBeenCalledWith('ai', 'describe_system_prompt', 'built-in describe')
+    // A prompt already at its default has nothing to restore.
+    expect(screen.queryByRole('button', { name: 'Restore the default ask prompt' })).toBeNull()
   })
 })

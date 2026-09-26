@@ -191,3 +191,37 @@ describe('Instance System card', () => {
     })
   })
 })
+
+describe('Instance System card layout (ST-33)', () => {
+  it('names the problems first instead of leaving them to be found among the tiles', () => {
+    renderCard({ debug: true, encryption_key_configured: false })
+
+    expect(
+      screen.getByText('2 items need attention: Debug mode is on, Encryption key is unset.'),
+    ).toBeInTheDocument()
+    // No second "System" title under the page's own.
+    expect(screen.queryByRole('heading', { name: 'System' })).toBeNull()
+  })
+
+  it('names what is wrong with the schema, not its revision id', () => {
+    renderCard({ alembic_head_revision: NEWER, alembic_up_to_date: false })
+
+    expect(
+      screen.getByText('1 item needs attention: Schema revision does not match this build.'),
+    ).toBeInTheDocument()
+  })
+
+  it('says an unreadable schema revision could not be read', () => {
+    renderCard({ alembic_revision: null, alembic_head_revision: NEWER, alembic_up_to_date: null })
+
+    expect(
+      screen.getByText('1 item needs attention: Schema revision could not be read.'),
+    ).toBeInTheDocument()
+  })
+
+  it('says nothing needs attention by saying nothing', () => {
+    renderCard()
+
+    expect(screen.queryByText(/need(s)? attention/)).toBeNull()
+  })
+})

@@ -758,7 +758,7 @@ was cancelled", or a scan/collection that fails after roughly the source's
 timeout.
 
 Narrow the time window, reduce the columns the base query selects, or raise the
-data source's **Timeout, s**. A smaller replay chunk does not help if the
+data source's **Timeout (seconds)**. A smaller replay chunk does not help if the
 statement that timed out is a breakdown's top-N ranking: that one query reads
 the whole replay window by design (see
 [Top-N breakdowns rank over the whole collection window](#top-n-breakdowns-rank-over-the-whole-collection-window)),

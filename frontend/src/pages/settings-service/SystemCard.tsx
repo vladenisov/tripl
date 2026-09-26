@@ -1,4 +1,3 @@
-import { ServerCog } from 'lucide-react'
 import type { SystemSettings } from '@/types'
 import { Dot } from '@/components/primitives/dot'
 import { SCard } from '@/components/settings/kit'
@@ -19,6 +18,12 @@ type SystemRow = {
    * state it can be in — including the unknown branches of the schema row.
    */
   note: string
+  /**
+   * What is wrong, as a short clause for the "needs attention" summary. Set on
+   * every warning or danger row: "<label> is <value>" said "Schema revision is
+   * 0042_abcd." for a mismatch, which does not name the problem (ST-33).
+   */
+  problem?: string
 }
 
 const VALUE_COLOR: Record<SystemTone, string> = {
@@ -40,6 +45,7 @@ function required(label: string, configured: boolean, use: string): SystemRow {
     value: configured ? 'Configured' : 'Unset',
     tone: configured ? 'success' : 'danger',
     note: configured ? use : 'Required — the API cannot reach this dependency.',
+    problem: configured ? undefined : `${label} is unset`,
   }
 }
 
@@ -78,8 +84,9 @@ function schemaRevisionRow(system: SystemSettings): SystemRow {
       label: 'Schema revision',
       // Both numbers, deliberately: what the database is at, and what this build
       // wants. Either alone leaves the operator unable to tell how far apart.
-      value: applied ?? '',
+      value: applied ?? 'Unknown',
       tone: 'danger',
+      problem: 'Schema revision does not match this build',
       // Direction is deliberately not asserted. The payload carries two revision
       // strings and no ordering between them, and this said "the migrate step
       // has not applied it" for both causes the admin guide itself lists: the
@@ -97,6 +104,7 @@ function schemaRevisionRow(system: SystemSettings): SystemRow {
       label: 'Schema revision',
       value: applied,
       tone: 'warning',
+      problem: "Schema revision can't be compared with this build",
       note: "The database is stamped with this revision. This build's own migration head could not be determined, so the two cannot be compared.",
     }
   }
@@ -104,6 +112,7 @@ function schemaRevisionRow(system: SystemSettings): SystemRow {
     label: 'Schema revision',
     value: 'Unknown',
     tone: 'warning',
+    problem: 'Schema revision could not be read',
     note: head
       ? `Could not read alembic_version. This build ships ${head}.`
       : "Could not read alembic_version, and this build's own migration head could not be determined either.",
@@ -131,12 +140,17 @@ function schemaRevisionRow(system: SystemSettings): SystemRow {
  *    and embedding keys (config.py:348-351). Unset is neutral for those two and
  *    for nothing else.
  */
+function needsAttention(row: SystemRow): boolean {
+  return row.tone === 'warning' || row.tone === 'danger'
+}
+
 function systemRows(system: SystemSettings): SystemRow[] {
   return [
     {
       label: 'Debug mode',
       value: system.debug ? 'On' : 'Off',
       tone: system.debug ? 'warning' : 'success',
+      problem: system.debug ? 'Debug mode is on' : undefined,
       note: system.debug
         ? 'Production startup checks are skipped and CORS falls back to "*".'
         : 'Production startup checks ran at boot and CORS is limited to the configured origins.',
@@ -168,6 +182,7 @@ function systemRows(system: SystemSettings): SystemRow[] {
       label: 'Encryption key',
       value: system.encryption_key_configured ? 'Configured' : 'Unset',
       tone: system.encryption_key_configured ? 'success' : 'danger',
+      problem: system.encryption_key_configured ? undefined : 'Encryption key is unset',
       note: system.encryption_key_configured
         ? 'Data source and alert destination secrets are encrypted at rest with it.'
         : 'Data source and alert destination secrets are stored as plaintext.',
@@ -185,16 +200,25 @@ function systemRows(system: SystemSettings): SystemRow[] {
 }
 
 export function SystemCard({ system }: { system: SystemSettings }) {
-  const rows = systemRows(system)
+  // The rows to act on first, so the owner does not scan all of them to find
+  // the two that matter (ST-33). The sort is stable: the rest keep their order.
+  const rows = [...systemRows(system)].sort((a, b) => Number(needsAttention(b)) - Number(needsAttention(a)))
+  const problems = rows.filter(needsAttention)
 
   return (
-    <SCard
-      title="System"
-      icon={<ServerCog className="h-4 w-4" />}
-      description="Read from this instance's environment when the API started. None of it can be changed from the app — set the variable where the process gets its environment, then restart. The schema revision is the exception: it is read from the database each time this page loads."
-    >
-      <div className="p-[18px]">
-        <div className="grid gap-2.5 sm:grid-cols-3">
+    // No card title: it repeated the page's own "System" h1 (ST-33).
+    <SCard description="Read from this instance's environment when the API started. None of it can be changed from the app — set the variable where the process gets its environment, then restart. The schema revision is the exception: it is read from the database each time this page loads.">
+      <div className="space-y-3 p-4">
+        {problems.length > 0 && (
+          <p className="m-0 text-body-sm font-medium" style={{ color: 'var(--fg)' }}>
+            {problems.length === 1 ? '1 item needs attention' : `${problems.length} items need attention`}
+            :{' '}
+            {problems.map(row => row.problem ?? `${row.label} needs a look`).join(', ')}.
+          </p>
+        )}
+        {/* Equal rows, so a two-line note does not make its row taller than
+            the next (ST-33). */}
+        <div className="grid auto-rows-fr gap-2.5 sm:grid-cols-3">
           {rows.map(row => (
             <div
               key={row.label}
@@ -217,10 +241,8 @@ export function SystemCard({ system }: { system: SystemSettings }) {
                   pulse={row.tone === 'warning' || row.tone === 'danger'}
                   size={7}
                 />
-                <span
-                  className="micro-label"
-                  style={{ color: 'var(--fg-faint)' }}
-                >
+                {/* Sentence case, not an uppercase eyebrow (ST-33). */}
+                <span className="text-caption font-medium" style={{ color: 'var(--fg-muted)' }}>
                   {row.label}
                 </span>
               </div>

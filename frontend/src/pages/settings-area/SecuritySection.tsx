@@ -1,10 +1,14 @@
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Mail } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { authApi } from '@/api/auth'
 import { useAuth } from '@/components/auth-context'
 import { SCard, SHeader } from '@/components/settings/kit'
+import { DisabledReason, disabledReasonAria } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { isOwner as isOwnerRole } from '@/lib/permissions'
+import { authStatusKey } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import { ComingLaterCard } from './ComingLaterCard'
 
@@ -40,11 +44,31 @@ const UNBUILT = [
 export default function SecuritySection() {
   const { user } = useAuth()
   const email = user?.email ?? ''
+  const isOwner = isOwnerRole(user?.role)
   const resetMut = useMutation({
     // The outcome renders under the button.
     meta: SILENT_ERROR_META,
     mutationFn: () => authApi.requestPasswordReset({ email }),
   })
+  // Everyone learns that email is off BEFORE pressing a button that cannot
+  // work (ST-24). The unauthenticated instance probe carries the same
+  // `email_can_send` answer the reset endpoint uses (host AND From: address),
+  // so it is right for owners and non-owners alike. An owner gets the way to
+  // fix it; anyone else is told to ask one. Only a definite `false` disables
+  // the button: while the probe is in flight, or if it failed, the request's
+  // own answer still says whether a link went out.
+  const statusQuery = useQuery({
+    queryKey: authStatusKey(),
+    queryFn: authApi.status,
+    meta: SILENT_ERROR_META,
+  })
+  const emailOff = statusQuery.data?.email_configured === false
+  const setUpEmail = (
+    <Link to="/settings/instance/email" className="font-medium text-accent no-underline hover:underline">
+      Set up email
+    </Link>
+  )
+  const blocker = emailOff ? "This instance can't send email yet." : null
 
   return (
     <div>
@@ -62,25 +86,32 @@ export default function SecuritySection() {
             <Button
               variant="outline"
               size="sm"
-              disabled={!email || resetMut.isPending}
+              disabled={!email || resetMut.isPending || emailOff}
               onClick={() => resetMut.mutate()}
+              {...disabledReasonAria('password-reset', blocker)}
             >
               <Mail className="h-3 w-3" />
               {resetMut.isPending ? 'Sending…' : 'Email me a reset link'}
             </Button>
           </div>
+          {emailOff && (
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <DisabledReason id="password-reset" reason={blocker} />
+              <span className="text-caption">{isOwner ? setUpEmail : 'Ask an owner to set it up.'}</span>
+            </div>
+          )}
           <div aria-live="polite" className="text-body-sm leading-[1.45]">
-            {resetMut.isSuccess &&
-              (resetMut.data.email_configured ? (
-                <span style={{ color: 'var(--success)' }}>
-                  Sent — check {email} for a link to choose a new password.
-                </span>
-              ) : (
-                <span style={{ color: 'var(--warning)' }}>
-                  This instance cannot send email, so no link went out. Ask a workspace owner to
-                  set up email under Service settings, or to reset the password for you.
-                </span>
-              ))}
+            {resetMut.isSuccess && resetMut.data.email_configured && (
+              <span style={{ color: 'var(--success)' }}>
+                Sent — check {email} for a link to choose a new password.
+              </span>
+            )}
+            {resetMut.isSuccess && !resetMut.data.email_configured && (
+              <span style={{ color: 'var(--warning)' }}>
+                This instance can't send email, so no link went out.{' '}
+                {isOwner ? setUpEmail : 'Ask an owner to set it up.'}
+              </span>
+            )}
           </div>
           {resetMut.isError && (
             <p role="alert" className="m-0 text-body-sm" style={{ color: 'var(--danger)' }}>

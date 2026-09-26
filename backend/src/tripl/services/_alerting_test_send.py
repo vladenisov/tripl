@@ -24,6 +24,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import smtplib
+import socket
+import ssl
+import urllib.error
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -49,7 +53,7 @@ from tripl.alerting_validation import (
 )
 from tripl.crypto import decrypt_value
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
-from tripl.schemas.alerting import AlertDestinationTestResponse
+from tripl.schemas.alerting import AlertDestinationTestResponse, DestinationTestErrorKind
 from tripl.services._alerting_destinations import get_destination
 from tripl.services.project_lookup import get_project_by_slug as _get_project
 
@@ -289,6 +293,57 @@ def _send_test_message(target: _TestTarget) -> None:
     sender(target)
 
 
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    """``exc`` and every exception it was raised from, outermost first.
+
+    The channel clients wrap transport errors in a readable ``ValueError``
+    (``raise ValueError(...) from exc``), so the type that says what went wrong
+    sits on ``__cause__``. A URLError's ``reason`` is walked too: it is where
+    urllib keeps the socket or TLS error.
+    """
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        reason = (
+            getattr(current, "reason", None) if isinstance(current, urllib.error.URLError) else None
+        )
+        current = (
+            reason
+            if isinstance(reason, BaseException)
+            else current.__cause__ or current.__context__
+        )
+    return chain
+
+
+def classify_test_send_error(exc: BaseException) -> tuple[DestinationTestErrorKind, int | None]:
+    """A test send's failure as a kind (+ HTTP status), for the dialog (AL-30).
+
+    Most specific first: an HTTP answer beats the socket it came over, a TLS or
+    DNS failure beats the generic OSError both subclass. A bare ``ValueError``
+    with nothing behind it is one of our own validators refusing a stored value.
+    """
+    chain = _exception_chain(exc)
+    for item in chain:
+        if isinstance(item, urllib.error.HTTPError):
+            return "http_status", item.code
+    for item in chain:
+        if isinstance(item, (ssl.SSLError, ssl.CertificateError)):
+            return "tls", None
+        if isinstance(item, socket.gaierror):
+            return "dns", None
+        if isinstance(item, TimeoutError):
+            return "timeout", None
+        if isinstance(item, smtplib.SMTPException):
+            return "smtp", None
+    for item in chain:
+        if isinstance(item, (urllib.error.URLError, OSError)):
+            return "network", None
+    if len(chain) == 1 and isinstance(exc, ValueError):
+        return "config", None
+    return "other", None
+
+
 async def send_destination_test(
     session: AsyncSession,
     slug: str,
@@ -330,6 +385,7 @@ async def send_destination_test(
                 # Nothing was sent, so there is no instant to report — but the
                 # key is still present, because the response type says it is.
                 sent_at=None,
+                error_kind="policy",
             ),
             destination_name=destination_name,
         )
@@ -358,8 +414,15 @@ async def send_destination_test(
             destination.type,
             exc_info=True,
         )
+        error_kind, http_status = classify_test_send_error(exc)
         return DestinationTestOutcome(
-            response=AlertDestinationTestResponse(ok=False, error=str(exc), sent_at=None),
+            response=AlertDestinationTestResponse(
+                ok=False,
+                error=str(exc),
+                sent_at=None,
+                error_kind=error_kind,
+                http_status=http_status,
+            ),
             destination_name=destination_name,
         )
 

@@ -32,6 +32,7 @@ export function ObservabilitySection({
             value={form.observability.log_level}
             onChange={value => setField('observability', 'log_level', value)}
             options={LOG_LEVEL_OPTIONS}
+            width="fill"
           />
         </Field>
         <ToggleRow

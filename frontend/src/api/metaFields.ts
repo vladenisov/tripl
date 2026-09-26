@@ -1,5 +1,5 @@
 import { api, withBranch } from './client'
-import type { MetaFieldDefinition, Sensitivity } from '../types'
+import type { MetaFieldDefinition, MetaFieldUsage, Sensitivity } from '../types'
 
 export const metaFieldsApi = {
   list: (slug: string, branchId?: string | null) =>
@@ -33,6 +33,8 @@ export const metaFieldsApi = {
       withBranch(`/projects/${slug}/meta-fields/${id}`, branchId),
       data,
     ),
+  usage: (slug: string, id: string, branchId?: string | null) =>
+    api.get<MetaFieldUsage>(withBranch(`/projects/${slug}/meta-fields/${id}/usage`, branchId)),
   del: (slug: string, id: string, branchId?: string | null) =>
     api.del(withBranch(`/projects/${slug}/meta-fields/${id}`, branchId)),
 }

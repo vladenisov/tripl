@@ -109,8 +109,8 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
    latest complete bucket — three intervals wide in steady state, thirty on a
    scan's very first run. A source that stopped for a while and later wrote rows
    into *old* buckets has put them behind that trailing slice, so no scheduled
-   run will ever pick them up. Fill them with **Run a one-off replay** over the
-   period they belong to.
+   run will ever pick them up. Fill them with **Replay a period…** (in the scan
+   page header) over the period they belong to.
 
 **Fix.**
 
@@ -121,8 +121,8 @@ monitoring charts stay empty and no anomalies or alerts ever show up.
   **Catalog + monitoring**, then fill in the **Time column** and **Schedule** it
   asks for — the form refuses to save until both are answered. Save, then wait
   one beat cycle (≤ 5 minutes) for the first collection, or fill a past window
-  right away with **Run a one-off replay** on the scan's Configuration tab (it
-  needs the same time column and schedule, so it unlocks with them).
+  right away with **Replay a period…** in the scan page header, which opens a
+  dialog (it needs the same time column and schedule, so it unlocks with them).
 - If the scan is deliberately **Catalog only**, nothing is broken: that mode
   records no metric points by design, so it raises no anomalies and sends no
   alerts.
@@ -528,7 +528,7 @@ to every curated message rather than leaving each raise site to remember it:
   interval, which is still filling. Choose an end at or before 2026-09-12 12:00
   UTC."* This is now refused **at submit** rather than becoming a failed run: the
   replay call answers `400` before any run is created, naming the same latest
-  acceptable end, and **Run a one-off replay** shows that message in the dialog.
+  acceptable end, and the **Replay a period…** dialog shows that message.
   A replay started from the UI or the API therefore no longer reaches the failure
   above; it survives for a run that was already queued when the instance was
   upgraded.
@@ -807,12 +807,13 @@ from this scan are open now*), so you are not left comparing a number here
 against a number on another page. The activity feed's "N new signals" on a scan
 card is the same delta.
 
-**Two runs both say "Rows read" but the numbers look unrelated.**
-Because they count different populations. A catalog run reports the rows the
-catalog analyzer read, bounded by **Row cap per run**; a metrics run reports the
-rows read across every metrics chunk, bounded by **Row cap per metrics run**. The
-column header cannot say which, so hover the figure — the stat card and every
-cell in the run table carry a title naming the population and its cap.
+**Two runs both say "Scanned" but the numbers look unrelated.**
+Because they count different populations. A catalog run reports the distinct
+column combinations the warehouse grouped for it ("153 combos"), not warehouse
+rows, bounded by **Row cap per run**; a metrics run reports the warehouse rows
+read across every metrics chunk, bounded by **Row cap per metrics run**. Hover
+the figure — the stat card and every cell in the run table carry a title naming
+the population and its cap.
 
 **Do I need to run scans on a schedule to get metrics?**
 **Yes** — the schedule is what makes a scan a monitoring scan. A scan with no
@@ -823,8 +824,8 @@ come from `collect_metrics`, and the dispatcher only ever selects scans that set
 for. What you never have to do is trigger that collection: pick the mode, and
 `celery-beat` dispatches it from then on. Starting a run by hand adds events and
 fields to your plan and writes no metric point — and the one manual metrics path,
-**Run a one-off replay** on the scan's Configuration tab, is itself disabled
-until the scan has both.
+**Replay a period…** in the scan page header, is itself disabled until the scan
+has both.
 
 **Why is my brand-new scan not flagging any anomalies?**
 Anomaly detection needs history. Until enough buckets accumulate, the detector

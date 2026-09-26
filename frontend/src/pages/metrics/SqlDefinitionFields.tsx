@@ -4,6 +4,8 @@ import { Loader2, Play } from 'lucide-react'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ColumnSuggestInput } from '@/components/column-suggest'
 import { ErrorState } from '@/components/error-state'
+import { FieldError } from '@/components/forms/FieldError'
+import { DisabledReason, disabledReasonAria } from '@/components/states'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { SqlEditor } from '@/components/sql-editor'
 import { SCard, NativeSelect, type SelectOption, Field } from '@/components/settings/kit'
@@ -115,6 +117,11 @@ interface SqlDefinitionFieldsProps {
    * once an edit invalidates that preview.
    */
   onPreviewColumns: (columns: string[] | null) => void
+  /**
+   * Whether the last preview failed (true) or no longer applies (false), so
+   * Create can ask before saving a query that just errored (MT-15).
+   */
+  onPreviewFailed?: (failed: boolean) => void
 }
 
 /**
@@ -137,6 +144,7 @@ export function SqlDefinitionFields({
   schemaTables,
   columnSuggestions,
   onPreviewColumns,
+  onPreviewFailed,
 }: SqlDefinitionFieldsProps) {
   // Last dry-run result, for the inputs it ran against.
   const [preview, setPreview] = useState<MetricPreviewResponse | null>(null)
@@ -149,11 +157,16 @@ export function SqlDefinitionFields({
     mutationFn: (payload: MetricPreviewRequest) => metricsCatalogApi.preview(slug, payload),
   })
 
-  const canPreview =
-    !!draft.dataSourceId
-    && !!draft.metricSql.trim()
-    && !!draft.sqlTimeColumn.trim()
-    && !previewMut.isPending
+  // Which input Preview still needs, said under the button rather than
+  // leaving it silently grey (MT-15).
+  const previewBlocker = !draft.dataSourceId
+    ? 'Pick a data source to preview.'
+    : !draft.metricSql.trim()
+      ? 'Write the query to preview it.'
+      : !draft.sqlTimeColumn.trim()
+        ? 'Name the time column to preview.'
+        : null
+  const canPreview = previewBlocker === null && !previewMut.isPending
 
   const onPreview = () => {
     setPreview(null)
@@ -172,8 +185,10 @@ export function SqlDefinitionFields({
       {
         onSuccess: result => {
           setPreview(result)
+          onPreviewFailed?.(!!result.error)
           if (!result.error && result.columns?.length) onPreviewColumns(result.columns)
         },
+        onError: () => onPreviewFailed?.(true),
       },
     )
   }
@@ -186,6 +201,7 @@ export function SqlDefinitionFields({
     setPreview(null)
     previewMut.reset()
     onPreviewColumns(null)
+    onPreviewFailed?.(false)
   }
 
   const dataSourceOptions: SelectOption[] = [
@@ -244,8 +260,6 @@ export function SqlDefinitionFields({
           htmlFor="metric-sql-query"
           required
           stacked
-          error={errors['metric-sql-query']}
-          announceError={false}
         >
           <SqlEditor
             id="metric-sql-query"
@@ -269,12 +283,16 @@ export function SqlDefinitionFields({
             ariaRequired
             ariaInvalid={!!errors['metric-sql-query']}
             ariaDescribedBy={errors['metric-sql-query'] ? fieldErrorId('metric-sql-query') : undefined}
+            // Right under the editor, not under the Preview row 60-100px
+            // below, where it read like a preview failure (MT-8).
+            error={<FieldError inputId="metric-sql-query" message={errors['metric-sql-query']} />}
           />
           <div className="mt-[10px] flex flex-wrap items-center gap-[10px]">
             <button
               type="button"
               onClick={onPreview}
               disabled={!canPreview}
+              {...disabledReasonAria('metric-sql-preview', previewBlocker)}
               className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"
               style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
             >
@@ -285,9 +303,13 @@ export function SqlDefinitionFields({
               )}
               {previewMut.isPending ? 'Running…' : 'Preview'}
             </button>
-            <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
-              Dry-run against the data source over recent buckets; nothing is saved.
-            </span>
+            {previewBlocker ? (
+              <DisabledReason id="metric-sql-preview" reason={previewBlocker} />
+            ) : (
+              <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                Dry-run against the data source over recent buckets; nothing is saved.
+              </span>
+            )}
           </div>
           {previewMut.isError && (
             <div className="mt-[10px]">

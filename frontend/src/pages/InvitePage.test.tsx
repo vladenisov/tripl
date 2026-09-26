@@ -56,7 +56,11 @@ describe('InvitePage', () => {
     renderInvitePage()
 
     expect(await screen.findByText('invitee@example.com')).toBeInTheDocument()
-    expect(screen.getByText(/Editor/)).toBeInTheDocument()
+    expect(screen.getByText('Editor')).toBeInTheDocument()
+    // The role is explained, not just named (SH-32).
+    expect(
+      screen.getByText('Editor can change the tracking plan and alerts, and run scans.'),
+    ).toBeInTheDocument()
     // The address is fixed by the invitation, so there must be no way to
     // redirect it to a different identity.
     expect(screen.queryByLabelText(/email/i)).not.toBeInTheDocument()
@@ -77,8 +81,51 @@ describe('InvitePage', () => {
 
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(/invalid, expired, or already used/i)
+    // The title stops inviting, and the way out is a real button (SH-32).
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'This invite link no longer works' }),
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Go to sign in' }))
+    expect(await screen.findByText('Sign in screen')).toBeInTheDocument()
     // No password form for a link that cannot be redeemed.
     expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
+  })
+
+  it('does not call a link dead when the check itself failed, and offers a retry', async () => {
+    // A rate limit (or a 5xx, or no network) says nothing about the link. Telling
+    // a valid invitee it "no longer works" sent them away from a good invite.
+    let calls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.includes(`/auth/invitations/${TOKEN}`)) {
+        calls += 1
+        if (calls === 1) {
+          return Promise.resolve(jsonResponse({ detail: 'Too many requests.' }, 429))
+        }
+        return Promise.resolve(
+          jsonResponse({
+            email: 'invitee@example.com',
+            role: 'viewer',
+            expires_at: '2026-08-01T00:00:00Z',
+          }),
+        )
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderInvitePage()
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Could not check this invitation' }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('This invite link no longer works')).not.toBeInTheDocument()
+    expect(screen.queryByText('Ask whoever invited you to send a new link.')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('invitee@example.com')).toBeInTheDocument()
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Join this tripl workspace' }),
+    ).toBeInTheDocument()
   })
 
   it('accepts the invitation and lands the new user in the app', async () => {
@@ -157,5 +204,26 @@ describe('InvitePage', () => {
     expect(password).toHaveAccessibleDescription(/Required/)
     await waitFor(() => expect(password).toHaveFocus())
     expect(accepted).not.toHaveBeenCalled()
+  })
+
+  it('lets the new user check the password they typed (SH-31)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.includes(`/auth/invitations/${TOKEN}`)) {
+        return Promise.resolve(
+          jsonResponse({ email: 'invitee@example.com', role: 'viewer', expires_at: '2026-08-01T00:00:00Z' }),
+        )
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderInvitePage()
+
+    const password = await screen.findByLabelText('Password')
+    expect(password).toHaveAttribute('type', 'password')
+    const toggle = screen.getByRole('button', { name: 'Show password' })
+    fireEvent.click(toggle)
+    expect(password).toHaveAttribute('type', 'text')
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
   })
 })

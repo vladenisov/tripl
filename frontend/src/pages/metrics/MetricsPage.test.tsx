@@ -134,6 +134,9 @@ function makeFactTable(overrides: Partial<FactTableListItem>): FactTableListItem
     order: 0,
     data_source_id: 'ds-1',
     timestamp_column: 'created_at',
+    metric_count: 0,
+    column_count: 0,
+    identifier_count: 0,
     created_at: '2026-06-01T00:00:00Z',
     updated_at: '2026-06-20T00:00:00Z',
     ...overrides,
@@ -251,6 +254,9 @@ describe('MetricsPage — a viewer reads the catalog without write controls (MET
     expect(screen.queryByRole('checkbox', { name: 'Select Checkout conversion' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Reorder Checkout conversion' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Actions for Checkout conversion' })).not.toBeInTheDocument()
+    // Nor the empty tracks those controls sat in (MT-29).
+    expect(screen.queryByRole('columnheader', { name: 'Reorder' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Actions' })).not.toBeInTheDocument()
   })
 })
 
@@ -793,7 +799,7 @@ describe('MetricsPage', () => {
       renderMetrics()
 
       await screen.findByText('Firing metric')
-      expect(screen.getByText('Metrics with anomalies')).toBeInTheDocument()
+      expect(screen.getByText('With anomalies')).toBeInTheDocument()
       expect(screen.queryByText('Anomalies')).not.toBeInTheDocument()
     })
 
@@ -818,12 +824,15 @@ describe('MetricsPage', () => {
       expect(link).toHaveAttribute('title', 'Purchase conversion')
     })
 
-    it('labels the Trend column header with the real sparkline point count', async () => {
+    it('titles the Trend column header with the real collection count (MT-34)', async () => {
       mockList({ items: [makeItem({ id: 'm-1', spark: [1, 2, 3, 4, 5, 6, 7, 8] })], total: 1 })
 
       renderMetrics()
 
-      expect(await screen.findByText('Trend · 8 pts')).toBeInTheDocument()
+      expect(await screen.findByRole('columnheader', { name: 'Trend' })).toHaveAttribute(
+        'title',
+        'Last 8 collections',
+      )
     })
 
     it('titles the Latest cell with the latest bucket time when available', async () => {

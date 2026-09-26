@@ -462,10 +462,35 @@ export default function MonitoringDetailPage() {
   usePageTitle(titleEntity ? headerTitle : null)
   const headerIdentity = scope === 'event' && event?.title ? (event.source_name || event.name) : null
   const headerDescription = (() => {
-    if (scope === 'metric') return metricDefinition?.description || 'Catalog metric monitoring detail.'
+    if (scope === 'metric') {
+      if (metricDefinition?.description) return metricDefinition.description
+      // A placeholder sentence said nothing; the gap is an invitation to fill
+      // it in (#246 JR-16).
+      return metricDefinition && canWrite ? (
+        <Link
+          to={metricEditPath}
+          className="text-muted-foreground underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-current"
+        >
+          Add a description…
+        </Link>
+      ) : undefined
+    }
     if (scope === 'project_total') return 'Every event the scan counts, in one series.'
     if (scope === 'event_type') return eventType?.description || 'Aggregated volume for the event type.'
     return event?.description || 'Monitoring detail for the selected event.'
+  })()
+  // Why the chart is empty, per scope (#246 JR-16): a draft is never
+  // collected (the header's Activate is the action), and a fact or SQL metric
+  // is computed on its own schedule rather than by a scan.
+  const chartEmptyDescription = (() => {
+    if (scope !== 'metric' || !metricDefinition) {
+      return 'Run a scan to start collecting volume metrics for this scope.'
+    }
+    if (metricDefinition.status === 'draft') return "This metric is a draft and isn't collected."
+    if (metricDefinition.kind === 'fact' || metricDefinition.kind === 'sql') {
+      return 'No values yet — compute now or wait for the next scheduled run.'
+    }
+    return 'Run a scan to start collecting values for this metric.'
   })()
   const latestSignal = metrics?.latest_signal
   const partialBuckets = useMemo(
@@ -801,7 +826,7 @@ export default function MonitoringDetailPage() {
                     <EmptyState
                       icon={TrendingUp}
                       title="No metrics data available"
-                      description="Run a scan to start collecting volume metrics for this scope."
+                      description={chartEmptyDescription}
                     />
                   </div>
                 ) : (

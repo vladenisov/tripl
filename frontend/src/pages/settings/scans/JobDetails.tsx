@@ -1,14 +1,17 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
+import { Button } from '@/components/ui/button'
 import type { ScanJob } from '@/types'
 import { formatDateTime } from '@/lib/datetime'
 import { friendlyScanError } from '@/lib/scanError'
+import { useIsOwner } from '@/lib/permissions'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
 import { ReplayChunkProgress } from './ReplayChunkProgress'
 import { ScanErrorTechnicalDetails } from './ScanErrorTechnicalDetails'
 import type { ScanMode } from './scanMode'
 import { buildRunReport, type RunReportLine, type RunReportTarget } from './runReport'
+import { scanErrorNextStep } from './scanErrorNextStep'
 
 /**
  * Where a report line's counter can be inspected. Both filter by SCAN, not by
@@ -108,14 +111,18 @@ export function JobDetails({
   slug,
   scanConfigId,
   mode,
+  dataSourceId,
 }: {
   job: ScanJob
   slug: string
   scanConfigId: string
   /** Derived from the config, not the run — it decides the catalog-only line. */
   mode: ScanMode
+  /** The scan's source, so a failure can link an owner to its connection. */
+  dataSourceId?: string | null
 }) {
   const [countersOpen, setCountersOpen] = useState(false)
+  const isOwner = useIsOwner()
   const summary = job.result_summary
 
   // "Raised N anomaly signals" links to the Anomalies page, which answers a
@@ -134,6 +141,7 @@ export function JobDetails({
 
   const report = buildRunReport(job, mode, openSignals)
   const error = job.error_message ? friendlyScanError(job.error_message) : null
+  const nextStep = error ? scanErrorNextStep(error.message, dataSourceId, isOwner) : null
 
   return (
     <div className="space-y-3 bg-muted/30 p-4">
@@ -141,6 +149,21 @@ export function JobDetails({
       {error && (
         <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-body-sm text-destructive">
           {error.message}
+          {/* The diagnosis, then what to do about it (#247 DA-20). */}
+          {nextStep && (
+            <div className="mt-2 space-y-2 text-foreground">
+              <p className="m-0">{nextStep.text}</p>
+              {nextStep.actions.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {nextStep.actions.map(action => (
+                    <Button key={action.label} asChild size="xs" variant="outline">
+                      <Link to={action.to}>{action.label}</Link>
+                    </Button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <ScanErrorTechnicalDetails technical={error.technical} />
         </div>
       )}

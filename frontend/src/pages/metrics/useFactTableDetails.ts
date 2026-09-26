@@ -19,6 +19,8 @@ import { factTableKey, factTablesKey } from '@/lib/queryKeys'
  */
 export interface FactTableDetail {
   columns: FactTableColumn[]
+  /** The column the table buckets by, never a breakdown (MT-16). */
+  timestampColumn?: string
   identifierColumns: string[]
   rowFilters: string[]
   dialect?: DbType
@@ -31,6 +33,7 @@ function toDetail(table: FactTable | undefined, dataSources: readonly DataSource
   if (!table) return EMPTY_DETAIL
   return {
     columns: table.columns,
+    timestampColumn: table.timestamp_column,
     identifierColumns: table.identifier_columns,
     rowFilters: table.row_filters.map(filter => filter.name),
     dialect: dataSources.find(source => source.id === table.data_source_id)?.db_type,
@@ -65,6 +68,8 @@ export function useFactTableDetails(
   slug: string,
   draft: MetricDraft,
   dataSources: readonly DataSource[],
+  /** Load the list for any kind: the create form's kind step reads it (MT-3). */
+  { loadList = false }: { loadList?: boolean } = {},
 ): FactTableDetails {
   const enabled = draft.kind === 'fact'
   const isRatio = draft.factComposition === 'ratio'
@@ -74,7 +79,7 @@ export function useFactTableDetails(
   const listQuery = useQuery({
     queryKey: factTablesKey(slug),
     queryFn: () => factTablesApi.list(slug),
-    enabled,
+    enabled: enabled || loadList,
   })
   const numeratorQuery = useQuery({
     queryKey: factTableKey(slug, numeratorId),

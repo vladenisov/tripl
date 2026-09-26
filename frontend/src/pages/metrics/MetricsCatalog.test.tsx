@@ -51,6 +51,14 @@ vi.mock('@/api/metricsCatalog', () => ({
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
+// Owned rows name their owner from the workspace roster (MT-25).
+vi.mock('@/api/users', () => ({
+  usersApi: {
+    list: vi.fn(async () => [
+      { id: 'user-1', email: 'ana@example.com', name: 'Ana Lima', role: 'editor', created_at: '2026-01-01T00:00:00Z' },
+    ]),
+  },
+}))
 
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { toast } from 'sonner'
@@ -416,11 +424,25 @@ describe('MetricsCatalog — filters live in the URL (MET-24)', () => {
     await waitFor(() => expect(box).toHaveValue('signups'))
   })
 
+  it('filters by review status from the address (MT-25)', async () => {
+    renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?review=unreviewed`)
+
+    await waitFor(() =>
+      expect(metricsCatalogApi.list).toHaveBeenCalledWith(
+        SLUG,
+        expect.objectContaining({ reviewed: false }),
+      ),
+    )
+    expect(screen.getByRole('combobox', { name: /^Review status filter/ })).toHaveTextContent(
+      /Review status:\s*Not reviewed/,
+    )
+  })
+
   it('ignores values that are not filters', async () => {
-    renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?status=bogus&signal=bogus`)
+    renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?status=bogus&signal=bogus&review=bogus`)
 
     await screen.findByText('Signups')
-    expect(listCallParams(0)).toMatchObject({ status: undefined })
+    expect(listCallParams(0)).toMatchObject({ status: undefined, reviewed: undefined })
     expect(screen.getByRole('button', { name: 'Filter by active anomalies' })).toHaveAttribute(
       'aria-pressed',
       'false',
@@ -568,5 +590,74 @@ describe('MetricsCatalog — the stat strip uses the app locale (DS-30)', () => 
     const metricsStat = screen.getByText('Metrics', { selector: 'dt' }).closest('dl') as HTMLElement
     expect(within(metricsStat).getByRole('definition')).toHaveTextContent('2')
     expect(screen.queryByText(/BROWSER-LOCALE/)).not.toBeInTheDocument()
+  })
+})
+
+describe('MetricsCatalog — the stat strip summarises the whole catalog (MT-23)', () => {
+  it('keeps the project counts while a search narrows the table', async () => {
+    vi.mocked(metricsCatalogApi.list).mockImplementation(async (_slug, params) =>
+      params?.search
+        ? { items: [], total: 0, active_total: 0 }
+        : TWO_METRICS,
+    )
+    renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?q=nothing`)
+
+    expect(await screen.findByText(/No metrics match/)).toBeInTheDocument()
+    const metricsStat = screen.getByText('Metrics', { selector: 'dt' }).closest('dl') as HTMLElement
+    await waitFor(() => expect(within(metricsStat).getByRole('definition')).toHaveTextContent('2'))
+    expect(screen.getByText('0 of 2 metrics')).toBeInTheDocument()
+  })
+})
+
+describe('MetricsCatalog — review state and archive toast (MT-25, MT-38)', () => {
+  it('marks a reviewed metric and lets the row menu toggle it', async () => {
+    vi.mocked(metricsCatalogApi.list).mockResolvedValue({
+      ...TWO_METRICS,
+      items: [
+        makeItem({ id: 'm-1', display_name: 'Checkout conversion', reviewed: true }),
+        makeItem({ id: 'm-2', name: 'signups', display_name: 'Signups' }),
+      ],
+    })
+    vi.mocked(metricsCatalogApi.update).mockResolvedValue(
+      {} as Awaited<ReturnType<typeof metricsCatalogApi.update>>,
+    )
+    renderCatalog(NOT_A_DEMO)
+
+    expect(await screen.findByTitle('Reviewed')).toBeInTheDocument()
+    await openRowMenu('Signups')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Mark reviewed' }))
+    await waitFor(() =>
+      expect(metricsCatalogApi.update).toHaveBeenCalledWith(SLUG, 'm-2', { reviewed: true }),
+    )
+  })
+
+  it('shows the owner of an owned metric and nothing on an unowned one', async () => {
+    vi.mocked(metricsCatalogApi.list).mockResolvedValue({
+      ...TWO_METRICS,
+      items: [
+        makeItem({ id: 'm-1', display_name: 'Checkout conversion', owner_id: 'user-1' }),
+        makeItem({ id: 'm-2', name: 'signups', display_name: 'Signups' }),
+      ],
+    })
+    renderCatalog(NOT_A_DEMO)
+
+    expect(await screen.findByRole('img', { name: 'Owner: Ana Lima' })).toBeInTheDocument()
+    expect(screen.getAllByRole('img', { name: /^Owner:/ })).toHaveLength(1)
+  })
+
+  it('names the archived metric and keeps the Undo toast up for 10 seconds', async () => {
+    vi.mocked(metricsCatalogApi.update).mockResolvedValue(
+      {} as Awaited<ReturnType<typeof metricsCatalogApi.update>>,
+    )
+    renderCatalog(NOT_A_DEMO)
+
+    await openRowMenu('Signups')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Archive' }))
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        '“Signups” archived — collection stopped.',
+        expect.objectContaining({ duration: 10_000 }),
+      ),
+    )
   })
 })

@@ -97,8 +97,31 @@ describe('CoveragePage', () => {
       screen.queryByText(/active events with no data in the last 30 days/),
     ).not.toBeInTheDocument()
 
-    // …and the panel says out loud why the Events page's Silent filter is bigger.
-    expect(screen.getByText(/Implemented and live events only/)).toBeInTheDocument()
+    // …and names the population in an info tip, in the user's terms rather
+    // than as a cross-page footnote (DA-31).
+    expect(
+      screen.getByRole('button', {
+        name: 'Implemented events older than 30 days that sent no data in the last 30 days.',
+      }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Silent > 30d/)).not.toBeInTheDocument()
+  })
+
+  // DA-30: "which ones, and who owns them?" had no answer on the page.
+  it('links the not-implemented remainder to the filtered Events list and breaks it down', async () => {
+    vi.spyOn(projectsApi, 'get').mockResolvedValue(project())
+    vi.spyOn(reconciliationApi, 'deadEvents').mockResolvedValue(dead)
+
+    renderPage()
+
+    const link = await screen.findByRole('link', { name: '569 not implemented' })
+    expect(link).toHaveAttribute(
+      'href',
+      '/p/windy-ios/events?status=draft&status=in_review&status=ready_for_dev&status=deprecated',
+    )
+    expect(
+      screen.getByText('Not implemented: 568 in review, 1 draft, ready for dev or deprecated.'),
+    ).toBeInTheDocument()
   })
 
   // The bar's remainder (active − implemented) includes draft/ready-for-dev

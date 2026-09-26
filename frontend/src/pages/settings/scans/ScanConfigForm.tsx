@@ -4,7 +4,7 @@ import { SaveBar } from '@/components/forms/SaveBar'
 import { SCard } from '@/components/settings/kit'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, RotateCcw, Trash2 } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { eventTypesApi } from '@/api/eventTypes'
 import { scansApi } from '@/api/scans'
 import { useActiveBranchId } from '@/hooks/useBranch'
@@ -14,7 +14,6 @@ import { useProjectDataSources } from '@/hooks/useProjectDataSources'
 import type { EventType, ScanConfig } from '@/types'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/error-state'
-import { ReplayDialog } from './ReplayDialog'
 import {
   AppVersionSection,
   EventNamingSection,
@@ -23,13 +22,12 @@ import {
   ScanEssentialsSection,
 } from './ScanFormSections'
 import { scanFormBlocker, useScanForm, type ScanFormPayload } from './useScanForm'
+import { dryRunNameExplosion } from './scanDryRunWarnings'
+import { countOf } from '@/lib/plural'
 import { eventTypesKey, platformPresenceKey, scanJobsKey, scansKey } from '@/lib/queryKeys'
 import { ownerOnlyReason, useIsOwner } from '@/lib/permissions'
 import { DisabledReason, ReadOnlyNotice, disabledReasonAria } from '@/components/states'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-
-/** Why Replay is off: it replays metrics, which need both to be set. */
-const REPLAY_BLOCKER = 'Replay needs a time column and an interval on this scan.'
 
 // ─── Configuration tab (page-style edit, one Save for the whole form) ───
 export function ScanConfigurationTab({
@@ -37,10 +35,16 @@ export function ScanConfigurationTab({
   scanConfig,
   onDeleted,
   onDirtyChange,
+  onDiscard,
 }: {
   slug: string
   scanConfig: ScanConfig
   onDeleted: () => void
+  /**
+   * Throw the edits away. The page remounts this form from the saved config,
+   * which is the one reset that cannot miss a field (#247 DA-26).
+   */
+  onDiscard?: () => void
   /**
    * Told whether the form holds unsaved edits, and `false` once it unmounts.
    * The page owns the leave guard: it also has to ask before its own tab strip
@@ -51,7 +55,6 @@ export function ScanConfigurationTab({
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   const { confirm, dialog } = useConfirm()
-  const [replayOpen, setReplayOpen] = useState(false)
   const form = useScanForm(slug, scanConfig)
   // Update, preview, replay and delete are all OwnerUserDep: anyone else reads
   // the configuration with every control disabled and no Save (DATA-6).
@@ -113,8 +116,6 @@ export function ScanConfigurationTab({
     if (ok) deleteMut.mutate()
   }
 
-  const canReplay = Boolean(scanConfig.time_column && scanConfig.interval)
-
   // The reason, not just the fact: a disabled Save with no explanation is how a
   // user ends up believing the form is broken.
   const saveBlocker = scanFormBlocker(form.state)
@@ -153,23 +154,27 @@ export function ScanConfigurationTab({
         </ReadOnlyNotice>
       )}
       {/* `disabled` on a fieldset reaches every native control inside it;
-          `contents` keeps it out of the layout. */}
+          `contents` keeps it out of the layout. The collapsible sections lock
+          their own fields (`readOnly`), so their toggles still open. */}
       <fieldset disabled={!canEdit} className="contents">
         <ScanEssentialsSection {...sectionProps} />
-        <EventNamingSection {...sectionProps} />
-        <AppVersionSection {...sectionProps} />
-        <MetricsDriftSection {...sectionProps} />
-        <LimitsSection {...sectionProps} />
       </fieldset>
+      <EventNamingSection {...sectionProps} />
+      <AppVersionSection {...sectionProps} />
+      <MetricsDriftSection {...sectionProps} />
+      <LimitsSection {...sectionProps} />
 
       {/* One Save for the whole form. Every card used to carry its own, which
           read as "save this card" while each one sent the entire form — so
           Save under Limits also committed a half-edited query two cards up
           (DATA-14). Sticky, so it is in reach from whichever card was edited. */}
-      {canEdit && (
-        // The blocker is visible text beside Save: a `title` on a disabled
-        // button never shows (pointer-events: none) and keyboard and touch
-        // users could not reach it at all (#237 DA-9).
+      {/* Only while there is something to say: a clean form showed a grey strip
+          holding a disabled Save and no text, which read as an empty footer.
+          Once edited it names the state and offers Discard beside Save
+          changes, like the other settings forms (#247 DA-26). The blocker is
+          visible text beside Save: a `title` on a disabled button never shows
+          (#237 DA-9). */}
+      {canEdit && (dirty || updateMut.isPending || updateMut.isSuccess) && (
         <SaveBar
           className="mb-5"
           status={
@@ -179,7 +184,19 @@ export function ScanConfigurationTab({
               saveStatus
             )
           }
+          statusTone={dirty ? 'warning' : 'muted'}
         >
+          {onDiscard && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!dirty || updateMut.isPending}
+              onClick={onDiscard}
+            >
+              Discard
+            </Button>
+          )}
           <Button
             type="button"
             size="sm"
@@ -187,45 +204,15 @@ export function ScanConfigurationTab({
             disabled={updateMut.isPending || !dirty || saveBlocker !== null}
             {...(dirty ? disabledReasonAria('save-scan', saveBlocker) : {})}
           >
-            {updateMut.isPending ? 'Saving…' : 'Save'}
+            {updateMut.isPending ? 'Saving…' : 'Save changes'}
           </Button>
         </SaveBar>
       )}
 
       {canEdit && (
         <SCard title="Danger zone" tone="danger">
-          <div
-            className="flex items-center gap-[18px] border-b px-4 py-3.5"
-            style={{ borderColor: 'var(--border-subtle)' }}
-          >
-            <div className="flex-1">
-              <div className="text-body font-medium" style={{ color: 'var(--fg)' }}>
-                Run a one-off replay
-              </div>
-              <div className="mt-0.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-                Re-scan a historical time range into events and metrics.
-              </div>
-            </div>
-            <div className="flex shrink-0 flex-col items-end gap-1">
-              <Button
-                type="button"
-                variant={replayOpen ? 'default' : 'outline'}
-                size="sm"
-                disabled={!canReplay}
-                {...disabledReasonAria('replay-scan', canReplay ? null : REPLAY_BLOCKER)}
-                onClick={() => setReplayOpen((o) => !o)}
-              >
-                <RotateCcw className="size-3" />
-                Replay…
-              </Button>
-              <DisabledReason id="replay-scan" tone="muted" reason={canReplay ? null : REPLAY_BLOCKER} />
-            </div>
-          </div>
-          {replayOpen && (
-            <div className="border-b px-4 py-3.5" style={{ borderColor: 'var(--border-subtle)' }}>
-              <ReplayDialog slug={slug} scanConfig={scanConfig} open={replayOpen} onOpenChange={setReplayOpen} />
-            </div>
-          )}
+          {/* Only Delete here: Replay re-reads history and deletes nothing, so
+              it moved to the page header as a dialog (#247 DA-8). */}
           <div className="flex items-center gap-[18px] px-4 py-3.5">
             <div className="flex-1">
               <div className="text-body font-medium" style={{ color: 'var(--fg)' }}>
@@ -300,6 +287,10 @@ export function ScanCreatePage({
 
   const loaded = Boolean(form.preview)
   const createBlocker = scanFormBlocker(form.state)
+  // When the dry run shows the draft would swamp the plan, the line beside
+  // Create says what pressing it leads to, instead of the neutral "Creates the
+  // scan" it gave a good answer too (#247 DA-1).
+  const explosion = form.dryRunStale ? null : dryRunNameExplosion(form.dryRun)
 
   const sectionProps = {
     form,
@@ -362,7 +353,9 @@ export function ScanCreatePage({
           <>
             <DisabledReason id="create-scan" tone="muted" reason={createBlocker} />
             <span className="block">
-              {loaded
+              {loaded && explosion
+                ? `This scan would add ${countOf(explosion.newEvents, 'event', 'events')} to your plan on its first run.`
+                : loaded
                 ? 'Creates the scan. Run it from its page when you are ready.'
                 : form.state.mode === 'monitoring'
                   ? 'Load a preview to choose a time column and see what this scan would create.'

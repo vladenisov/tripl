@@ -14,6 +14,7 @@ vi.mock('@/api/metaFields', () => ({
     list: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
+    usage: vi.fn(),
     del: vi.fn(),
   },
 }))
@@ -181,12 +182,26 @@ describe('MetaFieldsTab — load and delete states (PLAN-41 / PLAN-54)', () => {
 
   it('says a failed delete failed', async () => {
     vi.mocked(metaFieldsApi.del).mockRejectedValue(new Error('Field is referenced'))
+    // No usage count: the confirm falls back to naming the loss in words.
+    vi.mocked(metaFieldsApi.usage).mockRejectedValue(new Error('usage unavailable'))
     renderTab([FIELD], { auth: authAs('editor') })
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Jira link' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    // The confirm names what goes, and its button names what it deletes (AU-37).
+    expect(await screen.findByText(/Removes every Jira link value from the events that carry one/)).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete meta field' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Field is referenced')
+  })
+
+  it('counts the values and events a delete removes when the usage answers (AU-37)', async () => {
+    vi.mocked(metaFieldsApi.usage).mockResolvedValue({ value_count: 3, event_count: 2 })
+    renderTab([FIELD], { auth: authAs('editor') })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Jira link' }))
+    expect(
+      await screen.findByText("Removes 3 Jira link values from 2 events. This can't be undone."),
+    ).toBeInTheDocument()
   })
 
   it("refreshes the branch review's project-wide meta-field cache after an edit", async () => {

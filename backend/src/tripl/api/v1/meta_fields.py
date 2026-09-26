@@ -4,7 +4,12 @@ from fastapi import APIRouter
 
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.models.meta_field_definition import MetaFieldDefinition
-from tripl.schemas.meta_field import MetaFieldCreate, MetaFieldResponse, MetaFieldUpdate
+from tripl.schemas.meta_field import (
+    MetaFieldCreate,
+    MetaFieldResponse,
+    MetaFieldUpdate,
+    MetaFieldUsageResponse,
+)
 from tripl.services import audit_service, meta_field_service
 
 router = APIRouter(prefix="/projects/{slug}/meta-fields", tags=["meta-fields"])
@@ -37,6 +42,17 @@ async def create_meta_field(
         payload=data.model_dump(),
     )
     return mf
+
+
+@router.get("/{meta_field_id}/usage", response_model=MetaFieldUsageResponse)
+async def get_meta_field_usage(
+    session: SessionDep,
+    slug: str,
+    meta_field_id: uuid.UUID,
+    branch_id: BranchIdDep,
+) -> MetaFieldUsageResponse:
+    """Values and events a delete of this field would clear (AU-37)."""
+    return await meta_field_service.get_meta_field_usage(session, slug, meta_field_id, branch_id)
 
 
 @router.patch("/{meta_field_id}", response_model=MetaFieldResponse)

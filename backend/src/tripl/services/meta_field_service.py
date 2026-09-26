@@ -1,17 +1,19 @@
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl import cache
 from tripl.models.domain_enums import MetaFieldType
+from tripl.models.event_meta_value import EventMetaValue
 from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.schemas.meta_field import (
     MULTI_VALUE_FIELD_TYPES,
     MetaFieldCreate,
     MetaFieldResponse,
     MetaFieldUpdate,
+    MetaFieldUsageResponse,
 )
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
@@ -144,3 +146,39 @@ async def delete_meta_field(
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
     if is_main:
         await cache.delete_prefix(cache.prefix_meta_fields(slug))
+
+
+async def get_meta_field_usage(
+    session: AsyncSession,
+    slug: str,
+    meta_field_id: uuid.UUID,
+    branch_id: uuid.UUID | None = None,
+) -> MetaFieldUsageResponse:
+    """How many values, on how many events, the field holds on this branch.
+
+    The delete confirm names both before the cascade removes them (AU-37). An
+    empty string is not a value anyone would miss, so it is not counted.
+    """
+    project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
+    exists = await session.scalar(
+        select(MetaFieldDefinition.id).where(
+            MetaFieldDefinition.id == meta_field_id,
+            MetaFieldDefinition.project_id == project_id,
+            MetaFieldDefinition.branch_id == branch_id,
+        )
+    )
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Meta field not found")
+    row = (
+        await session.execute(
+            select(
+                func.count(EventMetaValue.id),
+                func.count(func.distinct(EventMetaValue.event_id)),
+            ).where(
+                EventMetaValue.meta_field_definition_id == meta_field_id,
+                EventMetaValue.value != "",
+            )
+        )
+    ).one()
+    return MetaFieldUsageResponse(value_count=int(row[0] or 0), event_count=int(row[1] or 0))

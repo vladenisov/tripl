@@ -25,6 +25,9 @@ export interface MetricListParams {
   status?: MetricStatus[]
   kind?: MetricKind
   search?: string
+  /** true: reviewed metrics only; false: not yet reviewed. */
+  reviewed?: boolean
+  owner_id?: string
   offset?: number
   limit?: number
 }
@@ -54,6 +57,8 @@ export const metricsCatalogApi = {
     }
     if (params?.kind) sp.set('kind', params.kind)
     if (params?.search) sp.set('search', params.search)
+    if (params?.reviewed !== undefined) sp.set('reviewed', String(params.reviewed))
+    if (params?.owner_id) sp.set('owner_id', params.owner_id)
     if (params?.offset !== undefined) sp.set('offset', String(params.offset))
     if (params?.limit !== undefined) sp.set('limit', String(params.limit))
     const qs = sp.toString()

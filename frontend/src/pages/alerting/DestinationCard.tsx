@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import { Pencil, Send } from "lucide-react"
+import { AlertCircle, CheckCircle2, Loader2, Pencil, Send, Trash2 } from "lucide-react"
 import type { AlertDestination } from "@/types"
 import { alertingApi } from "@/api/alerting"
 import { Chip } from "@/components/primitives/chip"
@@ -8,12 +8,15 @@ import { Button } from "@/components/ui/button"
 import { IconButton } from "@/components/ui/icon-button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
-import { getErrorMessage } from '@/lib/utils'
+import { cn, getErrorMessage } from '@/lib/utils'
 import { SILENT_ERROR_META, surfaceError } from "@/lib/errorFeedback"
 import { stripValueErrorPrefix } from "@/lib/alertStatus"
 import { formatDateTime } from "@/lib/datetime"
 import { countOf } from "@/lib/plural"
-import { describeCron, formatInProjectZone } from "./deliverySchedule"
+import { formatInProjectZone } from "./deliverySchedule"
+import { ChannelGlyph, channelLabel } from "./channelMeta"
+import { describeDeletionImpact } from "./deletionImpact"
+import { describeTestFailure, destinationScheduleLabel } from "./destinationCardLabels"
 import { invalidateAlertingConfig } from "./alertingCache"
 
 interface DestinationCardProps {
@@ -24,6 +27,10 @@ interface DestinationCardProps {
   // (deps.py `require_editor`).
   canWrite: boolean
   onEditDestination: (destination: AlertDestination) => void
+  /** Delete, confirmed by the page. Absent where the section offers none. */
+  onDeleteDestination?: (destination: AlertDestination) => void
+  /** This destination's delete is in flight: its control is inert (ALR-6). */
+  isDeleting?: boolean
 }
 
 /**
@@ -42,6 +49,8 @@ export function DestinationCard({
   destination,
   canWrite,
   onEditDestination,
+  onDeleteDestination,
+  isDeleting = false,
 }: DestinationCardProps) {
   const qc = useQueryClient()
 
@@ -88,67 +97,75 @@ export function DestinationCard({
   const testResult = testIsCurrent ? testDestinationMut.data ?? null : null
   const testFailed = testIsCurrent && testDestinationMut.isError
 
+  // Whether any write-only credential is stored. One muted "Configured" says
+  // it, where four "webhook set" / "bot token set" / "url set" pills did
+  // (AL-24); which value is stored is not something the card can show anyway.
+  const hasStoredCredential =
+    destination.webhook_set
+    || destination.bot_token_set
+    || destination.target_url_set
+    || destination.jira_api_token_set
+    || destination.linear_api_key_set
+  const refusal = testResult && !testResult.ok ? describeTestFailure(testResult.error, testResult) : null
+  const testTone = testDestinationMut.isPending
+    ? 'pending'
+    : testResult?.ok
+      ? 'ok'
+      : 'failed'
+
   return (
-    <Card>
-      <CardContent className="space-y-4">
+    // A disabled destination reads as muted — the switch is the state, so a
+    // solid "enabled" pill beside it only drew the eye to the least important
+    // fact on the card (AL-24).
+    <Card className={cn(!destination.enabled && 'bg-bg-sunken')}>
+      <CardContent className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          {/* `min-w-0` + `flex-wrap` on the badge row: at 390px the row used to
+          {/* `min-w-0` + `flex-wrap` on the name row: at 390px the row used to
               clip its own tail, and the tail is the chat id — the only value
               that says WHICH Telegram chat this destination points at
               (tripl-oxkt.18). */}
-          <div className="min-w-0 flex-1 space-y-2">
+          <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
+              {/* The channel as its icon and its name, not the raw uppercase
+                  enum (`WEBHOOK`, `DEMO_SINK`) it used to be (AL-24). */}
+              <ChannelGlyph
+                type={destination.type}
+                aria-hidden="true"
+                className="size-4 shrink-0 text-muted-foreground"
+              />
               <span className="font-semibold">{destination.name}</span>
-              {/* Kind tag, then lifecycle status: the badge taxonomy (DS-6).
-                  `enabled` used to be a solid brand block and `disabled` a grey
-                  one, so the state read as two unrelated shapes. */}
-              <Chip variant="outline">{destination.type}</Chip>
-              <Chip tone={destination.enabled ? 'success' : 'neutral'}>
-                {destination.enabled ? 'enabled' : 'disabled'}
-              </Chip>
+              <span className="text-body-sm text-muted-foreground">{channelLabel(destination.type)}</span>
+              {!destination.enabled && <Chip size="xs">Disabled</Chip>}
               {destination.is_local && (
                 <Chip variant="outline">
                   local · nothing is sent
                 </Chip>
-              )}
-              {destination.delivery_schedule_cron && (
-                <Chip
-                  variant="outline"
-                  title={
-                    destination.next_digest_at
-                      ? `Next digest ${formatInProjectZone(destination.next_digest_at, destination.project_timezone)}`
-                      : undefined
-                  }
-                >
-                  {describeCron(destination.delivery_schedule_cron)}
-                  {destination.project_timezone ? ` · ${destination.project_timezone}` : ''}
-                </Chip>
-              )}
-              {destination.delivery_schedule_cron && (
-                <Chip variant="outline">
-                  {destination.held_count
-                    ? `${destination.held_count} held`
-                    : 'nothing held'}
-                </Chip>
-              )}
-              {destination.type === 'slack' && destination.webhook_set && (
-                <Chip variant="outline">webhook set</Chip>
-              )}
-              {destination.type === 'telegram' && destination.bot_token_set && (
-                <Chip variant="outline">bot token set</Chip>
               )}
               {destination.type === 'telegram' && destination.chat_id && (
                 <Chip variant="outline" className="h-auto min-h-5 max-w-full whitespace-normal break-all py-0.5">
                   chat {destination.chat_id}
                 </Chip>
               )}
-              {destination.type === 'webhook' && destination.target_url_set && (
-                <Chip variant="outline">url set</Chip>
-              )}
               {destination.type === 'webhook' && destination.webhook_header_name && (
                 <Chip variant="outline">header {destination.webhook_header_name}</Chip>
               )}
             </div>
+            {destination.delivery_schedule_cron && (
+              <p
+                className="text-body-sm text-muted-foreground"
+                title={
+                  destination.next_digest_at
+                    ? `Next digest ${formatInProjectZone(destination.next_digest_at, destination.project_timezone)}`
+                    : undefined
+                }
+              >
+                {destinationScheduleLabel(
+                  destination.delivery_schedule_cron,
+                  destination.project_timezone,
+                  destination.held_count,
+                )}
+              </p>
+            )}
             {/* Traffic, not just configuration. A destination that has carried
                 nothing looks identical to a working one everywhere else on
                 this card, and the two are opposite facts (tripl-oxkt.17). The
@@ -156,11 +173,19 @@ export function DestinationCard({
                 "enabled, wired up, and nothing routes here" is a state worth
                 reading off the channel. */}
             <p className="text-body-sm text-muted-foreground">
-              {countOf(destination.rules.length, 'rule', 'rules')}
-              {' · '}
-              {countOf(destination.delivery_count, 'delivery', 'deliveries')}
-              {' · '}
-              {countOf(destination.incident_count, 'incident', 'incidents')}
+              <span>
+                {countOf(destination.rules.length, 'rule', 'rules')}
+                {' · '}
+                {countOf(destination.delivery_count, 'delivery', 'deliveries')}
+                {' · '}
+                {countOf(destination.incident_count, 'incident', 'incidents')}
+              </span>
+              {hasStoredCredential && (
+                <>
+                  {' · '}
+                  <span>Configured</span>
+                </>
+              )}
             </p>
           </div>
           {/* The whole control cluster goes for a viewer — a test send puts a
@@ -168,7 +193,7 @@ export function DestinationCard({
               both 403s. The card keeps every fact it was showing. */}
           {canWrite && (
           <div className="flex shrink-0 items-center gap-2">
-            {/* "bot token set" and a chat id mean a value is STORED. A revoked
+            {/* "Configured" and a chat id mean a value is STORED. A revoked
                 token stores exactly as well as a live one, so the only way to
                 answer "did I actually wire this up?" is to push a message
                 through the real channel (tripl-oxkt.17). */}
@@ -182,7 +207,7 @@ export function DestinationCard({
               disabled={testDestinationMut.isPending}
               aria-label={`Send a test message through ${destination.name}`}
             >
-              <Send aria-hidden="true" className="mr-2 h-4 w-4" />
+              <Send aria-hidden="true" />
               {testDestinationMut.isPending ? 'Sending…' : 'Test'}
             </Button>
             {/* `checked` is the server's value, and the control is inert while
@@ -194,59 +219,111 @@ export function DestinationCard({
               onCheckedChange={checked => updateDestinationMut.mutate({ enabled: checked })}
               aria-label={`Toggle ${destination.name}`}
             />
-            <IconButton variant="ghost" className="h-8 w-8" label={`Edit destination ${destination.name}`} onClick={() => {
+            <IconButton variant="ghost" label={`Edit destination ${destination.name}`} onClick={() => {
               // The editor can replace a secret the fingerprint cannot see.
               setTestedVersion(null)
               onEditDestination(destination)
             }}>
-              <Pencil aria-hidden="true" className="h-4 w-4" />
+              <Pencil aria-hidden="true" className="size-4" />
             </IconButton>
+            {/* Inside the card, beside Edit, like the Monitors rule rows — it
+                used to float under the card, in the gap before the next one,
+                where it was unclear which card it deleted (AL-25). The
+                confirm itself lives on the page that owns the delete mutation
+                and states the same cascade through the same helper; the
+                tooltip repeats it on the control, for a reader still deciding
+                whether to press it (tripl-oxkt.13). Absent where the section
+                offers no delete (a demo's local sink). */}
+            {onDeleteDestination && (
+              <IconButton
+                variant="ghost"
+                className="text-muted-foreground hover:text-destructive"
+                label={`Delete destination ${destination.name}`}
+                tooltip={`Deletes "${destination.name}", its rules, and their history. ${describeDeletionImpact(destination.delivery_count, destination.incident_count)}`}
+                disabled={isDeleting}
+                onClick={() => onDeleteDestination(destination)}
+              >
+                {isDeleting ? (
+                  <Loader2 aria-hidden="true" className="size-4 animate-spin" />
+                ) : (
+                  <Trash2 aria-hidden="true" className="size-4" />
+                )}
+              </IconButton>
+            )}
           </div>
           )}
         </div>
 
         {/* A channel refusal arrives as a 200 with `ok: false` — it is the
             answer the button was pressed for, so it renders as a result and
-            not as a crash. Only a transport failure gets `role="alert"`. */}
+            not as a crash. Only a transport failure gets `role="alert"`.
+            One inline row with an icon and its own Dismiss, rather than a
+            sentence alone in a tall card with a far-away button (AL-30). */}
         {(testDestinationMut.isPending || testResult || testFailed) && (
-          <div className="flex items-start justify-between gap-2">
-          <p
-            role={testFailed ? 'alert' : 'status'}
-            className={
-              testResult?.ok
-                ? 'text-body-sm text-success'
-                : testDestinationMut.isPending
-                  ? 'text-body-sm text-muted-foreground'
-                  : 'text-body-sm text-destructive'
-            }
+          <div
+            data-tone={testTone}
+            className={cn(
+              'flex items-start gap-2 rounded-control border px-3 py-2 text-body-sm',
+              testTone === 'ok' && 'border-success/40 bg-success-soft',
+              testTone === 'failed' && 'border-destructive/40 bg-danger-soft',
+            )}
           >
-            {testDestinationMut.isPending && 'Sending a test message…'}
-            {!testDestinationMut.isPending && testResult?.ok && (
-              testResult.sent_at
-                ? `Test message reached the channel at ${formatDateTime(testResult.sent_at)}.`
-                : 'Test message reached the channel.'
+            {testTone === 'pending' ? (
+              <Loader2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 animate-spin text-muted-foreground" />
+            ) : testTone === 'ok' ? (
+              <CheckCircle2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-success" />
+            ) : (
+              <AlertCircle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-destructive" />
             )}
-            {!testDestinationMut.isPending && testResult && !testResult.ok && (
-              `The channel refused the test message: ${testResult.error ?? 'no reason given'}`
+            <div className="min-w-0 flex-1 space-y-1">
+              <p
+                role={testFailed ? 'alert' : 'status'}
+                className={
+                  testTone === 'ok'
+                    ? 'text-success'
+                    : testTone === 'pending'
+                      ? 'text-muted-foreground'
+                      : 'text-destructive'
+                }
+              >
+                {testDestinationMut.isPending && 'Sending a test message…'}
+                {!testDestinationMut.isPending && testResult?.ok && (
+                  testResult.sent_at
+                    ? `Test message reached the channel at ${formatDateTime(testResult.sent_at)}.`
+                    : 'Test message reached the channel.'
+                )}
+                {!testDestinationMut.isPending && refusal && (
+                  refusal.detail
+                    ? `Test message not delivered. ${refusal.summary}`
+                    : `The channel refused the test message: ${refusal.summary}`
+                )}
+                {!testDestinationMut.isPending && !testResult && testFailed && (
+                  `Test send failed: ${getErrorMessage(testDestinationMut.error)}`
+                )}
+              </p>
+              {/* The transport's own words, for whoever has to fix the proxy
+                  or the firewall — kept, just not as the headline. */}
+              {!testDestinationMut.isPending && refusal?.detail && (
+                <details className="text-caption text-muted-foreground">
+                  <summary className="cursor-pointer">Details</summary>
+                  <p className="mt-1 whitespace-pre-wrap break-words font-mono">{refusal.detail}</p>
+                </details>
+              )}
+            </div>
+            {/* A result stays until the channel's settings change, so the
+                reader can put it away once it has been read. */}
+            {!testDestinationMut.isPending && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                className="shrink-0"
+                onClick={() => setTestedVersion(null)}
+                aria-label={`Dismiss the test result for ${destination.name}`}
+              >
+                Dismiss
+              </Button>
             )}
-            {!testDestinationMut.isPending && !testResult && testFailed && (
-              `Test send failed: ${getErrorMessage(testDestinationMut.error)}`
-            )}
-          </p>
-          {/* A result stays until the channel's settings change, so the reader
-              can put it away once it has been read. */}
-          {!testDestinationMut.isPending && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-6 shrink-0 px-2 text-body-sm"
-              onClick={() => setTestedVersion(null)}
-              aria-label={`Dismiss the test result for ${destination.name}`}
-            >
-              Dismiss
-            </Button>
-          )}
           </div>
         )}
       </CardContent>

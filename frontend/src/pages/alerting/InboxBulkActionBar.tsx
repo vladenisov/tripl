@@ -1,8 +1,14 @@
 import { useCallback, useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import { MoreHorizontal, X } from 'lucide-react'
 
 import { MAX_BULK_INBOX_ACTION_GROUPS, MAX_INBOX_NOTE_LENGTH } from '@/api/alerting'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Textarea } from '@/components/ui/textarea'
 import {
   INBOX_MUTE_CHOICES,
@@ -217,6 +223,10 @@ export function InboxBulkActionBar({
     setMuteOpen(false)
     onAction(trimmedNote ? { ...request, note: trimmedNote } : request)
   }
+  const openNote = () => {
+    noteFocusPending.current = true
+    setNoteOpen(true)
+  }
 
   return (
     <>
@@ -226,7 +236,10 @@ export function InboxBulkActionBar({
     <div aria-hidden="true" data-bulk-bar-spacer="" style={{ height: barHeight + 18 + 12 }} />
     <div
       ref={measureBar}
-      className="fixed bottom-[18px] left-1/2 z-(--z-bar) flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-col gap-1.5 rounded-card border py-1.5 pl-3.5 pr-2"
+      // Below `sm` the bar is a full-width strip pinned to the bottom edge,
+      // clear of the home indicator, with one row of actions (AL-16): as a
+      // floating card it wrapped into a ~190px box in mid-screen.
+      className="fixed inset-x-0 bottom-0 z-(--z-bar) flex flex-col gap-1.5 border-t px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:inset-x-auto sm:bottom-[18px] sm:left-1/2 sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:rounded-card sm:border sm:py-1.5 sm:pl-3.5 sm:pr-2"
       style={{
         background: 'var(--bg-elevated)',
         borderColor: 'var(--border-strong)',
@@ -271,7 +284,7 @@ export function InboxBulkActionBar({
               event.preventDefault()
               run({ action: 'note' })
             }}
-            className="min-h-0 w-full min-w-60 py-1.5 text-caption leading-5"
+            className="min-h-0 w-full min-w-60 py-1.5"
           />
           <div className="flex flex-wrap items-center gap-2">
             {/* Saves the note and NOTHING else — `note` moves no status and
@@ -284,7 +297,7 @@ export function InboxBulkActionBar({
             <Button
               size="sm"
               variant="outline"
-              className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
+              className="max-sm:h-9"
               aria-label={`Save this note on ${target}`}
               title="Copies this note onto every selected incident, and moves no status. Ctrl+Enter (⌘+Enter on a Mac) does the same."
               disabled={actionsDisabled || trimmedNote.length === 0}
@@ -292,18 +305,18 @@ export function InboxBulkActionBar({
             >
               Save note
             </Button>
-            <span className="text-micro" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
               …or press an action below to save it with that.
             </span>
             {noteBudget && (
-              <span role="status" className="text-micro" style={{ color: 'var(--fg-muted)' }}>
+              <span role="status" className="text-caption" style={{ color: 'var(--fg-muted)' }}>
                 {noteBudget}
               </span>
             )}
           </div>
         </div>
       )}
-      <div className="flex flex-wrap items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
       <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
         <span className="tnum font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
       </span>
@@ -317,7 +330,7 @@ export function InboxBulkActionBar({
           {overCapNotice(overCapBy)}
         </span>
       )}
-      <div className="h-5 w-px" style={{ background: 'var(--border)' }} />
+      <div className="h-5 w-px max-sm:hidden" style={{ background: 'var(--border)' }} />
       {/* No fixed-slot rule here, unlike the incident card (tripl-oxkt.8). That
           rule exists because the card's buttons line up in a COLUMN across
           rows, so a slot that appears on one row and not the next moves the
@@ -332,7 +345,8 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-caption"
+        // Folded into "More" below `sm` (AL-16).
+        className="max-sm:hidden"
         aria-expanded={noteOpen}
         aria-label={`Add a note to ${target}`}
         title="One sentence, copied onto every selected incident. Saved on its own, or carried by whichever action you press next."
@@ -346,8 +360,7 @@ export function InboxBulkActionBar({
             setNoteOpen(false)
             return
           }
-          noteFocusPending.current = true
-          setNoteOpen(true)
+          openNote()
         }}
       >
         Note
@@ -355,7 +368,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-caption"
+        className="max-sm:h-9"
         aria-label={`Acknowledge ${target}`}
         title="Stops re-delivery on each one until its scope goes quiet, then each reopens by itself. Reversible."
         disabled={actionsDisabled}
@@ -366,7 +379,7 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-caption"
+        className="max-sm:h-9"
         aria-label={`Resolve ${target}`}
         title="Same suppression as Acknowledge, different bucket in the filter. Each reopens by itself once its scope goes quiet. Reversible."
         disabled={actionsDisabled}
@@ -377,7 +390,8 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-caption"
+        // Folded into "More" below `sm` (AL-16).
+        className="max-sm:hidden"
         aria-expanded={muteOpen}
         // The shared "Mute <target>" sentence, given a count instead of a scope.
         // The incident card's other branch ("Change mute on …") has no meaning
@@ -393,7 +407,8 @@ export function InboxBulkActionBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-caption"
+        // Folded into "More" below `sm` (AL-16).
+        className="max-sm:hidden"
         // One word for one slot, and it is the surface's own word, not mute
         // vocabulary: `reopen` lifts acknowledge, resolve and false-positive as
         // well as a mute. The card can say "Unmute" because it knows the one
@@ -406,8 +421,36 @@ export function InboxBulkActionBar({
       >
         Reopen
       </Button>
+      {/* Phones get the count, the two decisions that close most incidents,
+          and this menu for the rest — one row, not four (AL-16). The items
+          call the same handlers as the buttons they stand in for, so a note
+          typed here still rides along with the next action. */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="sm"
+            variant="outline"
+            className="max-sm:h-9 sm:hidden"
+            aria-label={`More actions for ${target}`}
+            disabled={actionsDisabled}
+          >
+            <MoreHorizontal aria-hidden="true" />
+            More
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          // Focus goes to what the item opened (the note box), not back to
+          // the trigger.
+          onCloseAutoFocus={event => event.preventDefault()}
+        >
+          <DropdownMenuItem onSelect={openNote}>Add a note</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setMuteOpen(true)}>Mute…</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => run({ action: 'reopen' })}>Reopen</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       {muteOpen && (
-        <div className="flex flex-wrap items-center gap-1 text-micro" style={{ color: 'var(--fg-muted)' }}>
+        <div className="flex flex-wrap items-center gap-1 text-body-sm" style={{ color: 'var(--fg-muted)' }}>
           <span>Mute for</span>
           {/* INBOX_MUTE_CHOICES, not MUTE_PRESETS, and not re-typed literals.
               The shared module documents the scope rule: the open-ended choice
@@ -423,7 +466,7 @@ export function InboxBulkActionBar({
               key={choice.label}
               size="sm"
               variant="outline"
-              className="h-9 px-3 text-body-sm sm:h-6 sm:px-2 sm:text-micro"
+              className="max-sm:h-9"
               // Visible face and accessible name differ on the open-ended
               // button by design — "Mute 4 selected incidents for Until I
               // unmute" is not English. See `muteChoiceName` for the reasoning
@@ -437,14 +480,14 @@ export function InboxBulkActionBar({
           ))}
         </div>
       )}
-      <div className="h-5 w-px" style={{ background: 'var(--border)' }} />
+      <div className="h-5 w-px max-sm:hidden" style={{ background: 'var(--border)' }} />
       <button
         type="button"
         onClick={onClear}
-        className="flex size-9 items-center justify-center rounded-sm sm:size-6 text-[var(--fg-subtle)] hover:text-[var(--fg)]"
+        className="ml-auto flex size-9 items-center justify-center rounded-sm sm:ml-0 sm:size-7 text-[var(--fg-subtle)] hover:text-[var(--fg)]"
         aria-label="Clear selection"
       >
-        <X className="h-3.5 w-3.5" />
+        <X aria-hidden="true" className="size-3.5" />
       </button>
       </div>
     </div>

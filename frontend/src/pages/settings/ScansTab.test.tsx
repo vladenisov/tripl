@@ -57,7 +57,13 @@ function mockJsonResponse(body: unknown) {
   })
 }
 
-type ActivityOverrides = { scan_config_id?: string; failing_streak?: number; rows_read_24h?: number }
+type ActivityOverrides = {
+  scan_config_id?: string
+  failing_streak?: number
+  rows_read_24h?: number
+  warehouse_rows_24h?: number
+  catalog_combinations_24h?: number
+}
 
 /** GET /scans/activity: the server's exact streak and 24h rows per scan (tripl-fj5g.11). */
 function activityResponse(items: ActivityOverrides[] = [{}]) {
@@ -69,6 +75,8 @@ function activityResponse(items: ActivityOverrides[] = [{}]) {
       latest_job: null,
       failing_streak: 0,
       rows_read_24h: 0,
+      warehouse_rows_24h: 0,
+      catalog_combinations_24h: 0,
       ...item,
     })),
   }
@@ -306,9 +314,11 @@ describe('ScansTab', () => {
     expect(scansSurfaces).toHaveLength(2)
     // "Monitoring" is both the KPI label and this row's mode badge.
     expect(screen.getAllByText('Monitoring')).toHaveLength(2)
-    // "Rows scanned" said nothing about which rows; these are warehouse rows the
-    // runs read, not rows written to the plan.
-    expect(screen.getByText('Warehouse rows read · 24h')).toBeInTheDocument()
+    // Warehouse rows only; catalog runs' grouped combinations are a different
+    // unit and stay out of the figure (#247 DA-4).
+    expect(screen.getByText('Warehouse rows · 24h')).toBeInTheDocument()
+    // The aggregate the strip was missing: scans whose latest run failed (DA-11).
+    expect(screen.getByText('Failing').parentElement?.textContent).toBe('Failing0')
     // Rows lead with a human summary (source · cadence); the raw SQL is demoted
     // to a faint secondary line rather than its own prominent column.
     expect(screen.getByText(/Web Production · Every 15 min/)).toBeInTheDocument()
@@ -455,7 +465,7 @@ describe('ScansTab', () => {
     expect(screen.queryByText(/\+ runs/)).not.toBeInTheDocument()
   })
 
-  it("shows the server's exact 24h rows across every scan, without a floor", async () => {
+  it("shows the server's exact 24h warehouse rows across every scan, without a floor", async () => {
     const scanConfig2 = { ...scanConfig, id: 'scan-2', name: 'Backfill scan' }
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
@@ -464,8 +474,8 @@ describe('ScansTab', () => {
       if (url.endsWith('/api/v1/projects/demo/scans/activity')) {
         return mockJsonResponse(
           activityResponse([
-            { scan_config_id: 'scan-1', rows_read_24h: 1200 },
-            { scan_config_id: 'scan-2', rows_read_24h: 300 },
+            { scan_config_id: 'scan-1', rows_read_24h: 1353, warehouse_rows_24h: 1200, catalog_combinations_24h: 153 },
+            { scan_config_id: 'scan-2', rows_read_24h: 300, warehouse_rows_24h: 300 },
           ]),
         )
       }
@@ -475,9 +485,14 @@ describe('ScansTab', () => {
     })
     renderTab()
 
-    const label = await screen.findByText('Warehouse rows read · 24h')
-    await waitFor(() => expect(label.parentElement?.textContent).toBe('Warehouse rows read · 24h1.5K'))
+    const label = await screen.findByText('Warehouse rows · 24h')
+    await waitFor(() => expect(label.parentElement?.textContent).toBe('Warehouse rows · 24h1.5K'))
     expect(label.parentElement?.textContent).not.toContain('+')
+    // The catalog runs' combinations are named beside it, not added in (DA-4).
+    expect(label.closest('[title]')).toHaveAttribute(
+      'title',
+      'Warehouse rows read by metrics runs in the last 24 hours. Catalog runs also read back 153 column combinations.',
+    )
   })
 
   // The tag used to take its number from the activity endpoint alone, so it
@@ -587,7 +602,7 @@ describe('ScansTab', () => {
     expect(screen.getByText('Needs a time column')).toBeInTheDocument()
     expect(screen.queryByText('No metrics collected')).toBeNull()
 
-    // The KPI grid is [Scans, Monitoring, Warehouse rows read · 24h]; the
+    // The KPI grid is [Scans, Monitoring, Failing, Warehouse rows · 24h]; the
     // Monitoring tile must read 0, not 1.
     const monitoringLabel = screen.getByText('Monitoring')
     expect(monitoringLabel.parentElement?.textContent).toBe('Monitoring0')
@@ -927,5 +942,141 @@ describe('ScansTab — data layer and feedback (batch 4)', () => {
     expect(newScan).toBeDisabled()
     expect(newScan).not.toHaveAttribute('title')
     expect(newScan).toHaveAccessibleDescription('Add a data source first.')
+  })
+
+  function setupEmptyProject(dataSources: unknown[]) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse(dataSources)
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/scans/activity')) return mockJsonResponse(activityResponse([]))
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  it('shows one empty state, and no tiles, in a project with no data source (#247 DA-28)', async () => {
+    setupEmptyProject([])
+    renderTab()
+
+    expect(
+      await screen.findByRole('heading', { name: 'Connect your warehouse to start scanning' }),
+    ).toBeInTheDocument()
+    // What setting up a scan involves, in order.
+    const steps = screen.getByRole('list', { name: 'Setting up a scan' })
+    expect(steps).toHaveTextContent('Add a connection to your warehouse')
+    expect(screen.getByRole('link', { name: 'Add connection' })).toHaveAttribute('href', '/settings/data-sources')
+    // Nothing else competes with it: no stat strip, no second empty state, no
+    // empty "All scans" panel, no disabled New scan.
+    expect(screen.queryByText('Monitoring')).not.toBeInTheDocument()
+    expect(screen.queryByText('No data sources')).not.toBeInTheDocument()
+    expect(screen.queryByText('All scans')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New scan/ })).not.toBeInTheDocument()
+  })
+
+  it('offers New scan from the empty state once a data source exists (#247 DA-28)', async () => {
+    setupEmptyProject([dataSource])
+    renderTab()
+
+    expect(await screen.findByRole('heading', { name: 'Create your first scan' })).toBeInTheDocument()
+    const newScan = screen.getByRole('button', { name: /New scan/ })
+    fireEvent.click(newScan)
+    expect(navigateMock).toHaveBeenCalledWith('/p/demo/scans/new')
+    // One New scan, the empty state's, not a second in the header.
+    expect(screen.getAllByRole('button', { name: /New scan/ })).toHaveLength(1)
+  })
+
+  it('says the data sources did not load instead of offering a first scan', async () => {
+    // A failed list is not a list with a source in it: "Create your first
+    // scan" skipped step 1 for a project that may have no connection at all.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources')) {
+        return new Response(JSON.stringify({ detail: 'Database unavailable' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/scans/activity')) return mockJsonResponse(activityResponse([]))
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    expect(
+      await screen.findByRole('heading', { name: 'Could not load this project’s data sources' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Try again/ })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Create your first scan' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New scan/ })).not.toBeInTheDocument()
+  })
+
+  it('tells a viewer of an empty project who creates scans, with no button (#247 DA-28)', async () => {
+    setupEmptyProject([dataSource])
+    renderTab('viewer')
+
+    expect(await screen.findByRole('heading', { name: 'No scans yet' })).toBeInTheDocument()
+    expect(screen.getByText(/An owner creates scans/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New scan/ })).not.toBeInTheDocument()
+  })
+
+  it('tones the Failing tile when a scan is failing (#247 DA-11)', async () => {
+    setupFetchWithJobs([failedJob('job-f1', '2026-01-01T00:00:00Z')], undefined, { failing_streak: 1 })
+    renderTab()
+
+    await waitFor(() =>
+      expect(screen.getByText('Failing').parentElement?.textContent).toBe('Failing1'),
+    )
+  })
+
+  it('fills Recent runs past two rows when there is only one scan (#247 DA-24)', async () => {
+    const completed = (id: string, ts: string, rows: number) => ({
+      id,
+      scan_config_id: 'scan-1',
+      status: 'completed',
+      started_at: ts,
+      completed_at: ts,
+      result_summary: { scan_rows_processed: rows },
+      error_message: null,
+      created_at: ts,
+      updated_at: ts,
+    })
+    setupFetchWithJobs([
+      completed('j4', '2026-01-04T00:00:00Z', 153),
+      completed('j3', '2026-01-03T00:00:00Z', 1),
+      completed('j2', '2026-01-02T00:00:00Z', 2),
+      completed('j1', '2026-01-01T00:00:00Z', 3),
+    ])
+    renderTab()
+
+    // All four runs, with the catalog figure named for what it is (DA-4).
+    expect(await screen.findByText('153 combos')).toBeInTheDocument()
+    expect(screen.getByText('1 combo')).toBeInTheDocument()
+    expect(screen.getByText('2 combos')).toBeInTheDocument()
+    expect(screen.getByText('3 combos')).toBeInTheDocument()
+  })
+
+  it('offers Run again only on the latest failure, not one a success followed (#247 DA-22)', async () => {
+    setupFetchWithJobs([
+      {
+        id: 'job-ok',
+        scan_config_id: 'scan-1',
+        status: 'completed',
+        started_at: '2026-01-02T00:00:00Z',
+        completed_at: '2026-01-02T00:00:05Z',
+        result_summary: { query_rows_scanned: 10 },
+        error_message: null,
+        created_at: '2026-01-02T00:00:00Z',
+        updated_at: '2026-01-02T00:00:05Z',
+      },
+      failedJob('job-old', '2026-01-01T00:00:00Z'),
+    ])
+    renderTab()
+
+    expect(await screen.findByText('10 rows')).toBeInTheDocument()
+    // The old failure is still listed, with its reason, but nothing to retry.
+    expect(screen.getAllByText('Failed').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /Run again/i })).not.toBeInTheDocument()
   })
 })

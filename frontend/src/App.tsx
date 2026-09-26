@@ -281,6 +281,26 @@ function ScansRedirect() {
   return <Navigate to={itemId ? `/p/${slug}/scans/${itemId}` : `/p/${slug}/scans`} replace />
 }
 
+/**
+ * Legacy `/p/:slug/variables/:variableId` → the Variables surface with that
+ * variable focused. Event spec cards linked here before variables moved under
+ * `/settings/variables`, so old links and copied URLs still land (#245 JR-10).
+ */
+function VariableRedirect() {
+  const { slug, variableId } = useParams<{ slug: string; variableId: string }>()
+  return <Navigate to={`/p/${slug}/settings/variables/${variableId}`} replace />
+}
+
+/**
+ * Bare `/p/:slug` → the project's home. It used to render the Events list, so
+ * a project link from outside the app opened on a different page than every
+ * in-app project entry (#250 JR-1).
+ */
+function ProjectHomeRedirect() {
+  const { slug } = useParams<{ slug: string }>()
+  return <Navigate to={projectHomePath(slug ?? '')} replace />
+}
+
 function FactTablesNewRedirect() {
   const { slug } = useParams<{ slug: string }>()
   return <Navigate to={`/p/${slug}/metrics/fact-tables/new`} replace />
@@ -523,7 +543,8 @@ export default function App() {
               <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense('project-settings', <ProjectSettingsPage />, 'settings')} />
               <Route path="/p/:slug/settings/:tab" element={withSuspense('project-settings', <ProjectSettingsPage />, 'settings')} />
               <Route path="/p/:slug/settings" element={withSuspense('project-settings', <ProjectSettingsPage />, 'settings')} />
-              <Route path="/p/:slug" element={withSuspense('events', <EventsPage />)} />
+              <Route path="/p/:slug/variables/:variableId" element={<VariableRedirect />} />
+              <Route path="/p/:slug" element={<ProjectHomeRedirect />} />
               {/* Project-scoped catch-all. It has to exist separately from the
                   global one below: only a route that declares `:slug` puts the
                   param in scope for Layout, so an unmatched path under a real

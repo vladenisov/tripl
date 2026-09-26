@@ -1,8 +1,10 @@
 import { memo, useCallback, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { BellRing } from 'lucide-react'
 
 import { MAX_INBOX_NOTE_LENGTH } from '@/api/alerting'
 import { Chip } from '@/components/primitives/chip'
+import { EmptyState } from '@/components/empty-state'
 import { Panel } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -18,7 +20,7 @@ import {
   isHandledInboxStatus,
   priorDecisionLabel,
 } from '@/lib/alertStatus'
-import { formatDateTime } from '@/lib/datetime'
+import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import {
   getScopeMonitoringPath,
   getScopeNavigationTarget,
@@ -34,7 +36,7 @@ import {
 import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice, SectionSkeleton } from '@/components/states'
 import { countOf } from '@/lib/plural'
-import { getErrorMessage } from '@/lib/utils'
+import { cn, getErrorMessage } from '@/lib/utils'
 import type {
   AlertInboxAction,
   AlertInboxGroup,
@@ -45,6 +47,7 @@ import type {
 import { noteBudgetLabel } from './constants'
 import { InboxFilterBar } from './InboxFilterBar'
 import { liveInboxActionError, type InboxActionFailure } from './inboxActionErrors'
+import { incidentDeltaBadge, incidentHeadline } from './inboxCardLabels'
 import {
   EMPTY_INBOX_FILTERS,
   INBOX_LOOKBACK_DAYS,
@@ -160,6 +163,13 @@ interface AlertingInboxProps {
   // second write restore the status the first had just cleared. Optional: when
   // absent, the two setters are called in turn.
   onClearAllFilters?: () => void
+  // The empty state's "Show all": every status, filters off. Distinct from
+  // Clear when the page opens on a status of its own (AL-14) — clearing back
+  // to an empty Open queue would show nothing new. Falls back to Clear.
+  onShowAll?: () => void
+  // The status the page opens on; the filter bar does not count it as a
+  // filter the reader set. '' (All) when absent.
+  defaultStatusFilter?: InboxStatusFilter
   onLoadMore: () => void
   hasMore: boolean
   isLoadingMore: boolean
@@ -225,6 +235,8 @@ export function AlertingInbox({
   filters,
   onFiltersChange,
   onClearAllFilters,
+  onShowAll,
+  defaultStatusFilter = '',
   onLoadMore,
   hasMore,
   isLoadingMore,
@@ -394,19 +406,26 @@ export function AlertingInbox({
       {/* Without a rule nothing can correlate, so an empty list here would
           read as "no incidents" when the truth is "nothing can produce
           one". Say which, and where to fix it. */}
+      {/* "0 incidents", the word the rest of the UI uses — not "0 groups",
+          an internal term (AL-18). The CTA is a button, not an underlined word
+          mid-sentence; viewers get the sentence without it, since a rule is
+          an editor write. */}
       {!hasRules && (
-        <Panel title="Inbox" subtitle="0 groups">
-          <p className="p-4 text-body text-muted-foreground">
-            No alert rules yet, so nothing can raise an incident. Add one under{' '}
-            <button
-              type="button"
-              onClick={onGoToMonitors}
-              className="underline underline-offset-2"
-            >
-              Rules
-            </button>
-            .
-          </p>
+        <Panel title="Inbox" subtitle="0 incidents">
+          <EmptyState
+            size="sm"
+            headingLevel={3}
+            icon={BellRing}
+            title="No alert rules yet"
+            description="Nothing can raise an incident until a rule watches a scan. When a rule fires, its incidents show up here."
+            action={
+              canWrite ? (
+                <Button size="sm" onClick={onGoToMonitors}>
+                  Create a rule
+                </Button>
+              ) : undefined
+            }
+          />
         </Panel>
       )}
       {hasRules && (
@@ -451,6 +470,8 @@ export function AlertingInbox({
             onChange={onFiltersChange}
             status={statusFilter}
             onStatusChange={onStatusFilterChange}
+            statusCounts={inbox?.status_counts}
+            defaultStatus={defaultStatusFilter}
             onClearAll={clearAllFilters}
           />
           {/* ABOVE the loading/error/empty/list ternary, not inside its last
@@ -506,7 +527,8 @@ export function AlertingInbox({
                   <button
                     type="button"
                     onClick={() => {
-                      clearAllFilters()
+                      if (onShowAll) onShowAll()
+                      else clearAllFilters()
                       setFilterBarGeneration(generation => generation + 1)
                     }}
                     className="underline underline-offset-2"
@@ -515,7 +537,9 @@ export function AlertingInbox({
                   </button>
                 </>
               ) : (
-                'No correlated alert groups.'
+                // "Incidents", as the rest of the UI calls them — not
+                // "correlated alert groups" (AL-18).
+                `No incidents in the ${LOOKBACK_LABEL}. When a rule fires, it shows up here.`
               )}
             </div>
           ) : (
@@ -525,14 +549,14 @@ export function AlertingInbox({
                   number that looks project-wide while describing one page is
                   how "52 open" turns into a decision nobody can retrace. */}
               {!statusFilter && items.length > 0 && (
-                <p className="text-micro text-muted-foreground">
+                <p className="text-body-sm text-muted-foreground">
                   Of the {countOf(items.length, 'incident', 'incidents')} loaded: {openCount} open ·{' '}
                   {handledCount} handled
                 </p>
               )}
               {pinnedGroup && (
                 <div className="space-y-1">
-                  <p className="text-micro text-muted-foreground">
+                  <p className="text-body-sm text-muted-foreground">
                     Linked from an alert. This incident is outside the list below.
                   </p>
                   {renderCard(pinnedGroup, true)}
@@ -543,7 +567,7 @@ export function AlertingInbox({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-9 text-body-sm sm:h-7 sm:text-caption"
+                  className="max-sm:h-9"
                   disabled={isLoadingMore}
                   onClick={onLoadMore}
                 >
@@ -584,6 +608,11 @@ const NAVIGATION_DESTINATION: Record<
     title:
       "Opens this event type's own monitoring page. It charts the type's aggregated volume against the seasonal baseline over that page's own range — not the release-cohort comparison this incident made. Its By version tab holds release regressions for the current latest release only, so it will not show this comparison once a newer release ships.",
   },
+}
+
+/** The separator between the meta row's facts; decoration, so not read out. */
+function MetaDot() {
+  return <span aria-hidden="true">·</span>
 }
 
 /** One shared empty list, so a card without siblings keeps a stable prop. */
@@ -700,6 +729,8 @@ const IncidentCard = memo(function IncidentCard({
     title: NAVIGATION_DESTINATION[navTarget.scope].title,
   }
   const reason = incidentReasonLabel(group.direction, group.scope_types)
+  const headline = incidentHeadline(group)
+  const deltaBadge = incidentDeltaBadge(group)
   const worstDelta = incidentWorstDeltaLabel(group)
   const decision = priorDecisionLabel(group)
   const isMuted = group.status === 'muted'
@@ -730,7 +761,7 @@ const IncidentCard = memo(function IncidentCard({
   return (
     <div
       id={`incident-${id}`}
-      className="rounded-md border p-3 text-body-sm"
+      className="rounded-card border p-3 text-body-sm"
       style={isPinned ? { borderColor: 'var(--accent)' } : undefined}
     >
       <div className="flex items-start gap-2">
@@ -776,129 +807,146 @@ const IncidentCard = memo(function IncidentCard({
         />
       )}
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <Chip size="xs" tone={alertInboxStatusTone(group.status)}>
+        {/* The title row (AL-12): status, then WHAT broke at the card's own
+            heading size, then HOW MUCH as a signed badge on the right. It used
+            to lead with a row of chips and put the scope on line two as a
+            muted, underlined comma list, so nothing on the card supported
+            scanning a queue. */}
+        <div className="flex items-start gap-2">
+          <Chip size="sm" className="mt-px shrink-0" tone={alertInboxStatusTone(group.status)}>
             {alertInboxStatusLabel(group.status)}
           </Chip>
-          {/* Neutral on purpose: this chip is on every row, so it identifies
-              rather than alarms. The arrow carries the direction. */}
-          {/* Allowed to wrap: a multi-kind incident's reason reads "↑ spike ·
-              volume + event-type volume + metric + project volume", which as
-              one nowrap line ran 359px — past the card and the viewport at
-              375px (LIVE-19). The chip's fixed 18px height gives way to its
-              content for the same reason. */}
-          <Chip
-            size="xs"
-            tone="neutral"
-            className="max-w-full whitespace-normal break-words rounded-md leading-tight"
-            // Padding in `style`, not a `py-*` class: Chip sets an inline
-            // `padding: 0 6px`, which beats any class. And `rounded-md`, not
-            // the pill's `rounded-full`, whose stadium ends clip the first and
-            // last glyphs of a two-line chip.
-            style={{ height: 'auto', minHeight: 18, padding: '2px 6px' }}
-          >
-            {incidentDirectionGlyph(group.direction)} {reason}
-          </Chip>
-          <span className="font-medium">{countOf(group.item_count, 'item', 'items')}</span>
-          {group.item_count > 1 && (
-            <span className="text-muted-foreground">
-              · {countOf(group.scope_names.length, 'distinct scope name', 'distinct scope names')} shown
-            </span>
-          )}
-          <span className="text-muted-foreground">
-            {formatDateTime(group.latest_delivery_at)}
-          </span>
-          {group.false_positive_count > 0 && (
-            <span
-              className="text-muted-foreground"
-              title="How many times this exact group has already been marked a false positive."
-            >
-              · marked false positive {countOf(group.false_positive_count, 'time', 'times')}
-            </span>
-          )}
-        </div>
-        <div className="mt-1 break-words text-muted-foreground">
-          {/* Linked, not just named: the card told you WHAT
-              fired and gave you no way to go look at it, so
-              answering "is this real" meant leaving for the
-              events page and finding it by hand.
-              `break-words`, not `truncate`: at 390px the identity used to clip
-              to nine characters while the buttons kept full width. */}
-          {scopePath ? (
-            <Link to={scopePath} className="underline hover:text-foreground">
-              {group.scope_names.join(', ')}
-            </Link>
-          ) : (
-            <>
-              {group.scope_names.join(', ')}
-              {/* A SEPARATE affordance, not the name made clickable
-                  (tripl-wkwv.12). A release regression left a quarter of the
-                  production inbox as dead text: the name-as-link above is the
-                  substantiating gesture the deny-set in lib/monitoring.ts
-                  governs, and it is right to withhold it here — but "you cannot
-                  prove it from there" is not "you may not go there". A distinct
-                  link with its own words is what makes that difference sayable.
+          <div className="min-w-0 flex-1 break-words text-body font-semibold">
+            {/* Linked, not just named: the card told you WHAT fired and gave
+                you no way to go look at it, so answering "is this real" meant
+                leaving for the events page and finding it by hand.
+                `break-words`, not `truncate`: at 390px the identity used to
+                clip to nine characters while the buttons kept full width. */}
+            {scopePath ? (
+              <Link to={scopePath} className="hover:underline">
+                {headline.primary || 'Unnamed scope'}
+              </Link>
+            ) : (
+              <span>{headline.primary || 'Unnamed scope'}</span>
+            )}
+            {headline.more > 0 && (
+              <>
+                {' '}
+                <span
+                  className="whitespace-nowrap text-body-sm font-normal text-muted-foreground"
+                  title={group.scope_names.join(', ')}
+                >
+                  +{headline.more} more
+                </span>
+              </>
+            )}
+            {/* A SEPARATE affordance, not the name made clickable
+                (tripl-wkwv.12). A release regression left a quarter of the
+                production inbox as dead text: the name-as-link above is the
+                substantiating gesture the deny-set in lib/monitoring.ts
+                governs, and it is right to withhold it here — but "you cannot
+                prove it from there" is not "you may not go there". A distinct
+                link with its own words is what makes that difference sayable.
 
-                  Both halves of a release regression get it, and they land on
-                  different pages: an event-scoped one on the event, an
-                  event-TYPE-scoped one on the event type. `title` carries the
-                  caveat the visible words have no room for, as
-                  `incidentMagnitudeTitle` and the checkbox's shift-click hint
-                  already do on this card.
+                Both halves of a release regression get it, and they land on
+                different pages: an event-scoped one on the event, an
+                event-TYPE-scoped one on the event type. `title` carries the
+                caveat the visible words have no room for.
 
-                  Rendered inside this arm rather than beside the ternary so the
-                  structure guards the double link too, not only the helper. */}
-              {navLink && (
-                <>
-                  {' · '}
+                Rendered only when `scopePath` is null, so the structure guards
+                the double link too, not only the helper. */}
+            {!scopePath && navLink && (
+              <>
+                {' '}
+                <span className="text-body-sm font-normal text-muted-foreground">
+                  {'· '}
                   <Link
                     to={navLink.path}
                     aria-label={navLink.announce}
                     title={navLink.title}
-                    className="underline hover:text-foreground"
+                    className="hover:text-foreground hover:underline"
                   >
                     {navLink.label}
                   </Link>
-                </>
-              )}
-            </>
+                </span>
+              </>
+            )}
+          </div>
+          {deltaBadge && (
+            <Chip
+              size="md"
+              tone={deltaBadge.tone}
+              className="tnum shrink-0 font-semibold"
+              title={incidentMagnitudeTitle(group)}
+            >
+              {deltaBadge.label}
+            </Chip>
           )}
         </div>
         <div
-          className="mt-1 text-caption text-muted-foreground"
+          className="mt-1 text-body-sm text-muted-foreground"
           title={incidentMagnitudeTitle(group)}
         >
           {incidentMagnitudeLabel(group)}
           {worstDelta && <> · {worstDelta}</>}
         </div>
-        <div className="mt-1 text-micro text-muted-foreground">
-          {/* Each rule is linked by ITS OWN id: `rules` pairs id with name, so
-              the card can no longer send "Volume rule" to whichever monitor
-              sorted first (tripl-oxkt.4). The monitor page is where the coarse
-              mute lives — the one control that fits "silence all of this". */}
-          {group.rules.length > 0
-            ? group.rules.map((rule, index) => (
-                <span key={rule.id}>
-                  {index > 0 && ', '}
-                  <Link
-                    to={`/p/${slug}/monitors/${rule.id}`}
-                    className="underline hover:text-foreground"
-                  >
-                    {rule.name}
-                  </Link>
-                </span>
-              ))
-            : group.rule_names.join(', ')}
-          {' · '}
-          {group.scan_names.join(', ')}
+        {/* The meta row: what kind of signal, how many items, when, and which
+            rule on which scan — at 12.5px, not the 10px it was (AL-13). */}
+        <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-body-sm text-muted-foreground">
+          {/* Allowed to wrap: a multi-kind incident's reason reads "↑ spike ·
+              volume + event-type volume + metric + project volume", which as
+              one nowrap line ran past the card at 375px (LIVE-19). */}
+          <span className="break-words">
+            {incidentDirectionGlyph(group.direction)} {reason}
+          </span>
+          <MetaDot />
+          <span className="font-medium text-foreground">{countOf(group.item_count, 'item', 'items')}</span>
+          {group.item_count > 1 && (
+            <span>
+              ({countOf(group.scope_names.length, 'distinct scope name', 'distinct scope names')} shown)
+            </span>
+          )}
+          <MetaDot />
+          <span className="whitespace-nowrap" title={formatDateTime(group.latest_delivery_at)}>
+            {formatRelativeTime(group.latest_delivery_at)}
+          </span>
+          {group.false_positive_count > 0 && (
+            <>
+              <MetaDot />
+              <span title="How many times this exact group has already been marked a false positive.">
+                marked false positive {countOf(group.false_positive_count, 'time', 'times')}
+              </span>
+            </>
+          )}
+          <MetaDot />
+          <span className="break-words">
+            {/* Each rule is linked by ITS OWN id: `rules` pairs id with name, so
+                the card can no longer send "Volume rule" to whichever monitor
+                sorted first (tripl-oxkt.4). The monitor page is where the coarse
+                mute lives — the one control that fits "silence all of this". */}
+            {group.rules.length > 0
+              ? group.rules.map((rule, index) => (
+                  <span key={rule.id}>
+                    {index > 0 && ', '}
+                    <Link
+                      to={`/p/${slug}/monitors/${rule.id}`}
+                      className="hover:text-foreground hover:underline"
+                    >
+                      {rule.name}
+                    </Link>
+                  </span>
+                ))
+              : group.rule_names.join(', ')}
+            {group.scan_names.length > 0 && <> on {group.scan_names.join(', ')}</>}
+          </span>
         </div>
         {siblings.length > 0 && (
-          <div className="mt-1 text-micro text-muted-foreground">
+          <div className="mt-1 text-body-sm text-muted-foreground">
             {siblings.map(sibling => (
               <a
                 key={sibling.correlation_group_id}
                 href={`#incident-${sibling.correlation_group_id}`}
-                className="underline hover:text-foreground"
+                className="underline underline-offset-2 hover:text-foreground"
                 title="The same scope is also open as a different kind of signal. Silencing one does not silence the other — they are separate suppression keys."
               >
                 also here as {incidentReasonLabel(sibling.direction, sibling.scope_types)}
@@ -907,7 +955,7 @@ const IncidentCard = memo(function IncidentCard({
           </div>
         )}
         {decision && (
-          <div className="mt-1 text-micro text-muted-foreground">{decision}</div>
+          <div className="mt-1 text-body-sm text-muted-foreground">{decision}</div>
         )}
       </div>
       </div>
@@ -931,14 +979,14 @@ const IncidentCard = memo(function IncidentCard({
           and it never lapses, so it sinks out of the 30-day window for good and
           that filter is the only route back to its Unmute (tripl-oxkt.2). */}
       {group.muted && (
-        <div className="mt-2 text-micro text-muted-foreground">
+        <div className="mt-2 text-body-sm text-muted-foreground">
           {group.muted_until
             ? `muted until ${formatDateTime(group.muted_until)}`
             : 'muted — no end date, until you unmute it'}
         </div>
       )}
       {group.note && (
-        <p className="mt-2 rounded-sm border-l-2 border-muted-foreground/30 bg-muted/40 px-2 py-1 text-caption leading-5">
+        <p className="mt-2 rounded-sm border-l-2 border-muted-foreground/30 bg-muted/40 px-2 py-1 text-body-sm">
           {group.note}
         </p>
       )}
@@ -984,7 +1032,7 @@ const IncidentCard = memo(function IncidentCard({
                   event.preventDefault()
                   runAction('note')
                 }}
-                className="min-h-0 w-full py-1.5 text-caption leading-5"
+                className="min-h-0 w-full py-1.5"
               />
               <div className="flex flex-wrap items-center gap-2">
                 {/* An explicit save, because a note used to be reachable only as a
@@ -995,7 +1043,7 @@ const IncidentCard = memo(function IncidentCard({
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
+                  className="max-sm:h-9 max-sm:px-3"
                   title="Ctrl+Enter (⌘+Enter on a Mac) saves without leaving the box."
                   disabled={isPending || !canSaveNote}
                   onClick={() => runAction('note')}
@@ -1005,7 +1053,7 @@ const IncidentCard = memo(function IncidentCard({
                 {noteBudget && (
                   // `role="status"`: it appears mid-sentence, while the reader is
                   // looking at their own typing rather than at the row below it.
-                  <span role="status" className="text-micro text-muted-foreground">
+                  <span role="status" className="text-caption text-muted-foreground">
                     {noteBudget}
                   </span>
                 )}
@@ -1015,7 +1063,7 @@ const IncidentCard = memo(function IncidentCard({
             <button
               type="button"
               onClick={openNote}
-              className="inline-flex min-h-9 items-center text-body-sm text-muted-foreground underline underline-offset-2 hover:text-foreground sm:min-h-0 sm:text-micro"
+              className="inline-flex min-h-9 items-center text-body-sm text-muted-foreground underline underline-offset-2 hover:text-foreground sm:min-h-0"
             >
               {group.note ? 'Edit note' : 'Add note'}
             </button>
@@ -1032,18 +1080,19 @@ const IncidentCard = memo(function IncidentCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
+            className="max-sm:h-9 max-sm:px-3"
             aria-label={`Acknowledge ${target}`}
             title="Stops re-delivery until the scope goes quiet, then this reopens by itself. Reversible."
             disabled={isPending || group.status !== 'open'}
             onClick={() => runAction('acknowledge')}
           >
-            Ack
+            {/* The word the bulk bar uses too — one action, one label (AL-17). */}
+            Acknowledge
           </Button>
           <Button
             size="sm"
             variant="outline"
-            className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
+            className="max-sm:h-9 max-sm:px-3"
             aria-label={`Resolve ${target}`}
             title="Same suppression as Ack, different bucket in the filter. Reopens by itself once the scope goes quiet. Reversible."
             disabled={isPending || group.status === 'resolved'}
@@ -1054,7 +1103,7 @@ const IncidentCard = memo(function IncidentCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
+            className="max-sm:h-9 max-sm:px-3"
             aria-expanded={muteOpen}
             // Two WHOLE names, not one verb fragment glued to the target: the
             // "Mute <target>" half is the vocabulary the Monitors surfaces
@@ -1088,7 +1137,6 @@ const IncidentCard = memo(function IncidentCard({
           <Button
             size="sm"
             variant="outline"
-            className="h-9 px-3 text-body-sm sm:h-7 sm:px-2 sm:text-micro"
             aria-label={isMuted ? unmuteName(target) : `Reopen ${target}`}
             title={
               isMuted
@@ -1096,6 +1144,13 @@ const IncidentCard = memo(function IncidentCard({
                 : 'Puts this back in the open queue. Alerts resume.'
             }
             disabled={isPending || group.status === 'open'}
+            // On an open card the slot is KEPT, so False positive stays at the
+            // same x on every row (tripl-oxkt.8), but not drawn: a greyed
+            // "Reopen" on an open incident read as an available action (AL-17).
+            className={cn(
+              'max-sm:h-9 max-sm:px-3',
+              group.status === 'open' && 'invisible',
+            )}
             onClick={() => runAction('reopen')}
           >
             {isMuted ? 'Unmute' : 'Reopen'}
@@ -1113,7 +1168,7 @@ const IncidentCard = memo(function IncidentCard({
             <Button
               size="sm"
               variant="outline"
-              className="h-9 px-3 text-body-sm text-destructive sm:h-7 sm:px-2 sm:text-micro"
+              className="text-destructive max-sm:h-9 max-sm:px-3"
               aria-label={`Mark ${target} as a false positive`}
               title="Closes this incident and permanently makes detection stricter on its scopes only. Asks first, and reports how many scopes it actually changed."
               disabled={isPending || group.status === 'false_positive'}
@@ -1126,7 +1181,7 @@ const IncidentCard = memo(function IncidentCard({
       </div>
 
       {muteOpen && (
-        <div className="mt-2 flex flex-wrap items-center gap-1 text-micro text-muted-foreground">
+        <div className="mt-2 flex flex-wrap items-center gap-1 text-body-sm text-muted-foreground">
           {/* Durations on the buttons, not a silent constant in the mutation:
               every mute was 7 days and nothing said so (tripl-oxkt.7).
 
@@ -1146,7 +1201,7 @@ const IncidentCard = memo(function IncidentCard({
               key={choice.label}
               size="sm"
               variant="outline"
-              className="h-9 px-3 text-body-sm sm:h-6 sm:px-2 sm:text-micro"
+              className="max-sm:h-9 max-sm:px-3"
               // The open-ended button's visible face and its accessible name
               // differ on purpose, and the reason now lives with the branch
               // that makes them differ — see `muteChoiceName` (tripl-yapg).
@@ -1166,7 +1221,7 @@ const IncidentCard = memo(function IncidentCard({
 
       {/* Inside the failing card, not once below all twenty of them. */}
       {errorMessage && (
-        <p role="alert" className="mt-2 text-micro text-destructive">
+        <p role="alert" className="mt-2 text-body-sm text-destructive">
           {errorMessage}
         </p>
       )}
@@ -1178,7 +1233,7 @@ const IncidentCard = memo(function IncidentCard({
         type="button"
         aria-expanded={isExpanded}
         onClick={() => toggleIncident(id)}
-        className="mt-2 inline-flex min-h-9 items-center text-body-sm underline underline-offset-2 text-muted-foreground hover:text-foreground sm:min-h-0 sm:text-micro"
+        className="mt-2 inline-flex min-h-9 items-center text-body-sm underline underline-offset-2 text-muted-foreground hover:text-foreground sm:min-h-0"
       >
         {isExpanded ? 'Hide' : 'Show'} what was sent (
         {countOf(group.delivery_count, 'delivery', 'deliveries')})

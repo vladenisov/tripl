@@ -27,6 +27,18 @@ type MiniStatProps = {
    * figure and read as belonging to the next stat (LIVE-23).
    */
   labelAddon?: ReactNode
+  /**
+   * Makes the stat a toggle that filters something (F31/AL-47): it renders a
+   * `<button aria-pressed>` whose name reads "<label> <value>". A `<dl>`
+   * cannot sit inside a button, so the pressable stat is spans laid out the
+   * same way. `labelAddon` must not be interactive here: it would nest a
+   * control inside the button.
+   */
+  onPress?: () => void
+  /** Whether the pressable stat's filter is on. */
+  pressed?: boolean
+  /** Hover text for the pressable stat, e.g. what pressing it filters. */
+  title?: string
 }
 
 const TONE_COLOR: Record<MiniStatTone, string> = {
@@ -66,42 +78,73 @@ export function MiniStat({
   valueTone,
   pulse = false,
   labelAddon,
+  onPress,
+  pressed = false,
+  title,
 }: MiniStatProps) {
+  const figureTone = valueTone ?? (delta == null ? tone : undefined)
+  const tint = figureTone && figureTone !== 'neutral' ? figureTone : undefined
+  const captionClass = 'inline-flex items-center gap-1 micro-label'
+  const captionStyle = { color: 'var(--fg-faint)' }
+  const figure = (
+    <>
+      {/* Sans with tabular digits, not mono: a KPI figure ("1h ago",
+          "4.4K rows", "92%") is a number, not code (DS-17). */}
+      <span
+        data-slot="mini-stat-value"
+        className="tnum text-heading font-semibold tracking-[-0.01em]"
+        data-tone={tint}
+        style={{ color: tint ? TONE_COLOR[tint] : 'var(--fg)' }}
+      >
+        {value}
+      </span>
+      {delta != null && (
+        <span
+          className="inline-flex items-center gap-[3px] text-micro"
+          style={{ color: TONE_COLOR[tone] }}
+        >
+          {pulse && <Dot tone={TONE_DOT[tone]} size={5} pulse />}
+          {delta}
+        </span>
+      )}
+    </>
+  )
+
+  if (onPress) {
+    // The space between caption and figure sits outside both spans, so the
+    // button's name reads "Firing 3", not "Firing3".
+    return (
+      <button
+        type="button"
+        aria-pressed={pressed}
+        title={title}
+        onClick={onPress}
+        data-slot="mini-stat-pressable"
+        className={cn(
+          '-my-1 flex cursor-pointer flex-col items-start gap-px rounded-md px-2 py-1 text-left outline-none transition-colors',
+          'hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]',
+          pressed && 'bg-[var(--surface-hover)]',
+        )}
+      >
+        <span className={captionClass} style={captionStyle}>
+          {label}
+          {labelAddon}
+        </span>{' '}
+        <span className="flex items-baseline gap-1.5">{figure}</span>
+      </button>
+    )
+  }
+
   // A definition list programmatically ties the value (<dd>) to its caption
   // (<dt>) so assistive tech announces "<label>: <value>" together, instead of
   // two unrelated <span>s. (Issue M9.)
-  const figureTone = valueTone ?? (delta == null ? tone : undefined)
-  const tint = figureTone && figureTone !== 'neutral' ? figureTone : undefined
   return (
     <dl className="m-0 flex flex-col gap-px">
-      <dt
-        className="inline-flex items-center gap-1 micro-label"
-        style={{ color: 'var(--fg-faint)' }}
-      >
+      <dt className={captionClass} style={captionStyle}>
         {label}
         {labelAddon}
       </dt>
-      <dd className="m-0 flex items-baseline gap-1.5">
-        {/* Sans with tabular digits, not mono: a KPI figure ("1h ago",
-            "4.4K rows", "92%") is a number, not code (DS-17). */}
-        <span
-          data-slot="mini-stat-value"
-          className="tnum text-heading font-semibold tracking-[-0.01em]"
-          data-tone={tint}
-          style={{ color: tint ? TONE_COLOR[tint] : 'var(--fg)' }}
-        >
-          {value}
-        </span>
-        {delta != null && (
-          <span
-            className="inline-flex items-center gap-[3px] text-micro"
-            style={{ color: TONE_COLOR[tone] }}
-          >
-            {pulse && <Dot tone={TONE_DOT[tone]} size={5} pulse />}
-            {delta}
-          </span>
-        )}
-      </dd>
+      <dd className="m-0 flex items-baseline gap-1.5">{figure}</dd>
     </dl>
   )
 }
@@ -124,15 +167,21 @@ export function MiniStat({
  *
  * `className` / `style` style the outer box (border, background, padding);
  * falsy children are skipped, so a conditional stat needs no divider logic.
+ *
+ * `phoneGrid` lays a four-stat strip out as a 2×2 grid below `sm`, with no
+ * dividers: wrapped as a row, the fourth stat sat alone on its own line at
+ * 390px (MT-26, SH-27).
  */
 export function MiniStatStrip({
   children,
   boxed = false,
+  phoneGrid = false,
   className,
   style,
 }: {
   children: ReactNode
   boxed?: boolean
+  phoneGrid?: boolean
   className?: string
   style?: CSSProperties
 }) {
@@ -153,14 +202,25 @@ export function MiniStatStrip({
         data-slot="mini-stat-clip"
         style={{ overflowX: 'clip', overflowY: 'visible' }}
       >
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
+        <div
+          data-phone-grid={phoneGrid || undefined}
+          className={cn(
+            'gap-x-6 gap-y-4',
+            phoneGrid
+              ? 'grid grid-cols-2 sm:flex sm:flex-wrap sm:items-center'
+              : 'flex flex-wrap items-center',
+          )}
+        >
           {items.map((item, index) => (
             <div key={index} className="relative flex min-w-0 items-center">
               {index > 0 && (
                 <span
                   aria-hidden="true"
                   data-slot="mini-stat-divider"
-                  className="absolute -left-3 top-1/2 h-6 w-px -translate-y-1/2"
+                  className={cn(
+                    'absolute -left-3 top-1/2 h-6 w-px -translate-y-1/2',
+                    phoneGrid && 'max-sm:hidden',
+                  )}
                   style={{ background: 'var(--border)' }}
                 />
               )}

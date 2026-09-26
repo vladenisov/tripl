@@ -23,6 +23,7 @@ import {
 } from '@/lib/factOperandConfig'
 import { eventNameLabel } from '@/lib/eventName'
 import { METRIC_INTERVAL_LABEL } from '@/lib/metricFormat'
+import { useCanWriteProject } from '@/lib/permissions'
 import { METRIC_KIND_LABEL } from '@/types'
 import type { MetricDefinitionDetailResponse } from '@/types'
 import {
@@ -262,7 +263,7 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
               {METRIC_INTERVAL_LABEL[definition.interval]}
             </Chip>
           )}
-          <MetricSchedule definition={definition} />
+          <MetricSchedule slug={slug} definition={definition} />
           {dataSourceName && (
             <Chip size="xs" variant="outline">source · {dataSourceName}</Chip>
           )}
@@ -521,8 +522,26 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
   )
 }
 
-function MetricSchedule({ definition }: { definition: MetricDefinitionDetailResponse }) {
-  if (definition.status !== 'active' || !definition.interval) {
+function MetricSchedule({ slug, definition }: { slug: string; definition: MetricDefinitionDetailResponse }) {
+  const canEdit = useCanWriteProject()
+  // A draft is not collected whatever its interval; the header's Activate is
+  // the way out, so this only says why nothing runs (#246 JR-16).
+  if (definition.status === 'draft') {
+    return <span className="text-body-sm text-muted-foreground">Not collected while draft</span>
+  }
+  // An active metric with no interval is a dead end unless the line leads to
+  // where the schedule is set — for someone who can set it.
+  if (definition.status === 'active' && !definition.interval && canEdit) {
+    return (
+      <Link
+        to={`/p/${slug}/metrics/${definition.id}/edit`}
+        className="text-body-sm underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-current"
+      >
+        Set a schedule
+      </Link>
+    )
+  }
+  if (definition.status !== 'active') {
     return <span className="text-body-sm text-muted-foreground">Not scheduled</span>
   }
   if (definition.collection_due) {

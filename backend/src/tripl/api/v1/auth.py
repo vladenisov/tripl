@@ -147,10 +147,14 @@ async def get_status(session: SessionDep) -> AuthStatusResponse:
     # Rate limited on its own bucket (never shares login/register quota) so an
     # unauthenticated caller can't hammer the COUNT(*) behind it.
     has_users = await auth_service.has_any_users(session)
+    overrides = await app_settings_service.get_service_overrides(session)
     return AuthStatusResponse(
         has_users=has_users,
         registration_enabled=await auth_service.is_registration_allowed(
             session, is_first_user=not has_users
+        ),
+        email_configured=app_settings_service.email_can_send(
+            app_settings_service.build_email_config(overrides)
         ),
     )
 
@@ -249,11 +253,8 @@ async def request_password_reset(
     # (for the UI's fallback copy) does not enable enumeration.
     overrides = await app_settings_service.get_service_overrides(session)
     email_config = app_settings_service.build_email_config(overrides)
-    # Both, not just the host: ``_send_password_reset_email`` returns without
-    # sending when there is no From: address, so an instance with a relay and no
-    # sender would mint a token, drop the mail, and still have the UI promise a
-    # link was on its way. The flag has to mean "this can actually send".
-    email_configured = bool(email_config.smtp_host and email_config.smtp_from_address)
+    # The flag has to mean "this can actually send"; see ``email_can_send``.
+    email_configured = app_settings_service.email_can_send(email_config)
 
     if email_configured:
         issued = await auth_service.request_password_reset(session, data.email)

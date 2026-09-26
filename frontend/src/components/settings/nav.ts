@@ -138,7 +138,8 @@ export const WORKSPACE_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Instance',
     sub: 'Owner only',
-    desc: 'Server-wide settings (owner only)',
+    // "(owner only)" is the sub-label's job; saying it twice read as chrome (ST-7).
+    desc: 'Server-wide settings',
     items: [
       {
         id: 'runtime',
@@ -243,6 +244,16 @@ export function sectionLabel(path: string): string | undefined {
     }
   }
   return undefined
+}
+
+/**
+ * The words on the way out of the takeover. The label names where the link
+ * really goes: with no project bound `backHref` is the workspace list, and a
+ * link promising "project" that lands there was the LIVE-34 mismatch (ST-4).
+ */
+export function backToLabel(backHref: string, projectName?: string): string {
+  if (backHref === '/workspace') return 'Back to workspace'
+  return projectName ? `Back to ${projectName}` : 'Back to project'
 }
 
 /** Resolve which context owns a given section path. Defaults to 'workspace'. */

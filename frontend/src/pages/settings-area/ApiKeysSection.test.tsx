@@ -118,6 +118,47 @@ describe('ApiKeysSection', () => {
     expect(screen.queryByText('5 keys')).not.toBeInTheDocument()
   })
 
+  it('folds revoked keys away behind a count (ST-20)', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockResolvedValue([
+      key({ id: 'k1', name: 'codex' }),
+      key({ id: 'k3', name: 'ro', revoked_at: '2026-05-01T12:00:00Z' }),
+    ])
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+    renderSection()
+
+    expect(await screen.findByText('codex')).toBeInTheDocument()
+    expect(screen.queryByText('ro')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Show revoked (1)' }))
+    expect(screen.getByText('ro')).toBeInTheDocument()
+    expect(screen.getByText('revoked 2026-05-01')).toBeInTheDocument()
+  })
+
+  it('teaches what a key is for when there are none (ST-22)', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockResolvedValue([])
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+    renderSection()
+
+    expect(await screen.findByRole('heading', { name: 'No API keys yet' })).toBeInTheDocument()
+    expect(screen.queryByText(/shown in full only once/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Create your first key' }))
+    expect(await screen.findByText('New API key')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Create key/ })).toBeDisabled()
+  })
+
+  it('says there are no active keys when every key is revoked, not a bare card', async () => {
+    vi.spyOn(apiKeysApi, 'list').mockResolvedValue([
+      key({ id: 'k3', name: 'ro', revoked_at: '2026-05-01T12:00:00Z' }),
+    ])
+    vi.spyOn(projectsApi, 'list').mockResolvedValue([])
+    renderSection()
+
+    expect(await screen.findByRole('heading', { name: 'No active keys' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show revoked (1)' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show revoked (1)' }))
+    expect(screen.getByText('ro')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'No active keys' })).toBeNull()
+  })
+
   // WS-5: a failed load fell through to "No API keys yet".
   it('shows an error with retry, not an empty list, when the keys fail to load', async () => {
     vi.spyOn(apiKeysApi, 'list').mockRejectedValue(new Error('Server exploded'))
@@ -284,14 +325,18 @@ describe('ApiKeysSection', () => {
     }
 
     // WS-3: Esc or an outside click discarded a token that is never shown again.
-    it('stays open on Escape and closes only through Done', async () => {
+    it('stays open on Escape and closes only through its own button', async () => {
       const dialog = await mintKey()
 
       fireEvent.keyDown(dialog, { key: 'Escape' })
       expect(screen.getByRole('dialog', { name: 'Copy your API key now' })).toBeInTheDocument()
       expect(within(dialog).queryByRole('button', { name: 'Close' })).not.toBeInTheDocument()
+      // Says which key and how to send it (ST-21).
+      expect(within(dialog).getByText('agent · read-only · All projects · no expiry')).toBeInTheDocument()
+      expect(within(dialog).getByText('Authorization: Bearer <key>')).toBeInTheDocument()
 
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
+      // Not copied yet: closing is the reader's claim to have saved it (ST-21).
+      fireEvent.click(within(dialog).getByRole('button', { name: 'I’ve saved it' }))
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     })
 
@@ -334,6 +379,7 @@ describe('ApiKeysSection', () => {
 
       expect(await within(dialog).findByRole('button', { name: 'Copied' })).toBeInTheDocument()
       expect(writeText).toHaveBeenCalledWith('trpl_secret_token')
+      expect(within(dialog).getByRole('button', { name: 'Done' })).toBeInTheDocument()
     })
   })
 })

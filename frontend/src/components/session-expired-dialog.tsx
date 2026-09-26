@@ -10,7 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+import { PasswordInput } from '@/components/ui/password-input'
 import { Label } from '@/components/ui/label'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getErrorMessage } from '@/lib/utils'
@@ -83,9 +83,9 @@ export function SessionExpiredDialog({
                 Forgot password?
               </a>
             </div>
-            <Input
+            {/* The same show/hide toggle as the sign-in page (#250 SH-31). */}
+            <PasswordInput
               id="session-expired-password"
-              type="password"
               autoComplete="current-password"
               aria-required
               // eslint-disable-next-line jsx-a11y/no-autofocus -- the dialog exists to take this one field

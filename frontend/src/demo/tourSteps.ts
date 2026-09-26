@@ -7,16 +7,19 @@
  * unit-testable without rendering.
  */
 
+import { buildNavGroups } from '@/lib/navigation'
+
 export interface TourStep {
   id: string
   /**
-   * Grouped-nav area this surface belongs to. It must be one of the group
-   * labels `buildNavGroups` actually renders — Plan, Observe or Govern. The
-   * tour prints this as the step's chip, so a name the sidebar does not have
-   * sends the reader looking for a group that does not exist; 'Connect' was
-   * exactly that (tripl-3y7z).
+   * The sidebar group this surface sits in — Plan, Observe or Govern — read
+   * from `buildNavGroups` itself, never typed here (#251 JR-22): the typed
+   * copy said Govern for Plan branches and Alerting and drifted every time the
+   * sidebar moved an item. Null for a step with no sidebar item (search lives
+   * in the command palette), which prints no chip rather than a wrong one.
    */
-  area: string
+  area: string | null
+  /** The sidebar label, so "Open X" names the page the sidebar calls X. */
   title: string
   blurb: string
   /** Deep link to the real surface for this step. */
@@ -89,22 +92,51 @@ export function buildMetricBuildingBlocks(slug: string): MetricBuildingBlock[] {
   ]
 }
 
+/** A step as written here: which sidebar item it is, and what it says. */
+interface TourStepSpec {
+  id: string
+  /** The `buildNavGroups` item id the step's area and title come from. */
+  navId: string | null
+  /** Only for a step that is a section of a page, not the page (Alert rules). */
+  title?: string
+  blurb: string
+  to: string
+  action?: TourStep['action']
+}
+
 export function buildTourSteps(slug: string): [TourStep, ...TourStep[]] {
   const base = `/p/${slug}`
+  const nav = new Map(
+    buildNavGroups(slug, undefined).flatMap((group) =>
+      group.items.map((item) => [item.id, { area: group.label, label: item.label }] as const),
+    ),
+  )
+  const resolve = (spec: TourStepSpec): TourStep => {
+    const item = spec.navId ? nav.get(spec.navId) : undefined
+    return {
+      id: spec.id,
+      area: item?.area ?? null,
+      title: spec.title ?? item?.label ?? spec.id,
+      blurb: spec.blurb,
+      to: spec.to,
+      ...(spec.action ? { action: spec.action } : {}),
+    }
+  }
+  const [first, ...rest] = tourStepSpecs(base)
+  return [resolve(first), ...rest.map(resolve)]
+}
+
+function tourStepSpecs(base: string): [TourStepSpec, ...TourStepSpec[]] {
   return [
     {
       id: 'events',
-      area: 'Plan',
-      title: 'Events & tracking plan',
+      navId: 'events',
       blurb: 'The catalog of events you track and their implementation status.',
       to: `${base}/events`,
     },
     {
       id: 'scans',
-      // Scans live under Govern in the sidebar, and every doc says
-      // "Govern → Scans". 'Connect' named no group at all.
-      area: 'Govern',
-      title: 'Scans',
+      navId: 'scans',
       // A scan is not "pull volume to learn a baseline": that describes only the
       // scheduled metrics collection of a monitoring scan. What EVERY scan does
       // is fill the tracking plan (tripl-3y7z).
@@ -113,11 +145,9 @@ export function buildTourSteps(slug: string): [TourStep, ...TourStep[]] {
       to: `${base}/scans`,
     },
     {
+      // The step id keeps its old name so saved tour progress still matches.
       id: 'live-activity',
-      area: 'Observe',
-      // The sidebar item and the page heading say "Overview" (#238 SH-8); the
-      // step id keeps its old name so saved tour progress still matches.
-      title: 'Overview',
+      navId: 'overview',
       // "as scans ... run" counted an execution as a scan, the same slip the
       // activity rail's burst summary made. An execution is a *run*.
       blurb: 'The Overview updates live as scan runs and metric collection land.',
@@ -125,15 +155,15 @@ export function buildTourSteps(slug: string): [TourStep, ...TourStep[]] {
     },
     {
       id: 'metrics',
-      area: 'Observe',
-      title: 'Metrics & fact tables',
+      navId: 'metrics',
       blurb: 'Event-volume, fact, SQL and event-composition metrics, plus the fact tables behind them.',
       to: `${base}/metrics`,
     },
     {
       id: 'monitors',
-      area: 'Observe',
-      // One name for the object everywhere: alert rule (#238 JR-28).
+      // A section of Alerting, not a page of its own: it takes Alerting's
+      // group, and its own name — one name for the object: alert rule (#238 JR-28).
+      navId: 'alerting',
       title: 'Alert rules',
       blurb: 'The rules that decide which spikes and drops are worth notifying about, and their live state.',
       // The section, not the standalone page: that page rendered these same
@@ -143,42 +173,40 @@ export function buildTourSteps(slug: string): [TourStep, ...TourStep[]] {
     },
     {
       id: 'anomalies',
-      area: 'Observe',
-      title: 'Anomalies',
+      navId: 'anomalies',
       blurb: 'Detected anomalies across the project with severity and direction.',
       to: `${base}/anomalies`,
     },
     {
       id: 'coverage',
-      area: 'Govern',
-      title: 'Coverage',
-      blurb: 'Which platforms and event types are actually reporting.',
+      navId: 'coverage',
+      // What the page measures: plan implementation, not which platforms
+      // report (#251 JR-22).
+      blurb: 'How much of your plan is implemented, and which implemented events went silent.',
       to: `${base}/coverage`,
     },
     {
       id: 'reconciliation',
-      area: 'Govern',
-      title: 'Reconciliation',
+      navId: 'reconciliation',
       blurb: 'Which planned events are actually arriving vs the plan.',
       to: `${base}/reconciliation`,
     },
     {
       id: 'branches',
-      area: 'Govern',
-      title: 'Branches',
+      navId: 'branches',
       blurb: 'Propose and review changes to the tracking plan on a branch.',
       to: `${base}/settings/branches`,
     },
     {
       id: 'alerting',
-      area: 'Govern',
-      title: 'Alert preview',
+      navId: 'alerting',
       blurb: 'Route anomalies to destinations and preview a simulated firing.',
       to: `${base}/settings/alerting`,
     },
     {
       id: 'search',
-      area: 'Observe',
+      // The command palette, on every page: no sidebar item, so no group.
+      navId: null,
       title: 'Search by meaning',
       blurb:
         'Press Ctrl K (or ⌘K) and try "purchase funnel" or "money back" — semantic matches are marked.',

@@ -1,16 +1,19 @@
 import { useNavigate } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
-import { Loader2, MoreHorizontal, Pencil, RefreshCw, Trash2 } from 'lucide-react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { BellPlus, Loader2, MoreHorizontal, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { Button } from '@/components/ui/button'
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useScenarioArtifacts } from '@/demo/demoScenarioContext'
 import { useConfirm } from '@/hooks/useConfirm'
-import { metricsCatalogKey } from '@/lib/queryKeys'
+import { getErrorMessage } from '@/lib/utils'
+import { getAlertingPath } from '@/lib/navigation'
+import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { metricDefinitionKey, metricsCatalogKey } from '@/lib/queryKeys'
 import type { MetricDefinitionDetailResponse } from '@/types'
 import type { MetricCollect } from './useMetricCollect'
 
@@ -59,9 +62,41 @@ export function MetricHeaderActions({
     }
   }
 
+  // A draft is never collected on schedule or monitored, and nothing on this
+  // page could change that: the way out sat in the editor's Status select
+  // (MT-1 / JR-16). One click makes it active.
+  const isDraft = metricDefinition?.status === 'draft'
+  const activateMut = useMutation({
+    // Its own toast below, with the reason.
+    meta: SILENT_ERROR_META,
+    mutationFn: () => metricsCatalogApi.update(slug, scopeId, { status: 'active' }),
+    onSuccess: () => {
+      toast.success('Metric activated. Collection starts on the next scheduled run.')
+      void queryClient.invalidateQueries({ queryKey: metricDefinitionKey(slug) })
+      void queryClient.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
+    },
+    onError: error => toast.error(`Could not activate the metric — ${getErrorMessage(error)}`),
+  })
+
   const isFact = metricDefinition?.kind === 'fact'
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {isDraft && (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => activateMut.mutate()}
+          disabled={activateMut.isPending}
+          title="Drafts are not collected or monitored. Activate to collect on schedule."
+        >
+          {activateMut.isPending ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <Play className="mr-2 h-4 w-4" aria-hidden="true" />
+          )}
+          Activate
+        </Button>
+      )}
       {/* No see-chart mark on this page: the scenario completes that step
           on arrival here, so a mark would never be read. Collect-metric
           only coaches until the user's own collect is in flight — after
@@ -92,8 +127,8 @@ export function MetricHeaderActions({
           )}
           {isFact
             ? isCollecting
-              ? 'Refreshing source metrics…'
-              : 'Refresh source metrics'
+              ? 'Recomputing…'
+              : 'Recompute'
             : isCollecting
               ? 'Collecting…'
               : 'Collect now'}
@@ -110,6 +145,18 @@ export function MetricHeaderActions({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" sideOffset={6} className="w-[180px]">
+          {/* The rule form, opened already scoped to this metric (JR-16). */}
+          <DropdownMenuItem
+            onSelect={() =>
+              navigate(
+                `${getAlertingPath(slug)}?section=monitors&new=rule&metric=${encodeURIComponent(scopeId)}`,
+              )
+            }
+          >
+            <BellPlus aria-hidden="true" />
+            Create alert…
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
           <DropdownMenuItem variant="destructive" onSelect={() => void deleteMetric()}>
             <Trash2 aria-hidden="true" />
             Delete metric…

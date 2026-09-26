@@ -428,12 +428,23 @@ threads stay open.
 
 **Where:** Plan › Event types, then open a type.
 
-The detail view stacks: **General** (name, display name, color), a **Fields**
-editor (add/edit/reorder/delete fields — type, required flag, enum options,
-validation such as regex/range, and a sensitivity level), a **Sensitive fields**
-summary, and **Owners** (shown only on the `main` branch — owners are a fact
-about `main`'s type, so in branch context neither the list's Owner column nor
-the detail's merge-gate chip is shown, and nothing is asked for). Owners gate
+A type's page has three tabs — **Summary**, **Events** and **Settings** — and no
+separate Settings button in its header. A new type opens on its **Settings**
+tab, and its display name defaults to the title-cased name (`page_view` →
+*Page View*). The Settings tab stacks: **General** (name, display name, color),
+a **Fields** editor (add/edit/reorder/delete fields — type, required flag, enum
+options, validation, and a level in the **Sensitivity** column), a **Sensitive
+fields** summary, and **Owners** (shown only on the `main` branch — owners are a
+fact about `main`'s type, so in branch context neither the list's **Merge
+approval** column nor the detail's merge chip is shown, and nothing is asked
+for). The list column reads **Owner approval** for a gated type and **Open**
+for one without owners; the detail chip reads **Owner approval** or **Open to
+merge**.
+
+Validation offers what the field's type can use: **Regex** only for `string`
+and `url` fields, **Min** / **Max** only for `number`. An `enum` field lists its
+options and notes that values outside them are invalid. The share of invalid
+values a field tolerates before it counts as drifting is **Max invalid share**. Owners gate
 branch merges: a type **with** owners is "gated" (the branch needs a fresh approval from
 one of those owners before an authorized editor can merge a branch that adds,
 removes, or edits the type itself — its display name, description, color, or
@@ -568,8 +579,9 @@ from scan-observed contexts, and can bind to one or more warehouse columns or
 dotted JSON paths. A per-event override replaces the global documented list for
 that event.
 
-The table shows documented/observed samples, binding paths, usage counts, and
-open value drift. Observed samples accumulate across runs — re-sampling merges
+The table shows documented/observed samples, binding paths, the events a
+variable was **Observed in**, and open value drift; type chips show the schema
+key (`string`, `number_array`). Observed samples accumulate across runs — re-sampling merges
 new values into the stored list, under a cap, instead of replacing it — so the
 observed column is a history of what has been seen, not a mirror of the latest
 scan window. It also distinguishes two silences: it reads **No
@@ -632,7 +644,10 @@ is `all` and an unrecognised value is a `422`. See
 ### Event-type relations
 
 **Where:** Plan › Relations. Declare connections between event types; create and
-delete. Relations are resolved per the active branch.
+delete. Relations are resolved per the active branch. The create dialog groups
+the two ends as **From** and **To** and previews the join it describes; the
+table shows that join in one cell, with the relation type in words (*belongs
+to*).
 
 All four ids a relation names — two event types and two fields — must exist on
 the branch it is created in, and a request naming one that does not is refused.
@@ -838,9 +853,22 @@ resets. Version retention applies to event monitoring and standalone catalog
 metrics alike. Renaming the slug refreshes search links for the project's plan
 branches so palette and Ask AI results point at the new route. Deleting a project
 or resetting its demo clears its slug-specific catalog and monitoring caches.
-Deleting — owner-only, from this danger zone or from a project card's menu on
-the workspace page — asks you to type the project's slug before **Delete
-project** arms, and a refused delete is reported inside the dialog.
+The page has two cards below the fields: **Maintenance** holds **Rebuild
+index**, the resets and **Retire unused variables**, and **Danger zone** holds
+only **Delete project**. A read-only user sees the values as text, with no
+**Save** or **Rebuild**. Deleting — owner-only, from this danger zone or from a
+project's menu on the workspace page — asks you to type the project's slug
+before **Delete project** arms, and a refused delete is reported inside the
+dialog.
+
+The workspace page lists projects as compact rows, each with a **Details** fold;
+**Open incidents** is the figure that used to read *Alerts*, and a project with
+nothing set up yet offers **Continue setup**. A project's latest-run line says
+**N warehouse rows read** for a metrics run and **N combos grouped in the
+warehouse** for a catalog run. When you create a project, its URL
+slug is derived from the name and sits under **Customize URL**. If the server
+rejects the slug as taken, the **Project URL** field opens with "Another project
+already uses this URL. Choose a different one." under it.
 Older releases are combined into **Other**. **Reset anomalies**
 removes metric and breakdown anomaly records (and
 their derived active signals) across every scan/catalog metric. **Reset drifts**
@@ -931,13 +959,28 @@ the page's tag, status and search filters to the branch's own events — the one
 the table lists — and charts the volume their main-branch counterparts collected,
 so a tag or status changed on the branch selects the same events in the chart as
 in the table. A new project also shows a **Get started**
-checklist (Plan → Observe → Govern, with a **What is this?** link to Concepts)
-that ticks steps off automatically from real
-project state and hides itself once you are set up. It is role-aware: connecting a
+checklist (with a **What is this?** link to Concepts) that ticks steps off
+automatically from real project state and hides itself once you are set up. Its
+steps are **Connect a data source** → **Run a catalog + monitoring scan** →
+**Review imported events** (with **Add events by hand** as the other way to
+finish it) → **Define a key metric** (shown once the project reports a metric
+count) → **Set up alerting**. A step's link opens its page with a **Back to
+checklist** bar above it. The bare project address `/p/<slug>` opens this
+Overview. It is role-aware: connecting a
 data source is owner-only, so for an editor that step is shown as **Owner only**
 with an ask-an-owner hint and is excluded from progress — a non-owner's checklist
 can still reach done without it. Dismissing it offers **Undo**, and the command
 palette's **Show getting started** row brings a dismissed checklist back.
+
+### Top-bar alerts bell
+
+The bell in the top bar is titled **Alerts**. Its badge counts open incidents,
+the same number as the sidebar's Alerting badge. The popover lists **Open
+incidents** first (each links to its Inbox card), then **Active signals**, then
+**Recent alert deliveries**; retrying a Jira or Linear delivery from it asks
+first. See [Alerting](./alerting.md). The destination dialog has no Channel
+select on create — the channel comes from the **Add destination** item that
+opened it — and edit shows the channel read-only.
 
 ### Alert rules
 
@@ -1035,18 +1078,25 @@ catalog. Each row shows the metric's name, kind, status (`draft` / `active` /
 `archived`), interval, and latest signal state. Metrics are **not branched**: the
 catalog reads the same on every branch.
 
-The catalog supports kind/status/search filters, anomaly and stale-data filters,
+The catalog supports kind/status/review-status/search filters, anomaly and stale-data filters,
 reordering, uniform bulk status changes, duplicate-as-draft, manual **Collect
 now**, archive/restore, and delete. Collecting a fact metric refreshes every
 active metric that depends on the same fact table through the shared batch path:
 compatible aggregates are folded into one warehouse query instead of rerunning
 the fact-table SQL once per metric. A viewer who opens a metric's edit address
-lands on the metric's page instead of a disabled form. The create/edit form
-picks a **kind** and then reveals kind-specific config:
+lands on the metric's page instead of a disabled form. Each catalog row shows
+the metric's owner as an avatar when it has one. The create/edit form
+picks a **kind** and then reveals kind-specific config; a new metric starts on
+**From tracked events**, and a kind card says when the project has no events or
+no fact tables to build from. Creating a new metric opens a template gallery
+first: **Start from scratch** skips it, and a **Browse templates** link on the
+form brings it back. The top bar names the edited metric: **Metrics › Active
+Sessions › Edit** (a fact table's editor reads **Metrics › Fact tables ›
+<table> › Edit**).
 
-- **SQL** — a data source, a read-only `SELECT` or top-level `WITH ... SELECT`
+- **Custom SQL** — a data source, a read-only `SELECT` or top-level `WITH ... SELECT`
   returning one value per bucket, a time column, and a collection interval.
-- **Fact** — a reusable fact table built from a read-only `SELECT` or
+- **From a fact table** — a reusable fact table built from a read-only `SELECT` or
   top-level `WITH ... SELECT`, an **aggregation** (`count`, `sum`, `avg`, `min`,
   `max`, `count_distinct`), the **measure column** it runs over (a **distinct
   column** for `count_distinct`), optional row filters, optional **breakdowns**,
@@ -1056,7 +1106,8 @@ picks a **kind** and then reveals kind-specific config:
   when both operands use the same fact table; each breakdown row is that value's
   numerator divided by that value's denominator, so breakdown ratios do not add
   up to the top-line ratio.
-- **Event composition** — derived from already-collected event series with no
+- **From tracked events** — derived from already-collected event series, set
+  up under **Calculate**, with no
   warehouse query of its own: a **single** event's count, a **ratio** of one event
   to another (A / B), or an event **per distinct user**. Each side names one
   event — searched across the whole catalog — or a whole **event type**, which
@@ -1082,6 +1133,14 @@ condition operator it does not know — where the warning shows before anything
 was edited. Edits to the name, description, unit, color, status or dimension
 columns keep the history.
 
+A new metric is saved with **Create and start collecting**, or **Save as
+draft** when it is not ready; a draft is not collected. A new **Custom SQL**
+metric whose current query has not previewed cleanly — never previewed, edited
+since, or the preview failed — asks before it is created, since collection
+would most likely fail the same way. **Breakdowns** and
+dimension columns sit in collapsed sections of the form. A metric carries a
+reviewed mark, set with **Mark reviewed** on its page or in the catalog.
+
 Shared fields are name, display name, description, color, unit, owner/review,
 status, breakdown columns/limit, optional version/platform columns, and the
 anomaly-detection toggle. With a breakdown limit, the values that stay explicit
@@ -1102,7 +1161,10 @@ and `archived` metrics stop collecting.
 **Where:** Observe › Metrics › **Fact tables**. A fact table is a reusable,
 project-wide data definition behind fact metrics: a safe read-only `SELECT` or
 top-level `WITH ... SELECT`, a timestamp column, previewed columns/types,
-identifier columns, and named row-filter fragments. Preview runs the query with
+identifier columns, and named row-filter fragments, each written in a SQL
+editor that completes the table's columns. The timestamp column is
+picked in the **Columns** card and detected automatically from the previewed
+column types. Preview runs the query with
 a bounded sample so the form can validate and persist the available columns.
 
 Fact metrics can reference the table's named filters, add structured
@@ -1114,6 +1176,12 @@ operands, including operands from different fact tables. Fact tables and metrics
 are indexed by global search and are not copied into plan branches. A viewer
 opening a fact table sees its definition read-only (query, timestamp column,
 columns and filters as labelled values) rather than the editor.
+
+The list shows each table's data source, timestamp column, and **Used by** —
+how many metrics read it. That count includes every metric that reads the table,
+so a ratio metric that uses it only as the denominator counts too. The stat
+strip's **Tables in use** counts the tables at least one metric reads. A row's
+**⋯** menu has **Edit** and **Delete**.
 
 A fact table that metrics still read cannot be pulled out from under them.
 **Deleting** it, **unbinding its data source**, **removing or renaming a named
@@ -1161,8 +1229,18 @@ the save and on the preview. See
 **Where:** open a metric from the catalog. The drilldown **reuses the monitoring
 detail tabs** (Volume with the latest signal, Heatmap, Distribution, Breakdowns)
 for the metric's own scope, so a metric reads like any other monitored series.
+The header offers **Activate** on a draft, **Recompute** for a fact-table metric
+(it refreshes every active metric on that fact table) and **Collect now** for
+the other kinds, **Edit**, and a
+**⋯** menu with **Create alert…** (the rule form, already scoped to this
+metric) and **Delete metric…**. A metric with no description shows an **Add a
+description…** link to the editor. With no values yet the chart says why: a
+draft "is a draft and isn't collected"; a fact-table or SQL metric reads "No
+values yet — compute now or wait for the next scheduled run".
 Its definition card links fact-backed operands to their fact tables, shows the
-next scheduled collection (or an explicit due/unscheduled state), and exposes
+next scheduled collection (or an explicit due state; *Not collected while
+draft* for a draft, and a **Set a schedule** link to the editor for an active
+metric with no interval), and exposes
 the generated primary collection SQL in a collapsed, read-only editor. This is
 the same time-windowed, multi-aggregate statement shape the collector executes
 for all compatible dependent metrics on that fact table and interval; separate
@@ -1335,8 +1413,12 @@ delivery log rather than a permanently empty one.
 events actually seen in your data over a fixed 14-day window (named by the
 "Last 14 days" label on the panel). The per-day bars sit on a fixed 0–100% scale;
 a day with no data is drawn as an empty dashed outline rather than as 0%, and a
-match that never changes is stated in words ("Stable: 94% on each of the last 14
-days") instead of as a flat line. Screen readers get a summary (lowest, highest,
+match that never changes is stated in words ("Stable at 94% in every hour with
+data over the last 14 days") instead of as a flat line. A project where no scan
+has run yet shows **Nothing to reconcile yet** with a **Go to Scans** button
+instead of empty panels; once a scan has run, the panels (and the shadow inbox's
+Accepted / Dismissed tabs) stay even when nothing was read in the window. In the shadow events inbox each row's
+**Accept** is an outline button, and the bulk accept is the one primary action. Screen readers get a summary (lowest, highest,
 latest, days without data) and a per-day table. The headline percentage carries an inline tooltip spelling out
 that it measures data match — not the Coverage page's plan coverage — so the two
 governance numbers are not read as contradictory. The **shadow events inbox** (tabs: `new` / `accepted` /
@@ -1495,7 +1577,10 @@ are implemented — alongside active, implemented, **In review**, and archived
 counts, plus an implemented-vs-not-implemented bar. The bar's remainder is
 labelled "not implemented" rather than "pending" because it is the arithmetic
 remainder (active − implemented) and therefore includes draft and ready-for-dev
-events, not just the ones awaiting review. An inline tooltip on the
+events, not just the ones awaiting review. The "N not implemented" figure links
+to the Events list filtered to exactly those statuses, and a line under the bar
+breaks it down ("Not implemented: N in review, M draft, ready for dev or
+deprecated"). An inline tooltip on the
 plan-coverage figure clarifies that it counts implemented events, not events
 seen in warehouse data (Reconciliation's data match), so the two views are not
 confused. **Instrumentation gaps** lists **implemented and live** events with no
@@ -1624,13 +1709,19 @@ fields the answer is computed from. One button, two halves.
 The dry run describes one specific draft. Change the form after it ran — a
 different event name format, a new group rule, a different cardinality threshold
 — and the panel says the answer no longer describes this scan and offers
-**Check again**, rather than leaving a stale list of event names on screen.
+**Recalculate**, rather than leaving a stale list of event names on screen.
+
+When a draft would add too many events — more than 25 new events, or names
+built from more than three `column=value` segments — the answer carries a
+warning to narrow the event name format or the grouping before the first run
+writes them all into the plan.
 
 A brand-new scan picks its **Event type column** from the very rows this button
 loads, so on the first click there is often nothing yet that says how events are
 named. The panel says so and asks nothing of your warehouse — *Nothing tells this
 scan how to name events yet* — and once you answer, with an **Event type** or
-that column, a **Check** button turns the same rows into the answer.
+that column, a **Show what this scan would create** button turns the same rows
+into the answer.
 
 #### The dry run — what this scan would create
 
@@ -1762,17 +1853,31 @@ the run managed to do before you stopped it.
 
 **What period a replay may cover.** A replay period must end **at or before the
 last completed interval**: the interval that is still filling holds no complete
-bucket to replay. **Run a one-off replay** seeds exactly that — the period it
+bucket to replay. **Replay a period…** — in the scan page header, opening a
+dialog — seeds exactly that — the period it
 opens with ends on this scan's own last closed bucket and reaches at least 24
 hours back — so its defaults are always accepted. A period reaching into the
 interval still filling is refused when you submit it, with a message naming the
 latest end that would be accepted, instead of being accepted and turning into a
 failed run minutes later.
 
-The scan list heads three figures: **Scans**, **Monitoring** (scans that have
-both a time column and a schedule, so the dispatcher actually picks them up), and
-**Warehouse rows read · 24h**. The detail page adds **Rows read · last
-run**, **Events written**, and **Metric points**.
+The scan list heads four figures: **Scans**, **Monitoring** (scans that have
+both a time column and a schedule, so the dispatcher actually picks them up),
+**Failing**, and **Warehouse rows · 24h**. The detail page adds **Scanned · last
+run**, **Events written**, and **Metric points** — which also say when the last collection
+landed and when the next is due. The **Danger zone** on a scan's Configuration
+tab holds only **Delete**; replays start from **Replay a period…** in the page
+header. **Apply to existing events** sits on the Event mapping tab's **Event
+group rules** row. The Configuration tab's save bar appears only once you have
+edits, with **Discard** and **Save changes**. A project with no scans shows a
+single empty state in place of the list.
+
+**Warehouse rows · 24h** counts only the rows metrics runs read. A catalog
+run reads back grouped column combinations instead — a different unit — so
+those are not added in; the figure's hover title names them separately
+("Catalog runs also read back 153 column combinations"). The activity endpoint
+returns the two sums as `warehouse_rows_24h` and `catalog_combinations_24h`;
+the older mixed `rows_read_24h` is their total.
 
 The 24h figure, and the **failed last N runs** tag on a scan's collapsed
 failures under **Recent runs**, are exact: the server counts them over each
@@ -1781,6 +1886,10 @@ runs every few minutes no longer shows them as floors ending in `+`. A run
 counts toward the 24 hours by when it finished, or when it started if it is
 still running.
 
+The **Limits** hints quote the instance's real row caps for a scan with none of
+its own, read from `GET /api/v1/settings/row-limits` (open to every signed-in
+user); until that answers they quote the shipped defaults, 50,000 and 100,000.
+
 **Metric points**, not "metric rows": these are points on a metric time series —
 what anomaly detection and alerts are built on — and *Metrics* is the name of a
 different surface (Observe › Metrics, the catalog of user-defined metrics). The
@@ -1788,13 +1897,13 @@ figure sums all four counters a run reports (per-event, per-type, and their
 breakdown variants), so the list and the detail page always show the same number
 for the same run.
 
-**Rows read** counts warehouse rows a run read — bounded by the row caps below —
-not rows written into your plan. It is **one label over two populations**: a
-catalog run reports the rows the catalog analyzer read (bounded by **Row cap per
-run**), a metrics run reports the rows read across every metrics chunk (bounded
-by **Row cap per metrics run**). A column header cannot vary per row, so each
-figure — the stat card and each cell in the run table — carries a hover title
-saying which of the two it is.
+**Scanned** counts what a run read — bounded by the row caps below — not rows
+written into your plan. It is **one label over two populations**: a catalog run
+shows the distinct column combinations the warehouse grouped for it ("153
+combos", bounded by **Row cap per run**), a metrics run shows the warehouse rows
+read across every metrics chunk (bounded by **Row cap per metrics run**). A
+column header cannot vary per row, so each figure — the stat card and each cell
+in the run table — carries a hover title saying which of the two it is.
 
 #### What a run report says
 
@@ -1974,7 +2083,8 @@ screen in "choose a new password" mode, where the new password must meet the
 same policy as registration (at least 12 characters with a number and a symbol).
 When email is **not** configured, the confirmation instead tells you to contact
 your instance owner. Completing a reset also signs out the account's other
-sessions. See **[Security](../run/security.md)** for the token and delivery
+sessions. Password fields on the sign-in and invitation pages have a
+show-password toggle. See **[Security](../run/security.md)** for the token and delivery
 details.
 
 ### Command palette (⌘K)
@@ -2006,14 +2116,24 @@ invite form's email field focused. Everyone gets the light/dark theme toggle.
 Inside the Settings takeover (`/settings/*`) ⌘K opens a **different, narrower
 palette**. Those routes carry no project in scope, so this one offers only what
 it can honestly reach: every settings section the rail lists (filtered by role
-the same way), the projects by name, the way back out, and Sign out. There is no
+the same way), the projects by name, a **Project settings for &lt;name&gt;** row
+per project, the way back out, and Sign out. There is no
 knowledge search and no project-scoped destination — the takeover does not know
 which project you came from well enough to search it. Leaving through any of its
 rows goes through the same unsaved-changes guard as the rail links, so a draft is
 never dropped silently, and Esc hands focus back to whatever opened it.
 
+The rail's exit reads **Back to &lt;project name&gt;** — or **Back to workspace**
+when no project is bound — and goes to that project's Overview. The rail's
+Project label is a project switcher. Under **API keys**, revoked keys fold
+behind **Show revoked (N)**, and the dialog that reveals a new key names it and
+shows the `Authorization` header to send it in. **Members** is three cards:
+invite, pending invitations, and the roster. Where a Get-started step sent you
+here (Connect a data source), a **Back to checklist** bar sits above the
+section.
+
 That guard now covers **every** way out of the takeover: the rail, this palette,
-Back to project, Sign out, the browser's **Back and Forward buttons**, and — as
+the Back link, Sign out, the browser's **Back and Forward buttons**, and — as
 the browser's own prompt rather than ours — reload and closing the tab. A
 destination that keeps the draft, like moving between two Instance sections,
 passes without a word. Opening a rail link in a new tab is not a leave at all:
@@ -2085,8 +2205,9 @@ or within 3 intervals of the series' own grid when that is longer. A weekly
 series therefore stays visible: its newest reportable anomaly already starts
 more than a week back, because the current week is still settling.
 A completed `scan` item summarizes what
-the run produced — new events, metric points, **new** signals, and rows scanned;
-every figure on the card is that run's delta, not a project total — and
+the run produced — new events, metric points, **new** signals, and how much it
+read: **N column combinations** for a catalog run, **N rows scanned** for a
+metrics run; every figure on the card is that run's delta, not a project total — and
 reads "no new events discovered" when a run on an established catalog finds
 nothing new (which is normal, not a failure) rather than a bare "0 events".
 The signal figure is that run's own scan and nothing else: it compares the
@@ -2126,7 +2247,10 @@ before you create it, and nothing is stored by that test; a new source is tested
 again as soon as it is created, and an edited one when its host, credentials or
 TLS settings change); browse the schema (tables/columns) for the scan
 query builder; and view ingestion stats. Health is shown as healthy / stale /
-failing / untested. The dialog checks secrets before saving: a BigQuery key must
+failing / untested. Each connection card says **Used by N scans** (or **Not used
+by any scan**). Deleting a source that scans read asks you to type its name
+first, and the confirmation names how many scans and scan runs are removed with
+it. The dialog checks secrets before saving: a BigQuery key must
 be valid JSON with `"type": "service_account"` (paste it or **load the key
 file**), and PostgreSQL certificates and keys must be PEM blocks
 (`-----BEGIN …-----` to `-----END …-----`), not file paths. Credential fields

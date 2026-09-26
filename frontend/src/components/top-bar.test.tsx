@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -91,7 +91,7 @@ describe('TopBar mobile nav', () => {
     // jsdom resolves no Tailwind, so the sizes are read off the classes:
     // 40px hamburger and 36px icon buttons below sm, 32px from sm up.
     expect(screen.getByRole('button', { name: 'Open navigation' })).toHaveClass('h-10', 'w-10', 'sm:h-8')
-    expect(screen.getByRole('button', { name: 'Notifications' })).toHaveClass('h-9', 'w-9', 'sm:h-8')
+    expect(screen.getByRole('button', { name: 'Alerts' })).toHaveClass('h-9', 'w-9', 'sm:h-8')
     expect(screen.getByRole('button', { name: 'Command palette' })).toHaveClass('h-9', 'sm:h-8')
     expect(screen.getByRole('button', { name: 'Toggle activity feed' })).toHaveClass('h-9', 'sm:h-8')
   })
@@ -102,6 +102,7 @@ type DeliveryOverrides = {
   rule_name?: string
   status?: 'pending' | 'sent' | 'failed'
   error_message?: string | null
+  channel?: string
 }
 
 function mockSignal() {
@@ -150,9 +151,58 @@ function mockDelivery(overrides: DeliveryOverrides = {}) {
 /** The bell asks for the EXPANDED list; a collapsed URL would be the bug. */
 const SIGNALS_URL = '/api/v1/projects/demo/anomalies/signals?expanded=true'
 
-function mockNotificationsFetch(signals: unknown[], deliveries: unknown[]) {
+/** The open incidents the popover lists, and only while it is open. */
+const INBOX_URL = '/api/v1/projects/demo/alert-inbox?status=open&limit=4'
+
+function mockIncident(overrides: Record<string, unknown> = {}) {
+  return {
+    correlation_group_id: 'incident-1',
+    status: 'open',
+    muted: false,
+    muted_until: null,
+    note: null,
+    false_positive_count: 0,
+    item_count: 1,
+    delivery_count: 1,
+    latest_bucket: '2026-01-01T00:00:00Z',
+    first_delivery_at: '2026-01-01T00:00:00Z',
+    latest_delivery_at: '2026-01-01T00:00:00Z',
+    direction: 'spike',
+    actual_count: 42,
+    expected_count: 21,
+    percent_delta: 100,
+    max_abs_percent_delta: 100,
+    scope_type: 'event_type',
+    scope_types: ['event_type'],
+    scope_ref: 'type-12345678',
+    event_id: null,
+    scope_names: ['Checkout'],
+    destination_names: ['Ops'],
+    rules: [],
+    rule_names: ['Spike alerts'],
+    scan_names: ['Main scan'],
+    acted_at: null,
+    acted_by: null,
+    acted_by_name: null,
+    ...overrides,
+  }
+}
+
+type NotificationsFetchOptions = {
+  /** The project summary's open_incident_count — what the badge counts. */
+  openIncidentCount?: number
+  incidents?: unknown[]
+  /** Any further route; return undefined to fall through to the throw. */
+  extra?: (url: string, init?: RequestInit) => Response | undefined
+}
+
+function mockNotificationsFetch(
+  signals: unknown[],
+  deliveries: unknown[],
+  { openIncidentCount = 0, incidents = [], extra }: NotificationsFetchOptions = {},
+) {
   const calls: string[] = []
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input)
     calls.push(url)
     if (url.endsWith(SIGNALS_URL)) {
@@ -161,6 +211,16 @@ function mockNotificationsFetch(signals: unknown[], deliveries: unknown[]) {
     if (url.endsWith('/api/v1/projects/demo/alert-deliveries?limit=5')) {
       return mockJsonResponse({ items: deliveries, total: deliveries.length })
     }
+    if (url.endsWith('/api/v1/projects')) {
+      return mockJsonResponse([
+        { id: 'project-1', slug: 'demo', name: 'Demo', summary: { open_incident_count: openIncidentCount } },
+      ])
+    }
+    if (url.endsWith(INBOX_URL)) {
+      return mockJsonResponse({ items: incidents, total: Math.max(openIncidentCount, incidents.length) })
+    }
+    const handled = extra?.(url, init ?? undefined)
+    if (handled) return handled
     // No branch for the event / event-type / metrics-catalog lookups on purpose:
     // names ride on the signals now, so any such request lands on the throw
     // below rather than being quietly served (tripl-y4wt).
@@ -180,7 +240,7 @@ describe('TopBar notifications', () => {
         </MemoryRouter>
       </QueryClientProvider>,
     )
-    const bell = screen.getByRole('button', { name: 'Notifications' })
+    const bell = screen.getByRole('button', { name: 'Alerts' })
     const spinner = () => bell.querySelector('[data-testid="notifications-loading"]')
     const refreshDot = () => container.querySelector('[data-testid="notifications-refreshing"]')
     // First load: the spinner stands in for the bell.
@@ -199,7 +259,7 @@ describe('TopBar notifications', () => {
 
     renderTopBar()
 
-    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Alerts/ }))
 
     await waitFor(() => {
       expect(screen.getByText('Spike on Event type · Page View')).toBeInTheDocument()
@@ -207,6 +267,18 @@ describe('TopBar notifications', () => {
     expect(screen.getByText('Active signals')).toBeInTheDocument()
     expect(screen.getByText('Recent alert deliveries')).toBeInTheDocument()
     expect(screen.getByText('Spike alerts')).toBeInTheDocument()
+    // Words, not wire values, and the row opens its own delivery (AL-40).
+    expect(screen.getByText(/^Failed · Slack · 1 matched · /)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Spike alerts/ })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting/delivery-1',
+    )
+    // Both full lists, from the footer (JR-9).
+    expect(screen.getByRole('link', { name: 'All anomalies →' })).toHaveAttribute('href', '/p/demo/anomalies')
+    expect(screen.getByRole('link', { name: 'Alert inbox →' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting?section=inbox',
+    )
   })
 
   it('names non-event scopes for what they are (tripl-jfm3.120)', async () => {
@@ -226,7 +298,7 @@ describe('TopBar notifications', () => {
     )
 
     renderTopBar()
-    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Alerts/ }))
 
     await waitFor(() => {
       expect(screen.getByText('Spike on Metric · Checkout conversion')).toBeInTheDocument()
@@ -242,7 +314,7 @@ describe('TopBar notifications', () => {
 
     renderTopBar()
 
-    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Alerts/ }))
 
     await waitFor(() => {
       expect(screen.getByText('Drop on Event type · Page View')).toBeInTheDocument()
@@ -252,42 +324,52 @@ describe('TopBar notifications', () => {
     expect(screen.queryByText(/z=-20/)).toBeNull()
   })
 
-  it('header "N active" equals the active signals list length, never signals + deliveries', async () => {
-    // 1 active signal + 1 (failed) delivery. Old bug summed these to "2 active".
-    mockNotificationsFetch([mockSignal()], [mockDelivery({ status: 'failed' })])
+  it('badges open incidents, the count the sidebar Alerting item shows (AL-40 / SH-17)', async () => {
+    // Three signals and one open incident: the bell used to read 3 beside a
+    // sidebar reading "Alerting 1" for the same project.
+    mockNotificationsFetch(
+      [
+        mockSignal(),
+        { ...mockSignal(), scope_ref: 'type-2' },
+        { ...mockSignal(), scope_ref: 'type-3' },
+      ],
+      [mockDelivery({ status: 'failed' })],
+      { openIncidentCount: 1, incidents: [mockIncident()] },
+    )
 
     renderTopBar()
 
-    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+    const bell = await screen.findByRole('button', { name: 'Alerts — 1 open incident' })
+    fireEvent.click(bell)
 
-    await waitFor(() => {
-      expect(screen.getByText('Spike on Event type · Page View')).toBeInTheDocument()
-    })
-    // Header reads 1 active (signals.length), not 2 (signals + delivery).
-    expect(screen.getByText('1 active')).toBeInTheDocument()
-    expect(screen.queryByText('2 active')).toBeNull()
-    // Bell aria-label is bound to the same active-signal count.
-    expect(
-      screen.getByRole('button', { name: 'Notifications — 1 active' }),
-    ).toBeInTheDocument()
+    // Titled for what it holds, incidents first, each opening its own card.
+    const incidents = await screen.findByRole('region', { name: 'Open incidents' })
+    expect(await within(incidents).findByRole('link', { name: /Spike on Checkout/ })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting?incident=incident-1',
+    )
+    expect(screen.getByText('1 open')).toBeInTheDocument()
+    const sections = screen.getAllByRole('region').map(region => region.getAttribute('aria-label'))
+    expect(sections).toEqual(['Open incidents', 'Active signals', 'Recent alert deliveries'])
+    // Signals keep their own count, in their own section.
+    expect(within(screen.getByRole('region', { name: 'Active signals' })).getByText('3')).toBeInTheDocument()
   })
 
-  it('does not report deliveries as "active" when there are no open signals (H1 regression)', async () => {
-    // Canonical H1 scenario: 0 signals + 1 pending delivery must NOT read "1 active".
-    mockNotificationsFetch([], [mockDelivery({ status: 'pending', error_message: null })])
+  it('reads plain "Alerts" with no badge when nothing is open, whatever signals or deliveries say', async () => {
+    // Neither a signal nor a delivery (the H1 regression) is an open incident.
+    mockNotificationsFetch([mockSignal()], [mockDelivery({ status: 'pending', error_message: null })])
 
     renderTopBar()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Alerts' }))
 
     // The delivery is still listed as history once it loads.
     await waitFor(() => {
       expect(screen.getByText('Spike alerts')).toBeInTheDocument()
     })
-    expect(screen.getByText('No active monitoring signals.')).toBeInTheDocument()
-    // No "active" indicator at all — header span and bell badge are both hidden.
-    expect(screen.queryByText(/\d+ active/)).toBeNull()
-    expect(screen.getByRole('button', { name: 'Notifications' })).toBeInTheDocument()
+    expect(await screen.findByText('No open incidents.')).toBeInTheDocument()
+    expect(screen.queryByText(/\d+ open$/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Alerts' })).toBeInTheDocument()
   })
 
   it('counts event-scope signals, which the collapsed endpoint would have dropped', async () => {
@@ -304,16 +386,16 @@ describe('TopBar notifications', () => {
     )
 
     renderTopBar()
+    fireEvent.click(screen.getByRole('button', { name: 'Alerts' }))
 
-    expect(
-      await screen.findByRole('button', { name: 'Notifications — 2 active' }),
-    ).toBeInTheDocument()
+    const section = await screen.findByRole('region', { name: 'Active signals' })
+    expect(await within(section).findByText('2')).toBeInTheDocument()
   })
 
-  it('applies the shared Significant gate, so the bell equals the sidebar badge', async () => {
+  it('applies the shared Significant gate, so the signal count equals the sidebar badge', async () => {
     // The sidebar's monitoring_signal_count only counts signals whose relative
-    // effect clears 0.5. Counting the raw list here would put a bigger number on
-    // the bell than on every other surface — the same disagreement, inverted.
+    // effect clears 0.5. Counting the raw list here would put a bigger number
+    // here than on every other surface — the same disagreement, inverted.
     mockNotificationsFetch(
       [
         { ...mockSignal(), actual_count: 100, expected_count: 20 }, // rel 4.0 → counts
@@ -323,10 +405,10 @@ describe('TopBar notifications', () => {
     )
 
     renderTopBar()
+    fireEvent.click(screen.getByRole('button', { name: 'Alerts' }))
 
-    expect(
-      await screen.findByRole('button', { name: 'Notifications — 1 active' }),
-    ).toBeInTheDocument()
+    const section = await screen.findByRole('region', { name: 'Active signals' })
+    expect(await within(section).findByText('1')).toBeInTheDocument()
   })
 
   it('surfaces a failed-delivery count badge distinct from the active count', async () => {
@@ -334,13 +416,13 @@ describe('TopBar notifications', () => {
 
     renderTopBar()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Alerts' }))
 
-    // Failed deliveries are visibly distinguished without being counted as active.
+    // Failed deliveries are visibly distinguished without being counted as open.
     await waitFor(() => {
       expect(screen.getByText('1 failed')).toBeInTheDocument()
     })
-    expect(screen.queryByText(/\d+ active/)).toBeNull()
+    expect(screen.queryByText(/\d+ open$/)).toBeNull()
   })
 
   it('offers a compact retry control only on failed delivery notifications', async () => {
@@ -354,7 +436,7 @@ describe('TopBar notifications', () => {
 
     renderTopBar()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Alerts' }))
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Retry delivery for Failing rule' })).toBeInTheDocument()
@@ -364,33 +446,58 @@ describe('TopBar notifications', () => {
   })
 
   it('retries a failed delivery from the notifications menu', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input)
-      if (url.endsWith(SIGNALS_URL)) {
-        return mockJsonResponse([])
-      }
-      if (url.endsWith('/api/v1/projects/demo/alert-deliveries?limit=5')) {
-        return mockJsonResponse({ items: [mockDelivery({ status: 'failed' })], total: 1 })
-      }
-      if (url.endsWith('/alert-deliveries/delivery-1/retry') && init?.method === 'POST') {
-        return mockJsonResponse({ ...mockDelivery({ status: 'pending', error_message: null }), items: [] })
-      }
-      throw new Error(`Unhandled fetch: ${init?.method} ${url}`)
+    mockNotificationsFetch([], [mockDelivery({ status: 'failed' })], {
+      extra: (url, init) =>
+        url.endsWith('/alert-deliveries/delivery-1/retry') && init?.method === 'POST'
+          ? mockJsonResponse({ ...mockDelivery({ status: 'pending', error_message: null }), items: [] })
+          : undefined,
     })
+    const fetchSpy = vi.mocked(globalThis.fetch)
 
     renderTopBar()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Notifications' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Alerts' }))
 
     const retryButton = await screen.findByRole('button', { name: 'Retry delivery for Spike alerts' })
     fireEvent.click(retryButton)
 
+    // A Slack retry repeats a message nobody got: one click, no question.
+    expect(screen.queryByRole('alertdialog')).toBeNull()
     await waitFor(() => {
       expect(fetchSpy).toHaveBeenCalledWith(
         '/api/v1/projects/demo/alert-deliveries/delivery-1/retry',
         expect.objectContaining({ method: 'POST' }),
       )
     })
+  })
+
+  it('asks before retrying a Jira delivery, which would open a second ticket (AL-40)', async () => {
+    const retryUrl = '/api/v1/projects/demo/alert-deliveries/delivery-1/retry'
+    mockNotificationsFetch([], [mockDelivery({ status: 'failed', channel: 'jira' })], {
+      extra: (url, init) =>
+        url.endsWith(retryUrl) && init?.method === 'POST'
+          ? mockJsonResponse({ ...mockDelivery({ status: 'pending', error_message: null, channel: 'jira' }), items: [] })
+          : undefined,
+    })
+    const fetchSpy = vi.mocked(globalThis.fetch)
+    const retried = () => fetchSpy.mock.calls.some(([url]) => String(url).endsWith(retryUrl))
+
+    renderTopBar()
+    fireEvent.click(screen.getByRole('button', { name: 'Alerts' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry delivery for Spike alerts' }))
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent('Jira opens a new issue for it')
+    expect(retried()).toBe(false)
+
+    // Declining sends nothing, and the popover row is still there.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(retried()).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry delivery for Spike alerts' }))
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(retried()).toBe(true))
   })
 })
 
@@ -403,7 +510,7 @@ describe('TopBar notifications — scope names (tripl-9tyr, tripl-y4wt)', () => 
     const calls = mockNotificationsFetch([mockSignal()], [])
 
     renderTopBar()
-    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Alerts/ }))
 
     expect(await screen.findByText('Spike on Event type · Page View')).toBeInTheDocument()
     expect(screen.queryByText(/Spike on Event type type-123/)).toBeNull()
@@ -420,7 +527,7 @@ describe('TopBar notifications — scope names (tripl-9tyr, tripl-y4wt)', () => 
     mockNotificationsFetch([{ ...mockSignal(), scope_name: null }], [])
 
     renderTopBar()
-    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Alerts/ }))
 
     const row = await screen.findByText('Spike on deleted event type')
     expect(row).toHaveAttribute('title', 'Spike on Event type type-123')
@@ -445,7 +552,7 @@ describe('TopBar notifications — scope names (tripl-9tyr, tripl-y4wt)', () => 
     )
 
     renderTopBar()
-    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Alerts/ }))
 
     expect(await screen.findByText(/1\.2 actual vs 0\.4 expected/)).toBeInTheDocument()
     expect(screen.queryByText(/vs 0 expected/)).toBeNull()

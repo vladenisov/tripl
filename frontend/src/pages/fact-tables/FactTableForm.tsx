@@ -18,6 +18,7 @@ import { SqlEditor } from '@/components/sql-editor'
 import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
+import { editPageTitle, usePageTitle } from '@/components/shell-chrome-context'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import {
   SCard,
@@ -191,6 +192,9 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
   const canWrite = useCanWriteProject()
   const isNew = !factTable
   const { confirm, dialog: confirmDialog } = useConfirm()
+  // The top bar names the edited table after "Fact tables", as the heading
+  // does (MT-31).
+  usePageTitle(factTable ? editPageTitle(factTable.display_name) : null)
 
   const [displayName, setDisplayName] = useState(factTable?.display_name ?? '')
   const [name, setName] = useState(factTable?.name ?? '')
@@ -214,10 +218,28 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
   const [dataSourceId, setDataSourceId] = useState(factTable?.data_source_id ?? '')
   const [sql, setSql] = useState(factTable?.sql ?? '')
   const [timestampColumn, setTimestampColumn] = useState(factTable?.timestamp_column ?? '')
+  // The column a preview filled the empty timestamp in with, said beside it
+  // until the author changes it (MT-19).
+  const [detectedTimestamp, setDetectedTimestamp] = useState<string | null>(null)
+  const onTimestampChange = (value: string) => {
+    setDetectedTimestamp(null)
+    setTimestampColumn(value)
+  }
 
   // Persisted introspection: populated by a successful preview, seeded from the
   // existing fact table when editing.
   const [columns, setColumns] = useState<FactTableColumn[]>(factTable?.columns ?? [])
+  // A row filter runs over this table's own output, so its editor completes
+  // against the introspected columns, not every table in the warehouse.
+  const rowFilterTables = useMemo(
+    () => [
+      {
+        name: name || 'fact_table',
+        columns: columns.map(column => ({ name: column.name, data_type: column.type })),
+      },
+    ],
+    [name, columns],
+  )
   // The source + SQL the columns above describe. A saved table's stored columns
   // describe its stored SQL; a table saved with none describes nothing yet.
   const [introspectedFor, setIntrospectedFor] = useState<string | null>(() =>
@@ -275,6 +297,15 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     setIdentifierColumns(current => mergeIdentifierPicks(current, identifierCandidates, res))
     setIdentifierCandidates(res.identifier_candidates)
     setIntrospectedFor(introspectionKey(request.dataSourceId, request.sql))
+    // An empty timestamp takes the one timestamp-typed column, when there is
+    // exactly one: the author no longer types a name the preview already knows.
+    if (!request.timestampColumn.trim()) {
+      const timeColumns = res.columns.filter(column => typeTone(column.type) === 'info')
+      if (timeColumns.length === 1) {
+        setTimestampColumn(timeColumns[0]!.name)
+        setDetectedTimestamp(timeColumns[0]!.name)
+      }
+    }
     return { columns: res.columns, identifierColumns: nextIdentifiers }
   }
 
@@ -472,6 +503,16 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
     saveMut.mutate(introspection)
   }
 
+  // The backend's suggestions the picks do not match yet, offered as one click
+  // instead of a line repeating what the ticked boxes already show (MT-20).
+  const unusedSuggestions = identifierCandidates.filter(
+    candidate =>
+      !identifierColumns.includes(candidate) && columns.some(column => column.name === candidate),
+  )
+  const applySuggestions = () => {
+    setIdentifierColumns(current => [...current, ...unusedSuggestions.filter(c => !current.includes(c))])
+  }
+
   const toggleIdentifier = (columnName: string) => {
     setIdentifierColumns(current =>
       current.includes(columnName)
@@ -523,7 +564,12 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
         <PageHeader
           className="mb-[18px]"
           eyebrow="Observe · Fact table"
-          title={isNew ? 'New fact table' : canWrite ? 'Edit fact table' : 'Fact table'}
+          // The edited table is named, so two open editors are told apart (MT-31).
+          title={
+            factTable
+              ? `${canWrite ? 'Edit' : 'Fact table'} · ${factTable.display_name}`
+              : 'New fact table'
+          }
         />
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
@@ -596,7 +642,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
             </Field>
           </SCard>
 
-          <SCard title="Source" description="A full read-only SELECT or WITH ... SELECT plus the warehouse it runs against.">
+          <SCard title="Source" description="The warehouse query this table reads. A read-only SELECT (WITH … SELECT works too).">
             <Field
               label="Data source"
               htmlFor="fact-data-source"
@@ -618,7 +664,7 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               htmlFor="fact-sql"
               required
               stacked
-              hint="A single read-only SELECT or WITH ... SELECT."
+              last
               error={fieldErrors['fact-sql']}
               announceError={false}
             >
@@ -638,32 +684,13 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 ariaDescribedBy={errorAria(fieldErrors, 'fact-sql')['aria-describedby']}
               />
             </Field>
-            <Field
-              label="Timestamp column"
-              htmlFor="fact-timestamp"
-              required
-              last
-              hint="The column used to bucket facts over time."
-              error={fieldErrors['fact-timestamp']}
-              announceError={false}
-            >
-              <ColumnSuggestInput
-                id="fact-timestamp"
-                value={timestampColumn}
-                onChange={setTimestampColumn}
-                suggestions={timestampSuggestions}
-                placeholder={examplePlaceholder('created_at')}
-                aria-required
-                {...errorAria(fieldErrors, 'fact-timestamp')}
-              />
-            </Field>
           </SCard>
 
           <SCard
             title="Columns"
-            description="Preview introspects the SELECT and records its columns and identifier candidates. Saving previews for you when the SQL or data source changed since."
+            description="Detected from your query. Mark ID columns (user, order) to count them distinct. Saving reads them again if the query changed."
           >
-            <div className="px-4 py-[15px]">
+            <div className="px-4 py-[15px]" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
               <button
                 id="fact-preview-columns"
                 type="button"
@@ -696,58 +723,89 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
 
               {columns.length > 0 && (
                 <div className="mt-4">
+                  {/* A header row says what the box marks: it is not "include
+                      this column", it is "count this one distinct" (MT-20). */}
                   <div
-                    className="mb-2 micro-label"
+                    aria-hidden="true"
+                    className="mb-2 grid grid-cols-[minmax(0,1fr)_auto_72px] items-center gap-3 px-3 micro-label"
                     style={{ color: 'var(--fg-faint)' }}
                   >
-                    Columns
+                    <span>Column</span>
+                    <span>Type</span>
+                    <span
+                      className="text-center"
+                      title="Identifiers (user, session, order ids) can be counted distinct in fact metrics."
+                    >
+                      Identifier
+                    </span>
                   </div>
                   <ul className="space-y-1.5" aria-label="Fact table columns">
-                    {columns.map(column => {
-                      const isIdentifier = identifierColumns.includes(column.name)
-                      return (
-                        <li
-                          key={column.name}
-                          className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
-                          style={{ borderColor: 'var(--border-subtle)' }}
-                        >
-                          <span className="flex min-w-0 items-center gap-2">
-                            <label className="flex items-center gap-2 text-body-sm">
-                              <input
-                                type="checkbox"
-                                checked={isIdentifier}
-                                onChange={() => toggleIdentifier(column.name)}
-                                aria-label={`Use ${column.name} as an identifier column`}
-                              />
-                              <span className="mono truncate" style={{ color: 'var(--fg)' }}>
-                                {column.name}
-                              </span>
-                            </label>
-                            {isIdentifier && (
-                              <Chip tone="accent" size="xs">
-                                identifier
-                              </Chip>
-                            )}
-                          </span>
-                          <Chip tone={typeTone(column.type)} size="xs">
-                            {column.type}
-                          </Chip>
-                        </li>
-                      )
-                    })}
+                    {columns.map(column => (
+                      <li
+                        key={column.name}
+                        className="grid grid-cols-[minmax(0,1fr)_auto_72px] items-center gap-3 rounded-md border px-3 py-2"
+                        style={{ borderColor: 'var(--border-subtle)' }}
+                      >
+                        <span className="mono truncate text-body-sm" style={{ color: 'var(--fg)' }}>
+                          {column.name}
+                        </span>
+                        <Chip tone={typeTone(column.type)} size="xs">
+                          {column.type}
+                        </Chip>
+                        <span className="flex justify-center">
+                          <input
+                            type="checkbox"
+                            checked={identifierColumns.includes(column.name)}
+                            onChange={() => toggleIdentifier(column.name)}
+                            aria-label={`Use ${column.name} as an identifier column`}
+                            title="Identifiers (user, session, order ids) can be counted distinct in fact metrics."
+                          />
+                        </span>
+                      </li>
+                    ))}
                   </ul>
                 </div>
               )}
 
-              {identifierCandidates.length > 0 && (
-                <div className="mt-3 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-                  Suggested identifiers:{' '}
-                  <span className="mono" style={{ color: 'var(--fg)' }}>
-                    {identifierCandidates.join(', ')}
+              {unusedSuggestions.length > 0 && (
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                  <span>
+                    Suggested identifiers:{' '}
+                    <span className="mono" style={{ color: 'var(--fg)' }}>
+                      {unusedSuggestions.join(', ')}
+                    </span>
                   </span>
+                  <Button type="button" variant="outline" size="xs" onClick={applySuggestions}>
+                    Use suggestions
+                  </Button>
                 </div>
               )}
             </div>
+            {/* After the preview that discovers the columns, not before it in
+                the Source card, where it was free text asked too early (MT-19). */}
+            <Field
+              label="Timestamp column"
+              htmlFor="fact-timestamp"
+              required
+              last
+              hint={
+                detectedTimestamp && detectedTimestamp === timestampColumn
+                  ? `Detected: ${detectedTimestamp}, the query's only timestamp column. Used to bucket facts over time.`
+                  : 'The column used to bucket facts over time. Preview columns to pick from what the query returns.'
+              }
+              error={fieldErrors['fact-timestamp']}
+              announceError={false}
+            >
+              <ColumnSuggestInput
+                id="fact-timestamp"
+                value={timestampColumn}
+                onChange={onTimestampChange}
+                suggestions={timestampSuggestions}
+                placeholder={examplePlaceholder('created_at')}
+                aria-required
+                {...errorAria(fieldErrors, 'fact-timestamp')}
+              />
+            </Field>
           </SCard>
 
           <SCard
@@ -760,61 +818,81 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                   No row filters yet.
                 </div>
               ) : (
-                <ul className="space-y-3 sm:space-y-2" aria-label="Row filters">
-                  {rowFilters.map((filter, index) => {
-                    const nameId = rowFilterFieldId(filter.id, 'name')
-                    const sqlId = rowFilterFieldId(filter.id, 'sql')
-                    const rowError = fieldErrors[nameId] ?? fieldErrors[sqlId]
-                    return (
-                      <li key={filter.id}>
-                        {/* A phone gets name + remove on one line and the SQL
-                            condition full width under them: side by side, the
-                            condition was under 80px wide at 375px (MET-20). */}
-                        <div className="grid grid-cols-[minmax(0,1fr)_32px] items-start gap-2 sm:grid-cols-[180px_minmax(0,1fr)_32px]">
-                          <div className="min-w-0">
-                            <TextInput
-                              id={nameId}
-                              value={filter.name}
-                              onChange={value => updateRowFilter(filter.id, { name: value })}
-                              placeholder={examplePlaceholder('mobile_only')}
-                              aria-label={`Row filter ${index + 1} name`}
-                              {...errorAria(fieldErrors, nameId)}
-                            />
+                <>
+                  {/* What each input holds: once filled, nothing said which was
+                      the reusable name and which the condition (MT-22). The
+                      inputs carry the same words in their names. */}
+                  <div
+                    aria-hidden="true"
+                    className="mb-2 hidden grid-cols-[180px_minmax(0,1fr)_32px] gap-2 micro-label sm:grid"
+                    style={{ color: 'var(--fg-faint)' }}
+                  >
+                    <span>Name</span>
+                    <span>Condition (SQL WHERE)</span>
+                  </div>
+                  <ul className="space-y-3 sm:space-y-2" aria-label="Row filters">
+                    {rowFilters.map((filter, index) => {
+                      const nameId = rowFilterFieldId(filter.id, 'name')
+                      const sqlId = rowFilterFieldId(filter.id, 'sql')
+                      const rowError = fieldErrors[nameId] ?? fieldErrors[sqlId]
+                      return (
+                        <li key={filter.id}>
+                          {/* A phone gets name + remove on one line and the SQL
+                              condition full width under them: side by side, the
+                              condition was under 80px wide at 375px (MET-20). */}
+                          <div className="grid grid-cols-[minmax(0,1fr)_32px] items-start gap-2 sm:grid-cols-[180px_minmax(0,1fr)_32px]">
+                            <div className="min-w-0">
+                              <TextInput
+                                id={nameId}
+                                value={filter.name}
+                                onChange={value => updateRowFilter(filter.id, { name: value })}
+                                placeholder={examplePlaceholder('mobile_only')}
+                                aria-label={`Row filter ${index + 1} name`}
+                                {...errorAria(fieldErrors, nameId)}
+                              />
+                            </div>
+                            <div className="col-span-2 row-start-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
+                              {/* A WHERE fragment over this table: highlighted and
+                                  completed against its columns, with no gutter or
+                                  Format button per row (MT-22). */}
+                              <SqlEditor
+                                id={sqlId}
+                                ariaLabel={`Row filter ${index + 1} SQL condition`}
+                                value={filter.sql}
+                                onChange={value => updateRowFilter(filter.id, { sql: value })}
+                                placeholder={examplePlaceholder("platform = 'ios'")}
+                                dialect={selectedDataSource?.db_type}
+                                tables={rowFilterTables}
+                                compact
+                                readOnly={!canWrite}
+                                ariaInvalid={errorAria(fieldErrors, sqlId)['aria-invalid']}
+                                ariaDescribedBy={errorAria(fieldErrors, sqlId)['aria-describedby']}
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeRowFilter(filter.id)}
+                              aria-label={`Remove row filter ${index + 1}`}
+                              className="col-start-2 row-start-1 inline-flex h-8 w-8 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)] sm:col-start-3"
+                              style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
+                            >
+                              <Trash2 size={14} />
+                            </button>
                           </div>
-                          <div className="col-span-2 row-start-2 min-w-0 sm:col-span-1 sm:col-start-2 sm:row-start-1">
-                            <TextInput
-                              id={sqlId}
-                              value={filter.sql}
-                              onChange={value => updateRowFilter(filter.id, { sql: value })}
-                              mono
-                              placeholder={examplePlaceholder("platform = 'ios'")}
-                              aria-label={`Row filter ${index + 1} SQL condition`}
-                              {...errorAria(fieldErrors, sqlId)}
-                            />
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => removeRowFilter(filter.id)}
-                            aria-label={`Remove row filter ${index + 1}`}
-                            className="col-start-2 row-start-1 inline-flex h-8 w-8 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)] sm:col-start-3"
-                            style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                        {rowError && (
-                          <p
-                            id={fieldErrorId(fieldErrors[nameId] ? nameId : sqlId)}
-                            className="mt-[6px] text-body-sm leading-[1.45]"
-                            style={{ color: 'var(--danger)' }}
-                          >
-                            {rowError}
-                          </p>
-                        )}
-                      </li>
-                    )
-                  })}
-                </ul>
+                          {rowError && (
+                            <p
+                              id={fieldErrorId(fieldErrors[nameId] ? nameId : sqlId)}
+                              className="mt-[6px] text-body-sm leading-[1.45]"
+                              style={{ color: 'var(--danger)' }}
+                            >
+                              {rowError}
+                            </p>
+                          )}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </>
               )}
               <button
                 type="button"
@@ -882,6 +960,9 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
                 void onDelete()
               }}
               disabled={busy}
+              // On a phone Save leads, then Cancel, and this sits apart at the
+              // foot instead of between them (MT-36).
+              className="max-sm:order-3 max-sm:mt-2 max-sm:w-full"
             >
               {deleteMut.isPending ? (
                 <Loader2 className="animate-spin" aria-hidden="true" />
@@ -891,11 +972,11 @@ export function FactTableForm({ slug, factTable, dataSources, onClose }: FactTab
               Delete fact table
             </Button>
           )}
-          <Button type="button" variant="outline" onClick={onClose}>
+          <Button type="button" variant="outline" onClick={onClose} className="max-sm:order-2 max-sm:w-full">
             {canWrite ? 'Cancel' : 'Close'}
           </Button>
           {canWrite && (
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy} className="max-sm:order-1 max-sm:w-full">
               {saveMut.isPending || previewMut.isPending ? (
                 <Loader2 className="animate-spin" aria-hidden="true" />
               ) : isNew ? (

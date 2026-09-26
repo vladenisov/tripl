@@ -77,10 +77,11 @@ no connection is made anywhere, but the product is not faked around it: real
 scans, metric collection, anomaly detection, and reconciliation run over that
 synthetic source, and a background clock keeps it fresh.
 
-**Run the coached chapters.** The welcome panel lists **Coached chapters** —
-short hands-on lessons, one per product area, each coached by a strip under
-the demo banner and a callout that rings the exact button to press. Start
-with **Run the live loop**, the product's core loop end to end:
+**Run the coached chapters.** The welcome panel's **Start: Run the live loop**
+opens the first of the chapters — short hands-on lessons, one per product area,
+each coached by a strip under the demo banner and a callout that rings the exact
+button to press. **Browse chapters** lists them all. **Run the live loop** is the
+product's core loop end to end:
 
 1. **Run a scan** — press **Run now** on any scan.
 2. **Watch it land** — the run completes and shows what it changed.
@@ -95,8 +96,8 @@ Product ID value with `prod_monthly`; the guide advances automatically, then
 asks you to type `$`, select `${product_id}`, and save), **Variables & value
 drift**, **Review a branch**, **Reconcile the plan**, **Route an alert**, and
 **Explore the rest**.
-(Prefer to read first? **Take the tour** walks the same surfaces without
-asking you to do anything.)
+(Prefer to read first? **Browse chapters** → **Quick overview** walks the same
+surfaces without asking you to do anything.)
 
 Then look around in roughly this order:
 
@@ -210,7 +211,7 @@ monitored tracking plan.
 
    Change the form afterwards — a different event name format, a different
    cardinality threshold — and the panel says the answer no longer describes this
-   scan; **Check again** re-runs it. If your **Event name format** references a
+   scan; **Recalculate** re-runs it. If your **Event name format** references a
    key the rows cannot supply, the preview says so here: that format would fail
    *every* run of the config, so this is the cheapest place to find out.
 7. Open **Event names and grouping** and **App version** if you need them. These
@@ -236,9 +237,9 @@ points are what anomaly detection and alerts are built on:
 - **Catalog + monitoring** — the scan adds events to your tracking plan on every
   run, and records metric points on its schedule. Anomaly detection reads those
   points and raises signals; alerts are sent from signals. **Run now** fills the
-  plan and writes no metric point; the one manual metrics path is **Run a
-  one-off replay** on the scan's Configuration tab, which fills a past window and
-  unlocks with the same time column and schedule.
+  plan and writes no metric point; the one manual metrics path is **Replay a
+  period…** in the scan page header, which opens a dialog that fills a past
+  window and unlocks with the same time column and schedule.
 - **Catalog only** — the scan adds events and fields to your tracking plan. It
   records no metric points, so it raises no anomalies and sends no alerts.
 
@@ -304,20 +305,22 @@ count — revenue per hour, checkout success rate, sign-ups per active user —
 define **metrics** under **Observe → Metrics**. A metric produces one number per
 time bucket and is monitored exactly like an event. Pick a kind:
 
-- **Event composition** — built from events you already collect, with no
+- **From tracked events** — built from events you already collect, with no
   warehouse query of its own: a single event's count, a ratio of one event to
   another (A / B), or an event per distinct user. **Start here** — if your scan
   is collecting, an event-composition metric produces values immediately.
-- **SQL** — a read-only `SELECT` you write, run against your warehouse on its
+- **Custom SQL** — a read-only `SELECT` you write, run against your warehouse on its
   own interval; you pick the time column and tripl buckets the results.
-- **Fact** — an aggregation (`count`, `sum`, `avg`, `min`, `max`,
+- **From a fact table** — an aggregation (`count`, `sum`, `avg`, `min`, `max`,
   `count_distinct`) or a ratio of two aggregations over a **fact table** — a
   reusable read-only query you define once under **Observe → Metrics → Fact
   tables** and slice with named filters and breakdowns across many metrics.
 
-A metric starts as a **draft** and is only collected while **active**, so
-activate it when the definition looks right. Press **Collect now** to get a
-first data point without waiting for the schedule, then open the metric — its
+The create form ends in **Create and start collecting**, or **Save as draft**
+when the definition is not ready: a draft is not collected until you press
+**Activate** on its page. On an active metric, press **Collect now** (or
+**Recompute**, as it reads on a fact-table metric) to get a first
+data point without waiting for the schedule, then open the metric — its
 drilldown has the same tabs (volume, heatmap, distribution, breakdowns) as any
 event's monitoring detail.
 

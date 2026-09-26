@@ -116,8 +116,14 @@ function setupFetch(runCalls: { method: string; url: string }[] = []) {
     }
     // The scenario's own watch polls one job by id.
     if (url.includes('/scans/scan-1/jobs/')) return mockJsonResponse(job('job-new', 'running'))
+    // Before the POST nothing is running, or Run now would be off (#247 DA-6);
+    // after it, the user's run heads the feed above the tick's own job.
     if (url.includes('/scans/scan-1/jobs')) {
-      return mockJsonResponse([job('job-new', 'running'), job('job-tick', 'completed')])
+      return mockJsonResponse(
+        runCalls.length > 0
+          ? [job('job-new', 'running'), job('job-tick', 'completed')]
+          : [job('job-tick', 'completed')],
+      )
     }
     if (url.endsWith('/projects/demo/scans')) return mockJsonResponse([scanConfig])
     if (url.includes('/data-sources')) return mockJsonResponse([])
@@ -168,7 +174,7 @@ describe('ScanConfigDetail — role gating (DATA-6)', () => {
     expect(within(panel).getByRole('note')).toHaveTextContent(
       'Only an owner can change, replay or delete a scan.',
     )
-    expect(within(panel).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(within(panel).queryByRole('button', { name: /Save/ })).not.toBeInTheDocument()
     expect(within(panel).queryByRole('button', { name: /Delete/ })).not.toBeInTheDocument()
     expect(within(panel).queryByRole('button', { name: /Replay/ })).not.toBeInTheDocument()
     // The schema lookup behind SQL autocomplete is editor-scoped on a route this
@@ -233,6 +239,20 @@ describe('ScanConfigDetail — a scan that does not exist (#237 SH-33)', () => {
     expect(await screen.findByRole('heading', { name: 'Scan not found' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Back to Scans' })).toHaveAttribute('href', '/p/demo/scans')
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+describe('ScanConfigDetail — Run now while a run is in flight (#247 DA-6)', () => {
+  it('turns Run now off and says Running… while the latest run is active', async () => {
+    const runCalls: { method: string; url: string }[] = []
+    setupFetch(runCalls)
+    renderDetail(demoProject({ is_demo: false }))
+
+    fireEvent.click(await screen.findByRole('button', { name: /Run now/i }))
+
+    const running = await screen.findByRole('button', { name: /Running…/ })
+    expect(running).toBeDisabled()
+    expect(runCalls).toHaveLength(1)
   })
 })
 
@@ -384,7 +404,7 @@ describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
     renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
 
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Sent name' } })
-    fireEvent.click(at(screen.getAllByRole('button', { name: 'Save' }), 0))
+    fireEvent.click(at(screen.getAllByRole('button', { name: 'Save changes' }), 0))
     await waitFor(() => expect(saveSent).toBe(true))
     // Typed after the request left, before it answered.
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Typed during save' } })
@@ -417,17 +437,56 @@ describe('ScanConfigDetail — unsaved configuration edits (DATA-12)', () => {
     renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
 
     const name = await screen.findByLabelText('Name')
-    // Nothing to save yet.
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    // Nothing to save yet, so no Save bar: a disabled Save in an empty grey
+    // strip read as a dead footer (#247 DA-26).
+    expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
 
     fireEvent.change(name, { target: { value: 'Renamed' } })
-    expect(screen.getAllByRole('button', { name: 'Save' })).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(screen.getAllByRole('button', { name: 'Save changes' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     expect(await screen.findByText('Saved.')).toBeInTheDocument()
 
     fireEvent.change(name, { target: { value: 'Renamed again' } })
     expect(screen.queryByText('Saved.')).not.toBeInTheDocument()
     expect(screen.getByText('Unsaved changes.')).toBeInTheDocument()
+  })
+
+  it('discards edits back to the saved configuration (#247 DA-26)', async () => {
+    const saveable = { ...scanConfig, event_type_column: 'event_name' }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/projects/demo/scans')) return mockJsonResponse([saveable])
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/data-sources')) return mockJsonResponse([])
+      if (url.includes('event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
+
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Half-typed' } })
+    expect(screen.getByText('Unsaved changes.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+
+    expect(await screen.findByLabelText('Name')).toHaveValue(saveable.name)
+    expect(screen.queryByText('Unsaved changes.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
+  })
+
+  it('opens Replay from the header as a dialog, not from the Danger zone (#247 DA-8)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/data-sources')) return mockJsonResponse([])
+      if (url.includes('event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderAt(`/p/${SLUG}/scans/scan-1?tab=configuration`)
+
+    const panel = await screen.findByRole('tabpanel')
+    expect(within(panel).queryByRole('button', { name: /Replay/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Replay a period/ }))
+    expect(await screen.findByRole('dialog', { name: 'Replay a past period' })).toBeInTheDocument()
   })
 
   it('takes a deleted scan out of the cached list before leaving (DATA-4)', async () => {

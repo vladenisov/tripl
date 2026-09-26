@@ -3,6 +3,7 @@ import { RotateCcw, Trash2 } from 'lucide-react'
 import type { VariableRetirementCounts } from '@/api/projects'
 import { Button } from '@/components/ui/button'
 import { NativeSelect } from '@/components/settings/kit'
+import { DisabledReason, disabledReasonAria } from '@/components/states'
 import { RESET_PERIODS } from './projectGeneralFields'
 
 /** The danger-zone rows of Project settings › General. */
@@ -119,15 +120,29 @@ export function DangerRetireVariablesRow({
   busy,
   preview,
   feedback,
+  last,
 }: {
   onPreview: () => void
   onRetire: () => void
   busy: boolean
   preview: VariableRetirementCounts | undefined
   feedback: ReactNode
+  last?: boolean
 }) {
+  // Why Retire is grey, said beside it: a disabled button alone read as a
+  // neutral chip with no hint of the Preview it waits for (ST-38).
+  const retireBlocker = busy
+    ? null
+    : !preview
+      ? 'Run Preview first.'
+      : preview.retirable === 0
+        ? 'Nothing to retire.'
+        : null
   return (
-    <div className={DANGER_ROW_CONTAINER_CLASS} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+    <div
+      className={DANGER_ROW_CONTAINER_CLASS}
+      style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}
+    >
       <div className={DANGER_ROW_CLASS}>
         <div className="min-w-0 flex-1">
           <div className="text-body font-medium">Retire unused variables</div>
@@ -137,19 +152,23 @@ export function DangerRetireVariablesRow({
           </div>
           {feedback}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" disabled={busy} onClick={onPreview}>
-            {busy ? 'Checking…' : 'Preview'}
-          </Button>
-          <Button
-            variant="danger"
-            size="sm"
-            disabled={busy || !preview || preview.retirable === 0}
-            onClick={onRetire}
-          >
-            <Trash2 className="h-3 w-3" />
-            Retire
-          </Button>
+        <div className="flex flex-col items-start gap-1 @min-[560px]:items-end">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" disabled={busy} onClick={onPreview}>
+              {busy ? 'Checking…' : 'Preview'}
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={busy || !preview || preview.retirable === 0}
+              onClick={onRetire}
+              {...disabledReasonAria('retire-variables', retireBlocker)}
+            >
+              <Trash2 className="h-3 w-3" />
+              Retire
+            </Button>
+          </div>
+          <DisabledReason id="retire-variables" reason={retireBlocker} tone="muted" />
         </div>
       </div>
     </div>

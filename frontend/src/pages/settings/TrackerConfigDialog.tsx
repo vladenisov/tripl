@@ -1,6 +1,7 @@
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { FieldError } from '@/components/forms/FieldError'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 
 import { ApiError } from '@/api/client'
 import { trackerConfigApi } from '@/api/trackerConfig'
@@ -244,11 +245,20 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: trackerConfigKey(slug) })
-      // Clear the just-saved token so the field returns to its "leave blank to
-      // keep" state and the raw value never lingers in the DOM.
+      // Clear the just-saved token so the raw value never lingers in the DOM.
       setApiToken('')
+      // Done means closed: left open under a green line with Cancel still on
+      // offer, nobody could tell whether Cancel would undo the save (AU-38).
+      toast.success(enabled ? 'Jira tracker connected' : 'Tracker configuration saved')
+      onClose()
     },
   })
+
+  // The first control takes focus once the form is in, rather than the close
+  // button, which is all the dialog holds while the config loads (AU-38).
+  useEffect(() => {
+    if (canEdit) document.getElementById(enabledId)?.focus()
+  }, [canEdit, enabledId])
 
   const tokenPlaceholder = config.api_token_set
     ? 'Token stored — leave blank to keep'
@@ -284,6 +294,13 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
           />
         </div>
 
+        {/* The connection belongs to the switch above: dimmed while the
+            tracker is off, still editable so a connection can be parked
+            half-filled (AU-38). */}
+        <fieldset
+          className={enabled ? 'grid gap-4' : 'grid gap-4 opacity-60 transition-opacity focus-within:opacity-100'}
+        >
+        <legend className="mb-3 text-body-sm font-semibold">Connection</legend>
         <div className="grid gap-2">
           <Label htmlFor={baseUrlId}>Base URL</Label>
           <Input
@@ -353,12 +370,8 @@ function TrackerConfigForm({ slug, config, onClose }: TrackerConfigFormProps) {
             disabled={!canEdit}
           />
         </div>
+        </fieldset>
 
-        {saveMut.isSuccess && (
-          <p className="text-body" style={{ color: 'var(--success)' }}>
-            Tracker configuration saved.
-          </p>
-        )}
         {saveMut.isError && (
           <p className="text-body" style={{ color: 'var(--danger)' }}>
             {describeTrackerError(saveMut.error)}

@@ -242,6 +242,94 @@ describe('ProjectsPage', () => {
     expect(screen.queryByRole('button', { name: /Delete Alpha/i })).not.toBeInTheDocument()
   })
 
+  it('enters a project at its home, from the title or the Open button (JR-1, JR-34)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByRole('link', { name: 'Beta' })).toHaveAttribute('href', '/p/beta/overview')
+    expect(screen.getByRole('link', { name: /Open project/ })).toHaveAttribute('href', '/p/beta/overview')
+  })
+
+  it('keeps the card to one row of facts, with the rest under Details (SH-25)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    const details = screen.getByText('Details').closest('details')
+    expect(details).not.toBeNull()
+    expect(details).not.toHaveAttribute('open')
+    // The tiles and the scan/monitoring panels live in the fold.
+    expect(within(details as HTMLElement).getByText('Latest scan')).toBeInTheDocument()
+    expect(within(details as HTMLElement).getByText('Event types')).toBeInTheDocument()
+    // The old chip row repeated the facts row; it is gone.
+    expect(screen.queryByText('1 scan configured')).not.toBeInTheDocument()
+  })
+
+  it('counts open incidents on the card, not alert destinations (SH-26)', async () => {
+    mockSingleProject()
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Beta')).toBeInTheDocument()
+    expect(screen.queryByText('Alerts')).not.toBeInTheDocument()
+    const tile = screen.getByText('Open incidents').closest('dl')
+    // Beta has one destination and no open incident.
+    expect(tile).toHaveTextContent('0')
+  })
+
+  it('gives an empty project one setup line instead of a row of zeros (SH-25, JR-34)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([
+          {
+            id: 'proj-empty',
+            name: 'Empty',
+            slug: 'empty',
+            description: '',
+            created_at: '2026-05-01T09:00:00Z',
+            updated_at: '2026-05-10T09:00:00Z',
+            summary: {
+              event_type_count: 0,
+              event_count: 0,
+              active_event_count: 0,
+              implemented_event_count: 0,
+              review_pending_event_count: 0,
+              archived_event_count: 0,
+              variable_count: 0,
+              scan_count: 0,
+              alert_destination_count: 0,
+              alert_rule_count: 0,
+              monitoring_signal_count: 0,
+              firing_monitor_count: 0,
+              open_incident_count: 0,
+              failing_scan_config_count: 0,
+              latest_scan_job: null,
+              latest_signal: null,
+            },
+          },
+        ]))
+      }
+      if (url.endsWith('/api/v1/data-sources')) return Promise.resolve(jsonResponse([]))
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderProjectsPage('owner')
+
+    const setup = await screen.findByRole('link', { name: /Continue setup/ })
+    expect(setup).toHaveAttribute('href', '/p/empty/overview')
+    expect(setup).toHaveTextContent('0 of 4 set up · Next: Connect a data source')
+    expect(screen.queryByText('Details')).not.toBeInTheDocument()
+    expect(screen.queryByText('Latest scan')).not.toBeInTheDocument()
+  })
+
   const RAW_SCAN_ERROR =
     "HTTPSConnectionPool(host='clickhouse.internal', port=8443): Read timed out. (read timeout=30)"
 
@@ -275,6 +363,7 @@ describe('ProjectsPage', () => {
               alert_destination_count: 1,
               alert_rule_count: 0,
               monitoring_signal_count: 1,
+              open_incident_count: 0,
               failing_scan_config_count: 1,
               latest_scan_job: {
                 id: 'job-2',
@@ -319,7 +408,8 @@ describe('ProjectsPage', () => {
     // counting projects it does not open.
     expect(screen.getByText('1 in Beta')).toBeInTheDocument()
     expect(screen.queryByText('across 1 project')).not.toBeInTheDocument()
-    expect(screen.getByText('1 scan configured')).toBeInTheDocument()
+    // The compact row names the last run instead of the configured count (SH-25).
+    expect(screen.getByText('Failed').closest('[data-slot="chip"]')).toHaveAttribute('data-tone', 'danger')
     expect(screen.getByText('1 open signal')).toBeInTheDocument()
     // UX-10: the monitoring-signal metric lives once now, as an action-needed
     // stat — no separate Automation banner repeating the count.
@@ -369,9 +459,7 @@ describe('ProjectsPage', () => {
     // (Chip is class-based since DS-6, so the tone is read off data-tone.)
     const chipOf = (text: string) => screen.getByText(text).closest('[data-slot="chip"]')
     expect(chipOf('1 open signal')).toHaveAttribute('data-tone', 'danger')
-    // Every other supporting status chip renders calm/muted so it does not compete.
-    expect(chipOf('99.1% implemented')).toHaveAttribute('data-tone', 'neutral')
-    expect(chipOf('1 scan configured')).toHaveAttribute('data-tone', 'neutral')
+    // The review queue renders calm/muted so it does not compete.
     expect(chipOf('1 in review')).toHaveAttribute('data-tone', 'neutral')
   })
 
@@ -413,7 +501,7 @@ describe('ProjectsPage', () => {
                 started_at: '2026-06-10T08:00:00Z',
                 completed_at: '2026-06-10T08:02:00Z',
                 result_summary: {
-                  scan_rows_processed: 12345,
+                  query_rows_scanned: 12345,
                 },
                 error_message: null,
                 created_at: '2026-06-10T08:02:00Z',
@@ -494,7 +582,7 @@ describe('ProjectsPage', () => {
                   events_created: 0,
                   signals_added: 0,
                   alerts_queued: 0,
-                  scan_rows_processed: 8261,
+                  query_rows_scanned: 8261,
                 },
                 error_message: null,
                 created_at: '2026-06-10T08:02:00Z',
@@ -590,6 +678,75 @@ describe('ProjectsPage', () => {
     expect(rowsLine.textContent?.replace(/[^0-9]/g, '')).toBe('12345')
   })
 
+  it('names a catalog run\'s figure as column combinations, not warehouse rows (#247 DA-4)', async () => {
+    // A catalog run reports only scan_rows_processed: the rows of its GROUP BY
+    // breakdown, i.e. distinct column combinations. The scan page prints "153
+    // combos" for this run; the card must not call the same 153 warehouse rows.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([
+          {
+            id: 'proj-catalog',
+            name: 'Iota',
+            slug: 'iota',
+            description: 'A catalog run.',
+            created_at: '2026-06-01T09:00:00Z',
+            updated_at: '2026-06-10T09:00:00Z',
+            summary: {
+              event_type_count: 2,
+              event_count: 10,
+              active_event_count: 10,
+              implemented_event_count: 10,
+              review_pending_event_count: 0,
+              archived_event_count: 0,
+              variable_count: 2,
+              scan_count: 1,
+              alert_destination_count: 0,
+              alert_rule_count: 0,
+              monitoring_signal_count: 0,
+              failing_scan_config_count: 0,
+              latest_scan_job: {
+                id: 'job-catalog',
+                scan_config_id: 'scan-catalog',
+                scan_name: 'Catalog scan',
+                status: 'completed',
+                started_at: '2026-06-10T08:00:00Z',
+                completed_at: '2026-06-10T08:02:00Z',
+                result_summary: {
+                  scan_rows_processed: 153,
+                },
+                error_message: null,
+                created_at: '2026-06-10T08:02:00Z',
+              },
+              latest_signal: null,
+            },
+          },
+        ]))
+      }
+
+      if (url.endsWith('/api/v1/data-sources')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderProjectsPage('owner')
+
+    expect(await screen.findByText('Iota')).toBeInTheDocument()
+    const line = screen.getByText(/combos grouped in the warehouse/)
+    expect(line).toHaveTextContent('153 combos grouped in the warehouse')
+    expect(line.getAttribute('title')).toMatch(/column combinations/)
+    expect(screen.queryByText(/warehouse rows read/)).not.toBeInTheDocument()
+  })
+
   it('says what the monitoring tile counts and when (tripl-h5um)', async () => {
     // The two tiles inside one project card print 8,261 and 13,373 for the same
     // scan name at the same clock time. They are a warehouse row count and an
@@ -633,7 +790,7 @@ describe('ProjectsPage', () => {
                 completed_at: '2026-06-10T09:00:00Z',
                 result_summary: {
                   events_created: 0,
-                  scan_rows_processed: 8261,
+                  query_rows_scanned: 8261,
                 },
                 error_message: null,
                 created_at: '2026-06-10T09:00:00Z',

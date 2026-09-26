@@ -47,9 +47,6 @@ describe('ScanCausalNote — a scan says what it produces (tripl-3y7z.2)', () =>
     // Catalog only is a legitimate choice, so the note is not a warning — but it
     // must still say that no anomaly and no alert will ever come from this scan,
     // which is the silence the user would otherwise have to infer.
-    expect(noteText(<ScanCausalNote variant="form" mode="catalog" />)).toContain(
-      'no anomalies and sends no alerts',
-    )
     expect(noteText(<ScanCausalNote variant="config" config={config(null, null)} />)).toContain(
       'no metric points, no anomalies, no alerts',
     )
@@ -76,23 +73,24 @@ describe('ScanCausalNote — a scan says what it produces (tripl-3y7z.2)', () =>
     expect(note).not.toMatch(/so it is never run/)
   })
 
-  it('promises the whole chain in the form note for Catalog + monitoring', () => {
+  it('adds only what the monitoring radio lacks: when points arrive, where output shows (#247 DA-13)', () => {
     const note = noteText(<ScanCausalNote variant="form" mode="monitoring" />)
 
-    // Per-run for the plan, per-schedule for the points — the split the backend
-    // makes, and the one the config note above makes too.
-    expect(note).toContain('add events to your tracking plan on every run')
-    expect(note).toContain('record metric points on its schedule')
+    // Per-schedule for the points — the split the backend makes, and the one
+    // the config note makes too.
+    expect(note).toContain('recorded on the schedule, not by Run now')
     expect(note).not.toMatch(/metric points every run/)
-    expect(note).toContain('raises signals; alerts are sent from signals')
+    expect(note).toContain('Signals appear on Anomalies; alerts go out from Alerting.')
+    // Not a restatement of the radio's own description.
+    expect(note).not.toContain('tracking plan')
   })
 
-  it('follows the selected mode in the form variant', () => {
+  it('has nothing to add under Catalog only, whose radio already says it all (#247 DA-13)', () => {
     const { rerender } = render(<ScanCausalNote variant="form" mode="monitoring" />)
-    expect(screen.getByTestId('scan-causal-note')).toHaveTextContent('record metric points')
+    expect(screen.getByTestId('scan-causal-note')).toHaveTextContent('Metric points are recorded')
 
     rerender(<ScanCausalNote variant="form" mode="catalog" />)
-    expect(screen.getByTestId('scan-causal-note')).toHaveTextContent('records no metric points')
+    expect(screen.queryByTestId('scan-causal-note')).toBeNull()
   })
 
   it('tones only the fault as a warning', () => {

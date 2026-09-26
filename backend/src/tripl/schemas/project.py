@@ -110,10 +110,16 @@ class DetectionResetPeriod(BaseModel):
     """Optional half-open window (``after <= t < before``) for a danger-zone reset.
 
     Both bounds are optional; omitting both clears the whole project.
+
+    ``dry_run`` returns the counts the reset WOULD delete and deletes nothing, so
+    the confirm dialog can name them (ST-39). It defaults to false, unlike
+    ``VariableRetirementRequest``: this body predates it, and a client that
+    omits it has always meant "delete".
     """
 
     before: datetime | None = None
     after: datetime | None = None
+    dry_run: bool = False
 
 
 class DemoCancelResponse(BaseModel):
@@ -211,6 +217,10 @@ class ProjectSummary(BaseModel):
     archived_event_count: int = 0
     variable_count: int = 0
     scan_count: int = 0
+    # Metric definitions in the project, any status. Drives the "Define a key
+    # metric" onboarding step's done-state (JR-2). Metrics are not plan
+    # entities, so a ``?branch=`` read does not change it.
+    metric_count: int = 0
     alert_destination_count: int = 0
     # ENABLED alert rules across this project's destinations. A destination on
     # its own routes nothing — a rule is what binds a signal to a channel — so

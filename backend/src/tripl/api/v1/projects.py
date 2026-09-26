@@ -344,22 +344,27 @@ async def reset_anomalies(
     """Owner-only: clear every anomaly (+ breakdown) in the project's period.
 
     Destructive and irreversible. Derived monitoring signals disappear with the
-    anomalies they are computed from.
+    anomalies they are computed from. ``dry_run`` only counts (ST-39).
     """
     project = await project_service.get_project_by_slug(session, slug)
     counts = await detection_reset_service.reset_project_anomalies(
-        session, project.id, before=period.before, after=period.after
-    )
-    await audit_service.record(
         session,
-        user=current_user,
-        action="project.reset_anomalies",
-        target_type="project",
-        target_id=project.id,
-        target_name=project.name,
-        project=project,
-        payload={"before": period.before, "after": period.after, "counts": counts},
+        project.id,
+        before=period.before,
+        after=period.after,
+        dry_run=period.dry_run,
     )
+    if not period.dry_run:
+        await audit_service.record(
+            session,
+            user=current_user,
+            action="project.reset_anomalies",
+            target_type="project",
+            target_id=project.id,
+            target_name=project.name,
+            project=project,
+            payload={"before": period.before, "after": period.after, "counts": counts},
+        )
     return AnomalyResetCounts(**counts)
 
 
@@ -372,22 +377,27 @@ async def reset_drifts(
 ) -> DriftResetCounts:
     """Owner-only: clear every schema + distribution drift in the project's period.
 
-    Destructive and irreversible.
+    Destructive and irreversible. ``dry_run`` only counts (ST-39).
     """
     project = await project_service.get_project_by_slug(session, slug)
     counts = await detection_reset_service.reset_project_drifts(
-        session, project.id, before=period.before, after=period.after
-    )
-    await audit_service.record(
         session,
-        user=current_user,
-        action="project.reset_drifts",
-        target_type="project",
-        target_id=project.id,
-        target_name=project.name,
-        project=project,
-        payload={"before": period.before, "after": period.after, "counts": counts},
+        project.id,
+        before=period.before,
+        after=period.after,
+        dry_run=period.dry_run,
     )
+    if not period.dry_run:
+        await audit_service.record(
+            session,
+            user=current_user,
+            action="project.reset_drifts",
+            target_type="project",
+            target_id=project.id,
+            target_name=project.name,
+            project=project,
+            payload={"before": period.before, "after": period.after, "counts": counts},
+        )
     return DriftResetCounts(**counts)
 
 

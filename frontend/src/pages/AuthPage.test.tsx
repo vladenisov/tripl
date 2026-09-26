@@ -179,6 +179,24 @@ describe('AuthPage', () => {
     expect(screen.getByRole('button', { name: 'Send reset link' })).toBeInTheDocument()
   })
 
+  it('says before the request when the instance cannot send email (ST-24)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      if (String(input).endsWith('/api/v1/auth/status')) {
+        return Promise.resolve(
+          jsonResponse({ has_users: true, registration_enabled: true, email_configured: false }),
+        )
+      }
+      return Promise.reject(new Error(`Unhandled fetch: ${String(input)}`))
+    })
+    renderAuth('/auth?mode=forgot')
+
+    expect(
+      await screen.findByText(/This instance can't send email, so no reset link will arrive/),
+    ).toBeInTheDocument()
+    // Still a form: the server's answer is the same neutral one either way.
+    expect(screen.getByRole('button', { name: 'Send reset link' })).toBeEnabled()
+  })
+
   it('falls back to the contact-owner copy when the instance has no email configured', async () => {
     mockAuthFetch({ emailConfigured: false })
     renderAuth()
@@ -300,5 +318,20 @@ describe('AuthPage', () => {
     expect(password).toHaveAttribute('aria-invalid', 'true')
     expect(await screen.findByText('Use at least 12 characters.')).toBeInTheDocument()
     expect(screen.getByLabelText('Email')).not.toHaveAttribute('aria-invalid')
+  })
+
+  it('shows the product mark, a plain name placeholder and a password reveal (SH-31)', () => {
+    mockStatus(true)
+    renderAuth()
+
+    expect(screen.getByText('tripl')).toBeInTheDocument()
+
+    const password = screen.getByLabelText('Password')
+    expect(password).toHaveAttribute('type', 'password')
+    fireEvent.click(screen.getByRole('button', { name: 'Show password' }))
+    expect(password).toHaveAttribute('type', 'text')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    expect(screen.getByLabelText('Name')).toHaveAttribute('placeholder', 'Your name')
   })
 })

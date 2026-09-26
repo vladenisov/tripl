@@ -57,6 +57,19 @@ function ownerAuthValue(): AuthContextValue {
   }
 }
 
+
+/**
+ * Open the create page from the empty Scans page's first-scan state, and wait
+ * for its SQL editor: it is a lazy chunk, so the form's heading renders before
+ * the editor's textbox does.
+ */
+async function clickFirstScanNewScan() {
+  const emptyState = (await screen.findByRole('heading', { name: 'Create your first scan' }))
+    .closest('[data-slot="empty-state"]') as HTMLElement
+  fireEvent.click(within(emptyState).getByRole('button', { name: 'New scan' }))
+  await waitFor(() => expect(screen.queryByText('Loading editor…')).toBeNull())
+}
+
 describe('ProjectSettingsPage', () => {
   it('redirects the legacy general tab to the takeover settings area', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJsonResponse({}))
@@ -473,7 +486,8 @@ describe('ProjectSettingsPage', () => {
     )
 
     fireEvent.click(await screen.findByText('Main scan'))
-    fireEvent.click(await screen.findByRole('button', { name: 'Apply groups' }))
+    // On the Event mapping "Event group rules" row (#247).
+    fireEvent.click(await screen.findByRole('button', { name: /Apply to existing events/ }))
 
     expect(await screen.findByText('Group apply queued.')).toBeInTheDocument()
     expect(calls).toContain('POST /api/v1/projects/demo/scans/scan-1/event-groups/apply')
@@ -605,16 +619,16 @@ describe('ProjectSettingsPage', () => {
     )
 
     fireEvent.click(await screen.findByText('Main scan'))
-    // Replay now lives in the Configuration tab's danger zone.
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
-    fireEvent.click(await screen.findByRole('button', { name: /Replay…/i }))
+    // Replay lives in the scan page header, not the danger zone (#247).
+    fireEvent.click(await screen.findByRole('button', { name: /Replay a period/ }))
 
     const inputs = document.querySelectorAll('input[type="datetime-local"]')
     expect(inputs).toHaveLength(2)
     fireEvent.change(at(inputs, 0), { target: { value: '2026-04-01T00:00' } })
     fireEvent.change(at(inputs, 1), { target: { value: '2026-04-02T00:00' } })
 
-    // Replay is now an inline page-style panel (no modal dialog).
+    // A real Dialog: the inputs above are in its portal, which
+    // document.querySelectorAll still reaches.
     fireEvent.click(screen.getByRole('button', { name: /Replay period/i }))
 
     await waitFor(() => {
@@ -1358,9 +1372,10 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
-    await waitFor(() => expect(addScanButton).not.toBeDisabled())
-    fireEvent.click(addScanButton)
+    // A project with no scans shows ONE empty state, and its "New scan" is the
+    // way in (#247 DA-28): the header button only renders while the list is
+    // still loading, so a reference to it goes stale once the list answers.
+    await clickFirstScanNewScan()
 
     // Create flow is an in-place page (no dialog). Scoped to the heading here
     // and at the three sibling call sites below: the list's own "New scan"
@@ -1566,9 +1581,7 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
-    await waitFor(() => expect(addScanButton).not.toBeDisabled())
-    fireEvent.click(addScanButton)
+    await clickFirstScanNewScan()
 
     await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
@@ -1820,9 +1833,7 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
-    await waitFor(() => expect(addScanButton).not.toBeDisabled())
-    fireEvent.click(addScanButton)
+    await clickFirstScanNewScan()
 
     await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
@@ -1840,7 +1851,7 @@ describe('ProjectSettingsPage', () => {
 
     // Nothing is asked of the warehouse until the draft can name its events, so
     // the answer is one click away once the event type is picked.
-    fireEvent.click(await screen.findByRole('button', { name: 'Check' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Show what this scan would create' }))
 
     // The headline that used to be false on this exact path.
     expect(
@@ -2071,9 +2082,7 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    const addScanButton = await screen.findByRole('button', { name: /New scan/i })
-    await waitFor(() => expect(addScanButton).not.toBeDisabled())
-    fireEvent.click(addScanButton)
+    await clickFirstScanNewScan()
 
     await screen.findByRole('heading', { name: 'New scan' })
     const textboxes = screen.getAllByRole('textbox')
@@ -2099,7 +2108,7 @@ describe('ProjectSettingsPage', () => {
       target: { value: 'platform' },
     })
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Check' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Show what this scan would create' }))
 
     // The panel's two lists, which the button must not contradict.
     expect(

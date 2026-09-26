@@ -1283,7 +1283,7 @@ export interface paths {
          * @description Owner-only: clear every anomaly (+ breakdown) in the project's period.
          *
          *     Destructive and irreversible. Derived monitoring signals disappear with the
-         *     anomalies they are computed from.
+         *     anomalies they are computed from. ``dry_run`` only counts (ST-39).
          */
         post: operations["reset_anomalies_api_v1_projects__slug__danger_reset_anomalies_post"];
         delete?: never;
@@ -1305,7 +1305,7 @@ export interface paths {
          * Reset Drifts
          * @description Owner-only: clear every schema + distribution drift in the project's period.
          *
-         *     Destructive and irreversible.
+         *     Destructive and irreversible. ``dry_run`` only counts (ST-39).
          */
         post: operations["reset_drifts_api_v1_projects__slug__danger_reset_drifts_post"];
         delete?: never;
@@ -2125,6 +2125,26 @@ export interface paths {
         patch: operations["update_meta_field_api_v1_projects__slug__meta_fields__meta_field_id__patch"];
         trace?: never;
     };
+    "/api/v1/projects/{slug}/meta-fields/{meta_field_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Meta Field Usage
+         * @description Values and events a delete of this field would clear (AU-37).
+         */
+        get: operations["get_meta_field_usage_api_v1_projects__slug__meta_fields__meta_field_id__usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/metrics": {
         parameters: {
             query?: never;
@@ -2645,7 +2665,8 @@ export interface paths {
         delete: operations["delete_relation_api_v1_projects__slug__relations__relation_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** Update Relation */
+        patch: operations["update_relation_api_v1_projects__slug__relations__relation_id__patch"];
         trace?: never;
     };
     "/api/v1/projects/{slug}/revisions": {
@@ -3343,6 +3364,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/ai/defaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Ai Prompt Defaults
+         * @description The built-in AI system prompts, for each prompt's "Restore default" (ST-30).
+         */
+        get: operations["get_ai_prompt_defaults_api_v1_settings_ai_defaults_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings/ai/test": {
         parameters: {
             query?: never;
@@ -3403,6 +3444,30 @@ export interface paths {
          *     requires a session.
          */
         get: operations["get_photo_limits_api_v1_settings_photo_limits_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settings/row-limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Row Limit Defaults
+         * @description The instance row caps a scan falls back to, readable by every signed-in user.
+         *
+         *     Owner-only like the rest of this router would hide the real numbers from the
+         *     editors who fill in a scan's Limits, so the form hard-coded the shipped
+         *     defaults instead (B15). Two integers, nothing about the connection.
+         */
+        get: operations["get_row_limit_defaults_api_v1_settings_row_limits_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3596,6 +3661,21 @@ export interface components {
             description: string;
             /** Field Name */
             field_name: string;
+        };
+        /**
+         * AiPromptDefaultsResponse
+         * @description The built-in system prompts, whatever is stored over them (ST-30).
+         *
+         *     A "Restore default" link fills the editor from these; saving ``null`` for
+         *     the field clears the override and has the same effect server-side.
+         */
+        AiPromptDefaultsResponse: {
+            /** Alert Explanation System Prompt */
+            alert_explanation_system_prompt: string;
+            /** Ask System Prompt */
+            ask_system_prompt: string;
+            /** Describe System Prompt */
+            describe_system_prompt: string;
         };
         /** AiSettings */
         AiSettings: {
@@ -4032,6 +4112,10 @@ export interface components {
         AlertDestinationTestResponse: {
             /** Error */
             error: string | null;
+            /** Error Kind */
+            error_kind?: ("config" | "policy" | "dns" | "timeout" | "tls" | "network" | "http_status" | "smtp" | "other") | null;
+            /** Http Status */
+            http_status?: number | null;
             /** Ok */
             ok: boolean;
             /** Sent At */
@@ -4259,6 +4343,7 @@ export interface components {
             items: components["schemas"]["AlertInboxGroupResponse"][];
             /** Next Cursor */
             next_cursor: string | null;
+            status_counts?: components["schemas"]["AlertInboxStatusCounts"];
             /** Total */
             total: number;
             /** Window Truncated At */
@@ -4289,6 +4374,40 @@ export interface components {
          * @enum {string}
          */
         AlertInboxStatus: "open" | "acknowledged" | "resolved" | "muted" | "false_positive";
+        /**
+         * AlertInboxStatusCounts
+         * @description Incidents per effective status over the whole window (AL-14).
+         *
+         *     Counted after the non-status filters and before the status one, so a chip
+         *     reads what choosing it would list, without loading every page.
+         */
+        AlertInboxStatusCounts: {
+            /**
+             * Acknowledged
+             * @default 0
+             */
+            acknowledged: number;
+            /**
+             * False Positive
+             * @default 0
+             */
+            false_positive: number;
+            /**
+             * Muted
+             * @default 0
+             */
+            muted: number;
+            /**
+             * Open
+             * @default 0
+             */
+            open: number;
+            /**
+             * Resolved
+             * @default 0
+             */
+            resolved: number;
+        };
         /**
          * AlertMessageFormat
          * @enum {string}
@@ -4971,6 +5090,11 @@ export interface components {
         };
         /** AuthStatusResponse */
         AuthStatusResponse: {
+            /**
+             * Email Configured
+             * @default false
+             */
+            email_configured: boolean;
             /** Has Users */
             has_users: boolean;
             /**
@@ -5472,6 +5596,16 @@ export interface components {
             port: number;
             /** Project Id */
             project_id?: string | null;
+            /**
+             * Scan Count
+             * @default 0
+             */
+            scan_count: number;
+            /**
+             * Scan Run Count
+             * @default 0
+             */
+            scan_run_count: number;
             /** Timeout Seconds */
             timeout_seconds?: number | null;
             /**
@@ -5630,12 +5764,22 @@ export interface components {
          * @description Optional half-open window (``after <= t < before``) for a danger-zone reset.
          *
          *     Both bounds are optional; omitting both clears the whole project.
+         *
+         *     ``dry_run`` returns the counts the reset WOULD delete and deletes nothing, so
+         *     the confirm dialog can name them (ST-39). It defaults to false, unlike
+         *     ``VariableRetirementRequest``: this body predates it, and a client that
+         *     omits it has always meant "delete".
          */
         DetectionResetPeriod: {
             /** After */
             after?: string | null;
             /** Before */
             before?: string | null;
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run: boolean;
         };
         /**
          * DistributionDriftBand
@@ -7035,6 +7179,11 @@ export interface components {
             /** Color */
             color: string;
             /**
+             * Column Count
+             * @default 0
+             */
+            column_count: number;
+            /**
              * Created At
              * Format: date-time
              */
@@ -7050,6 +7199,16 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Identifier Count
+             * @default 0
+             */
+            identifier_count: number;
+            /**
+             * Metric Count
+             * @default 0
+             */
+            metric_count: number;
             /** Name */
             name: string;
             /** Order */
@@ -7579,6 +7738,19 @@ export interface components {
             /** Order */
             order?: number | null;
             sensitivity?: components["schemas"]["Sensitivity"] | null;
+        };
+        /**
+         * MetaFieldUsageResponse
+         * @description What deleting a meta field would take with it (AU-37).
+         *
+         *     ``value_count`` is every non-empty stored value (a multi-value field holds
+         *     several per event); ``event_count`` is the events holding at least one.
+         */
+        MetaFieldUsageResponse: {
+            /** Event Count */
+            event_count: number;
+            /** Value Count */
+            value_count: number;
         };
         /**
          * MetricAggregation
@@ -9228,6 +9400,11 @@ export interface components {
             latest_scan_job?: components["schemas"]["ProjectLatestScanJob"] | null;
             latest_signal?: components["schemas"]["ProjectLatestSignal"] | null;
             /**
+             * Metric Count
+             * @default 0
+             */
+            metric_count: number;
+            /**
              * Monitoring Signal Count
              * @default 0
              */
@@ -9404,6 +9581,27 @@ export interface components {
             target_field_id: string;
         };
         /**
+         * RelationUpdate
+         * @description Editing a relation in place (AU-13); every field optional, none nullable.
+         *
+         *     An end is re-checked against the project branch whenever either of its ids
+         *     changes, with the stored id standing in for the one not sent.
+         */
+        RelationUpdate: {
+            /** Description */
+            description?: string | null;
+            /** Relation Type */
+            relation_type?: string | null;
+            /** Source Event Type Id */
+            source_event_type_id?: string | null;
+            /** Source Field Id */
+            source_field_id?: string | null;
+            /** Target Event Type Id */
+            target_event_type_id?: string | null;
+            /** Target Field Id */
+            target_field_id?: string | null;
+        };
+        /**
          * ReleaseComparabilityItem
          * @description Whether one detection pass could judge the latest release at all.
          *
@@ -9536,6 +9734,19 @@ export interface components {
             /** Resolved By */
             resolved_by: string | null;
         };
+        /**
+         * RowLimitDefaultsResponse
+         * @description The instance's effective row caps for a scan with no limit of its own.
+         *
+         *     Readable by every signed-in user, unlike the rest of ``/settings``: the scan
+         *     form's Limits hints quote them to whoever is filling it in (B15).
+         */
+        RowLimitDefaultsResponse: {
+            /** Metrics Row Limit Default */
+            metrics_row_limit_default: number;
+            /** Scan Row Limit Default */
+            scan_row_limit_default: number;
+        };
         /** RuntimeSettings */
         RuntimeSettings: {
             /** App Base Url */
@@ -9559,6 +9770,11 @@ export interface components {
          * @description One scan config's run activity, as the Scans list shows it.
          */
         ScanActivityItem: {
+            /**
+             * Catalog Combinations 24H
+             * @default 0
+             */
+            catalog_combinations_24h: number;
             /** Failing Streak */
             failing_streak: number;
             latest_job: components["schemas"]["ScanJobResponse"] | null;
@@ -9569,6 +9785,11 @@ export interface components {
              * Format: uuid
              */
             scan_config_id: string;
+            /**
+             * Warehouse Rows 24H
+             * @default 0
+             */
+            warehouse_rows_24h: number;
         };
         /**
          * ScanActivityResponse
@@ -10933,6 +11154,19 @@ export interface components {
             /** Values */
             values: string[];
         };
+        /**
+         * VariableEventRef
+         * @description One event a variable was observed in, with the id a link needs (AU-29).
+         */
+        VariableEventRef: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+        };
         /** VariableListResponse */
         VariableListResponse: {
             /** Items */
@@ -10970,6 +11204,12 @@ export interface components {
              * @default []
              */
             event_names: string[];
+            /**
+             * Event Refs
+             * @description The events this variable was observed in, as id + name so each can link to its event. Ordered by name (then id) and capped at 20, like 'event_names'; 'event_count' carries the untruncated total.
+             * @default []
+             */
+            event_refs: components["schemas"]["VariableEventRef"][];
             /**
              * Excluded From Scans
              * @default false
@@ -16143,12 +16383,49 @@ export interface operations {
             };
         };
     };
+    get_meta_field_usage_api_v1_projects__slug__meta_fields__meta_field_id__usage_get: {
+        parameters: {
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                meta_field_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetaFieldUsageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_metric_definitions_api_v1_projects__slug__metrics_get: {
         parameters: {
             query?: {
                 status?: components["schemas"]["MetricStatus"][] | null;
                 kind?: components["schemas"]["MetricKind"] | null;
                 search?: string | null;
+                reviewed?: boolean | null;
+                owner_id?: string | null;
                 offset?: number;
                 limit?: number;
             };
@@ -17232,6 +17509,45 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_relation_api_v1_projects__slug__relations__relation_id__patch: {
+        parameters: {
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                relation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RelationUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RelationResponse"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -18875,6 +19191,26 @@ export interface operations {
             };
         };
     };
+    get_ai_prompt_defaults_api_v1_settings_ai_defaults_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AiPromptDefaultsResponse"];
+                };
+            };
+        };
+    };
     test_ai_settings_api_v1_settings_ai_test_post: {
         parameters: {
             query?: never;
@@ -18957,6 +19293,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PhotoLimitsResponse"];
+                };
+            };
+        };
+    };
+    get_row_limit_defaults_api_v1_settings_row_limits_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RowLimitDefaultsResponse"];
                 };
             };
         };

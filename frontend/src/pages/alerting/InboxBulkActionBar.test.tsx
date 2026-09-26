@@ -284,3 +284,32 @@ describe('InboxBulkActionBar — room for the end of the list', () => {
     expect(container.querySelector('[data-bulk-bar-spacer]')).toBeNull()
   })
 })
+
+// Below `sm` the bar is one row: the count, Acknowledge, Resolve and a "More"
+// menu holding Note, Mute and Reopen (AL-16). The menu items must do what the
+// buttons they stand in for do.
+describe('InboxBulkActionBar — the phone "More" menu', () => {
+  it('reopens the selection from the menu', async () => {
+    const { onAction } = renderBar(3)
+
+    const more = screen.getByRole('button', { name: 'More actions for 3 selected incidents' })
+    fireEvent.pointerDown(more, { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Reopen' }))
+
+    expect(onAction).toHaveBeenCalledWith({ action: 'reopen' })
+  })
+
+  it('opens the shared note box from the menu', async () => {
+    renderBar(3)
+
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'More actions for 3 selected incidents' }),
+      { button: 0, ctrlKey: false },
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Add a note' }))
+
+    expect(
+      await screen.findByRole('textbox', { name: 'Note on 3 selected incidents' }),
+    ).toBeInTheDocument()
+  })
+})

@@ -141,6 +141,8 @@ interface RenderOptions {
   autoOpenRuleForDestinationId?: string | null
   onAutoOpenRuleConsumed?: () => void
   onGoToDestinations?: () => void
+  /** The URL the section mounts under, for `?new=rule` (AL-18 / JR-16). */
+  entry?: string
 }
 
 function renderSection(options: RenderOptions = {}) {
@@ -149,7 +151,7 @@ function renderSection(options: RenderOptions = {}) {
   })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[options.entry ?? '/']}>
         <MonitorsSection
           slug="windy-ios"
           destinations={options.destinations ?? [makeDestination()]}
@@ -210,6 +212,17 @@ describe('MonitorsSection live state (tripl-89ps)', () => {
       'href',
       '/p/windy-ios/monitors/rule-1',
     )
+  })
+
+  it('leaves the Healthy count neutral; only Firing and Warning take colour (AL-47)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary({ healthy_count: 3 }))
+    const { container } = renderSection()
+
+    const healthy = await screen.findByText('Healthy', { selector: 'dt' })
+    const figure = healthy.closest('dl')?.querySelector('[data-slot="mini-stat-value"]')
+    await waitFor(() => expect(figure).toHaveTextContent('3'))
+    expect(figure).not.toHaveAttribute('data-tone')
+    expect(container.querySelectorAll('[data-slot="mini-stat-value"][data-tone="success"]')).toHaveLength(0)
   })
 
   it('renders the rule before the state request answers, rather than blanking the list', () => {
@@ -486,6 +499,27 @@ describe('MonitorsSection guided-setup handoff (tripl-oxkt.15)', () => {
     // here, so a section that never reported back would re-open the dialog on
     // the next mount.
     expect(consumed).toHaveBeenCalled()
+  })
+})
+
+describe('MonitorsSection ?new=rule (AL-18, JR-16)', () => {
+  it('opens a blank rule form on arrival', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({ entry: '/p/windy-ios/settings/alerting?section=monitors&new=rule' })
+
+    expect(await screen.findByText('New alert rule')).toBeInTheDocument()
+    expect(screen.getByLabelText('Name')).toHaveValue('')
+  })
+
+  it('does not open the form for a viewer', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({
+      canWrite: false,
+      entry: '/p/windy-ios/settings/alerting?section=monitors&new=rule',
+    })
+
+    await screen.findByRole('link', { name: 'Prod drops' })
+    expect(screen.queryByText('New alert rule')).toBeNull()
   })
 })
 

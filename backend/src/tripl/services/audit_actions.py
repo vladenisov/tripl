@@ -64,6 +64,7 @@ PROJECT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "meta_field.update",
             "meta_field.delete",
             "relation.create",
+            "relation.update",
             "relation.delete",
             *_family("schema_drift", SchemaDriftAction),
         ),

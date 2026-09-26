@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl.models.event_type import EventType
 from tripl.models.event_type_relation import EventTypeRelation
 from tripl.models.field_definition import FieldDefinition
-from tripl.schemas.relation import RelationCreate
+from tripl.schemas.relation import RelationCreate, RelationUpdate
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.search_service import reindex_project_branch
@@ -102,6 +102,53 @@ async def create_relation(
     )
     relation = EventTypeRelation(**data.model_dump(), project_id=project_id, branch_id=branch_id)
     session.add(relation)
+    await session.commit()
+    await session.refresh(relation)
+    await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)
+    return relation
+
+
+async def update_relation(
+    session: AsyncSession,
+    slug: str,
+    relation_id: uuid.UUID,
+    data: RelationUpdate,
+    branch_id: uuid.UUID | None = None,
+) -> EventTypeRelation:
+    """Edit a relation in place (AU-13), re-checking any end that moves.
+
+    The same ``_check_end`` guard as create, on the merged values: a changed
+    field must still belong to its (possibly unchanged) event type, in this
+    project branch.
+    """
+    project_id = await get_project_id_by_slug(session, slug)
+    branch_id = await resolve_branch_id(session, project_id, branch_id)
+    relation = (
+        await session.execute(
+            select(EventTypeRelation).where(
+                EventTypeRelation.id == relation_id,
+                EventTypeRelation.project_id == project_id,
+                EventTypeRelation.branch_id == branch_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if relation is None:
+        raise HTTPException(status_code=404, detail="Relation not found")
+    changes = data.model_dump(exclude_unset=True)
+    for side in ("source", "target"):
+        type_key, field_key = f"{side}_event_type_id", f"{side}_field_id"
+        if type_key not in changes and field_key not in changes:
+            continue
+        await _check_end(
+            session,
+            project_id=project_id,
+            branch_id=branch_id,
+            event_type_id=changes.get(type_key, getattr(relation, type_key)),
+            field_id=changes.get(field_key, getattr(relation, field_key)),
+            side=side,
+        )
+    for key, value in changes.items():
+        setattr(relation, key, value)
     await session.commit()
     await session.refresh(relation)
     await reindex_project_branch(session, project_id=project_id, branch_id=branch_id, slug=slug)

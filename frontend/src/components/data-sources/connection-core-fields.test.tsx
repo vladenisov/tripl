@@ -63,7 +63,7 @@ describe('BigQuery key file input', () => {
         mode="create"
       />,
     )
-    return screen.getByLabelText('Or load the key file')
+    return screen.getByLabelText('Service account key file')
   }
 
   it('loads the picked file into the key field', async () => {
@@ -81,6 +81,9 @@ describe('BigQuery key file input', () => {
       expect(onChange).toHaveBeenCalledWith({ secret: '{"type":"service_account"}' }),
     )
     expect(screen.queryByText(/Could not read that file/)).not.toBeInTheDocument()
+    // The loaded file is named beside the styled upload button (DA-44).
+    expect(screen.getByText('key.json')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Upload key file…' })).toBeInTheDocument()
   })
 
   // A read that fails (file moved after it was picked, IO error) used to be an

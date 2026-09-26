@@ -143,9 +143,9 @@ describe('ScanPreviewPanel — the answer leads, the rows are evidence (tripl-3y
     renderPanel({ dryRunStale: true, onRecheck })
 
     expect(
-      screen.getByText('The form changed since this check ran, so it no longer describes this scan.'),
+      screen.getByText('The form changed since this was worked out, so it no longer describes this scan.'),
     ).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Recalculate' }))
     expect(onRecheck).toHaveBeenCalledTimes(1)
   })
 
@@ -194,12 +194,12 @@ describe('ScanPreviewPanel — a draft that cannot name its events (tripl-3y7z)'
   })
 
   // A stale answer computed from a draft that COULD name events does not
-  // describe one that cannot, and its "Check again" button would be a no-op.
+  // describe one that cannot, and its "Recalculate" button would be a no-op.
   it('withholds an answer left over from a draft that could still name events', () => {
     renderPanel({ dryRunStale: true, eventTargetMissing: true })
 
     expect(screen.queryByTestId('scan-dry-run-summary')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Recalculate' })).toBeNull()
   })
 
   // Once the draft can name events, the same rows are one click from the answer
@@ -209,7 +209,7 @@ describe('ScanPreviewPanel — a draft that cannot name its events (tripl-3y7z)'
     const onRecheck = vi.fn()
     renderPanel({ dryRun: null, eventTargetMissing: false, onRecheck })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Check' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show what this scan would create' }))
     expect(onRecheck).toHaveBeenCalledTimes(1)
   })
 })

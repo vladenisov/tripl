@@ -1,6 +1,7 @@
 import type { ScanDryRunResponse } from '@/types'
 import { formatDateTime } from '@/lib/datetime'
 import { countOf } from '@/lib/plural'
+import { dryRunNameExplosion, type NameExplosion, type NamingFixTarget } from './scanDryRunWarnings'
 
 /**
  * "What this scan would create" — the answer the quick-start guide has promised
@@ -162,6 +163,53 @@ function NameFormatErrors({ errors }: { errors: string[] }) {
   )
 }
 
+/**
+ * The coaching callout for a draft that would swamp the plan (#247 DA-1). Same
+ * box as the name-format errors, in warning rather than danger: the draft still
+ * saves and runs; it just probably is not what its author meant. The bold terms
+ * open the control that fixes it, where the caller can.
+ */
+function NameExplosionWarning({
+  explosion,
+  onFixNaming,
+}: {
+  explosion: NameExplosion
+  onFixNaming?: (target: NamingFixTarget) => void
+}) {
+  const term = (label: string, target: NamingFixTarget) =>
+    onFixNaming ? (
+      <button
+        type="button"
+        className="font-semibold underline underline-offset-2"
+        onClick={() => onFixNaming(target)}
+      >
+        {label}
+      </button>
+    ) : (
+      <strong>{label}</strong>
+    )
+  return (
+    <div
+      data-testid="dry-run-explosion"
+      className="rounded-card border p-3 text-body-sm"
+      style={{ borderColor: 'var(--warning)', background: 'var(--warning-soft)', color: 'var(--fg)' }}
+    >
+      <p className="m-0">
+        This draft would add{' '}
+        <strong>{countOf(explosion.newEvents, 'new event', 'new events')}</strong>
+        {explosion.columns > 0
+          ? `, one per combination of ${explosion.columns} columns.`
+          : '.'}{' '}
+        That is usually not what you want.
+      </p>
+      <p className="m-0 mt-1">
+        Set an {term('Event name format', 'format')} (e.g. <code className="mono">{'{event_name}'}</code>) or
+        add {term('Event groups', 'groups')} to name events from one column.
+      </p>
+    </div>
+  )
+}
+
 function EventList({ events }: { events: ScanDryRunResponse['events'] }) {
   if (events.length === 0) return null
   const shown = events.slice(0, MAX_LISTED)
@@ -220,6 +268,10 @@ function EventList({ events }: { events: ScanDryRunResponse['events'] }) {
 function FieldList({ fields }: { fields: ScanDryRunResponse['fields'] }) {
   if (fields.length === 0) return null
   const shown = fields.slice(0, MAX_LISTED)
+  // A field belongs to an event type, and a draft spanning several repeats the
+  // same names once per type: without the type the list read "event_name /
+  // button_id / … / event_name" as a bug or as double counting (#247 DA-2).
+  const showEventType = new Set(fields.map(field => field.event_type)).size > 1
   return (
     <>
       <ul className="m-0 mt-1.5 list-none space-y-1 p-0">
@@ -228,6 +280,11 @@ function FieldList({ fields }: { fields: ScanDryRunResponse['fields'] }) {
             <span className="min-w-0 flex-1 truncate font-medium" style={{ color: 'var(--fg)' }}>
               {field.name}
             </span>
+            {showEventType && (
+              <span style={{ color: 'var(--fg-faint)' }} className="max-w-[40%] shrink-0 truncate text-caption">
+                {field.event_type || NO_EVENT_TYPE_LABEL}
+              </span>
+            )}
             <span className="shrink-0 font-mono text-caption" style={{ color: 'var(--fg-subtle)' }}>
               {field.type}
             </span>
@@ -244,11 +301,20 @@ function FieldList({ fields }: { fields: ScanDryRunResponse['fields'] }) {
   )
 }
 
-export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
+export function ScanDryRunSummary({
+  dryRun,
+  onFixNaming,
+}: {
+  dryRun: ScanDryRunResponse
+  /** Opens the naming control a warning names; omitted where there is none. */
+  onFixNaming?: (target: NamingFixTarget) => void
+}) {
   const events = dryRun.events
   const newEvents = events.filter(event => event.status === 'new').length
   const existingEvents = events.length - newEvents
   const newFields = dryRun.fields.filter(field => field.status === 'new')
+  const newFieldTypes = new Set(newFields.map(field => field.event_type)).size
+  const explosion = dryRunNameExplosion(dryRun)
 
   // "at least" is not decoration. The sample is the most common column
   // combinations, capped; when the cap was hit, the count is a floor and saying
@@ -269,6 +335,7 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
   return (
     <div data-testid="scan-dry-run-summary" className="space-y-3">
       <NameFormatErrors errors={dryRun.errors} />
+      {explosion && <NameExplosionWarning explosion={explosion} onFixNaming={onFixNaming} />}
 
       <div>
         <h4 className="m-0 text-body font-semibold" style={{ color: 'var(--fg)' }}>
@@ -327,7 +394,9 @@ export function ScanDryRunSummary({ dryRun }: { dryRun: ScanDryRunResponse }) {
           <div>
             <div className="text-body font-medium" style={{ color: 'var(--fg)' }}>
               {newFields.length > 0
-                ? `Would add ${countOf(newFields.length, 'field', 'fields')}`
+                ? newFieldTypes > 1
+                  ? `Would add ${countOf(newFields.length, 'field', 'fields')} across ${newFieldTypes} event types`
+                  : `Would add ${countOf(newFields.length, 'field', 'fields')}`
                 : dryRun.unmapped_columns.length > 0
                   ? UNDECLARED_COLUMNS_LINE
                   : ALL_MAPPED_LINE}

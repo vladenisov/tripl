@@ -122,8 +122,8 @@ export function VariablesBulkBar({
         <div className="flex items-center gap-1">
           <Input
             aria-label="Bulk add values"
-            className="h-7 w-40 text-body-sm"
-            placeholder="Add values (comma-sep)…"
+            className="h-7 w-44 text-body-sm"
+            placeholder="Values, comma-separated"
             title={VALUE_LIST_HINT}
             aria-describedby={valuesHintId}
             value={valuesDraft}

@@ -456,3 +456,27 @@ describe('SettingsSaveBar', () => {
     expect(screen.getByRole('button', { name: 'Discard' })).toBeDisabled()
   })
 })
+
+describe('NativeSelect width (ST-27)', () => {
+  it('caps a compact select at 280px and lets a fill select take the control column', () => {
+    const { rerender } = render(
+      <NativeSelect aria-label="Mode" value="a" onChange={() => {}} options={['a', 'b']} />,
+    )
+    expect(screen.getByRole('combobox', { name: 'Mode' }).parentElement).toHaveStyle({ maxWidth: '280px' })
+
+    rerender(
+      <NativeSelect aria-label="Mode" value="a" onChange={() => {}} options={['a', 'b']} width="fill" />,
+    )
+    expect(screen.getByRole('combobox', { name: 'Mode' }).parentElement?.style.maxWidth).toBe('')
+  })
+})
+
+describe('TextArea autoGrow (ST-37)', () => {
+  it('sizes to its content between the given rows and eight lines', () => {
+    const { rerender } = render(<TextArea value="text" onChange={() => {}} rows={3} />)
+    expect(screen.getByRole('textbox')).not.toHaveClass('field-sizing-content')
+
+    rerender(<TextArea value="text" onChange={() => {}} rows={3} autoGrow />)
+    expect(screen.getByRole('textbox')).toHaveClass('field-sizing-content')
+  })
+})

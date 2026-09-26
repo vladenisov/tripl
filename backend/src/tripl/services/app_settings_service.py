@@ -354,6 +354,31 @@ def _get_overrides_for_key_sync(session: Session, key: str) -> dict[str, Any]:
     return dict(row.value)
 
 
+def email_can_send(email_config: EmailConfig) -> bool:
+    """Whether this instance can actually deliver mail.
+
+    Both the host and a From: address, not just the host: the password-reset
+    sender returns without sending when there is no From: address, so a relay
+    with no sender would mint a token, drop the mail, and still have the UI
+    promise a link was on its way.
+    """
+    return bool(email_config.smtp_host and email_config.smtp_from_address)
+
+
+def ai_prompt_defaults() -> dict[str, str]:
+    """The built-in system prompts, before any stored override (ST-30)."""
+    return {
+        "describe_system_prompt": DEFAULT_DESCRIBE_SYSTEM_PROMPT,
+        "ask_system_prompt": DEFAULT_ASK_SYSTEM_PROMPT,
+        "alert_explanation_system_prompt": DEFAULT_ALERT_EXPLANATION_SYSTEM_PROMPT,
+    }
+
+
+async def get_row_limit_defaults(session: AsyncSession) -> RuntimeConfig:
+    """The effective instance row caps: env values with stored overrides on top."""
+    return build_runtime_config(await get_service_overrides(session))
+
+
 async def get_service_overrides(session: AsyncSession) -> dict[str, Any]:
     # ``ai`` is a legacy read path from the initial AI-only version. The
     # canonical ``service`` document wins when both contain a field.

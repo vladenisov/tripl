@@ -15,6 +15,8 @@ export const SCENARIO_STORAGE_PREFIX = 'tripl-demo-scenario:'
 export const WELCOME_DISMISS_PREFIX = 'tripl-demo-welcome-dismissed:'
 /** sessionStorage: "Hide hints" — scoped to the browser session, per project. */
 export const HINTS_MUTED_PREFIX = 'tripl-demo-hints-muted:'
+/** sessionStorage: the tour step shown in the docked card (tourDock.ts). */
+export const TOUR_DOCK_PREFIX = 'tripl-tour-dock:'
 
 /** Drop everything the demo remembered about `slug`. Best effort, never throws. */
 export function forgetDemoLocalState(slug: string): void {
@@ -27,6 +29,7 @@ export function forgetDemoLocalState(slug: string): void {
   }
   try {
     window.sessionStorage.removeItem(`${HINTS_MUTED_PREFIX}${slug}`)
+    window.sessionStorage.removeItem(`${TOUR_DOCK_PREFIX}${slug}`)
   } catch {
     /* as above */
   }
@@ -57,7 +60,7 @@ export function sweepOrphanedDemoLocalState(liveSlugs: Iterable<string>): void {
     /* storage unavailable: nothing was written to it either */
   }
   try {
-    sweep(window.sessionStorage, [HINTS_MUTED_PREFIX])
+    sweep(window.sessionStorage, [HINTS_MUTED_PREFIX, TOUR_DOCK_PREFIX])
   } catch {
     /* as above */
   }

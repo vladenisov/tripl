@@ -168,7 +168,11 @@ describe('AlertingInbox item and scope counts', () => {
     })
 
     expect(screen.getByText('8 items')).toBeInTheDocument()
-    expect(screen.getByText('· 4 distinct scope names shown')).toBeInTheDocument()
+    expect(screen.getByText('(4 distinct scope names shown)')).toBeInTheDocument()
+    // The headline is the first scope, with the rest counted rather than
+    // listed (AL-12); the full list stays on the "+N more" title.
+    expect(screen.getByText('one')).toBeInTheDocument()
+    expect(screen.getByText('+3 more')).toHaveAttribute('title', 'one, two, three, four')
   })
 })
 
@@ -560,14 +564,14 @@ describe('AlertingInbox — three states, three branches (tripl-oxkt.10)', () =>
     renderInbox({ inbox: undefined, isLoading: true })
 
     expect(screen.getByText('Loading incidents…')).toBeInTheDocument()
-    expect(screen.queryByText('No correlated alert groups.')).toBeNull()
+    expect(screen.queryByText(/No incidents in the last 30 days/)).toBeNull()
   })
 
   it('reports a failed request as a failure, not as an empty queue', () => {
     renderInbox({ inbox: undefined, isError: true, loadError: new Error('boom') })
 
     expect(screen.getByRole('alert')).toHaveTextContent(/Could not load the inbox: boom/)
-    expect(screen.queryByText('No correlated alert groups.')).toBeNull()
+    expect(screen.queryByText(/No incidents in the last 30 days/)).toBeNull()
   })
 
   it('names the filter when a filter is what emptied the list', () => {
@@ -1101,6 +1105,8 @@ describe('AlertingInbox — narrowing the list past its status', () => {
     // The list is read over 30 days and then capped, so a date older than that
     // narrows nothing — a control that accepted one and answered "none" would
     // be describing the project rather than the page (tripl-39n6).
+    // The range and its caveat are one chip now, opened on demand (AL-15).
+    fireEvent.click(screen.getByRole('button', { name: 'Last fired filter: any' }))
     const from = screen.getByLabelText('Last fired from')
     expect(from).toHaveAttribute('min', earliestReachableDay(new Date()))
     expect(screen.getByText(/Dates narrow the 30 days this list already covers/)).toBeInTheDocument()
@@ -1265,5 +1271,58 @@ describe('AlertingInbox — the filter bar speaks the design system (ALR-49)', (
     expect(onFiltersChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ direction: '' }),
     )
+  })
+})
+
+describe('AlertingInbox — the card leads with what broke and by how much (AL-12, AL-17, AL-18)', () => {
+  it('puts a signed delta badge beside the scope headline', () => {
+    renderInbox()
+
+    const card = document.getElementById('incident-grp-1')!
+    // 412 against 1,010 expected, on a drop: a real minus sign, whole percent.
+    expect(within(card).getByText('−59%')).toBeInTheDocument()
+    expect(within(card).getByRole('link', { name: TARGET })).toBeInTheDocument()
+  })
+
+  it('shows no percentage badge where there was no baseline to be a percentage of', () => {
+    renderInbox({
+      inbox: makeInbox({
+        items: [makeGroup({ direction: 'spike', actual_count: 412, expected_count: 0, percent_delta: null })],
+      }),
+    })
+
+    expect(screen.queryByText(/%$/)).toBeNull()
+  })
+
+  it('names the action "Acknowledge", as the bulk bar does', () => {
+    renderInbox()
+
+    expect(screen.getByRole('button', { name: `Acknowledge ${TARGET}` })).toHaveTextContent(
+      'Acknowledge',
+    )
+  })
+
+  it('keeps the Reopen slot on an open card but does not draw it', () => {
+    renderInbox()
+
+    expect(screen.getByRole('button', { name: `Reopen ${TARGET}` })).toHaveClass('invisible')
+  })
+
+  it('offers a rule, not a sentence, when there are no rules', () => {
+    const onGoToMonitors = vi.fn()
+    renderInbox({ hasRules: false, onGoToMonitors })
+
+    expect(screen.getByRole('heading', { name: 'No alert rules yet' })).toBeInTheDocument()
+    expect(screen.getByText('0 incidents')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create a rule' }))
+    expect(onGoToMonitors).toHaveBeenCalledTimes(1)
+  })
+
+  it('says "incidents", not "correlated alert groups", when the inbox is empty', () => {
+    renderInbox({ inbox: makeInbox({ items: [], total: 0 }) })
+
+    expect(
+      screen.getByText('No incidents in the last 30 days. When a rule fires, it shows up here.'),
+    ).toBeInTheDocument()
   })
 })

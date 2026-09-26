@@ -119,6 +119,13 @@ class VariableUpdate(BaseModel):
     _check_bindings = field_validator("bindings")(_validate_update_bindings)
 
 
+class VariableEventRef(BaseModel):
+    """One event a variable was observed in, with the id a link needs (AU-29)."""
+
+    id: uuid.UUID
+    name: str
+
+
 class VariableResponse(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
@@ -150,6 +157,15 @@ class VariableResponse(BaseModel):
             "Distinct names of the events this variable was observed in, alphabetical"
             " and capped at 20. 'event_count' carries the untruncated total; fetch"
             " /variables/{id}/values for the full per-event breakdown."
+        ),
+    )
+    event_refs: list[VariableEventRef] = Field(
+        default=[],
+        max_length=SUMMARY_EVENT_LIMIT,
+        description=(
+            "The events this variable was observed in, as id + name so each can link"
+            " to its event. Ordered by name (then id) and capped at 20, like"
+            " 'event_names'; 'event_count' carries the untruncated total."
         ),
     )
 

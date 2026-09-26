@@ -6,6 +6,8 @@ import { getErrorMessage } from '@/lib/utils'
 import type { ServiceSettings } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Field, SCard, NativeSelect, TextInput } from '@/components/settings/kit'
+import { examplePlaceholder } from '@/components/forms/placeholders'
+import { DisabledReason, disabledReasonAria } from '@/components/states'
 import { NumberSettingInput, SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
 import type {
   EditableSettings,
@@ -18,10 +20,12 @@ import { sourceFor } from './serviceSettingsHelpers'
 // Ports named in the labels because the mode and the port have to agree, and
 // disagreeing does not produce an error the operator can act on — the client
 // waits for a greeting that never arrives and stalls until it times out.
+// Short enough to show whole: the long forms were cut mid-parenthesis (ST-27);
+// the hint under the select says what each mode does.
 const SECURITY_OPTIONS = [
-  { value: 'starttls', label: 'STARTTLS — upgrade after connecting (587, 2525)' },
-  { value: 'implicit_tls', label: 'Implicit TLS — encrypted from the start (465)' },
-  { value: 'none', label: 'None — plaintext' },
+  { value: 'starttls', label: 'STARTTLS (ports 587, 2525)' },
+  { value: 'implicit_tls', label: 'Implicit TLS (port 465)' },
+  { value: 'none', label: 'None (plaintext)' },
 ] as const
 
 const SECURITY_HINTS: Record<string, string> = {
@@ -54,6 +58,14 @@ export function EmailSection({
     // A failed request is rendered in the status slot beside the button.
     meta: SILENT_ERROR_META,
   })
+  // The probe sends with the SAVED settings and needs both a host and a From:
+  // address (the backend's `email_can_send`); without either it can only
+  // fail, so it waits for them (ST-32).
+  const testBlocker = !settings.email.smtp_host.trim()
+    ? 'Set an SMTP host and save first.'
+    : !settings.email.smtp_from_address.trim()
+      ? 'Set a default From address and save first.'
+      : null
 
   return (
     <>
@@ -65,6 +77,7 @@ export function EmailSection({
           <TextInput
             value={form.email.smtp_host}
             onChange={value => setField('email', 'smtp_host', value)}
+            placeholder={examplePlaceholder('smtp.example.com')}
             mono
           />
         </Field>
@@ -87,6 +100,7 @@ export function EmailSection({
           <TextInput
             value={form.email.smtp_username}
             onChange={value => setField('email', 'smtp_username', value)}
+            placeholder={examplePlaceholder('tripl@example.com')}
             mono
           />
         </Field>
@@ -138,6 +152,7 @@ export function EmailSection({
             value={form.email.smtp_security}
             onChange={value => setField('email', 'smtp_security', value)}
             options={SECURITY_OPTIONS}
+            width="fill"
           />
         </Field>
       </SCard>
@@ -151,14 +166,16 @@ export function EmailSection({
           <TextInput
             value={form.email.smtp_from_address}
             onChange={value => setField('email', 'smtp_from_address', value)}
+            placeholder={examplePlaceholder('tripl@example.com')}
             mono
           />
         </Field>
       </SCard>
 
+      {/* Named for what it does; "Check" told the reader little (ST-32). */}
       <SCard
-        title="Check"
-        description="Sends one message to your own address using the SAVED settings — save first, or you will be testing what is still stored."
+        title="Send a test email"
+        description="Sends one message to your own address. Uses the saved settings, so save your changes first."
       >
         {/* A test button and its status line, not a control to be named —
             the same shape the AI section uses. This card is the whole point of
@@ -166,13 +183,14 @@ export function EmailSection({
             the person who asked for the link, so the operator needs somewhere
             else to look, and until now there was nowhere. */}
         <Field label="Delivery" last htmlFor={false}>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
               variant="outline"
               size="sm"
               onClick={() => emailTestMut.mutate()}
-              disabled={emailTestMut.isPending || saving}
+              disabled={emailTestMut.isPending || saving || testBlocker !== null}
+              {...disabledReasonAria('email-test', testBlocker)}
             >
               <MailCheck className="h-3.5 w-3.5" />
               {emailTestMut.isPending ? 'Sending...' : 'Send test email'}
@@ -187,6 +205,7 @@ export function EmailSection({
               )}
             </span>
           </div>
+          <DisabledReason id="email-test" reason={testBlocker} className="mt-1.5" />
         </Field>
       </SCard>
     </>

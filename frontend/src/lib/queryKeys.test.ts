@@ -196,7 +196,8 @@ describe('query key values (SHELL-50)', () => {
     [keys.demoScenarioCollectWatchKey('demo', 'm-1', 1), ['demo-scenario-collect-watch', 'demo', 'm-1', 1]],
     [keys.metricCollectWatchKey('demo', 'm-1', 1), ['metric-collect-watch', 'demo', 'm-1', 1]],
 
-    [keys.metricsCatalogListKey('demo', 'all', 'all', ''), ['metrics-catalog', 'demo', 'all', 'all', '']],
+    [keys.metricsCatalogListKey('demo', 'all', 'all', ''), ['metrics-catalog', 'demo', 'all', 'all', '', '']],
+    [keys.metricsCatalogListKey('demo', 'all', 'all', '', 'reviewed'), ['metrics-catalog', 'demo', 'all', 'all', '', 'reviewed']],
     [keys.metricGeneratedSqlForMetricKey('demo', 'm-1'), ['metric-generated-sql', 'demo', 'm-1']],
     [keys.factTablesKey('demo'), ['fact-tables', 'demo']],
     [keys.factTableKey('demo', 'ft-1'), ['fact-table', 'demo', 'ft-1']],

@@ -3,6 +3,8 @@ import { lazyWithReload } from '@/lib/lazyWithReload'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { projectsQueryOptions } from '@/lib/queryKeys'
+import { projectHomePath } from '@/lib/navigation'
+import { OnboardingReturnBar } from '@/components/onboarding-return-bar'
 import { useAuth } from '@/components/auth-context'
 import { ErrorState } from '@/components/error-state'
 import { SCard, SHeader } from '@/components/settings/kit'
@@ -135,7 +137,10 @@ export default function SettingsArea({ section }: { section: string }) {
     }
   }, [section])
 
-  const backHref = slug ? `/p/${slug}/events` : '/workspace'
+  // The project's front door, Overview, where the Get-started checklist lives:
+  // a newcomer sent to Data sources by step 2 came back to an empty Events
+  // table instead (#250 JR-1 / JR-3).
+  const backHref = slug ? projectHomePath(slug) : '/workspace'
 
   return (
     <SettingsLayout
@@ -149,6 +154,10 @@ export default function SettingsArea({ section }: { section: string }) {
           app shell Layout reports its failure. These routes mount outside
           Layout, so they report it here — once, and not where the no-project
           card below already says it. */}
+      {/* A Get-started step (Connect a data source) lands here; the bar is
+          its way back to the checklist, and renders nothing otherwise
+          (#250 JR-3). */}
+      <OnboardingReturnBar className="mb-4" />
       {projectsQuery.isError && !(slug === undefined && isProjectScopedSection(section)) && (
         <ErrorState
           compact

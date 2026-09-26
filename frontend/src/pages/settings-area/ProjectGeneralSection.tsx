@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Trash2, TriangleAlert } from 'lucide-react'
+import { RefreshCw, Trash2, TriangleAlert, Wrench } from 'lucide-react'
 import {
   projectsApi,
   type AnomalyResetCounts,
@@ -30,8 +30,10 @@ import {
   projectVariablesKey,
 } from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
+import { countOf } from '@/lib/plural'
 import {
   Field,
+  InfoRow,
   SCard,
   NativeSelect,
   SHeader,
@@ -112,6 +114,24 @@ function periodLabel(value: string): string {
 
 function summarizeAnomalyCounts(counts: AnomalyResetCounts): string {
   return `Cleared ${counts.metric_anomalies} anomalies and ${counts.metric_breakdown_anomalies} breakdown anomalies.`
+}
+
+// What a reset would delete, from its dry run (ST-39). Null — the preview
+// failed — falls back to naming the loss without counting it.
+function anomalyResetScope(counts: AnomalyResetCounts | null): string {
+  if (!counts) return 'Permanently delete anomaly detections'
+  return `Permanently delete ${countOf(counts.metric_anomalies, 'anomaly', 'anomalies')} and ${countOf(counts.metric_breakdown_anomalies, 'breakdown anomaly', 'breakdown anomalies')}`
+}
+
+// Said out loud rather than swallowed: a reader who saw counts on every other
+// reset should not read the uncounted wording as "nothing to count".
+function uncountedNote(counts: unknown): string {
+  return counts ? '' : " The count couldn't be read first."
+}
+
+function driftResetScope(counts: DriftResetCounts | null): string {
+  if (!counts) return 'Permanently delete schema and distribution drift detections'
+  return `Permanently delete ${countOf(counts.schema_drifts, 'schema drift', 'schema drifts')} and ${countOf(counts.distribution_drifts, 'distribution drift', 'distribution drifts')}`
 }
 
 function summarizeDriftCounts(counts: DriftResetCounts): string {
@@ -298,24 +318,35 @@ function ProjectGeneralBody({
     if (ok) retireVariablesMut.mutate()
   }
 
+  // Each reset counts first (a dry run over the SAME window the delete then
+  // uses), so the confirm says what goes rather than only that something does
+  // (ST-39). A failed count does not block the reset, but the dialog says so.
   const handleResetAnomalies = async () => {
+    const period = resetPeriodPayload(anomaliesPeriod)
+    const preview = await projectsApi
+      .resetAnomalies(slug, { ...period, dry_run: true })
+      .catch(() => null)
     const ok = await confirm({
       title: 'Reset anomalies',
-      message: `Permanently delete anomaly detections (${periodLabel(anomaliesPeriod)}) across this entire project — every scan and catalog metric. Monitoring signals derived from them are cleared too. This cannot be undone.`,
+      message: `${anomalyResetScope(preview)} (${periodLabel(anomaliesPeriod)}) across this entire project — every scan and catalog metric. Monitoring signals derived from them are cleared too.${uncountedNote(preview)} This cannot be undone.`,
       confirmLabel: 'Reset anomalies',
       variant: 'danger',
     })
-    if (ok) resetAnomaliesMut.mutate(resetPeriodPayload(anomaliesPeriod))
+    if (ok) resetAnomaliesMut.mutate(period)
   }
 
   const handleResetDrifts = async () => {
+    const period = resetPeriodPayload(driftsPeriod)
+    const preview = await projectsApi
+      .resetDrifts(slug, { ...period, dry_run: true })
+      .catch(() => null)
     const ok = await confirm({
       title: 'Reset drifts',
-      message: `Permanently delete schema and distribution drift detections (${periodLabel(driftsPeriod)}) across this entire project. This cannot be undone.`,
+      message: `${driftResetScope(preview)} (${periodLabel(driftsPeriod)}) across this entire project.${uncountedNote(preview)} This cannot be undone.`,
       confirmLabel: 'Reset drifts',
       variant: 'danger',
     })
-    if (ok) resetDriftsMut.mutate(resetPeriodPayload(driftsPeriod))
+    if (ok) resetDriftsMut.mutate(period)
   }
 
   const handleDelete = () => {
@@ -446,13 +477,18 @@ function ProjectGeneralBody({
             // instance pages use: Discard and Save changes for both cards.
             // A failed save is red and announced; a 403 or a 409 for a taken
             // slug used to render in hint grey, where it read like advice
-            // (WS-15).
+            // (WS-15). An edited form says so in amber, so the lit Save is
+            // not the only difference from a pristine one (ST-2).
             <SettingsSaveBar
               className="mb-4"
               note={
-                saved && !dirty
-                  ? <span style={{ color: 'var(--success)' }}>Saved</span>
-                  : 'Saves the project details and the version policy together.'
+                saved && !dirty ? (
+                  <span style={{ color: 'var(--success)' }}>Saved</span>
+                ) : dirty ? (
+                  <span style={{ color: 'var(--warning)' }}>Unsaved changes</span>
+                ) : (
+                  'Saves the project details and the version policy together.'
+                )
               }
               error={saveMut.isError ? getErrorMessage(saveMut.error) : undefined}
               dirty={dirty}
@@ -462,109 +498,146 @@ function ProjectGeneralBody({
               onSave={save}
             />
           )}
-          <SCard title="Project details">
-            <Field label="Name" hint="Shown across the workspace and in the project switcher." htmlFor="proj-name">
-              <TextInput id="proj-name" value={name} onChange={setName} disabled={!canEdit} />
-            </Field>
-            <Field
-              label="Slug"
-              hint={
-                slugError && slugDraft.length > 0
-                  ? slugError
-                  : `${SLUG_HINT} Changing it rewrites project URLs.`
-              }
-              htmlFor="proj-slug"
-            >
-              <TextInput
-                id="proj-slug"
-                value={slugDraft}
-                onChange={setSlugDraft}
-                mono
-                prefix={projectUrlPrefix()}
-                disabled={!canEdit}
-              />
-            </Field>
-            <Field label="Description" htmlFor="proj-desc">
-              <TextArea id="proj-desc" value={description} onChange={setDescription} rows={2} disabled={!canEdit} />
-            </Field>
-            <Field
-              label="Timezone"
-              htmlFor="proj-timezone"
-              hint="The clock alert delivery schedules are read in. Type to jump, e.g. Europe/Moscow."
-              last
-            >
-              <NativeSelect
-                id="proj-timezone"
-                value={timezone}
-                onChange={setTimezone}
-                options={timezoneOptions}
-                disabled={!canEdit}
-              />
-            </Field>
-          </SCard>
-
-          <SCard
-            title="Version monitoring"
-            description="One release-retention policy for event monitoring and catalog metrics."
-          >
-            <Field
-              label="Releases to keep"
-              hint={
-                versionPolicyInvalid
-                  ? `Enter a whole number from 1 to ${MAX_APP_VERSION_KEEP_RELEASES}.`
-                  : 'Older releases are combined into Other across every app-version chart in this project.'
-              }
-              htmlFor="app-version-keep-releases"
-              last
-            >
-              <TextInput
-                id="app-version-keep-releases"
-                type="number"
-                value={appVersionKeepReleases}
-                onChange={setAppVersionKeepReleases}
-                disabled={!canEdit}
-              />
-            </Field>
-          </SCard>
-
-          <SCard title="Search index">
-            <div className={DANGER_ROW_CONTAINER_CLASS}>
-              <div className={DANGER_ROW_CLASS}>
-                <div className="min-w-0 flex-1">
-                  <div className="text-body font-medium">Rebuild search index</div>
-                  <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
-                    Rebuild project search when existing events, descriptions, or fields do not appear
-                    in global search.
-                  </div>
-                  {reindexMut.isSuccess && (
-                    <div className="mt-2 text-body-sm" style={{ color: 'var(--success)' }}>
-                      Indexed {reindexMut.data.documents_indexed} documents
-                      {reindexMut.data.embeddings_scheduled ? '; embeddings queued.' : '.'}
-                    </div>
-                  )}
-                  {reindexMut.isError && (
-                    <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
-                      {getErrorMessage(reindexMut.error)}
-                    </div>
-                  )}
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => reindexMut.mutate()}
-                  disabled={!canReindex || reindexMut.isPending}
+          {canEdit ? (
+            <>
+              <SCard title="Project details">
+                <Field label="Name" hint="Shown across the workspace and in the project switcher." htmlFor="proj-name">
+                  <TextInput id="proj-name" value={name} onChange={setName} />
+                </Field>
+                {/* A bad slug is an error, red and tied to the input, not the
+                    hint turning into a rule in the same grey (ST-2). Shown once
+                    there is something typed: an emptied box is not yet wrong. */}
+                <Field
+                  label="Slug"
+                  hint={`${SLUG_HINT} Changing it rewrites project URLs.`}
+                  error={slugError && slugDraft.length > 0 ? slugError : undefined}
+                  htmlFor="proj-slug"
                 >
-                  <RefreshCw className={reindexMut.isPending ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
-                  {reindexMut.isPending ? 'Rebuilding…' : 'Rebuild index'}
-                </Button>
-              </div>
-            </div>
-          </SCard>
+                  <TextInput
+                    id="proj-slug"
+                    value={slugDraft}
+                    onChange={setSlugDraft}
+                    mono
+                    prefix={projectUrlPrefix()}
+                  />
+                </Field>
+                {/* Stacked, and growing with its text: two fixed rows cut a
+                    seeded description mid-line on a phone (ST-37). */}
+                <Field label="Description" htmlFor="proj-desc" stacked>
+                  <TextArea id="proj-desc" value={description} onChange={setDescription} rows={3} autoGrow />
+                </Field>
+                <Field
+                  label="Timezone"
+                  htmlFor="proj-timezone"
+                  hint="The clock alert delivery schedules are read in. Type to jump, e.g. Europe/Moscow."
+                  last
+                >
+                  <NativeSelect
+                    id="proj-timezone"
+                    value={timezone}
+                    onChange={setTimezone}
+                    options={timezoneOptions}
+                    width="fill"
+                  />
+                </Field>
+              </SCard>
 
-          {/* Every row here is owner-only, so a non-owner is not shown a card
-              of buttons they can never press. */}
-          {canDelete && (
-            <SCard title="Danger zone" tone="danger" icon={<TriangleAlert className="size-4" />}>
+              <SCard
+                title="Version monitoring"
+                description="One release-retention policy for event monitoring and catalog metrics."
+              >
+                <Field
+                  label="Releases to keep"
+                  hint="Older releases are combined into Other across every app-version chart in this project."
+                  error={
+                    versionPolicyInvalid
+                      ? `Enter a whole number from 1 to ${MAX_APP_VERSION_KEEP_RELEASES}.`
+                      : undefined
+                  }
+                  htmlFor="app-version-keep-releases"
+                  last
+                >
+                  <TextInput
+                    id="app-version-keep-releases"
+                    type="number"
+                    value={appVersionKeepReleases}
+                    onChange={setAppVersionKeepReleases}
+                  />
+                </Field>
+              </SCard>
+            </>
+          ) : (
+            // Read-only: the values as text, not a form of dashed dead inputs
+            // under a notice that already says nothing here can change (ST-18).
+            <>
+              <SCard title="Project details">
+                <InfoRow label="Name" value={projectQuery.data.name} mono={false} />
+                <InfoRow label="Slug" value={projectQuery.data.slug} />
+                <InfoRow label="Description" value={projectQuery.data.description || '—'} mono={false} />
+                <InfoRow label="Timezone" value={projectQuery.data.timezone ?? 'UTC'} mono={false} last />
+              </SCard>
+              <SCard
+                title="Version monitoring"
+                description="One release-retention policy for event monitoring and catalog metrics."
+              >
+                <InfoRow
+                  label="Releases to keep"
+                  value={projectQuery.data.app_version_keep_releases}
+                  mono={false}
+                  last
+                />
+              </SCard>
+            </>
+          )}
+
+          {/* Routine upkeep, apart from the one irreversible act below: three
+              resets beside "Delete project" diluted the danger signal (ST-38).
+              Rows the reader cannot run are left out, not shown disabled
+              (ST-18); with none left the card goes too. */}
+          {(canReindex || canDelete) && (
+            <SCard
+              title="Maintenance"
+              icon={<Wrench className="size-4" />}
+              description={canDelete ? 'Resets delete detections for good; the index rebuild only refreshes search.' : undefined}
+            >
+              {canReindex && (
+                <div
+                  className={DANGER_ROW_CONTAINER_CLASS}
+                  style={{ borderBottom: canDelete ? '1px solid var(--border-subtle)' : 'none' }}
+                >
+                  <div className={DANGER_ROW_CLASS}>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-body font-medium">Rebuild search index</div>
+                      <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+                        Rebuild project search when existing events, descriptions, or fields do not appear
+                        in global search.
+                      </div>
+                      {reindexMut.isSuccess && (
+                        <div className="mt-2 text-body-sm" style={{ color: 'var(--success)' }}>
+                          Indexed {reindexMut.data.documents_indexed} documents
+                          {reindexMut.data.embeddings_scheduled ? '; embeddings queued.' : '.'}
+                        </div>
+                      )}
+                      {reindexMut.isError && (
+                        <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
+                          {getErrorMessage(reindexMut.error)}
+                        </div>
+                      )}
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => reindexMut.mutate()}
+                      disabled={reindexMut.isPending}
+                    >
+                      <RefreshCw className={reindexMut.isPending ? 'h-3 w-3 animate-spin' : 'h-3 w-3'} />
+                      {reindexMut.isPending ? 'Rebuilding…' : 'Rebuild index'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {canDelete && (
+                <>
                   <DangerResetRow
                     title="Reset anomalies"
                     hint="Delete anomaly detections (and the signals derived from them) across the whole project for the chosen period."
@@ -641,7 +714,17 @@ function ProjectGeneralBody({
                         </div>
                       ) : null
                     }
+                    last
                   />
+                </>
+              )}
+            </SCard>
+          )}
+
+          {/* Owner-only, so a non-owner is not shown a card of a button they
+              can never press. */}
+          {canDelete && (
+            <SCard title="Danger zone" tone="danger" icon={<TriangleAlert className="size-4" />}>
               <DangerRow
                 title="Delete project"
                 hint="Permanently remove the plan, history and all ingested events. Cannot be undone."

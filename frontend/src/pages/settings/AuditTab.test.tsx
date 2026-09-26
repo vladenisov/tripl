@@ -239,7 +239,7 @@ describe('AuditTab — paging (tripl-5ydt)', () => {
     // handful while parked on page 2 would land on a blank page of a list that
     // has rows — which reads as "nothing matches".
     // An option the select holds only once the vocabulary has arrived.
-    await screen.findByRole('option', { name: 'event.delete' })
+    await screen.findByRole('option', { name: 'Deleted event' })
     fireEvent.change(screen.getByLabelText('Action'), {
       target: { value: 'event.delete' },
     })
@@ -503,6 +503,23 @@ describe('AuditTab — the action vocabulary comes from the backend (PLAN-49)', 
     const select = screen.getByLabelText('Action') as HTMLSelectElement
     expect(Array.from(select.querySelectorAll('option')).map((o) => o.textContent)).toEqual(['Action: any'])
   })
+
+  it('labels each action as the row chip reads, with the code only where two read alike (ST-34)', async () => {
+    actionsMock.mockResolvedValue({
+      project: [{ label: 'Events', actions: ['event.create', 'event.delete', 'event.bulk_delete'] }],
+      workspace: [],
+    })
+    renderTab()
+
+    await waitFor(() => expect(offeredActions()).toHaveLength(3))
+    const select = screen.getByLabelText('Action') as HTMLSelectElement
+    const options = Array.from(select.querySelectorAll('option')).filter((o) => o.value !== '')
+    expect(options.map((o) => [o.value, o.textContent])).toEqual([
+      ['event.create', 'Created event'],
+      ['event.delete', 'Deleted event (event.delete)'],
+      ['event.bulk_delete', 'Deleted event (event.bulk_delete)'],
+    ])
+  })
 })
 
 describe('AuditTab — rows read as sentences (PL-23 / PL-24)', () => {
@@ -528,8 +545,9 @@ describe('AuditTab — rows read as sentences (PL-23 / PL-24)', () => {
     renderTab()
 
     const chip = await screen.findByText('Approved branch')
-    // The code stays reachable for whoever filters by it.
-    expect(chip).toHaveAttribute('title', 'plan_branch.approve')
+    // The code stays reachable for whoever filters by it: on the chip, whose
+    // sentence sits in an inner span so it can truncate.
+    expect(chip.closest('[data-slot="chip"]')).toHaveAttribute('title', 'plan_branch.approve')
     expect(await screen.findByText('Alice Moreau')).toHaveAttribute('title', 'alice@example.com')
     expect(screen.getByRole('region', { name: 'Aug 17, 2026' })).toBeInTheDocument()
 

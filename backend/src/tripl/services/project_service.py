@@ -167,6 +167,14 @@ async def _get_project_summaries(
     for project_id, scan_count in scan_rows.all():
         summaries[project_id].scan_count = int(scan_count or 0)
 
+    metric_rows = await session.execute(
+        select(MetricDefinition.project_id, func.count(MetricDefinition.id))
+        .where(MetricDefinition.project_id.in_(project_ids))
+        .group_by(MetricDefinition.project_id)
+    )
+    for project_id, metric_count in metric_rows.all():
+        summaries[project_id].metric_count = int(metric_count or 0)
+
     # Destinations AND their enabled rules in one pass. A destination with no
     # enabled rule routes nothing, so callers that ask "is alerting wired up?"
     # (the onboarding checklist) need both numbers — tripl-jfm3.81. The LEFT

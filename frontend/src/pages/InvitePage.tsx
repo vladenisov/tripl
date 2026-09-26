@@ -3,18 +3,39 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 
+import { ApiError } from '@/api/client'
 import { invitationsApi } from '@/api/invitations'
 import { FieldError } from '@/components/forms/FieldError'
 import { REQUIRED_MESSAGE, focusFirstInvalid } from '@/components/forms/validation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { ROLE_OPTIONS, type AuthUser } from '@/types'
+import { TrifoldMark } from '@/components/states/brand-mark'
+import { ROLE_OPTIONS, type AuthUser, type Role } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { PASSWORD_MIN_LENGTH, PASSWORD_POLICY_HINT } from '@/lib/passwordPolicy'
 import { invitationPreviewKey } from '@/lib/queryKeys'
 import { AUTH_QUERY_KEY } from '@/components/auth-context'
+import { PasswordInput } from '@/components/ui/password-input'
+
+/** What each role can do, in the words of the Concepts page's Roles section. */
+const ROLE_BLURB: Readonly<Record<Role, string>> = {
+  owner: 'has full control, including data sources, scans and members.',
+  editor: 'can change the tracking plan and alerts, and run scans.',
+  viewer: 'can read everything, but not change it.',
+}
+
+/**
+ * Statuses that mean the link itself is spent. The API answers an unknown,
+ * expired or used token with one neutral 400; 404 and 410 are read the same way
+ * so a future route change cannot turn a dead link into a "try again".
+ */
+const DEAD_LINK_STATUSES: ReadonlySet<number> = new Set([400, 404, 410])
+
+function isDeadLinkError(error: unknown): boolean {
+  return error instanceof ApiError && DEAD_LINK_STATUSES.has(error.status)
+}
 
 /**
  * Redeem an invitation into an account.
@@ -65,106 +86,175 @@ export default function InvitePage() {
       : null
   const passwordError = submitted ? passwordProblem : null
 
+  const roleLabel = preview
+    ? ROLE_OPTIONS.find((r) => r.value === preview.role)?.label ?? preview.role
+    : null
+  const roleBlurb = preview ? ROLE_BLURB[preview.role] : undefined
+  // Only the API's invalid-token answer means the link is dead. A network
+  // failure, a 5xx or a rate limit says nothing about the link, and telling a
+  // valid invitee to ask for a new one sent them away from a working invite.
+  const linkIsDead = previewQuery.isError && isDeadLinkError(previewQuery.error)
+  const checkFailed = previewQuery.isError && !linkIsDead
+  const title = linkIsDead
+    ? 'This invite link no longer works'
+    : checkFailed
+      ? 'Could not check this invitation'
+      : 'Join this tripl workspace'
+
   return (
-    <div className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6">
-      <div
-        className="space-y-4 rounded-xl border p-6"
-        style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
-      >
-        <PageHeader title="Join this tripl workspace" />
+    // The sign-in page's shell — accent wash, the product mark, one card — so
+    // the first screen a teammate ever sees is recognisably tripl (SH-32).
+    <div
+      className="min-h-screen text-fg"
+      style={{
+        background:
+          'radial-gradient(circle at top left, var(--accent-soft), transparent 32%), var(--bg)',
+      }}
+    >
+      <div className="mx-auto flex min-h-screen max-w-md flex-col gap-6 px-6 py-10 sm:pt-[12vh]">
+        <div className="flex items-center gap-2">
+          <TrifoldMark size={24} />
+          {/* A logo, not UI text: drawn at the sidebar wordmark's fixed 18px. */}
+          <span
+            className="font-bold leading-none tracking-[-0.045em]"
+            style={{ color: 'var(--fg)', fontSize: 18 }}
+          >
+            tripl
+          </span>
+        </div>
+        <div
+          className="space-y-4 rounded-card border p-6 shadow-lg"
+          style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)' }}
+        >
+          <PageHeader title={title} />
 
-        {previewQuery.isLoading && (
-          <p className="text-body" style={{ color: 'var(--fg-subtle)' }}>
-            Checking your invitation…
-          </p>
-        )}
-
-        {previewQuery.isError && (
-          <div className="space-y-2">
-            <p role="alert" className="text-body text-destructive">
-              {getErrorMessage(previewQuery.error)}
-            </p>
-            <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-              Ask whoever invited you to send a new link.
-            </p>
-            <Button type="button" variant="link" size="xs" className="px-0" onClick={() => void navigate('/auth')}>
-              Go to sign in
-            </Button>
-          </div>
-        )}
-
-        {preview && (
-          <>
+          {previewQuery.isLoading && (
             <p className="text-body" style={{ color: 'var(--fg-subtle)' }}>
-              You were invited as <strong>{preview.email}</strong>, joining as{' '}
-              <strong>
-                {ROLE_OPTIONS.find((r) => r.value === preview.role)?.label ?? preview.role}
-              </strong>
-              . Set a password to finish.
+              Checking your invitation…
             </p>
+          )}
 
-            <form
-              className="space-y-3"
-              // Checked here and marked under the field, not by a browser
-              // bubble; Accept stays pressable so it can say what is missing.
-              noValidate
-              onSubmit={(e) => {
-                e.preventDefault()
-                setSubmitted(true)
-                if (passwordProblem) {
-                  const form = e.currentTarget
-                  requestAnimationFrame(() => focusFirstInvalid(form))
-                  return
-                }
-                acceptMut.mutate()
-              }}
-            >
-              <div className="space-y-1.5">
-                <Label htmlFor="invite-name" optional>
-                  Your name
-                </Label>
-                <Input
-                  id="invite-name"
-                  autoComplete="name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="invite-password">Password</Label>
-                {/* The policy up front, as on sign-up, rather than learned from
-                    a 422 after submitting. */}
-                <Input
-                  id="invite-password"
-                  type="password"
-                  autoComplete="new-password"
-                  aria-required
-                  minLength={PASSWORD_MIN_LENGTH}
-                  aria-invalid={passwordError ? true : undefined}
-                  aria-describedby={
-                    passwordError ? 'invite-password-hint invite-password-error' : 'invite-password-hint'
-                  }
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-                <p id="invite-password-hint" className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-                  {PASSWORD_POLICY_HINT}
+          {linkIsDead && (
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <p role="alert" className="text-body text-destructive">
+                  {getErrorMessage(previewQuery.error)}
                 </p>
-                <FieldError inputId="invite-password" message={passwordError} className="mt-0" />
-              </div>
-
-              {acceptMut.isError && (
-                <p role="alert" className="text-body-sm text-destructive">
-                  {getErrorMessage(acceptMut.error)}
+                <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                  Ask whoever invited you to send a new link.
                 </p>
-              )}
-
-              <Button type="submit" className="w-full" disabled={acceptMut.isPending}>
-                {acceptMut.isPending ? 'Creating your account…' : 'Accept invitation'}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                className="w-full justify-center"
+                onClick={() => void navigate('/auth')}
+              >
+                Go to sign in
               </Button>
-            </form>
-          </>
-        )}
+            </div>
+          )}
+
+          {checkFailed && (
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <p role="alert" className="text-body text-destructive">
+                  {getErrorMessage(previewQuery.error)}
+                </p>
+                <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                  Your link may still be fine. Try again in a moment.
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="lg"
+                className="w-full justify-center"
+                disabled={previewQuery.isFetching}
+                onClick={() => void previewQuery.refetch()}
+              >
+                {previewQuery.isFetching ? 'Checking…' : 'Try again'}
+              </Button>
+            </div>
+          )}
+
+          {preview && (
+            <>
+              <div className="space-y-1">
+                <p className="text-body" style={{ color: 'var(--fg-subtle)' }}>
+                  You were invited as <strong>{preview.email}</strong>, joining as{' '}
+                  <strong>{roleLabel}</strong>. Set a password to finish.
+                </p>
+                {/* What the role means, since "Editor" alone does not say
+                    (SH-32; website/docs/use/concepts.md, Roles). */}
+                {roleBlurb && (
+                  <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                    {`${roleLabel} ${roleBlurb}`}
+                  </p>
+                )}
+              </div>
+              <form
+                className="space-y-3"
+                // Checked here and marked under the field, not by a browser
+                // bubble; Accept stays pressable so it can say what is missing.
+                noValidate
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  setSubmitted(true)
+                  if (passwordProblem) {
+                    const form = e.currentTarget
+                    requestAnimationFrame(() => focusFirstInvalid(form))
+                    return
+                  }
+                  acceptMut.mutate()
+                }}
+              >
+                <div className="space-y-1.5">
+                  <Label htmlFor="invite-name" optional>
+                    Your name
+                  </Label>
+                  <Input
+                    id="invite-name"
+                    autoComplete="name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="invite-password">Password</Label>
+                  {/* The policy up front, as on sign-up, rather than learned from
+                      a 422 after submitting. */}
+                  <PasswordInput
+                    id="invite-password"
+                    autoComplete="new-password"
+                    aria-required
+                    minLength={PASSWORD_MIN_LENGTH}
+                    aria-invalid={passwordError ? true : undefined}
+                    aria-describedby={
+                      passwordError ? 'invite-password-hint invite-password-error' : 'invite-password-hint'
+                    }
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                  <p id="invite-password-hint" className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                    {PASSWORD_POLICY_HINT}
+                  </p>
+                  <FieldError inputId="invite-password" message={passwordError} className="mt-0" />
+                </div>
+
+                {acceptMut.isError && (
+                  <p role="alert" className="text-body-sm text-destructive">
+                    {getErrorMessage(acceptMut.error)}
+                  </p>
+                )}
+
+                <Button type="submit" size="lg" className="w-full justify-center" disabled={acceptMut.isPending}>
+                  {acceptMut.isPending ? 'Creating your account…' : 'Accept invitation'}
+                </Button>
+              </form>
+            </>
+          )}
+        </div>
       </div>
     </div>
   )

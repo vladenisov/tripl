@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Chip } from "@/components/primitives/chip"
 import { Search } from "lucide-react"
 import { RunStatusPill, ScanListRow } from "./scans/ScanConfigRow"
+import { FirstScanEmptyState } from "./scans/FirstScanEmptyState"
 import { runPillStatus } from "./scans/scanRunStatus"
 import { scanModeOf } from "./scans/scanMode"
 import { PageHeader } from '@/components/primitives/page-header'
@@ -22,11 +23,11 @@ import { TermHint, TERM_HINTS } from '@/components/term-hint'
 import { PageContainer } from '@/components/primitives/page-container'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
-import { LOADING_SCAN_RUN_INFO, consecutiveFailedRuns, deriveScanRunInfo, jobDurationSeconds, jobRowsScanned, scanJobsHaveActiveWork, summarizeScanChanges, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
+import { LOADING_SCAN_RUN_INFO, consecutiveFailedRuns, deriveScanRunInfo, formatJobScanned, jobDurationSeconds, jobScanned, scanJobsHaveActiveWork, summarizeScanChanges, type JobScanned, type ScanChange, type ScanRunInfo } from "./scans/scanUtils"
 import { useAdaptiveRefetchIntervalFn } from "@/realtime/streamContext"
 import { friendlyScanError } from "@/lib/scanError"
 import { formatRelativeTime } from "@/lib/datetime"
-import { countOf, pluralize } from "@/lib/plural"
+import { countOf } from "@/lib/plural"
 import { getErrorMessage } from '@/lib/utils'
 import { projectEventTypesKey, scanActivityKey, scanJobsKey, scanJobsLimitedKey, scansKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -52,7 +53,8 @@ interface RecentRun {
   scanId: string
   scanName: string
   startedAt: string | null
-  rows: number | null
+  /** Warehouse rows or catalog combinations, unit named (#247 DA-4). */
+  scanned: JobScanned | null
   durationSec: number | null
   status: ScanJob['status']
   errorMessage: string | null
@@ -60,12 +62,18 @@ interface RecentRun {
   // the server over its whole history). Only meaningful on the collapsed
   // streak row; 0 on every other row, and until the activity has loaded.
   failingStreak: number
+  // The scan's newest settled run. Only there does "Run again" answer the
+  // failure: on an older one a success has already followed (#247 DA-22).
+  latestSettled: boolean
   // What the completed job actually changed (+N events / metrics / signals …).
   changes: ScanChange[]
 }
 
 /** Why New scan is off: a scan reads from a data source. */
 const NEW_SCAN_BLOCKER = 'Add a data source first.'
+
+/** Rows the "Recent runs" panel shows across every scan. */
+const RECENT_RUNS_SHOWN = 6
 
 export function ScansTab({ slug }: { slug: string }) {
   const navigate = useNavigate()
@@ -80,7 +88,13 @@ export function ScansTab({ slug }: { slug: string }) {
   // Scoped to this project (DATA-15), and only a LOADED empty list means "no
   // data sources": during a cold load the empty state and the disabled New
   // scan used to flash for everyone (DATA-16).
-  const { data: dataSources = [], isSuccess: dataSourcesLoaded } = useProjectDataSources()
+  const {
+    data: dataSources = [],
+    isSuccess: dataSourcesLoaded,
+    isError: dataSourcesFailed,
+    error: dataSourcesError,
+    refetch: refetchDataSources,
+  } = useProjectDataSources()
   const noDataSources = dataSourcesLoaded && dataSources.length === 0
 
   const {
@@ -177,6 +191,12 @@ export function ScansTab({ slug }: { slug: string }) {
 
   const recentRuns = useMemo<RecentRun[]>(() => {
     const runs: RecentRun[] = []
+    // Two runs a scan keeps one busy scan from filling the panel, but with one
+    // or two scans it cut the history to 2-4 rows and read as a short one
+    // (#247 DA-24): take enough per scan to fill the panel.
+    const perScan = scanConfigs.length < 3
+      ? Math.ceil(RECENT_RUNS_SHOWN / Math.max(scanConfigs.length, 1))
+      : 2
     scanConfigs.forEach((sc: ScanConfig, index: number) => {
       const jobs = jobsByScan[index] ?? []
       if (jobs.length === 0) return
@@ -195,16 +215,16 @@ export function ScansTab({ slug }: { slug: string }) {
         ? [
           ...jobs.slice(0, firstSettled),
           streakHead,
-          ...jobs.slice(firstSettled + streak, firstSettled + streak + 1),
-        ].slice(0, 2)
-        : jobs.slice(0, 2)
+          ...jobs.slice(firstSettled + streak, firstSettled + streak + perScan),
+        ].slice(0, perScan)
+        : jobs.slice(0, perScan)
       collapsed.forEach(job => {
         runs.push({
           jobId: job.id,
           scanId: sc.id,
           scanName: sc.name,
           startedAt: job.started_at ?? job.created_at,
-          rows: jobRowsScanned(job),
+          scanned: jobScanned(job),
           durationSec: jobDurationSeconds(job),
           status: job.status,
           errorMessage: job.error_message,
@@ -212,21 +232,35 @@ export function ScansTab({ slug }: { slug: string }) {
           // in while the activity loads, if it failed, or if it is older than
           // the page (a run finished since), so the tag never vanishes.
           failingStreak: job === streakHead ? Math.max(failingStreakById.get(sc.id) ?? 0, streak) : 0,
+          latestSettled: firstSettled >= 0 && job === jobs[firstSettled],
           changes: summarizeScanChanges(job),
         })
       })
     })
     return runs
       .sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))
-      .slice(0, 6)
+      .slice(0, RECENT_RUNS_SHOWN)
   }, [scanConfigs, jobsByScan, failingStreakById])
 
   // Null until the activity has arrived: "0" while loading contradicted the
   // completed runs already listed in the activity rail (tripl-jfm3.28).
   // `formatCount(null)` renders "—". Exact, not a floor: the server sums every
   // job in the window rather than the capped page this list loads.
-  const rowsScanned24h = useMemo<number | null>(
-    () => (activity ? activity.items.reduce((total, item) => total + item.rows_read_24h, 0) : null),
+  // Warehouse rows and catalog combinations are summed apart: they are
+  // different units, and adding them made the tile a number with no name
+  // (#247 DA-4).
+  const warehouseRows24h = useMemo<number | null>(
+    () =>
+      activity
+        ? activity.items.reduce((total, item) => total + (item.warehouse_rows_24h ?? 0), 0)
+        : null,
+    [activity],
+  )
+  const catalogCombinations24h = useMemo<number | null>(
+    () =>
+      activity
+        ? activity.items.reduce((total, item) => total + (item.catalog_combinations_24h ?? 0), 0)
+        : null,
     [activity],
   )
 
@@ -260,6 +294,16 @@ export function ScansTab({ slug }: { slug: string }) {
   const monitoringCount = scanConfigs.filter(
     (sc: ScanConfig) => scanModeOf(sc) === 'monitoring',
   ).length
+  // Scans whose latest settled run failed, by the server's streak: the one
+  // aggregate the strip was missing (#247 DA-11). Null until it answers.
+  const failingCount = activity
+    ? activity.items.filter(item => item.failing_streak > 0).length
+    : null
+
+  // A loaded, empty list is the whole page: one empty state that says what
+  // setting up a scan involves, instead of zero tiles over "No data sources"
+  // over an empty "All scans" panel (#247 DA-28).
+  const noScans = !scanConfigsLoading && !scanConfigsError && scanConfigs.length === 0
 
   return (
     <PageContainer>
@@ -274,7 +318,7 @@ export function ScansTab({ slug }: { slug: string }) {
         titleAddon={<TermHint slug={slug} {...TERM_HINTS.scans} />}
         description="Scans read your warehouse into your tracking plan; monitoring scans also record the metric points that anomalies and alerts are built on."
         actions={
-          isOwner && (
+          isOwner && !noScans && (
             // The reason New scan is off is a caption under it, not a `title`
             // a disabled button never shows (#237 DA-9).
             <div className="flex flex-col items-end gap-1">
@@ -292,18 +336,35 @@ export function ScansTab({ slug }: { slug: string }) {
           )
         }
         // The one page-KPI strip (DS-5), in place of three bordered tiles.
+        // Hidden while there is nothing to count (#247 DA-11).
         stats={
-          <MiniStatStrip boxed>
-            {/* Not "0" before the list answers (#237 DS-25). */}
-            <MiniStat label="Scans" value={scanConfigsLoading ? <StatValueSkeleton /> : scanConfigs.length} />
-            <MiniStat
-              label="Monitoring"
-              value={scanConfigsLoading ? <StatValueSkeleton /> : monitoringCount}
-            />
-            <div title="Rows read across every catalog and metrics run in the last 24 hours.">
-              <MiniStat label="Warehouse rows read · 24h" value={formatCount(rowsScanned24h)} />
-            </div>
-          </MiniStatStrip>
+          noScans ? undefined : (
+            <MiniStatStrip boxed>
+              {/* Not "0" before the list answers (#237 DS-25). */}
+              <MiniStat label="Scans" value={scanConfigsLoading ? <StatValueSkeleton /> : scanConfigs.length} />
+              <MiniStat
+                label="Monitoring"
+                value={scanConfigsLoading ? <StatValueSkeleton /> : monitoringCount}
+              />
+              <MiniStat
+                label="Failing"
+                value={failingCount == null ? <StatValueSkeleton /> : failingCount}
+                valueTone={failingCount ? 'danger' : undefined}
+              />
+              {/* Warehouse rows only: a catalog run reads back grouped column
+                  combinations, a different unit, so those are named in the
+                  title instead of being added in (#247 DA-4). */}
+              <div
+                title={
+                  catalogCombinations24h
+                    ? `Warehouse rows read by metrics runs in the last 24 hours. Catalog runs also read back ${formatCount(catalogCombinations24h)} column combinations.`
+                    : 'Warehouse rows read by metrics runs in the last 24 hours.'
+                }
+              >
+                <MiniStat label="Warehouse rows · 24h" value={formatCount(warehouseRows24h)} />
+              </div>
+            </MiniStatStrip>
+          )
         }
       />
 
@@ -315,199 +376,208 @@ export function ScansTab({ slug }: { slug: string }) {
         </ReadOnlyNotice>
       )}
 
-      {noDataSources && (
-        <EmptyState
-          icon={Search}
-          title="No data sources"
-          description={
-            isOwner
-              ? 'Add a data source connection first to create a scan.'
-              : 'An owner has to add a data source connection before scans can be created.'
-          }
-          action={
-            // The empty state used to name the page that fixes it and leave the
-            // reader to find it; the link IS the remedy now (tripl-eadx). Only
-            // for an owner: data sources are owner-only, and anyone else landed
-            // on a page with nothing they could add.
-            isOwner ? (
-              <Button asChild size="sm">
-                <Link to="/settings/data-sources">
-                  <Plus className="size-3.5" />
-                  Add connection
-                </Link>
-              </Button>
-            ) : undefined
-          }
+      {noScans ? (
+        <FirstScanEmptyState
+          isOwner={isOwner}
+          dataSourcesSettled={dataSourcesLoaded || dataSourcesFailed}
+          noDataSources={noDataSources}
+          dataSourcesError={dataSourcesFailed ? dataSourcesError : null}
+          onRetryDataSources={() => { void refetchDataSources() }}
+          onNewScan={() => navigate(`/p/${slug}/scans/new`)}
         />
-      )}
-
-      {/* A project has exactly one scan the moment it finishes the onboarding
-          checklist's "Run a scan" step, so "1 scans" was the first thing a new
-          user read on the page this epic exists to make comprehensible. */}
-      <Panel title="All scans" subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
-        {failedRunScanName && (
-          <p role="alert" className="border-b px-4 py-2 text-body" style={{ color: 'var(--danger)', borderColor: 'var(--border-subtle)' }}>
-            Could not start {failedRunScanName}: {getErrorMessage(runScan.error)}
-          </p>
-        )}
-        {scanConfigsLoading ? (
-          <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading scans">
-            {[0, 1, 2].map((index) => (
-              <Skeleton key={index} className="h-10 w-full" />
-            ))}
-          </div>
-        ) : scanConfigsError ? (
-          <div className="p-4">
-            <ErrorState
-              compact
-              title="Couldn't load scans"
-              error={scanConfigsErrorObj}
-              onRetry={() => {
-                void refetchScanConfigs()
-              }}
+      ) : (
+        <>
+          {noDataSources && (
+            <EmptyState
+              icon={Search}
+              title="No data sources"
+              description={
+                isOwner
+                  ? 'Add a data source connection first to create a scan.'
+                  : 'An owner has to add a data source connection before scans can be created.'
+              }
+              action={
+                // The empty state used to name the page that fixes it and leave the
+                // reader to find it; the link IS the remedy now (tripl-eadx). Only
+                // for an owner: data sources are owner-only, and anyone else landed
+                // on a page with nothing they could add.
+                isOwner ? (
+                  <Button asChild size="sm">
+                    <Link to="/settings/data-sources">
+                      <Plus className="size-3.5" />
+                      Add connection
+                    </Link>
+                  </Button>
+                ) : undefined
+              }
             />
-          </div>
-        ) : scanConfigs.length === 0 ? (
-          <EmptyState size="sm" headingLevel={3} title="No scans yet." />
-        ) : (
-          <table className="w-full border-collapse">
-            {/* Phones get the rows as stacked cards (ScanListRow), so the
-                column headings have nothing to head there. */}
-            <thead className="hidden sm:table-header-group">
-              <tr style={{ background: 'var(--bg-sunken)' }}>
-                {['Scan', 'Last run'].map(h => (
-                  <th
-                    key={h}
-                    className="px-3.5 py-2 text-left micro-label"
-                    style={{ color: 'var(--fg-subtle)' }}
-                  >
-                    {h}
-                  </th>
-                ))}
-                <th className="w-10" />
-              </tr>
-            </thead>
-            <tbody>
-              {scanConfigs.map((sc: ScanConfig, index: number) => {
-                // One href, two consumers: the row's name link (the keyboard and
-                // screen-reader route) and the row's mouse click. Deriving them
-                // from separate literals is how they drift apart — and this is
-                // the live route, NOT the /settings/scans/ form, which App.tsx
-                // only keeps as a redirect (tripl-np3p).
-                const detailHref = `/p/${slug}/scans/${sc.id}`
-                return (
-                  <ScanListRow
-                    key={sc.id}
-                    sc={sc}
-                    dataSource={dsMap.get(sc.data_source_id) ?? null}
-                    runInfo={runInfoById.get(sc.id) ?? LOADING_SCAN_RUN_INFO}
-                    intervalLabel={INTERVAL_LABEL}
-                    detailHref={detailHref}
-                    onNavigate={() => navigate(detailHref)}
-                    onRun={canRun ? () => runScan.mutate(sc.id) : undefined}
-                    runPending={pendingScanId === sc.id}
-                    // The step-1 CTA opens this list; point the coach at the first
-                    // row's Run control (inert unless the demo scenario is active).
-                    runCoachMark={index === 0}
-                    onReviewEvents={() => navigate(reviewEventsHref(sc))}
-                  />
-                )
-              })}
-            </tbody>
-          </table>
-        )}
-      </Panel>
+          )}
 
-      {recentRuns.length > 0 && (
-        <Panel title="Recent runs" subtitle="Latest runs across all scans">
-          <div>
-            {recentRuns.map(run => {
-              const isFailed = run.status === 'failed'
-              const friendly = isFailed ? friendlyScanError(run.errorMessage).message : null
-              return (
-                <ScenarioCoachMark
-                  key={run.jobId}
-                  step="live-loop/watch-scan"
-                  // Exactly one row: the run the user's own action started.
-                  when={run.jobId === scanJobId}
-                  side="top"
-                  align="start"
-                >
-                  {/* One row from `sm` up. Below it the row wraps — pill, name
-                      and the rows/duration figures on the first line, what
-                      happened on the next, a failed run's actions under that —
-                      because the fixed 150px name and 52px duration left a
-                      375px screen nothing for the rest, and "3h ago" ran into
-                      "4.8K rows" (DATA-10). */}
-                  <div
-                    className="flex min-h-(--row-h) flex-wrap items-center gap-x-3 gap-y-1.5 border-t px-4 py-2.5 first:border-t-0 sm:flex-nowrap"
-                    style={{ borderColor: 'var(--border-subtle)' }}
-                  >
-                    <RunStatusPill status={runPillStatus(run.status)} title={friendly ?? undefined} />
-                    <span className="min-w-0 flex-1 truncate text-body-sm font-medium sm:w-[150px] sm:flex-none sm:shrink-0">
-                      {run.scanName}
-                    </span>
-                    <div className="order-last flex min-w-0 basis-full flex-col gap-1 sm:order-none sm:basis-auto sm:flex-1">
-                      <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
-                        {run.startedAt ? formatRelativeTime(run.startedAt) : '—'}
-                      </span>
-                      {friendly && (
-                        <span className="truncate text-caption" style={{ color: 'var(--danger)' }}>{friendly}</span>
-                      )}
-                      {/* What this completed run changed — surfaced inline so a
-                          finished scan/collection shows its impact, not just a
-                          status pill (tripl-2su6.9). */}
-                      {!isFailed && run.changes.length > 0 && (
-                        <div className="flex flex-wrap gap-1">
-                          {run.changes.map((change) => (
-                            <Chip key={change.label} tone={change.tone} size="xs">
-                              {change.label}
-                            </Chip>
-                          ))}
+          {/* A project has exactly one scan the moment it finishes the onboarding
+              checklist's "Run a scan" step, so "1 scans" was the first thing a new
+              user read on the page this epic exists to make comprehensible. */}
+          <Panel title="All scans" subtitle={countOf(scanConfigs.length, 'scan', 'scans')}>
+            {failedRunScanName && (
+              <p role="alert" className="border-b px-4 py-2 text-body" style={{ color: 'var(--danger)', borderColor: 'var(--border-subtle)' }}>
+                Could not start {failedRunScanName}: {getErrorMessage(runScan.error)}
+              </p>
+            )}
+            {scanConfigsLoading ? (
+              <div className="space-y-2 px-4 py-4" aria-busy="true" aria-label="Loading scans">
+                {[0, 1, 2].map((index) => (
+                  <Skeleton key={index} className="h-10 w-full" />
+                ))}
+              </div>
+            ) : scanConfigsError ? (
+              <div className="p-4">
+                <ErrorState
+                  compact
+                  title="Couldn't load scans"
+                  error={scanConfigsErrorObj}
+                  onRetry={() => {
+                    void refetchScanConfigs()
+                  }}
+                />
+              </div>
+            ) : (
+              <table className="w-full border-collapse">
+                {/* Phones get the rows as stacked cards (ScanListRow), so the
+                    column headings have nothing to head there. */}
+                <thead className="hidden sm:table-header-group">
+                  <tr style={{ background: 'var(--bg-sunken)' }}>
+                    {['Scan', 'Last run'].map(h => (
+                      <th
+                        key={h}
+                        className="px-3.5 py-2 text-left micro-label"
+                        style={{ color: 'var(--fg-subtle)' }}
+                      >
+                        {h}
+                      </th>
+                    ))}
+                    <th className="w-10" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {scanConfigs.map((sc: ScanConfig, index: number) => {
+                    // One href, two consumers: the row's name link (the keyboard and
+                    // screen-reader route) and the row's mouse click. Deriving them
+                    // from separate literals is how they drift apart — and this is
+                    // the live route, NOT the /settings/scans/ form, which App.tsx
+                    // only keeps as a redirect (tripl-np3p).
+                    const detailHref = `/p/${slug}/scans/${sc.id}`
+                    return (
+                      <ScanListRow
+                        key={sc.id}
+                        sc={sc}
+                        dataSource={dsMap.get(sc.data_source_id) ?? null}
+                        runInfo={runInfoById.get(sc.id) ?? LOADING_SCAN_RUN_INFO}
+                        intervalLabel={INTERVAL_LABEL}
+                        detailHref={detailHref}
+                        onNavigate={() => navigate(detailHref)}
+                        onRun={canRun ? () => runScan.mutate(sc.id) : undefined}
+                        runPending={pendingScanId === sc.id}
+                        // The step-1 CTA opens this list; point the coach at the first
+                        // row's Run control (inert unless the demo scenario is active).
+                        runCoachMark={index === 0}
+                        onReviewEvents={() => navigate(reviewEventsHref(sc))}
+                      />
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+          </Panel>
+
+          {recentRuns.length > 0 && (
+            <Panel title="Recent runs" subtitle="Latest runs across all scans">
+              <div>
+                {recentRuns.map(run => {
+                  const isFailed = run.status === 'failed'
+                  const friendly = isFailed ? friendlyScanError(run.errorMessage).message : null
+                  return (
+                    <ScenarioCoachMark
+                      key={run.jobId}
+                      step="live-loop/watch-scan"
+                      // Exactly one row: the run the user's own action started.
+                      when={run.jobId === scanJobId}
+                      side="top"
+                      align="start"
+                    >
+                      {/* One row from `sm` up. Below it the row wraps — pill, name
+                          and the rows/duration figures on the first line, what
+                          happened on the next, a failed run's actions under that —
+                          because the fixed 150px name and 52px duration left a
+                          375px screen nothing for the rest, and "3h ago" ran into
+                          "4.8K rows" (DATA-10). */}
+                      <div
+                        className="flex min-h-(--row-h) flex-wrap items-center gap-x-3 gap-y-1.5 border-t px-4 py-2.5 first:border-t-0 sm:flex-nowrap"
+                        style={{ borderColor: 'var(--border-subtle)' }}
+                      >
+                        <RunStatusPill status={runPillStatus(run.status)} title={friendly ?? undefined} />
+                        <span className="min-w-0 flex-1 truncate text-body-sm font-medium sm:w-[150px] sm:flex-none sm:shrink-0">
+                          {run.scanName}
+                        </span>
+                        <div className="order-last flex min-w-0 basis-full flex-col gap-1 sm:order-none sm:basis-auto sm:flex-1">
+                          <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                            {run.startedAt ? formatRelativeTime(run.startedAt) : '—'}
+                          </span>
+                          {friendly && (
+                            <span className="truncate text-caption" style={{ color: 'var(--danger)' }}>{friendly}</span>
+                          )}
+                          {/* What this completed run changed — surfaced inline so a
+                              finished scan/collection shows its impact, not just a
+                              status pill (tripl-2su6.9). */}
+                          {!isFailed && run.changes.length > 0 && (
+                            <div className="flex flex-wrap gap-1">
+                              {run.changes.map((change) => (
+                                <Chip key={change.label} tone={change.tone} size="xs">
+                                  {change.label}
+                                </Chip>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                    {isFailed ? (
-                      <div className="order-last flex shrink-0 flex-wrap items-center gap-2 sm:order-none">
-                        {run.failingStreak > 1 && (
-                          <Chip tone="danger" size="xs" className="whitespace-nowrap">
-                            failed last {run.failingStreak} runs
-                          </Chip>
-                        )}
-                        {canRun && (
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            disabled={pendingScanId === run.scanId}
-                            onClick={() => runScan.mutate(run.scanId)}
-                          >
-                            <RotateCw className="size-3" aria-hidden="true" />
-                            {pendingScanId === run.scanId ? 'Starting…' : 'Run again'}
-                          </Button>
+                        {isFailed ? (
+                          <div className="order-last flex shrink-0 flex-wrap items-center gap-2 sm:order-none">
+                            {run.failingStreak > 1 && (
+                              <Chip tone="danger" size="xs" className="whitespace-nowrap">
+                                failed last {run.failingStreak} runs
+                              </Chip>
+                            )}
+                            {canRun && run.latestSettled && (
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                disabled={pendingScanId === run.scanId}
+                                onClick={() => runScan.mutate(run.scanId)}
+                              >
+                                <RotateCw className="size-3" aria-hidden="true" />
+                                {pendingScanId === run.scanId ? 'Starting…' : 'Run again'}
+                              </Button>
+                            )}
+                          </div>
+                        ) : (
+                          <>
+                            {/* Figures in sans + tabular digits, not mono (DS-17). */}
+                            {/* Full digits and the unit, the same as the scan's
+                                own page ("4,428 rows", "153 combos"), in a fixed
+                                right-aligned column (#247 DA-24, DA-4). */}
+                            <span className="tnum shrink-0 whitespace-nowrap text-right text-caption sm:w-[104px]" style={{ color: 'var(--fg-subtle)' }}>
+                              {formatJobScanned(run.scanned)}
+                            </span>
+                            <span className="tnum shrink-0 whitespace-nowrap text-right text-caption sm:w-[52px]" style={{ color: 'var(--fg-faint)' }}>
+                              {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}
+                            </span>
+                          </>
                         )}
                       </div>
-                    ) : (
-                      <>
-                        {/* Figures in sans + tabular digits, not mono (DS-17). */}
-                        <span className="tnum shrink-0 whitespace-nowrap text-caption" style={{ color: 'var(--fg-subtle)' }}>
-                          {/* `formatCount` compacts (1.8M), so the noun agrees
-                              with the raw count rather than the printed text —
-                              a run that read a single row said "1 rows". */}
-                          {run.rows == null
-                            ? '—'
-                            : `${formatCount(run.rows)} ${pluralize(run.rows, 'row', 'rows')}`}
-                        </span>
-                        <span className="tnum shrink-0 whitespace-nowrap text-right text-caption sm:w-[52px]" style={{ color: 'var(--fg-faint)' }}>
-                          {run.durationSec == null ? '—' : `${run.durationSec.toFixed(1)}s`}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                </ScenarioCoachMark>
-              )
-            })}
-          </div>
-        </Panel>
+                    </ScenarioCoachMark>
+                  )
+                })}
+              </div>
+            </Panel>
+          )}
+        </>
       )}
     </PageContainer>
   )

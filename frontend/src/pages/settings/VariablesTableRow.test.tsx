@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 import type { Variable } from '@/types'
 import { VariablesTableRow } from './VariablesTableRow'
@@ -98,5 +99,43 @@ describe('VariablesTableRow observed values cell', () => {
     expect(screen.getByText('documented')).toBeInTheDocument()
     expect(screen.getByText('checkout_completed')).toBeInTheDocument()
     expect(screen.getByText('—')).toBeInTheDocument()
+  })
+})
+
+describe('VariablesTableRow observed-in events (AU-29)', () => {
+  it('links each event name to its event when ids and a route are given', () => {
+    render(
+      <MemoryRouter>
+        <table>
+          <tbody>
+            <VariablesTableRow
+              variable={makeSpeakingVariable({
+                event_refs: [{ id: 'event-1', name: 'checkout_completed' }],
+              })}
+              typeLabel="string"
+              selected={false}
+              focused={false}
+              onToggleSelect={() => {}}
+              onEdit={() => {}}
+              onExclude={() => {}}
+              onDelete={() => {}}
+              eventHref={id => `/p/demo/events/all/${id}`}
+            />
+          </tbody>
+        </table>
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByRole('link', { name: 'checkout_completed' })).toHaveAttribute(
+      'href',
+      '/p/demo/events/all/event-1',
+    )
+  })
+
+  it('keeps plain names without a route', () => {
+    renderRow(makeSpeakingVariable({ event_refs: [{ id: 'event-1', name: 'checkout_completed' }] }))
+
+    expect(screen.getByText('checkout_completed')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'checkout_completed' })).toBeNull()
   })
 })

@@ -237,17 +237,23 @@ describe('ProjectsPage — creating a project (WS-17, WS-18)', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /new project/i }))
     fireEvent.change(screen.getByLabelText(/project name/i), { target: { value: 'Old' } })
-    fireEvent.change(screen.getByLabelText(/slug/i), { target: { value: 'hand-typed' } })
+    // The URL field is folded under "Customize URL" (SH-29).
+    fireEvent.click(screen.getByRole('button', { name: 'Customize URL' }))
+    fireEvent.change(screen.getByLabelText(/project url/i), { target: { value: 'hand-typed' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: /new project/i }))
     expect(screen.getByLabelText(/project name/i)).toHaveValue('')
-    expect(screen.getByLabelText(/slug/i)).toHaveValue('')
+    // Folded again, and empty: the preview shows the placeholder address.
+    expect(screen.queryByLabelText(/project url/i)).not.toBeInTheDocument()
+    expect(screen.getByText('/p/your-project')).toBeInTheDocument()
 
     // The slug follows the name again: the "edited by hand" flag was reset.
     fireEvent.change(screen.getByLabelText(/project name/i), { target: { value: 'Café Ölmotor' } })
-    expect(screen.getByLabelText(/slug/i)).toHaveValue('cafe-olmotor')
+    expect(screen.getByText('/p/cafe-olmotor')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Customize URL' }))
+    expect(screen.getByLabelText(/project url/i)).toHaveValue('cafe-olmotor')
   })
 
   it('falls back to project-<n> for a name with no Latin letters', async () => {
@@ -257,7 +263,7 @@ describe('ProjectsPage — creating a project (WS-17, WS-18)', () => {
     fireEvent.click(await screen.findByRole('button', { name: /new project/i }))
     fireEvent.change(screen.getByLabelText(/project name/i), { target: { value: 'Аналитика' } })
     // The first project-<n> no existing project uses.
-    expect(screen.getByLabelText(/slug/i)).toHaveValue('project-1')
+    expect(screen.getByText('/p/project-1')).toBeInTheDocument()
   })
 
   it('explains an invalid slug inline instead of the browser tooltip', async () => {
@@ -266,7 +272,8 @@ describe('ProjectsPage — creating a project (WS-17, WS-18)', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /new project/i }))
     fireEvent.change(screen.getByLabelText(/project name/i), { target: { value: 'Shop' } })
-    const slugInput = screen.getByLabelText(/slug/i)
+    fireEvent.click(screen.getByRole('button', { name: 'Customize URL' }))
+    const slugInput = screen.getByLabelText(/project url/i)
     fireEvent.change(slugInput, { target: { value: 'Bad Slug' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 

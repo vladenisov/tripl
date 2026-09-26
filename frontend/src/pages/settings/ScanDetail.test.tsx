@@ -14,6 +14,7 @@ import type { Project, ScanConfig } from '@/types'
 import { ScanDetail } from './ScanDetail'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import { at } from '@/test/at'
+import { authAs } from '@/test/auth'
 
 function mockJsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -68,7 +69,7 @@ afterEach(() => {
 })
 
 describe('ScanDetail', () => {
-  it('shows Apply groups only to owners', async () => {
+  it('offers Apply to existing events only to owners, on the group rules row (#247 DA-18)', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
       if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
@@ -80,6 +81,12 @@ describe('ScanDetail', () => {
     })
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const withRules: ScanConfig = {
+      ...scanConfig,
+      event_group_rules: [
+        { name: 'Home', condition_logic: 'all', conditions: [{ field: 'event_name', pattern: '^Home' }] },
+      ],
+    }
     const auth = (role: 'editor' | 'owner'): AuthContextValue => ({
       user: {
         id: 'u-1', email: 'operator@example.com', name: 'Operator', role,
@@ -91,17 +98,44 @@ describe('ScanDetail', () => {
     const detail = (role: 'editor' | 'owner') => (
       <AuthContext.Provider value={auth(role)}>
         <QueryClientProvider client={queryClient}>
-          <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
+          <ScanDetail slug="demo" scanConfig={withRules} eventTypes={[]} />
         </QueryClientProvider>
       </AuthContext.Provider>
     )
 
     const view = render(detail('editor'))
     expect(await screen.findByText('Recent runs')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Apply groups' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Apply to existing events/ })).not.toBeInTheDocument()
 
     view.rerender(detail('owner'))
-    expect(screen.getByRole('button', { name: 'Apply groups' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Apply to existing events/ })).toBeInTheDocument()
+    expect(screen.getByText('1 rule')).toBeInTheDocument()
+  })
+
+  it('offers no Apply action on a scan with no group rules (#247 DA-18)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
+      if (url.endsWith('/api/v1/projects/demo/scans/scan-1/jobs')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <AuthContext.Provider value={{
+        user: {
+          id: 'u-1', email: 'owner@example.com', name: 'Owner', role: 'owner',
+          created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+        },
+        status: 'authenticated', error: null, isLoggingOut: false,
+        logout: async () => {}, refresh: () => {},
+      }}>
+        <QueryClientProvider client={queryClient}>
+          <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
+        </QueryClientProvider>
+      </AuthContext.Provider>,
+    )
+    expect(await screen.findByText('Recent runs')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Apply/ })).not.toBeInTheDocument()
   })
 
   it('shows replay chunk progress for running jobs', async () => {
@@ -228,22 +262,63 @@ describe('ScanDetail', () => {
       defaultOptions: { queries: { retry: false } },
     })
 
-    render(
+    const report = (role: 'owner' | 'editor') => (
       <QueryClientProvider client={queryClient}>
-        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
-      </QueryClientProvider>,
+        {/* The failure box links to its fixes, so the report needs a router.
+            Data-source pages are owner-only, so an owner is signed in. */}
+        <AuthContext.Provider value={authAs(role)}>
+          <MemoryRouter>
+            <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>
     )
+    const view = render(report('owner'))
+    /** The raw error is the owner's, and only behind "View technical details",
+     * folded (DATA-19): never in the row, the summary or the next step. */
+    const expectRawErrorOnlyInClosedTechnicalDetails = () => {
+      expect(screen.getAllByText('View technical details').length).toBeGreaterThan(0)
+      for (const pattern of [/clickhouse\.internal/, /8443/]) {
+        for (const node of screen.queryAllByText(pattern)) {
+          const details = node.closest('details')
+          expect(details).not.toBeNull()
+          expect(details).not.toHaveAttribute('open')
+          expect(within(details as HTMLElement).getByText('View technical details')).toBeInTheDocument()
+        }
+      }
+    }
 
     // Status is readable as text (not a bare red dot) and a retry is wired.
     expect(await screen.findByText('Failed')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry scan' })).toBeInTheDocument()
-    // Raw host/port never reaches the DOM, collapsed or expanded.
+    // Raw host/port never reaches the collapsed row.
     expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
+
+    // Why it failed is readable in the row itself, not only in a title or
+    // after expanding (#247 DA-20).
+    expect(screen.getByText('Scan failed: the data source did not respond in time.')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Expand run details' }))
     expect(
-      screen.getByText('Scan failed: the data source did not respond in time.'),
-    ).toBeInTheDocument()
+      screen.getAllByText('Scan failed: the data source did not respond in time.'),
+).toHaveLength(2)
+    // …and what to do about it, not only the diagnosis (#247 DA-20).
+    expect(screen.getByText(/Read less per run/)).toBeInTheDocument()
+    // The link names the section, so Limits opens and scrolls into view.
+    expect(screen.getByRole('link', { name: 'Open Limits' })).toHaveAttribute(
+      'href',
+      '/?tab=configuration#scan-limits',
+    )
+    expect(screen.getByRole('link', { name: 'Open the connection' })).toHaveAttribute(
+      'href',
+      '/settings/data-sources/ds-1',
+    )
+    expectRawErrorOnlyInClosedTechnicalDetails()
+
+    // Anyone but an owner never gets the raw error in the DOM at all.
+    view.rerender(report('editor'))
+    expect(screen.getAllByText('Scan failed: the data source did not respond in time.')).toHaveLength(2)
+    expect(screen.queryByText('View technical details')).not.toBeInTheDocument()
     expect(screen.queryByText(/clickhouse\.internal/)).not.toBeInTheDocument()
     expect(screen.queryByText(/8443/)).not.toBeInTheDocument()
   })
@@ -446,7 +521,7 @@ describe('ScanDetail', () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
+        <ScanDetail slug="demo" scanConfig={{ ...scanConfig, platform_column: 'platform' }} eventTypes={[]} />
       </QueryClientProvider>,
     )
 
@@ -460,9 +535,11 @@ describe('ScanDetail', () => {
     expect(screen.getByLabelText('checkout present on android')).toHaveTextContent('✓')
     expect(screen.getByLabelText('signup absent on android')).toHaveTextContent('—')
     expect(screen.getByLabelText('signup present on ios')).toHaveTextContent('✓')
+    // The panel says how much of the plan the matrix covers (#247 DA-19).
+    expect(screen.getByText('1 of 2 events seen on every platform value')).toBeInTheDocument()
   })
 
-  it('shows an empty state when no platform column is configured', async () => {
+  it('says there is no platform column in Event mapping instead of an empty panel', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
       if (url.endsWith('/scans/activity')) return mockJsonResponse(activityFor())
@@ -490,7 +567,10 @@ describe('ScanDetail', () => {
       </QueryClientProvider>,
     )
 
-    expect(await screen.findByText('No platform column configured')).toBeInTheDocument()
+    // No platform column: one line in Event mapping, not a full-width panel
+    // holding a dead end (#247 DA-19).
+    expect(await screen.findByText('Set in Configuration › App version')).toBeInTheDocument()
+    expect(screen.queryByText('Platform presence')).not.toBeInTheDocument()
   })
 
   it('says the platform presence failed to load instead of claiming no column (DATA-21)', async () => {
@@ -510,7 +590,7 @@ describe('ScanDetail', () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <ScanDetail slug="demo" scanConfig={scanConfig} eventTypes={[]} />
+        <ScanDetail slug="demo" scanConfig={{ ...scanConfig, platform_column: 'platform' }} eventTypes={[]} />
       </QueryClientProvider>,
     )
 
@@ -610,7 +690,9 @@ describe('ScanDetail', () => {
     // Expanding reveals the individual failed job rows.
     fireEvent.click(expander)
     expect(screen.getByRole('button', { name: /Hide 4 repeated failed runs/ })).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: 'Retry scan' })).toHaveLength(4)
+    // Retry rides only on the latest settled failure: on the older ones it
+    // offered nothing Run again does not (#247 DA-22).
+    expect(screen.getAllByRole('button', { name: 'Retry scan' })).toHaveLength(1)
   })
 })
 
@@ -685,7 +767,7 @@ describe('ScanDetail — streak past the loaded page (tripl-fj5g.11)', () => {
 
     const headers = await screen.findAllByRole('columnheader')
     expect(headers.map(header => header.textContent)).toEqual([
-      'Started', 'Duration', 'Rows read', 'Events', 'Status', 'Actions',
+      'Started', 'Duration', 'Scanned', 'Events', 'Status', 'Actions',
     ])
   })
 })

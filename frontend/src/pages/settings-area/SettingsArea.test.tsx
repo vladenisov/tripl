@@ -100,8 +100,9 @@ describe('SettingsArea project binding', () => {
     // Never silently binds to whichever project happened to sort first: the
     // projects are offered as choices, not applied.
     expect(screen.getByRole('button', { name: /Windy Android/ })).toBeInTheDocument()
-    // "Back to project" falls back to the workspace, not to /p/windy-android.
-    expect(screen.getByRole('link', { name: /Back to project/i })).toHaveAttribute(
+    // The way back falls back to the workspace, not to /p/windy-android, and
+    // says so instead of promising a project (ST-4).
+    expect(screen.getByRole('link', { name: 'Back to workspace' })).toHaveAttribute(
       'href',
       '/workspace',
     )
@@ -117,9 +118,9 @@ describe('SettingsArea project binding', () => {
 
     expect(await screen.findByRole('heading', { name: 'Plan rules' })).toBeInTheDocument()
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: /Back to project/i })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: /^Back to (?!workspace)/ })).toHaveAttribute(
         'href',
-        '/p/windy-ios/events',
+        '/p/windy-ios/overview',
       )
     })
     // Persisted the same way the sidebar persists it, so a reload keeps it.
@@ -133,9 +134,9 @@ describe('SettingsArea project binding', () => {
     renderArea('project/general')
 
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: /Back to project/i })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: /^Back to (?!workspace)/ })).toHaveAttribute(
         'href',
-        '/p/windy-ios/events',
+        '/p/windy-ios/overview',
       )
     })
     // The rail names the bound project, and it is the one the user last opened.
@@ -151,9 +152,9 @@ describe('SettingsArea project binding', () => {
     renderArea('project/plan-rules', '?project=windy-android')
 
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: /Back to project/i })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: /^Back to (?!workspace)/ })).toHaveAttribute(
         'href',
-        '/p/windy-android/events',
+        '/p/windy-android/overview',
       )
     })
     // Moving between project sections keeps the binding in the address.
@@ -192,9 +193,9 @@ describe('SettingsArea project binding', () => {
     resolveList(projects)
 
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: /Back to project/i })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: /^Back to (?!workspace)/ })).toHaveAttribute(
         'href',
-        '/p/windy-ios/events',
+        '/p/windy-ios/overview',
       )
     })
   })
@@ -288,9 +289,9 @@ describe('SettingsArea follows a slug rename (WS-8)', () => {
 
     await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: /Back to project/i })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: /^Back to (?!workspace)/ })).toHaveAttribute(
         'href',
-        '/p/windy-ios-2/events',
+        '/p/windy-ios-2/overview',
       )
     })
     expect(screen.queryByText(/Could not load this project|Project not found/)).not.toBeInTheDocument()

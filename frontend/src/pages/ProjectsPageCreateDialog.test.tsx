@@ -39,4 +39,47 @@ describe('CreateProjectDialog', () => {
     await waitFor(() => expect(name).toHaveFocus())
     expect(fetchSpy).not.toHaveBeenCalled()
   })
+
+  it('shows the URL a name becomes and folds the field under "Customize URL" (SH-29)', () => {
+    renderDialog()
+
+    expect(screen.getByLabelText('Project name')).toHaveAttribute('placeholder', 'e.g. iOS app')
+    expect(screen.queryByLabelText(/slug/i)).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Shop Web' } })
+    expect(screen.getByText('/p/shop-web')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Customize URL' }))
+    expect(screen.getByLabelText('Project URL')).toHaveValue('shop-web')
+  })
+
+  it('opens the URL field and marks it when the server says the slug is taken (SH-29)', async () => {
+    // existingSlugs cannot rule this out: the list hides seeding and failed
+    // demos, whose slugs are still held.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Project with this slug already exists' }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    renderDialog()
+
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Shop Web' } })
+    expect(screen.queryByLabelText('Project URL')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    const slug = await screen.findByLabelText('Project URL')
+    expect(slug).toHaveValue('shop-web')
+    expect(slug).toHaveAttribute('aria-invalid', 'true')
+    expect(slug).toHaveAccessibleDescription(
+      'Another project already uses this URL. Choose a different one.',
+    )
+    await waitFor(() => expect(slug).toHaveFocus())
+    expect(screen.queryByText('Could not create project')).not.toBeInTheDocument()
+
+    // Editing the slug clears the server's verdict on the old one.
+    fireEvent.change(slug, { target: { value: 'shop-web-2' } })
+    expect(slug).not.toHaveAttribute('aria-invalid')
+    expect(screen.queryByText(/already uses this URL/)).not.toBeInTheDocument()
+    expect(screen.queryByText('Could not create project')).not.toBeInTheDocument()
+  })
 })

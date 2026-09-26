@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
+import { projectHomePath } from '@/lib/navigation'
 
 const DEFAULT_DESCRIPTION = 'The page you’re looking for doesn’t exist or may have moved.'
 
@@ -52,7 +53,7 @@ export function NotFoundState({
             primitive's hover, focus ring and dark-mode fill (DS-14, AU-7). */}
         {project && (
           <Button asChild size="lg">
-            <Link to={`/p/${project.slug}/events`}>Back to {project.name}</Link>
+            <Link to={projectHomePath(project.slug)}>Back to {project.name}</Link>
           </Button>
         )}
         <Button asChild size="lg" variant={project ? 'outline' : 'default'}>

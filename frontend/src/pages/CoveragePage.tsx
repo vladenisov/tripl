@@ -4,6 +4,7 @@ import { ArrowRight, Info, ShieldCheck, ShieldX } from 'lucide-react'
 import { projectsApi } from '@/api/projects'
 import { reconciliationApi } from '@/api/reconciliation'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Panel } from '@/components/settings/kit'
@@ -38,11 +39,21 @@ const PLAN_COVERAGE_HELP =
 
 // The gap list is computed over a deliberately NARROWER population than the
 // "Active events" stat above it: only implemented/live events that are old
-// enough to have had a chance to emit can be "missing data". Naming that
-// population inline stops the panel reading as a subset of the 2.4k "active
-// events" tile, and explains why the Events page's Silent filter — which spans
-// every non-archived status — reports a bigger number (tripl-jfm3.23).
-const GAP_BASIS_HELP = `Implemented and live events only, excluding any created in the last ${DEAD_DAYS} days. The Events page's "Silent > ${DEAD_DAYS}d" filter spans every non-archived status, so its total is larger.`
+// enough to have had a chance to emit can be "missing data" (tripl-jfm3.23).
+// Said for the user, in an info tip beside the panel subtitle (DA-31): the
+// full-width line it used to be explained a cross-page discrepancy nobody had
+// asked about and took four lines on a phone.
+const GAP_BASIS_HELP = `Implemented events older than ${DEAD_DAYS} days that sent no data in the last ${DEAD_DAYS} days.`
+
+// Every status that counts as active but not implemented: the coverage bar's
+// remainder. Linked as an Events filter so "which ones?" has an answer (DA-30).
+const NOT_IMPLEMENTED_STATUSES = ['draft', 'in_review', 'ready_for_dev', 'deprecated'] as const
+
+function notImplementedEventsPath(slug: string): string {
+  const params = new URLSearchParams()
+  for (const status of NOT_IMPLEMENTED_STATUSES) params.append('status', status)
+  return `/p/${slug}/events?${params}`
+}
 
 export default function CoveragePage() {
   const { slug } = useParams<{ slug: string }>()
@@ -145,8 +156,10 @@ export default function CoveragePage() {
           {/* Coverage bar: implemented vs pending across the active plan */}
           {summary && active > 0 && (
             <CoverageBar
+              slug={slug}
               implemented={implemented}
               notImplemented={notImplemented}
+              inReview={summary.review_pending_event_count}
               coverageLabel={formatPlanCoverage(implemented, active)}
             />
           )}
@@ -177,9 +190,12 @@ export default function CoveragePage() {
         <Panel
           title="Instrumentation gaps"
           subtitle={
-            deadQuery.data
-              ? `${formatNumber(deadTotal)} implemented event${deadTotal === 1 ? '' : 's'} with no data in the last ${DEAD_DAYS} days`
-              : undefined
+            deadQuery.data ? (
+              <span className="inline-flex items-center gap-1">
+                {`${formatNumber(deadTotal)} implemented event${deadTotal === 1 ? '' : 's'} with no data in the last ${DEAD_DAYS} days`}
+                <InfoTip help={GAP_BASIS_HELP} />
+              </span>
+            ) : undefined
           }
           right={
             slug && deadItems.length > 0 ? (
@@ -218,9 +234,6 @@ export default function CoveragePage() {
             </div>
           ) : (
             <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
-              <p className="px-(--panel-pad) py-2 text-micro" style={{ color: 'var(--fg-subtle)' }}>
-                {GAP_BASIS_HELP}
-              </p>
               {deadItems.slice(0, GAP_LIMIT).map((item) => (
                 <GapRow key={item.event_id} item={item} slug={slug} />
               ))}
@@ -238,12 +251,17 @@ export default function CoveragePage() {
 }
 
 function CoverageBar({
+  slug,
   implemented,
   notImplemented,
+  inReview,
   coverageLabel,
 }: {
+  slug: string | undefined
   implemented: number
   notImplemented: number
+  /** The "In review" tile's count; part of the not-implemented remainder. */
+  inReview: number
   /**
    * The headline's own formatting (`formatPlanCoverage`). `Math.round` here
    * announced 322 of 323 as "100% of active events are implemented" (DATA-45).
@@ -252,6 +270,22 @@ function CoverageBar({
 }) {
   const total = implemented + notImplemented
   const implementedPct = total > 0 ? (implemented / total) * 100 : 0
+  // In review is a subset of the remainder; the rest are drafts, events ready
+  // for development and deprecated ones. Said under the bar so the tiles and
+  // the bar add up at a glance (DA-30).
+  const inReviewShare = Math.min(inReview, notImplemented)
+  const otherShare = notImplemented - inReviewShare
+  const notImplementedCount = (
+    <>
+      <span
+        className="font-semibold"
+        style={{ color: notImplemented > 0 ? 'var(--warning)' : 'var(--fg)' }}
+      >
+        {formatNumber(notImplemented)}
+      </span>{' '}
+      not implemented
+    </>
+  )
   return (
     <div className="rounded-card border px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
       <div className="mb-2 flex items-center justify-between text-caption" style={{ color: 'var(--fg-muted)' }}>
@@ -261,15 +295,19 @@ function CoverageBar({
           </span>{' '}
           implemented
         </span>
-        <span>
-          <span
-            className="font-semibold"
-            style={{ color: notImplemented > 0 ? 'var(--warning)' : 'var(--fg)' }}
+        {/* "Which ones?" answered: the remainder opens the Events list
+            filtered to exactly those statuses (DA-30). */}
+        {slug && notImplemented > 0 ? (
+          <Link
+            to={notImplementedEventsPath(slug)}
+            className="no-underline hover:underline"
+            style={{ color: 'inherit' }}
           >
-            {formatNumber(notImplemented)}
-          </span>{' '}
-          not implemented
-        </span>
+            {notImplementedCount}
+          </Link>
+        ) : (
+          <span>{notImplementedCount}</span>
+        )}
       </div>
       <div
         className="flex h-2 overflow-hidden rounded-full"
@@ -280,7 +318,36 @@ function CoverageBar({
         <div style={{ width: `${implementedPct}%`, background: 'var(--success)' }} />
         <div style={{ width: `${100 - implementedPct}%`, background: 'var(--warning)' }} />
       </div>
+      {notImplemented > 0 && (
+        <p className="tnum mt-2 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          {`Not implemented: ${formatNumber(inReviewShare)} in review, ${formatNumber(otherShare)} draft, ready for dev or deprecated.`}
+        </p>
+      )}
     </div>
+  )
+}
+
+/**
+ * An info icon that shows `help` on hover or focus, and names it for a screen
+ * reader. Carries its own provider, as TermHint does, so the page renders it
+ * without the app's root one (page tests mount without it).
+ */
+function InfoTip({ help }: { help: string }) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex shrink-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            aria-label={help}
+          >
+            <Info className="size-3" style={{ color: 'var(--fg-faint)' }} aria-hidden="true" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs whitespace-normal">{help}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 

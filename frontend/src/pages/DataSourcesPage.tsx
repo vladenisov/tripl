@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { toast } from 'sonner'
+import { onboardingStepHref, parseOnboardingReturn } from '@/components/onboarding-steps'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dataSourcesApi } from '@/api/dataSources'
+import {
+  dataSourceDeleteMessage,
+  dataSourceDeleteRequireText,
+  dataSourceUsageLabel,
+} from './dataSourceDelete'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
 import {
@@ -35,6 +42,7 @@ import {
   connectionCoreSecretError,
   coreConnectionChanged,
   dataSourceToCoreForm,
+  serverCoreErrors,
   type ConnectionCoreForm,
   type CoreMissing,
 } from '@/components/data-sources/connection-core'
@@ -55,6 +63,7 @@ import { ErrorState } from '@/components/error-state'
 import { StatValueSkeleton } from '@/components/states'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SyntheticSourceBadge } from '@/demo/capabilityBadges'
+import { SrcIcon } from '@/pages/settings/scans/scanLayout'
 import { Chip } from '@/components/primitives/chip'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import {
@@ -144,6 +153,7 @@ export default function DataSourcesPage() {
 
 function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const navigate = useNavigate()
+  const location = useLocation()
   const qc = useQueryClient()
   const { user } = useAuth()
   const [showForm, setShowForm] = useState(false)
@@ -157,6 +167,10 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const [createNameError, setCreateNameError] = useState<string | null>(null)
   const createFormRef = useRef<HTMLFormElement>(null)
   const editFormRef = useRef<HTMLFormElement>(null)
+  // The inputs the last Create / Save was sent with, so a server refusal is
+  // only pinned to a field until that field changes (DA-38).
+  const [createSentKey, setCreateSentKey] = useState<string | null>(null)
+  const [editSentKey, setEditSentKey] = useState<string | null>(null)
 
   const [name, setName] = useState('')
   const [dbType, setDbType] = useState<DbType>('clickhouse')
@@ -172,12 +186,14 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   }
 
   const handleDbTypeChange = (value: DbType) => {
-    const previousDefault = DB_TYPE_OPTIONS.find((o) => o.value === dbType)?.defaultPort
     const nextDefault = DB_TYPE_OPTIONS.find((o) => o.value === value)?.defaultPort
     setDbType(value)
-    // Only auto-update port if the user hasn't customized it away from the
-    // previous adapter's default.
-    if (nextDefault && core.port === previousDefault) {
+    // Only auto-update the port if the user hasn't typed their own. Compared
+    // with EVERY adapter's default, not just the previous type's: BigQuery has
+    // no port, so Postgres → BigQuery → ClickHouse used to keep 5432 and the
+    // test failed like a network problem (DA-39).
+    const portIsADefault = !core.port || DB_TYPE_OPTIONS.some((o) => o.defaultPort === core.port)
+    if (nextDefault && portIsADefault) {
       patchCore({ port: nextDefault })
     }
   }
@@ -223,8 +239,20 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const createMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: () => dataSourcesApi.create(buildCreatePayload()),
+    // A refusal may now mark a control, which then takes focus like a
+    // client-side one does.
+    onError: () => focusFirstInvalidSoon(createFormRef.current),
     onSuccess: (created) => {
       resetForm()
+      // Arrived from the Get-started checklist: the next step is one click
+      // away rather than a trip back to Overview (#250 JR-3).
+      const onboarding = parseOnboardingReturn(location.pathname, location.search)
+      if (onboarding?.step === 'source') {
+        const scansHref = onboardingStepHref(`/p/${onboarding.slug}/scans`, 'scan', onboarding.slug)
+        toast.success(`Data source "${created.name}" connected`, {
+          action: { label: 'Next: Run a catalog + monitoring scan', onClick: () => navigate(scansHref) },
+        })
+      }
       // Tested again the moment it is saved, so the card shows its health right
       // away instead of "unverified" until the first scan (DATA-30).
       void qc
@@ -256,6 +284,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
         ...(connectionSettings ? { connection_settings: connectionSettings } : {}),
       })
     },
+    onError: () => focusFirstInvalidSoon(editFormRef.current),
     onSuccess: (_saved, { id, retest }) => {
       closeEdit()
       // A changed host, credential or TLS setting is re-tested right away, so
@@ -279,7 +308,10 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
   const handleDelete = async (ds: DataSource) => {
     const ok = await confirm({
       title: 'Delete data source',
-      message: `Delete "${ds.name}"? All associated scans and their runs will be removed.`,
+      // Counts what goes with it when the list says (DA-40).
+      message: dataSourceDeleteMessage(ds),
+      // Scans go with it, so a source in use takes its name typed first.
+      requireText: dataSourceDeleteRequireText(ds),
       confirmLabel: 'Delete',
       variant: 'danger',
     })
@@ -291,7 +323,19 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     try {
       const result = await dataSourcesApi.testConnection(id)
       qc.setQueryData<DataSource[] | undefined>(dataSourcesKey(), (prev) =>
-        prev?.map((ds) => (ds.id === id ? result.data_source : ds)),
+        // Only the test's own fields: the rest of the row (scan counts, the
+        // name) is the list's, and a test answer is not the place to refresh
+        // it (F47).
+        prev?.map((ds) =>
+          ds.id === id
+            ? {
+                ...ds,
+                last_test_at: result.data_source.last_test_at,
+                last_test_status: result.data_source.last_test_status,
+                last_test_message: result.data_source.last_test_message,
+              }
+            : ds,
+        ),
       )
     } catch (err) {
       // HTTP failure before the backend persisted anything — reflect it locally
@@ -383,6 +427,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
     // `key` names the inputs the answer is for.
     mutationFn: ({ payload }: { key: string; payload: ReturnType<typeof buildCreatePayload> }) =>
       dataSourcesApi.testDraft(payload),
+    onError: () => focusFirstInvalidSoon(createFormRef.current),
   })
   const draftTestShown = draftTestMut.variables?.key === draftKey && !draftTestMut.isPending
   const testDraft = () => {
@@ -393,6 +438,36 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       return
     }
     draftTestMut.mutate({ key: draftKey, payload: buildCreatePayload() })
+  }
+
+  // A 422 from Create or Test, split onto the controls it names (DA-38): it
+  // used to arrive as "host: String should have at least 1 character; …" at the
+  // foot of the dialog with nothing marked. Like the test answer, a field
+  // refusal belongs to the inputs it was sent with and clears once they change.
+  const createServer = serverCoreErrors(
+    createMut.isError ? createMut.error : null,
+    dbType,
+    REQUIRED_MESSAGE,
+  )
+  const draftServer = serverCoreErrors(
+    draftTestShown && draftTestMut.isError ? draftTestMut.error : null,
+    dbType,
+    REQUIRED_MESSAGE,
+  )
+  const createMissing: CoreMissing = {
+    ...draftServer.fields,
+    ...(createSentKey === draftKey ? createServer.fields : {}),
+    ...createErrors.missing,
+  }
+  const editKey = JSON.stringify(editCore)
+  const editServer = serverCoreErrors(
+    updateMut.isError ? updateMut.error : null,
+    editingDs?.db_type ?? 'clickhouse',
+    REQUIRED_MESSAGE,
+  )
+  const editMissing: CoreMissing = {
+    ...(editSentKey === editKey ? editServer.fields : {}),
+    ...editErrors.missing,
   }
 
   const resetForm = () => {
@@ -417,6 +492,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       focusFirstInvalidSoon(createFormRef.current)
       return
     }
+    setCreateSentKey(draftKey)
     createMut.mutate()
   }
 
@@ -442,6 +518,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
       return
     }
     const settingsChanged = JSON.stringify(editSettings) !== JSON.stringify(baseline)
+    setEditSentKey(editKey)
     updateMut.mutate({
       id: editingDs.id,
       retest: settingsChanged || coreConnectionChanged(editingDs, editCore),
@@ -504,7 +581,8 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
           <MiniStat
             label="Healthy"
             value={statsPending ? <StatValueSkeleton /> : String(healthyCount)}
-            delta={!statsPending && healthyCount > 0 ? 'up' : undefined}
+            // No "up" delta: it read "Healthy 2 · up", a trend the page never
+            // measured (DA-41).
             tone={statsPending ? undefined : 'success'}
             pulse={!statsPending && healthyCount > 0}
           />
@@ -549,7 +627,10 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                       setCreateNameError(null)
                     }}
                     aria-required
-                    placeholder={examplePlaceholder('Production ClickHouse')}
+                    // Follows the type, so BigQuery is not offered "Production ClickHouse" (DA-44).
+                    placeholder={examplePlaceholder(
+                      `Production ${DB_TYPE_OPTIONS.find((o) => o.value === dbType)?.label ?? 'warehouse'}`,
+                    )}
                     {...invalidAria('ds-name', createNameError)}
                   />
                   <FieldError inputId="ds-name" message={createNameError} />
@@ -577,7 +658,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 onChange={patchCore}
                 mode="create"
                 secretError={createErrors.secret}
-                missing={createErrors.missing}
+                missing={createMissing}
               />
               <ConnectionSettingsFields
                 idPrefix="ds"
@@ -586,8 +667,9 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 onChange={patchSettings}
                 pemErrors={createErrors.pem}
               />
-              {createMut.isError && (
-                <p className="text-body text-destructive">{getErrorMessage(createMut.error)}</p>
+              {/* Only what no control can show; field refusals sit under their field. */}
+              {createServer.rest && (
+                <p role="alert" className="text-body text-destructive">{createServer.rest}</p>
               )}
               {draftTestShown && draftTestMut.data && (
                 <p
@@ -597,9 +679,9 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                   {draftTestMut.data.message}
                 </p>
               )}
-              {draftTestShown && draftTestMut.isError && (
+              {draftServer.rest && (
                 <p role="alert" className="text-body text-destructive">
-                  {getErrorMessage(draftTestMut.error)}
+                  {draftServer.rest}
                 </p>
               )}
             </DialogBody>
@@ -653,7 +735,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                       <p className="text-body text-muted-foreground">
                         Demo sources have no warehouse connection to configure.
                       </p>
-                      <Label htmlFor="edit-ds-timeout">Timeout, s</Label>
+                      <Label htmlFor="edit-ds-timeout">Timeout (seconds)</Label>
                       <Input
                         id="edit-ds-timeout"
                         type="number"
@@ -673,7 +755,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                         mode="edit"
                         secretSet={editingDs.password_set}
                         secretError={editErrors.secret}
-                        missing={editErrors.missing}
+                        missing={editMissing}
                       />
                       <ConnectionSettingsFields
                         idPrefix="edit-ds"
@@ -687,8 +769,8 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                   )}
                 </>
               )}
-              {updateMut.isError && (
-                <p className="text-body text-destructive">{getErrorMessage(updateMut.error)}</p>
+              {editServer.rest && (
+                <p className="text-body text-destructive">{editServer.rest}</p>
               )}
             </DialogBody>
             <DialogFooter>
@@ -810,6 +892,8 @@ function DataSourceCard({
     ? `${ds.host}/${ds.database_name}`
     : `${ds.host}:${ds.port}/${ds.database_name}`
   const secretLabel = isBigQuery ? 'Service account key set' : 'Password set'
+  // What reads this source, so the delete's reach shows before its confirm (DA-40).
+  const usageLabel = dataSourceUsageLabel(ds)
 
   return (
     // A card in the page, on the page's surface (DS-10): --bg-elevated is for
@@ -819,22 +903,17 @@ function DataSourceCard({
       style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
     >
       <div className="flex items-start gap-3 p-3.5">
-        <div
-          // Sans: mono is never set bold (DS-17).
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-micro font-bold uppercase"
-          style={{
-            background: 'var(--accent-soft)',
-            color: 'var(--accent)',
-            letterSpacing: '0.04em',
-          }}
-        >
-          {ds.db_type.slice(0, 2)}
-        </div>
+        {/* The warehouse glyph the Scans pages use for this source, not the
+            first two letters of its type ("SY", "CL"), which meant nothing
+            (DA-41). The type itself is named in the chip row below. */}
+        <SrcIcon dbType={ds.db_type} size={36} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-body font-semibold">{ds.name}</span>
           </div>
-          {!connectionRedacted && (
+          {/* The demo warehouse has no real address: its summary read
+              "synthetic:0/synthetic". */}
+          {!connectionRedacted && !ds.is_synthetic && (
             <div
               className="mono mt-0.5 truncate text-caption"
               style={{ color: 'var(--fg-subtle)' }}
@@ -863,10 +942,17 @@ function DataSourceCard({
         {ds.is_synthetic ? <SyntheticSourceBadge /> : <Chip size="xs">{ds.db_type}</Chip>}
         {ds.username && <Chip size="xs">{ds.username}</Chip>}
         {ds.timeout_seconds != null && <Chip size="xs">timeout {ds.timeout_seconds}s</Chip>}
+        {usageLabel && (
+          <span className="text-caption" style={{ color: 'var(--fg-muted)' }}>
+            {usageLabel}
+          </span>
+        )}
         <div className="flex-1" />
         {/* A relative time is not code: sans + tabular digits (DS-17). */}
+        {/* Labelled: two bare relative times on one card (this and the last
+            test's) could not be told apart (DA-41). */}
         <span className="tnum text-micro" style={{ color: 'var(--fg-faint)' }}>
-          {formatRelativeTime(ds.updated_at)}
+          Edited {formatRelativeTime(ds.updated_at)}
         </span>
       </div>
 
@@ -905,7 +991,7 @@ function DataSourceCard({
                 className="tnum ml-auto shrink-0 text-micro"
                 style={{ color: 'var(--fg-faint)' }}
               >
-                {stale ? 're-test to confirm' : formatRelativeTime(lastTestAt)}
+                {stale ? 're-test to confirm' : `Tested ${formatRelativeTime(lastTestAt)}`}
               </span>
             )}
           </div>

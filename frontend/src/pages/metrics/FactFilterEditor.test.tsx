@@ -112,6 +112,11 @@ describe('FactFilterEditor filter check', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  it('says how many rows the filters matched (MT-9)', () => {
+    renderEditor({ onCheck: vi.fn(), checkResult: clean(12340) })
+    expect(screen.getByRole('status')).toHaveTextContent('matched 12,340 rows in the last 7 days')
+  })
+
   it('distinguishes "valid SQL, but matched nothing" from a failure', () => {
     renderEditor({ onCheck: vi.fn(), checkResult: clean(0) })
     const status = screen.getByRole('status')

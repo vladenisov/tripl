@@ -1,7 +1,10 @@
 import type { DbType, JsonPathDiscovery } from '@/types'
+import { Upload } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { useId, useState, type ChangeEvent } from 'react'
+import { Chip } from '@/components/primitives/chip'
+import { useId, useRef, useState, type ChangeEvent } from 'react'
 import { FieldError } from '@/components/forms/FieldError'
 import { examplePlaceholder } from '@/components/forms/placeholders'
 import { invalidAria } from '@/components/forms/validation'
@@ -158,7 +161,7 @@ export function ConnectionCoreFields({
               placeholder={
                 isEdit && secretSet
                   ? 'A key is stored. Leave empty to keep it.'
-                  : 'Paste the key file’s JSON, or load the file below'
+                  : 'Paste the key file’s JSON, or upload the file below'
               }
               className={TEXTAREA_CLASS}
               aria-invalid={keyError ? true : undefined}
@@ -255,7 +258,8 @@ export function ConnectionCoreFields({
           help wrapped into four ragged lines down the left half while the right
           half of the dialog stayed empty (tripl-ofvc). */}
       <div className={FIELD_COL_CLASS}>
-        <Label htmlFor={`${idPrefix}-timeout`}>Timeout, s</Label>
+        {/* The unit in words, like the scan form's "Lookback (hours)" (DA-43). */}
+        <Label htmlFor={`${idPrefix}-timeout`}>Timeout (seconds)</Label>
         <Input
           id={`${idPrefix}-timeout`}
           type="number"
@@ -292,39 +296,74 @@ export function ConnectionCoreFields({
 }
 
 /**
- * "Load key file": reads a downloaded service-account JSON into the field, so
+ * "Upload key file": reads a downloaded service-account JSON into the field, so
  * the key does not have to travel through the clipboard (DATA-29). The file
  * never leaves the browser until the form is saved.
+ *
+ * The native file input is visually hidden behind an outline button (DA-44):
+ * the browser's "Choose File / No file chosen" control clashed with the rest
+ * of the dialog, most of all in dark mode. The loaded file's name shows as a
+ * chip beside the button instead.
  */
 function KeyFileInput({ id, onLoad }: { id: string; onLoad: (text: string) => void }) {
   // A read can fail (the file was moved after it was picked, or a permission
   // or IO error); that used to be an unhandled rejection with no feedback.
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [fileName, setFileName] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const errorId = `${id}-error`
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     const input = e.currentTarget
     const file = input.files?.[0]
     if (!file) return
     setLoadError(null)
-    file.text().then(onLoad, () => setLoadError('Could not read that file. Pick it again.'))
+    file.text().then(
+      (text) => {
+        setFileName(file.name)
+        onLoad(text)
+      },
+      () => {
+        setFileName(null)
+        setLoadError('Could not read that file. Pick it again.')
+      },
+    )
     // Let the same file be picked again after an edit of the textarea.
     input.value = ''
   }
   return (
     <div className="grid gap-1">
-      <div className="flex items-center gap-2">
-        <Label htmlFor={id} className="text-body-sm font-normal text-muted-foreground">
-          Or load the key file
-        </Label>
+      <div className="flex flex-wrap items-center gap-2">
+        {/* The button is the pointer and keyboard target. The input stays in
+            the DOM with a name (for assistive tech and tests) but out of the
+            tab order, so focus does not stop twice on one action. */}
         <input
+          ref={inputRef}
           id={id}
           type="file"
           accept="application/json,.json"
           onChange={handleChange}
+          aria-label="Service account key file"
           aria-invalid={loadError ? true : undefined}
           aria-describedby={loadError ? errorId : undefined}
-          className="text-body-sm file:mr-2 file:rounded-md file:border file:border-input file:bg-background file:px-2 file:py-0.5 file:text-body-sm"
+          tabIndex={-1}
+          className="sr-only"
         />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => inputRef.current?.click()}
+          aria-invalid={loadError ? true : undefined}
+          aria-describedby={loadError ? errorId : undefined}
+        >
+          <Upload aria-hidden="true" />
+          Upload key file…
+        </Button>
+        {fileName && (
+          <Chip size="xs" title={fileName} className="max-w-60 truncate">
+            {fileName}
+          </Chip>
+        )}
       </div>
       {loadError && (
         <p id={errorId} role="alert" className={ERROR_CLASS}>

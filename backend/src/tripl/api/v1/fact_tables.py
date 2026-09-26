@@ -8,7 +8,6 @@ from tripl.models.fact_table import FactTable
 from tripl.schemas.fact_table import (
     FactTableColumnSchema,
     FactTableCreate,
-    FactTableListItem,
     FactTableListResponse,
     FactTablePreviewRequest,
     FactTablePreviewResponse,
@@ -32,17 +31,14 @@ async def list_fact_tables(
     offset: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=1000),
 ) -> FactTableListResponse:
-    items, total = await fact_table_service.list_fact_tables(
+    items, total = await fact_table_service.list_fact_table_items(
         session,
         slug,
         search=search,
         offset=offset,
         limit=limit,
     )
-    return FactTableListResponse(
-        items=[FactTableListItem.model_validate(item) for item in items],
-        total=total,
-    )
+    return FactTableListResponse(items=items, total=total)
 
 
 @router.post("", response_model=FactTableResponse, status_code=201)

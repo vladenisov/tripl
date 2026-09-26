@@ -213,7 +213,7 @@ describe('JobDetails — the raw error behind "Scan failed." (DATA-19)', () => {
       <AuthContext.Provider value={authAs(role)}>
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <JobDetails job={failed} slug="demo" scanConfigId="scan-1" mode="monitoring" />
+            <JobDetails job={failed} slug="demo" scanConfigId="scan-1" mode="monitoring" dataSourceId="ds-1" />
           </MemoryRouter>
         </QueryClientProvider>
       </AuthContext.Provider>,
@@ -234,5 +234,27 @@ describe('JobDetails — the raw error behind "Scan failed." (DATA-19)', () => {
     expect(screen.getByText('Scan failed: the data source did not respond in time.')).toBeInTheDocument()
     expect(screen.queryByText('View technical details')).not.toBeInTheDocument()
     expect(screen.queryByText(RAW)).not.toBeInTheDocument()
+  })
+
+  it('links an owner to the Limits section and to the connection', () => {
+    renderFailed('owner')
+
+    expect(screen.getByRole('link', { name: 'Open Limits' })).toHaveAttribute(
+      'href',
+      '/?tab=configuration#scan-limits',
+    )
+    expect(screen.getByRole('link', { name: 'Open the connection' })).toHaveAttribute(
+      'href',
+      '/settings/data-sources/ds-1',
+    )
+  })
+
+  it('offers no connection link to a role the data-source page would bounce', () => {
+    // Data-source pages are owner-only; an editor following the link landed
+    // back on the list with nothing to test.
+    renderFailed('editor')
+
+    expect(screen.getByRole('link', { name: 'Open Limits' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Open the connection' })).not.toBeInTheDocument()
   })
 })

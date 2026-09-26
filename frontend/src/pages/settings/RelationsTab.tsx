@@ -1,6 +1,6 @@
 import { useId, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Link2, Plus, Trash2 } from "lucide-react"
+import { Link2, Pencil, Plus, Trash2 } from "lucide-react"
 import { eventTypesApi } from "@/api/eventTypes"
 import { relationsApi } from "@/api/relations"
 import { useActiveBranchId } from "@/hooks/useBranch"
@@ -8,27 +8,31 @@ import type { EventType, EventTypeRelation } from "@/types"
 import { useConfirm } from "@/hooks/useConfirm"
 import { Button } from "@/components/ui/button"
 import { IconButton } from "@/components/ui/icon-button"
-import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { PageContainer } from "@/components/primitives/page-container"
 import { PageHeader } from "@/components/primitives/page-header"
-import { SELECT_CLASS } from "@/components/data-sources/connection-settings"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
 import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
-import { Panel } from "@/components/settings/kit"
+import { NativeSelect, Panel } from "@/components/settings/kit"
 import { getErrorMessage } from '@/lib/utils'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { eventTypesKey, relationsKey } from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/states'
 
+/** A stored relation type in words: `belongs_to` -> "belongs to". */
+const relationTypeLabel = (relationType: string) => relationType.replace(/_/g, ' ')
+
 export function RelationsTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
   const canWrite = useCanWriteProject()
   const branchId = useActiveBranchId()
   const [showForm, setShowForm] = useState(false)
+  // The relation the dialog edits; null while it creates one (AU-13).
+  const [editing, setEditing] = useState<EventTypeRelation | null>(null)
   const [srcEtId, setSrcEtId] = useState('')
   const [tgtEtId, setTgtEtId] = useState('')
   const [srcFieldId, setSrcFieldId] = useState('')
@@ -56,16 +60,49 @@ export function RelationsTab({ slug }: { slug: string }) {
   const srcEt = eventTypes.find((e: EventType) => e.id === srcEtId)
   const tgtEt = eventTypes.find((e: EventType) => e.id === tgtEtId)
 
-  const createMut = useMutation({
-    mutationFn: () => relationsApi.create(slug, {
-      source_event_type_id: srcEtId, target_event_type_id: tgtEtId,
-      source_field_id: srcFieldId, target_field_id: tgtFieldId,
-    }, branchId),
+  const closeForm = () => {
+    setShowForm(false); setEditing(null)
+    setSrcEtId(''); setTgtEtId(''); setSrcFieldId(''); setTgtFieldId('')
+  }
+
+  const saveMut = useMutation({
+    // Its error is rendered in the dialog.
+    meta: SILENT_ERROR_META,
+    mutationFn: () => {
+      const ends = {
+        source_event_type_id: srcEtId, target_event_type_id: tgtEtId,
+        source_field_id: srcFieldId, target_field_id: tgtFieldId,
+      }
+      return editing
+        ? relationsApi.update(slug, editing.id, ends, branchId)
+        : relationsApi.create(slug, ends, branchId)
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: relationsKey(slug, branchId) })
-      setShowForm(false); setSrcEtId(''); setTgtEtId(''); setSrcFieldId(''); setTgtFieldId('')
+      closeForm()
     },
   })
+
+  const openCreate = () => {
+    saveMut.reset()
+    setEditing(null)
+    setSrcEtId(''); setTgtEtId(''); setSrcFieldId(''); setTgtFieldId('')
+    setShowForm(true)
+  }
+
+  // Edit in place: the same From/To dialog, seeded with the relation's ends,
+  // so fixing a wrong field no longer means delete and re-create (AU-13).
+  const openEdit = (r: EventTypeRelation) => {
+    saveMut.reset()
+    setEditing(r)
+    setSrcEtId(r.source_event_type_id); setSrcFieldId(r.source_field_id)
+    setTgtEtId(r.target_event_type_id); setTgtFieldId(r.target_field_id)
+    setShowForm(true)
+  }
+
+  const unchanged = editing !== null
+    && editing.source_event_type_id === srcEtId && editing.source_field_id === srcFieldId
+    && editing.target_event_type_id === tgtEtId && editing.target_field_id === tgtFieldId
 
   const deleteMut = useMutation({
     // Its error is rendered under the table.
@@ -107,10 +144,10 @@ export function RelationsTab({ slug }: { slug: string }) {
       <PageHeader
         eyebrow="Plan"
         title="Relations"
-        description="Links between event types by a shared field, so drift and coverage can follow the join."
+        description={<>Declare that a field on one event type refers to a field on another, so drift and coverage can follow the join (e.g. <span className="font-mono">click.screen_name → screen_view.screen_name</span>).</>}
         actions={
           canWrite && (
-            <Button size="sm" onClick={() => setShowForm(true)}>
+            <Button size="sm" onClick={openCreate}>
               <Plus className="size-3.5" />New relation
             </Button>
           )
@@ -118,49 +155,64 @@ export function RelationsTab({ slug }: { slug: string }) {
       />
       {!canWrite && <ReadOnlyNotice />}
 
-      {/* Create dialog */}
-      <Dialog open={showForm} onOpenChange={setShowForm}>
+      {/* Create / edit dialog. Each end of the join is one group — its type, then
+          its field — read top to bottom, with a live preview of the join
+          instead of a 2x2 grid read diagonally (AU-13). */}
+      <Dialog open={showForm} onOpenChange={open => { if (!open) closeForm() }}>
         <DialogContent>
-          <form className="flex min-h-0 flex-col gap-4" onSubmit={e => { e.preventDefault(); createMut.mutate() }}>
-            <DialogHeader><DialogTitle>New relation</DialogTitle></DialogHeader>
+          <form className="flex min-h-0 flex-col gap-4" onSubmit={e => { e.preventDefault(); saveMut.mutate() }}>
+            <DialogHeader>
+              <DialogTitle>{editing ? 'Edit relation' : 'New relation'}</DialogTitle>
+              <DialogDescription>
+                {editing
+                  ? 'Move either end of the join to another event type or field.'
+                  : 'Say that a field on one event type holds the same value as a field on another, so drift and coverage can follow the join.'}
+              </DialogDescription>
+            </DialogHeader>
             <DialogBody className="grid gap-4">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor={srcEtLabelId}>Source event type</Label>
-                  <select id={srcEtLabelId} value={srcEtId} onChange={e => { setSrcEtId(e.target.value); setSrcFieldId('') }} className={SELECT_CLASS}>
-                    <option value="">Select...</option>
-                    {eventTypes.map((et: EventType) => <option key={et.id} value={et.id}>{et.display_name}</option>)}
-                  </select>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor={tgtEtLabelId}>Target event type</Label>
-                  <select id={tgtEtLabelId} value={tgtEtId} onChange={e => { setTgtEtId(e.target.value); setTgtFieldId('') }} className={SELECT_CLASS}>
-                    <option value="">Select...</option>
-                    {eventTypes.map((et: EventType) => <option key={et.id} value={et.id}>{et.display_name}</option>)}
-                  </select>
-                </div>
+                <RelationEndpointFields
+                  legend="From"
+                  typeId={srcEtLabelId}
+                  fieldId={srcFieldLabelId}
+                  eventTypes={eventTypes}
+                  selectedType={srcEt}
+                  typeValue={srcEtId}
+                  fieldValue={srcFieldId}
+                  onTypeChange={value => { setSrcEtId(value); setSrcFieldId('') }}
+                  onFieldChange={setSrcFieldId}
+                />
+                <RelationEndpointFields
+                  legend="To"
+                  typeId={tgtEtLabelId}
+                  fieldId={tgtFieldLabelId}
+                  eventTypes={eventTypes}
+                  selectedType={tgtEt}
+                  typeValue={tgtEtId}
+                  fieldValue={tgtFieldId}
+                  onTypeChange={value => { setTgtEtId(value); setTgtFieldId('') }}
+                  onFieldChange={setTgtFieldId}
+                />
               </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor={srcFieldLabelId}>Source field</Label>
-                  <select id={srcFieldLabelId} value={srcFieldId} onChange={e => setSrcFieldId(e.target.value)} className={SELECT_CLASS}>
-                    <option value="">Select...</option>
-                    {srcEt?.field_definitions.map(f => <option key={f.id} value={f.id}>{f.display_name}</option>)}
-                  </select>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor={tgtFieldLabelId}>Target field</Label>
-                  <select id={tgtFieldLabelId} value={tgtFieldId} onChange={e => setTgtFieldId(e.target.value)} className={SELECT_CLASS}>
-                    <option value="">Select...</option>
-                    {tgtEt?.field_definitions.map(f => <option key={f.id} value={f.id}>{f.display_name}</option>)}
-                  </select>
-                </div>
-              </div>
-              {createMut.isError && <p className="text-body text-destructive">{getErrorMessage(createMut.error)}</p>}
+              <p className="text-body-sm text-muted-foreground" aria-live="polite">
+                {srcFieldId && tgtFieldId ? (
+                  <>
+                    Joins{' '}
+                    <span className="font-mono text-foreground">{endpoint(srcEtId, srcFieldId)}</span>
+                    {' → '}
+                    <span className="font-mono text-foreground">{endpoint(tgtEtId, tgtFieldId)}</span>
+                  </>
+                ) : (
+                  'Pick a field on each side to preview the join.'
+                )}
+              </p>
+              {saveMut.isError && <p role="alert" className="text-body text-destructive">{getErrorMessage(saveMut.error)}</p>}
             </DialogBody>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
-              <Button type="submit" disabled={!srcFieldId || !tgtFieldId || createMut.isPending}>Create</Button>
+              <Button type="button" variant="outline" onClick={closeForm}>Cancel</Button>
+              <Button type="submit" disabled={!srcFieldId || !tgtFieldId || unchanged || saveMut.isPending}>
+                {editing ? 'Save' : 'Create'}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -202,11 +254,12 @@ export function RelationsTab({ slug }: { slug: string }) {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Source</TableHead>
-                  <TableHead className="w-8"><span className="sr-only">Joins</span></TableHead>
-                  <TableHead>Target</TableHead>
+                  {/* One cell per join, so source and target read as one
+                      thing instead of floating apart across a wide arrow
+                      column (AU-13). */}
+                  <TableHead>Join</TableHead>
                   <TableHead>Type</TableHead>
-                  <TableHead className="w-16"><span className="sr-only">Actions</span></TableHead>
+                  <TableHead className="sticky right-0 w-20 bg-surface"><span className="sr-only">Actions</span></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -215,21 +268,36 @@ export function RelationsTab({ slug }: { slug: string }) {
                   const target = endpoint(r.target_event_type_id, r.target_field_id)
                   return (
                     <TableRow key={r.id}>
-                      <TableCell className="font-mono text-body-sm">{source}</TableCell>
-                      <TableCell className="text-muted-foreground" aria-hidden="true">→</TableCell>
-                      <TableCell className="font-mono text-body-sm">{target}</TableCell>
-                      <TableCell className="text-muted-foreground text-body-sm">{r.relation_type}</TableCell>
-                      <TableCell>
+                      <TableCell className="font-mono text-body-sm">
+                        <span>{source}</span>
+                        <span className="px-1.5 text-muted-foreground" aria-hidden="true">→</span>
+                        <span className="sr-only"> to </span>
+                        <span>{target}</span>
+                      </TableCell>
+                      {/* The stored key, in words: "belongs_to" was a value
+                          nobody chose in the dialog. */}
+                      <TableCell className="text-muted-foreground text-body-sm">{relationTypeLabel(r.relation_type)}</TableCell>
+                      <TableCell className="sticky right-0 bg-surface">
                         {canWrite && (
-                          <IconButton
-                            variant="ghost"
-                            className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                            label={`Delete relation between ${source} and ${target}`}
-                            disabled={deleteMut.isPending}
-                            onClick={() => handleDelete(r)}
-                          >
-                            <Trash2 className="h-3 w-3" aria-hidden="true" />
-                          </IconButton>
+                          <div className="flex items-center justify-end gap-0.5">
+                            <IconButton
+                              variant="ghost"
+                              className="h-7 w-7 text-muted-foreground"
+                              label={`Edit relation between ${source} and ${target}`}
+                              onClick={() => openEdit(r)}
+                            >
+                              <Pencil className="h-3 w-3" aria-hidden="true" />
+                            </IconButton>
+                            <IconButton
+                              variant="ghost"
+                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              label={`Delete relation between ${source} and ${target}`}
+                              disabled={deleteMut.isPending}
+                              onClick={() => handleDelete(r)}
+                            >
+                              <Trash2 className="h-3 w-3" aria-hidden="true" />
+                            </IconButton>
+                          </div>
                         )}
                       </TableCell>
                     </TableRow>
@@ -245,10 +313,73 @@ export function RelationsTab({ slug }: { slug: string }) {
           </>
         ) : (
           <div className="px-4 py-8">
-            <EmptyState icon={Link2} title="No relations" description="Link event types by a shared field so drift and coverage can follow the join — e.g. connect Purchase.user_id to Signup.user_id." />
+            <EmptyState
+              icon={Link2}
+              title="No relations"
+              description="Link event types by a shared field so drift and coverage can follow the join — e.g. connect Purchase.user_id to Signup.user_id."
+              action={canWrite ? (
+                <Button type="button" size="sm" onClick={openCreate}>
+                  <Plus className="size-3.5" />Create your first relation
+                </Button>
+              ) : undefined}
+            />
           </div>
         )}
       </Panel>
     </PageContainer>
+  )
+}
+
+/** One end of a relation: its event type, then a field of that type. */
+function RelationEndpointFields({
+  legend,
+  typeId,
+  fieldId,
+  eventTypes,
+  selectedType,
+  typeValue,
+  fieldValue,
+  onTypeChange,
+  onFieldChange,
+}: {
+  legend: 'From' | 'To'
+  typeId: string
+  fieldId: string
+  eventTypes: EventType[]
+  selectedType: EventType | undefined
+  typeValue: string
+  fieldValue: string
+  onTypeChange: (value: string) => void
+  onFieldChange: (value: string) => void
+}) {
+  return (
+    <fieldset className="grid min-w-0 gap-2 rounded-card border border-border-subtle p-3">
+      <legend className="px-1 text-body-sm font-semibold">{legend}</legend>
+      <Label htmlFor={typeId}>Event type</Label>
+      <NativeSelect
+        id={typeId}
+        aria-label={`${legend} event type`}
+        value={typeValue}
+        onChange={onTypeChange}
+        options={[
+          { value: '', label: 'Pick an event type' },
+          ...eventTypes.map(et => ({ value: et.id, label: et.display_name })),
+        ]}
+      />
+      <Label htmlFor={fieldId}>Field</Label>
+      {/* Disabled until its type is set: enabled and empty, it offered a
+          list with nothing in it. */}
+      <NativeSelect
+        id={fieldId}
+        aria-label={`${legend} field`}
+        value={fieldValue}
+        disabled={!selectedType}
+        onChange={onFieldChange}
+        options={[
+          { value: '', label: selectedType ? 'Pick a field' : 'Pick a type first' },
+          ...(selectedType?.field_definitions ?? []).map(f => ({ value: f.id, label: f.display_name })),
+        ]}
+      />
+    </fieldset>
   )
 }

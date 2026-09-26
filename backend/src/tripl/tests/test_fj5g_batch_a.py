@@ -449,6 +449,8 @@ async def test_scan_activity_is_exact_over_the_whole_history(client: AsyncClient
         "latest_job": None,
         "failing_streak": 0,
         "rows_read_24h": 0,
+        "warehouse_rows_24h": 0,
+        "catalog_combinations_24h": 0,
     }
 
 

@@ -6,9 +6,13 @@ import {
   consecutiveFailedRuns,
   deriveScanRunInfo,
   eligibleChunkIntervals,
+  formatDueIn,
+  formatJobScanned,
   jobDurationSeconds,
   jobMetricPoints,
   jobRowsScanned,
+  jobScanned,
+  metricsFreshness,
   parseOptionalPositiveInt,
   parseOptionalShare,
   positiveIntError,
@@ -96,6 +100,66 @@ describe('jobRowsScanned', () => {
     expect(jobRowsScanned(job({ result_summary: { scan_rows_processed: 7 } }))).toBe(7)
     expect(jobRowsScanned(job({ result_summary: {} }))).toBeNull()
     expect(jobRowsScanned(null)).toBeNull()
+  })
+})
+
+describe('jobScanned (#247 DA-4)', () => {
+  it('names a catalog figure as combinations and a metrics figure as rows', () => {
+    expect(jobScanned(job({ result_summary: { query_rows_scanned: 4428, scan_rows_processed: 9 } })))
+      .toEqual({ value: 4428, unit: 'rows' })
+    expect(jobScanned(job({ result_summary: { scan_rows_processed: 153 } })))
+      .toEqual({ value: 153, unit: 'combinations' })
+    expect(jobScanned(job({ result_summary: {} }))).toBeNull()
+  })
+
+  it('prints the unit after the figure, agreeing with the raw count', () => {
+    expect(formatJobScanned({ value: 4428, unit: 'rows' })).toBe(`${(4428).toLocaleString()} rows`)
+    expect(formatJobScanned({ value: 1, unit: 'combinations' })).toBe('1 combo')
+    expect(formatJobScanned({ value: 1500, unit: 'combinations' }, formatCount)).toBe('1.5K combos')
+    expect(formatJobScanned(null)).toBe('—')
+  })
+})
+
+describe('metricsFreshness (#247 DA-5)', () => {
+  const now = Date.parse('2026-01-01T12:00:00Z')
+
+  it('reads the newest metrics run, not the newest run', () => {
+    const jobs = [
+      job({ id: 'catalog', status: 'completed', completed_at: '2026-01-01T11:59:00Z', result_summary: { scan_rows_processed: 5 } }),
+      job({ id: 'metrics', status: 'completed', completed_at: '2026-01-01T11:30:00Z', result_summary: { mode: 'metrics_collection' } }),
+    ]
+    const freshness = metricsFreshness(jobs, '1h', now)
+    expect(freshness.job?.id).toBe('metrics')
+    expect(freshness.lastAt).toBe('2026-01-01T11:30:00Z')
+    expect(freshness.nextAt).toBe(Date.parse('2026-01-01T12:30:00Z'))
+    expect(freshness.overdue).toBe(false)
+  })
+
+  it('flags a series with no point for more than two intervals', () => {
+    const jobs = [
+      job({ status: 'completed', completed_at: '2026-01-01T09:00:00Z', result_summary: { event_metrics: 3 } }),
+    ]
+    expect(metricsFreshness(jobs, '1h', now).overdue).toBe(true)
+  })
+
+  it('does not let a replay stand in for the scheduled collection', () => {
+    const jobs = [
+      job({ id: 'replay', status: 'completed', completed_at: '2026-01-01T11:55:00Z', result_summary: { mode: 'metrics_replay', event_metrics: 40 } }),
+      job({ id: 'metrics', status: 'completed', completed_at: '2026-01-01T08:00:00Z', result_summary: { mode: 'metrics_collection', event_metrics: 3 } }),
+    ]
+    const freshness = metricsFreshness(jobs, '1h', now)
+    expect(freshness.job?.id).toBe('metrics')
+    expect(freshness.overdue).toBe(true)
+  })
+
+  it('has nothing to say before the first metrics run', () => {
+    expect(metricsFreshness([], '1h', now)).toEqual({ job: null, lastAt: null, nextAt: null, overdue: false })
+  })
+
+  it('says when the next run is due', () => {
+    expect(formatDueIn(now + 48 * 60_000, now)).toBe('in 48m')
+    expect(formatDueIn(now + 3 * 3_600_000, now)).toBe('in 3h')
+    expect(formatDueIn(now - 1000, now)).toBe('due now')
   })
 })
 

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { toast } from 'sonner'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -76,6 +76,9 @@ function executedJob(
 function renderChecklist(props: {
   summary: ProjectSummary | undefined
   sourceCount?: number
+  // Defaults to 0: the metric step is shown and not done. `null` leaves the
+  // count unknown, as it is until the project summary carries one.
+  metricCount?: number | null
   slug?: string
   projectId?: string
   isDemo?: boolean
@@ -91,11 +94,30 @@ function renderChecklist(props: {
           projectId={props.projectId}
           summary={props.summary}
           sourceCount={props.sourceCount ?? 0}
+          metricCount={props.metricCount === null ? undefined : props.metricCount ?? 0}
           isDemo={props.isDemo}
         />
       </MemoryRouter>
     </AuthContext.Provider>,
   )
+}
+
+// "Review imported events" ticks once an event has left the review queue:
+// 10 active events, 4 still in review. Coverage stays low (3 of 10), so the
+// established-project auto-hide never kicks in by accident.
+const REVIEWED: Partial<ProjectSummary> = {
+  active_event_count: 10,
+  review_pending_event_count: 4,
+  implemented_event_count: 3,
+}
+
+// Everything but alerting: a source, an executed scan, a reviewed event, a metric.
+function nearlyDoneProps(): { summary: ProjectSummary; sourceCount: number; metricCount: number } {
+  return {
+    summary: makeSummary({ ...REVIEWED, latest_scan_job: executedJob() }),
+    sourceCount: 1,
+    metricCount: 1,
+  }
 }
 
 afterEach(() => {
@@ -104,15 +126,8 @@ afterEach(() => {
 })
 
 describe('OnboardingChecklist collapse and recovery (SHELL-51 / WS-35)', () => {
-  const nearlyDone = () =>
-    makeSummary({
-      event_type_count: 4,
-      latest_scan_job: executedJob(),
-      implemented_event_count: 3,
-    })
-
   it('collapses back to the slim bar after "Show steps", with a real aria-expanded', () => {
-    renderChecklist({ summary: nearlyDone(), sourceCount: 1 })
+    renderChecklist(nearlyDoneProps())
 
     const show = screen.getByRole('button', { name: /show steps/i })
     expect(show).toHaveAttribute('aria-expanded', 'false')
@@ -128,7 +143,7 @@ describe('OnboardingChecklist collapse and recovery (SHELL-51 / WS-35)', () => {
   })
 
   it('offers Undo after a dismissal', () => {
-    renderChecklist({ summary: nearlyDone(), sourceCount: 1, projectId: 'project-1' })
+    renderChecklist({ ...nearlyDoneProps(), projectId: 'project-1' })
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
     expect(screen.queryByText('4 of 5')).not.toBeInTheDocument()
 
@@ -141,41 +156,82 @@ describe('OnboardingChecklist collapse and recovery (SHELL-51 / WS-35)', () => {
   })
 
   it('keys the dismissal on the project id, so a slug rename keeps it', () => {
-    const { unmount } = renderChecklist({
-      summary: nearlyDone(),
-      sourceCount: 1,
-      projectId: 'project-1',
-    })
+    const { unmount } = renderChecklist({ ...nearlyDoneProps(), projectId: 'project-1' })
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
     expect(localStorage.getItem('tripl-onboarding-dismissed:project-1')).toBe('1')
     unmount()
 
-    renderChecklist({
-      summary: nearlyDone(),
-      sourceCount: 1,
-      slug: 'renamed',
-      projectId: 'project-1',
-    })
+    renderChecklist({ ...nearlyDoneProps(), slug: 'renamed', projectId: 'project-1' })
     expect(screen.queryByText('4 of 5')).not.toBeInTheDocument()
   })
 })
 
 describe('OnboardingChecklist', () => {
-  it('renders the five core-loop steps with their deep links', () => {
+  it('orders the five steps along the fastest path, with tagged deep links (JR-2 / JR-3)', () => {
     renderChecklist({ summary: makeSummary() })
 
     expect(screen.getByText('Get started')).toBeInTheDocument()
 
     const expected: ReadonlyArray<[RegExp, string]> = [
-      [/Define your plan/, '/p/demo/events'],
-      [/Connect a data source/, '/settings/data-sources'],
-      [/Run a scan/, '/p/demo/scans'],
-      [/Review reconciliation/, '/p/demo/reconciliation'],
-      [/Set up alerting/, '/p/demo/settings/alerting'],
+      [/Connect a data source/, '/settings/data-sources?onboarding=source&step=1-of-5&project=demo'],
+      [/Run a catalog \+ monitoring scan/, '/p/demo/scans?onboarding=scan&step=2-of-5'],
+      [/Review imported events/, '/p/demo/events/review?onboarding=review&step=3-of-5'],
+      [/Define a key metric/, '/p/demo/metrics/new?onboarding=metric&step=4-of-5'],
+      [/Set up alerting/, '/p/demo/settings/alerting?onboarding=alert&step=5-of-5'],
     ]
     for (const [name, href] of expected) {
       expect(screen.getByRole('link', { name })).toHaveAttribute('href', href)
     }
+    const titles = within(screen.getByRole('list', { name: 'Setup steps' }))
+      .getAllByRole('listitem')
+      .map((item) => item.querySelector('a')?.textContent ?? '')
+    expect(titles[0]).toMatch(/^1?Connect a data source/)
+    expect(titles[4]).toMatch(/Set up alerting/)
+  })
+
+  it('offers adding events by hand on the review step, for a project with no warehouse (JR-2)', () => {
+    renderChecklist({ summary: makeSummary() })
+
+    expect(
+      screen.getByRole('link', { name: 'No warehouse yet? Add events by hand.' }),
+    ).toHaveAttribute('href', '/p/demo/events?onboarding=review&step=3-of-5')
+  })
+
+  it('leaves the metric step out while the metric count is unknown', () => {
+    renderChecklist({ summary: makeSummary(), metricCount: null })
+
+    expect(screen.queryByText('Define a key metric')).not.toBeInTheDocument()
+    expect(screen.getByText('0 of 4')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Set up alerting/ })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting?onboarding=alert&step=4-of-4',
+    )
+  })
+
+  it('reads the metric count off the summary when the caller has none', () => {
+    renderChecklist({ summary: makeSummary({ metric_count: 2 }), metricCount: null })
+
+    expect(screen.getByText('Define a key metric')).toBeInTheDocument()
+    expect(screen.getByText('1 of 5')).toBeInTheDocument()
+  })
+
+  it('names the step count in plain words, not Plan → Observe → Govern (SH-37)', () => {
+    renderChecklist({ summary: makeSummary() })
+
+    expect(screen.getByText(/5 steps to your first monitored event/)).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/Plan → Observe → Govern/)
+  })
+
+  it('keeps upcoming steps at full opacity with their number (SH-37)', () => {
+    renderChecklist({ summary: makeSummary() })
+
+    const upcoming = screen.getByRole('link', { name: /Set up alerting/ })
+    expect(upcoming).not.toHaveStyle({ opacity: '0.6' })
+    expect(upcoming).toHaveTextContent(/^5/)
+    expect(screen.getByRole('link', { name: /Connect a data source/ })).toHaveAttribute(
+      'aria-current',
+      'step',
+    )
   })
 
   it('links "What is this?" under the title to the project glossary (JR-32)', () => {
@@ -187,7 +243,7 @@ describe('OnboardingChecklist', () => {
     )
   })
 
-  it('describes "Run a scan" by what a run produces, not by a baseline (tripl-3y7z)', () => {
+  it('describes the scan step by what a run produces, not by a baseline (tripl-3y7z)', () => {
     // The step ticks on ANY executed run, including a Catalog only scan's, and
     // the manual Run now it asks for calls `run_scan`, which writes events and
     // fields but never a metric point. "Pull recent volume so tripl can learn
@@ -197,18 +253,15 @@ describe('OnboardingChecklist', () => {
     const body = document.body.textContent ?? ''
     expect(body).not.toMatch(/learn the baseline/i)
     expect(body).not.toMatch(/Pull recent volume/i)
-    expect(screen.getByText(/Catalog \+ monitoring/)).toBeInTheDocument()
+    expect(screen.getByText(/Imports your events and fields/)).toBeInTheDocument()
   })
 
   it('auto-derives the completed count from project state', () => {
-    // plan (event types), scan (an EXECUTED job), and reconciliation (coverage)
+    // scan (an EXECUTED job), review (an event out of the queue) and a metric
     // are done → 3 of 5.
     renderChecklist({
-      summary: makeSummary({
-        event_type_count: 4,
-        latest_scan_job: executedJob(),
-        implemented_event_count: 3,
-      }),
+      summary: makeSummary({ ...REVIEWED, latest_scan_job: executedJob() }),
+      metricCount: 1,
     })
 
     expect(screen.getByText('3 of 5')).toBeInTheDocument()
@@ -216,33 +269,41 @@ describe('OnboardingChecklist', () => {
     expect(screen.getAllByText('Done')).toHaveLength(3)
   })
 
-  it('does NOT count a seeded scan config with no executed job as "Run a scan"', () => {
-    // scan_count > 0 (a seeded ScanConfig) but no job has ever run — the scan
-    // step must stay incomplete. plan + reconciliation are the only done steps.
+  it('does not tick the review step while every imported event is still in review', () => {
     renderChecklist({
       summary: makeSummary({
-        event_type_count: 4,
-        scan_count: 3,
-        latest_scan_job: null,
-        implemented_event_count: 3,
+        active_event_count: 6,
+        review_pending_event_count: 6,
+        latest_scan_job: executedJob(),
       }),
+      sourceCount: 1,
     })
 
+    // Source and scan are done; nothing has left the review queue yet.
     expect(screen.getByText('2 of 5')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Review imported events/ })).toHaveAttribute(
+      'aria-current',
+      'step',
+    )
+  })
+
+  it('does NOT count a seeded scan config with no executed job as a run scan', () => {
+    // scan_count > 0 (a seeded ScanConfig) but no job has ever run — the scan
+    // step must stay incomplete. Review is the only done step.
+    renderChecklist({
+      summary: makeSummary({ ...REVIEWED, scan_count: 3, latest_scan_job: null }),
+    })
+
+    expect(screen.getByText('1 of 5')).toBeInTheDocument()
   })
 
   it('does not count a merely-queued (pending) job as an executed scan', () => {
     renderChecklist({
-      summary: makeSummary({
-        event_type_count: 4,
-        scan_count: 1,
-        latest_scan_job: executedJob('pending'),
-        implemented_event_count: 3,
-      }),
+      summary: makeSummary({ ...REVIEWED, scan_count: 1, latest_scan_job: executedJob('pending') }),
     })
 
-    // plan + reconciliation done; the pending job doesn't tick "Run a scan".
-    expect(screen.getByText('2 of 5')).toBeInTheDocument()
+    // Review done; the pending job doesn't tick the scan step.
+    expect(screen.getByText('1 of 5')).toBeInTheDocument()
   })
 
   it('counts a connected data source toward completion', () => {
@@ -257,39 +318,41 @@ describe('OnboardingChecklist', () => {
   // rather than a silent dead-end that keeps the checklist from ever finishing.
 
   it('still counts the data-source step for owners and shows no owner-only flag', () => {
-    renderChecklist({ role: 'owner', summary: makeSummary({ event_type_count: 4 }) })
+    renderChecklist({ role: 'owner', summary: makeSummary(REVIEWED) })
 
-    // plan done → 1 of 5; the owner can action every step.
+    // review done → 1 of 5; the owner can action every step.
     expect(screen.getByText('1 of 5')).toBeInTheDocument()
     expect(screen.queryByText('Owner only')).not.toBeInTheDocument()
   })
 
   it('shows the owner-only data-source step but excludes it from an editor’s progress', () => {
-    renderChecklist({ role: 'editor', summary: makeSummary({ event_type_count: 4 }) })
+    renderChecklist({ role: 'editor', summary: makeSummary(REVIEWED) })
 
-    // plan is done → 1 of 4: the source step is not one of the counted four.
+    // review is done → 1 of 4: the source step is not one of the counted four.
     expect(screen.getByText('1 of 4')).toBeInTheDocument()
     // Still discoverable: the row is rendered, links to the (read-only) list,
     // and is flagged owner-only with an ask-an-owner hint.
     expect(screen.getByRole('link', { name: /Connect a data source/ })).toHaveAttribute(
       'href',
-      '/settings/data-sources',
+      '/settings/data-sources?onboarding=source&step=1-of-5&project=demo',
     )
     expect(screen.getByText('Owner only')).toBeInTheDocument()
     expect(screen.getByText(/ask an owner/i)).toBeInTheDocument()
+    // "Next" skips the owner-only step and lands on the scan.
+    expect(screen.getByRole('link', { name: /Run a catalog/ })).toHaveAttribute('aria-current', 'step')
   })
 
   it('is not shown to a viewer, who can take none of its steps', () => {
-    // Plan, scans and alerting are editor-gated and sources owner-only; the
+    // Scans, review and alerting are editor-gated and sources owner-only; the
     // card could never reach done for this role and just sat there.
-    renderChecklist({ role: 'viewer', summary: makeSummary({ event_type_count: 4 }) })
+    renderChecklist({ role: 'viewer', summary: makeSummary(REVIEWED) })
 
     expect(screen.queryByRole('list', { name: 'Setup steps' })).not.toBeInTheDocument()
     expect(screen.queryByText(/of \d/)).not.toBeInTheDocument()
   })
 
   it('treats an anonymous (no-user) context as a non-owner', () => {
-    renderChecklist({ role: null, summary: makeSummary({ event_type_count: 4 }) })
+    renderChecklist({ role: null, summary: makeSummary(REVIEWED) })
 
     expect(screen.getByText('1 of 4')).toBeInTheDocument()
     expect(screen.getByText('Owner only')).toBeInTheDocument()
@@ -301,13 +364,13 @@ describe('OnboardingChecklist', () => {
     const { container } = renderChecklist({
       role: 'editor',
       summary: makeSummary({
-        event_type_count: 4,
+        ...REVIEWED,
         latest_scan_job: executedJob(),
-        implemented_event_count: 3,
         alert_destination_count: 1,
         alert_rule_count: 1,
       }),
       sourceCount: 0,
+      metricCount: 1,
     })
 
     expect(screen.queryByText('Get started')).not.toBeInTheDocument()
@@ -318,15 +381,12 @@ describe('OnboardingChecklist', () => {
   it('names the real remaining step (not the owner-only source) in an editor’s compact bar', () => {
     renderChecklist({
       role: 'editor',
-      summary: makeSummary({
-        event_type_count: 4,
-        latest_scan_job: executedJob(),
-        implemented_event_count: 3,
-      }),
+      summary: makeSummary({ ...REVIEWED, latest_scan_job: executedJob() }),
       sourceCount: 0,
+      metricCount: 1,
     })
 
-    // plan + scan + reconcile done → 3 of 4 for an editor; alerting is the one
+    // scan + review + metric done → 3 of 4 for an editor; alerting is the one
     // remaining actionable step, and the owner-only source is never named here.
     expect(screen.getByText('3 of 4')).toBeInTheDocument()
     expect(screen.getByText(/1 step left: Set up alerting/)).toBeInTheDocument()
@@ -335,33 +395,22 @@ describe('OnboardingChecklist', () => {
   it('shows an already-connected source as done for an editor, still out of 4', () => {
     // An owner has connected a source (sourceCount > 0): the step is genuinely
     // done. It renders as Done but stays outside the editor's 4-step tally.
-    renderChecklist({
-      role: 'editor',
-      summary: makeSummary({ event_type_count: 4 }),
-      sourceCount: 1,
-    })
+    renderChecklist({ role: 'editor', summary: makeSummary(REVIEWED), sourceCount: 1 })
 
     expect(screen.getByText('1 of 4')).toBeInTheDocument()
     expect(screen.queryByText('Owner only')).not.toBeInTheDocument()
-    // Both plan and the connected source render a Done badge.
+    // Both review and the connected source render a Done badge.
     expect(screen.getAllByText('Done')).toHaveLength(2)
   })
 
   it('collapses to a compact bar once all but the last step are done (fix #13)', () => {
     // 4 of 5 done — everything except alerting → slim bar, not the full card.
-    renderChecklist({
-      summary: makeSummary({
-        event_type_count: 4,
-        latest_scan_job: executedJob(),
-        implemented_event_count: 3,
-      }),
-      sourceCount: 1,
-    })
+    renderChecklist(nearlyDoneProps())
 
     expect(screen.getByText('4 of 5')).toBeInTheDocument()
     // The tall card header and its step rows are hidden until expanded.
     expect(screen.queryByText('Get started')).not.toBeInTheDocument()
-    expect(screen.queryByText('Define your plan')).not.toBeInTheDocument()
+    expect(screen.queryByText('Review imported events')).not.toBeInTheDocument()
 
     // Expanding reveals the full multi-row checklist.
     fireEvent.click(screen.getByRole('button', { name: /show steps/i }))
@@ -370,14 +419,7 @@ describe('OnboardingChecklist', () => {
   })
 
   it('can still be dismissed from the compact bar (fix #13)', () => {
-    renderChecklist({
-      summary: makeSummary({
-        event_type_count: 4,
-        latest_scan_job: executedJob(),
-        implemented_event_count: 3,
-      }),
-      sourceCount: 1,
-    })
+    renderChecklist(nearlyDoneProps())
 
     expect(screen.getByText('4 of 5')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
@@ -387,15 +429,10 @@ describe('OnboardingChecklist', () => {
   })
 
   it('auto-hides once every step is complete', () => {
+    const props = nearlyDoneProps()
     renderChecklist({
-      summary: makeSummary({
-        event_type_count: 4,
-        latest_scan_job: executedJob(),
-        implemented_event_count: 3,
-        alert_destination_count: 1,
-        alert_rule_count: 1,
-      }),
-      sourceCount: 1,
+      ...props,
+      summary: { ...props.summary, alert_destination_count: 1, alert_rule_count: 1 },
     })
 
     expect(screen.queryByText('Get started')).not.toBeInTheDocument()
@@ -408,15 +445,10 @@ describe('OnboardingChecklist', () => {
   // setup that could never reach anyone.
 
   it('does not complete "Set up alerting" on a destination with no rule', () => {
+    const props = nearlyDoneProps()
     renderChecklist({
-      summary: makeSummary({
-        event_type_count: 4,
-        latest_scan_job: executedJob(),
-        implemented_event_count: 3,
-        alert_destination_count: 1,
-        alert_rule_count: 0,
-      }),
-      sourceCount: 1,
+      ...props,
+      summary: { ...props.summary, alert_destination_count: 1, alert_rule_count: 0 },
     })
 
     // Four of five: the destination exists but routes nothing, so the card
@@ -426,15 +458,10 @@ describe('OnboardingChecklist', () => {
   })
 
   it('completes "Set up alerting" once a rule is bound to the destination', () => {
+    const props = nearlyDoneProps()
     const { container } = renderChecklist({
-      summary: makeSummary({
-        event_type_count: 4,
-        latest_scan_job: executedJob(),
-        implemented_event_count: 3,
-        alert_destination_count: 1,
-        alert_rule_count: 1,
-      }),
-      sourceCount: 1,
+      ...props,
+      summary: { ...props.summary, alert_destination_count: 1, alert_rule_count: 1 },
     })
 
     expect(container).toBeEmptyDOMElement()
@@ -443,22 +470,17 @@ describe('OnboardingChecklist', () => {
   it('does not complete alerting on a rule with no destination', () => {
     // Defensive: the two counters are independent on the wire, and a rule
     // cannot route without a channel any more than the reverse.
+    const props = nearlyDoneProps()
     renderChecklist({
-      summary: makeSummary({
-        event_type_count: 4,
-        latest_scan_job: executedJob(),
-        implemented_event_count: 3,
-        alert_destination_count: 0,
-        alert_rule_count: 1,
-      }),
-      sourceCount: 1,
+      ...props,
+      summary: { ...props.summary, alert_destination_count: 0, alert_rule_count: 1 },
     })
 
     expect(screen.getByText('4 of 5')).toBeInTheDocument()
   })
 
   it('tells the user a RULE is what routes anomalies', () => {
-    renderChecklist({ summary: makeSummary({ event_type_count: 4 }), sourceCount: 1 })
+    renderChecklist({ summary: makeSummary(REVIEWED), sourceCount: 1 })
 
     // The old hint ("Add a destination so anomalies reach your team.") taught
     // the same wrong model the done-check encoded.
@@ -466,10 +488,11 @@ describe('OnboardingChecklist', () => {
     expect(screen.queryByText(/Add a destination so anomalies reach your team/)).toBeNull()
   })
 
-  it('auto-hides for an established project when only an optional step remains (tripl-7l83.12)', () => {
+  it('auto-hides for an established project when only optional steps remain (tripl-7l83.12)', () => {
     // windy-android-shaped: high coverage, real scans and sources, but alerting
-    // was deliberately never wired up. The core loop is set up, so a "4 of 5"
-    // that can never reach 5 should disappear, not become permanent chrome.
+    // was deliberately never wired up and no metric defined. The core loop is
+    // set up, so a "3 of 5" that may never reach 5 should disappear, not become
+    // permanent chrome.
     const { container } = renderChecklist({
       summary: makeSummary({
         event_type_count: 12,
@@ -479,6 +502,7 @@ describe('OnboardingChecklist', () => {
         // alert_destination_count stays 0 — the skipped optional step
       }),
       sourceCount: 1,
+      metricCount: 0,
     })
 
     expect(screen.queryByText('Get started')).not.toBeInTheDocument()
@@ -497,6 +521,7 @@ describe('OnboardingChecklist', () => {
         latest_scan_job: executedJob(),
       }),
       sourceCount: 1,
+      metricCount: 1,
     })
 
     expect(screen.getByText('4 of 5')).toBeInTheDocument()
@@ -504,14 +529,7 @@ describe('OnboardingChecklist', () => {
   })
 
   it('names the single remaining step inline in the compact bar (tripl-7l83.12)', () => {
-    renderChecklist({
-      summary: makeSummary({
-        event_type_count: 4,
-        latest_scan_job: executedJob(),
-        implemented_event_count: 3,
-      }),
-      sourceCount: 1,
-    })
+    renderChecklist(nearlyDoneProps())
 
     expect(screen.getByText(/1 step left: Set up alerting/)).toBeInTheDocument()
   })
@@ -521,15 +539,7 @@ describe('OnboardingChecklist', () => {
     // "Connect a data source" step could never complete — this otherwise yields
     // "4 of 5" and a permanent "Almost set up" bar. Demos own their onboarding
     // (DemoWelcomePanel + coach), so the checklist must render nothing.
-    const { container } = renderChecklist({
-      summary: makeSummary({
-        event_type_count: 4,
-        latest_scan_job: executedJob(),
-        implemented_event_count: 3,
-      }),
-      sourceCount: 1,
-      isDemo: true,
-    })
+    const { container } = renderChecklist({ ...nearlyDoneProps(), isDemo: true })
 
     expect(screen.queryByText('Get started')).not.toBeInTheDocument()
     expect(screen.queryByText(/Almost set up/)).not.toBeInTheDocument()
@@ -540,15 +550,7 @@ describe('OnboardingChecklist', () => {
   it('still shows the compact bar for a non-demo project with the same "4 of 5" state', () => {
     // Regression guard: the isDemo hide must not swallow real projects. The same
     // summary that a demo hides renders the "Almost set up" bar when not a demo.
-    renderChecklist({
-      summary: makeSummary({
-        event_type_count: 4,
-        latest_scan_job: executedJob(),
-        implemented_event_count: 3,
-      }),
-      sourceCount: 1,
-      isDemo: false,
-    })
+    renderChecklist({ ...nearlyDoneProps(), isDemo: false })
 
     expect(screen.getByText('4 of 5')).toBeInTheDocument()
     expect(screen.getByText(/Almost set up/)).toBeInTheDocument()

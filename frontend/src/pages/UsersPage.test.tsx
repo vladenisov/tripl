@@ -127,6 +127,41 @@ describe('UsersPage', () => {
     expect(revoked).toEqual([])
   })
 
+  it('splits the page into titled settings cards with counts (ST-14, ST-40)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/users')) {
+        return Promise.resolve(
+          jsonResponse([
+            { ...OWNER.user, created_at: '2026-01-02T12:00:00Z' },
+            {
+              id: 'u2',
+              email: 'ed@example.com',
+              name: 'Ed',
+              role: 'editor',
+              created_at: '2026-01-02T12:00:00Z',
+              updated_at: '2026-01-02T12:00:00Z',
+            },
+          ]),
+        )
+      }
+      if (url.endsWith('/api/v1/users/invitations')) return Promise.resolve(jsonResponse([INVITATION]))
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderUsersPage()
+
+    expect(screen.getByRole('heading', { name: 'Invite a member' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Pending invitations' })).toBeInTheDocument()
+    expect(screen.getByText('1 pending')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Members' })).toBeInTheDocument()
+    expect(await screen.findByText('2 people')).toBeInTheDocument()
+    // The page's main action is the primary button (ST-15), and the
+    // instance-registration aside is gone (ST-14).
+    expect(screen.getByRole('button', { name: 'Create invite link' })).toHaveClass('bg-accent-solid')
+    expect(screen.queryByText(/self-service registration/)).toBeNull()
+  })
+
   it('selects the one-time invite link when the clipboard is unavailable', async () => {
     const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
     Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })

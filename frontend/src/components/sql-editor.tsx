@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import CodeMirror, { type EditorView } from '@uiw/react-codemirror'
 import { sql, type SQLNamespace } from '@codemirror/lang-sql'
 import { toast } from 'sonner'
@@ -43,6 +43,10 @@ function buildSqlNamespace(tables: readonly TableSchema[]): SQLNamespace {
  * SELECT and the free-text fact row filter — so every place a user writes
  * warehouse SQL gets the same first-class editor, and read-only on the
  * monitoring metric-definition card, which shows the query it ran.
+ *
+ * `compact` is for one-line WHERE fragments (fact filters, fact-table row
+ * filters): no gutter, no Format button and no table browser — about 130px of
+ * chrome per row — while autocomplete still works (MT-14).
  */
 export function SqlEditor({
   value,
@@ -57,6 +61,8 @@ export function SqlEditor({
   ariaDescribedBy,
   ariaInvalid = false,
   ariaRequired = false,
+  compact = false,
+  error,
 }: {
   value: string
   onChange: (v: string) => void
@@ -77,6 +83,13 @@ export function SqlEditor({
   ariaDescribedBy?: string
   ariaInvalid?: boolean
   ariaRequired?: boolean
+  /** One-line fragment mode: no line numbers, Format or table browser. */
+  compact?: boolean
+  /**
+   * A validation message rendered right under the editor, above Format and the
+   * table browser, so it sits against the control it describes (MT-8).
+   */
+  error?: ReactNode
 }) {
   const viewRef = useRef<EditorView | null>(null)
   // CodeMirror defaults to its LIGHT theme, which registers the editor as
@@ -220,26 +233,27 @@ export function SqlEditor({
           aria-label={ariaLabel}
           theme={editorTheme}
           extensions={extensions}
-          basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: false }}
-          minHeight={minHeight}
+          basicSetup={{ lineNumbers: !compact, foldGutter: false, highlightActiveLine: false }}
+          minHeight={minHeight ?? (compact ? '32px' : undefined)}
           onCreateEditor={view => {
             viewRef.current = view
             applyContentAria(view)
           }}
         />
       </div>
+      {error}
       {/* Format sits under the editor, not over it: an overlay button covered
           the first line of every query wider than the box — the same fix the
           JSON editor took, in the same shape. The guard wraps the whole row so
           a read-only mount gains no empty strip. */}
-      {!readOnly && (
+      {!readOnly && !compact && (
         <div className="flex items-start justify-end gap-2">
           <Button type="button" variant="ghost" size="xs" onClick={handleFormat} className="shrink-0">
             Format
           </Button>
         </div>
       )}
-      {!readOnly && tables && tables.length > 0 && (
+      {!readOnly && !compact && tables && tables.length > 0 && (
         <SqlSchemaBrowser tables={tables} onInsert={insertToken} />
       )}
     </div>

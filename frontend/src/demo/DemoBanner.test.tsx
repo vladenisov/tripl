@@ -176,6 +176,21 @@ describe('DemoBanner', () => {
     expect(pill).toHaveAttribute('aria-expanded', 'false')
   })
 
+  it('wraps the phone panel instead of pushing Reset and Delete off-screen (#251 SH-1)', () => {
+    renderBanner()
+
+    // Both inner groups were `shrink-0` on one line: at 390 the panel content
+    // came to 462px in a 364px panel. They wrap below `lg` and hold the line
+    // only from there.
+    const actions = screen.getByRole('button', { name: /^delete$/i }).parentElement
+    expect(actions).toContainElement(screen.getByRole('button', { name: /^reset$/i }))
+    expect(actions).toHaveClass('flex-wrap', 'lg:flex-nowrap', 'lg:shrink-0')
+    expect(actions).not.toHaveClass('shrink-0')
+    const info = screen.getByText('Demo workspace').parentElement
+    expect(info).toHaveClass('flex-wrap', 'lg:flex-nowrap')
+    expect(info).not.toHaveClass('shrink-0')
+  })
+
   it('reports freshness from the runtime tick, not the seed time (tripl-2su6.17)', () => {
     // demo_seeded_at is floored to the hour, so a demo seeded at 10:59 carries
     // 10:00 and would read "refreshed 59m ago" the moment it appeared — and no

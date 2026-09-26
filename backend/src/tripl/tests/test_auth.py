@@ -458,9 +458,17 @@ async def test_auth_status_reports_whether_registration_is_accepted(
 
     # Empty instance: the bootstrap signup is always on offer.
     empty = await anon_client.get("/api/v1/auth/status")
-    assert empty.json() == {"has_users": False, "registration_enabled": True}
+    assert empty.json() == {
+        "has_users": False,
+        "registration_enabled": True,
+        "email_configured": False,
+    }
 
     await _register(anon_client, "status-owner@example.com", "Password123!")
 
     provisioned = await anon_client.get("/api/v1/auth/status")
-    assert provisioned.json() == {"has_users": True, "registration_enabled": False}
+    assert provisioned.json() == {
+        "has_users": True,
+        "registration_enabled": False,
+        "email_configured": False,
+    }

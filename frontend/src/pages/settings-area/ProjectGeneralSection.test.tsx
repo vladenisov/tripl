@@ -141,6 +141,28 @@ describe('ProjectGeneralSection', () => {
     expect(save).toBeDisabled()
   })
 
+  it('marks a bad slug and a bad release count as errors, and says the form is edited (ST-2)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection()
+
+    const slugInput = await screen.findByLabelText('Slug')
+    await waitFor(() => expect(slugInput).toHaveValue('demo'))
+    fireEvent.change(slugInput, { target: { value: 'Bad Slug' } })
+
+    expect(slugInput).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
+
+    const releases = screen.getByLabelText('Releases to keep')
+    fireEvent.change(releases, { target: { value: '0' } })
+    expect(releases).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByText(/Enter a whole number from 1 to/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Save changes/ })).toBeDisabled()
+  })
+
   it('rebuilds the search index', async () => {
     const reindex = vi.spyOn(searchApi, 'reindex').mockResolvedValue({
       documents_indexed: 42,
@@ -254,7 +276,9 @@ describe('ProjectGeneralSection', () => {
 
     // Wait for the project to load, then confirm the whole owner-only danger
     // zone is absent rather than a card of buttons the editor can never press.
-    await screen.findByLabelText('Name')
+    // A non-editor reads the details as text, not as disabled inputs (#252 ST-18).
+    expect(await screen.findByText('Demo')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Reset anomalies' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Reset drifts' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Delete project/ })).not.toBeInTheDocument()
@@ -287,14 +311,17 @@ describe('ProjectGeneralSection', () => {
     })
     renderSection(authValue('editor'))
 
-    expect(await screen.findByLabelText('Name')).toBeDisabled()
-    expect(screen.getByLabelText('Releases to keep')).toBeDisabled()
+    // Values as text, not dashed dead inputs (ST-18).
+    expect(await screen.findByText('Demo')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Name')).toBeNull()
+    expect(screen.queryByLabelText('Releases to keep')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Save changes/ })).toBeNull()
     expect(screen.getByRole('note')).toHaveTextContent(/creator or an owner/)
     // Reindex is a plain project mutation, which shared projects allow editors.
     expect(screen.getByRole('button', { name: 'Rebuild index' })).toBeEnabled()
   })
 
-  it('disables Rebuild index when the project says this user may not mutate it', async () => {
+  it('leaves Rebuild index out when the project says this user may not mutate it (ST-18)', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo')) {
@@ -304,8 +331,9 @@ describe('ProjectGeneralSection', () => {
     })
     renderSection(authValue('editor'))
 
-    await screen.findByLabelText('Name')
-    expect(screen.getByRole('button', { name: 'Rebuild index' })).toBeDisabled()
+    await screen.findByText('Demo')
+    expect(screen.queryByRole('button', { name: 'Rebuild index' })).toBeNull()
+    expect(screen.queryByText('Maintenance')).toBeNull()
   })
 
   it('tells a viewer once why the form is read-only', async () => {
@@ -316,9 +344,12 @@ describe('ProjectGeneralSection', () => {
     })
     renderSection(authValue('viewer'))
 
-    expect(await screen.findByLabelText('Name')).toBeDisabled()
+    expect(await screen.findByText('Demo')).toBeInTheDocument()
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
-    expect(screen.getByRole('button', { name: 'Rebuild index' })).toBeDisabled()
+    // No dead controls under a notice that says nothing can change (ST-18).
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Rebuild index' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Save changes/ })).toBeNull()
   })
 
   it('resets anomalies with the chosen period after confirmation', async () => {
@@ -332,7 +363,10 @@ describe('ProjectGeneralSection', () => {
         url.endsWith('/api/v1/projects/demo/danger/reset-anomalies') &&
         init?.method === 'POST'
       ) {
-        resetBody = JSON.parse(String(init?.body))
+        const body = JSON.parse(String(init?.body))
+        // The dry run that feeds the confirm is not the reset (ST-39).
+        if (body.dry_run) return jsonResponse({ metric_anomalies: 5, metric_breakdown_anomalies: 2 })
+        resetBody = body
         return jsonResponse({ metric_anomalies: 5, metric_breakdown_anomalies: 2 })
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -346,8 +380,9 @@ describe('ProjectGeneralSection', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Reset anomalies' }))
 
-    // Confirm in the irreversible-action dialog.
+    // Confirm in the irreversible-action dialog, which counts what goes (ST-39).
     const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent('Permanently delete 5 anomalies and 2 breakdown anomalies (older than 7 days)')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Reset anomalies' }))
 
     expect(
@@ -355,11 +390,37 @@ describe('ProjectGeneralSection', () => {
     ).toBeInTheDocument()
 
     expect(resetBody).not.toBeNull()
-    const body = resetBody as unknown as { before: string; after: string | null }
+    const body = resetBody as unknown as { before: string; after: string | null; dry_run?: boolean }
     expect(body.after).toBeNull()
+    expect(body.dry_run).toBeUndefined()
     // The cutoff must be ~7 days ago (the chosen window), not the 30-day default.
     const sevenDaysMs = 7 * 24 * 60 * 60 * 1000
     expect(Math.abs(Date.now() - Date.parse(body.before) - sevenDaysMs)).toBeLessThan(60_000)
+  })
+})
+
+describe('ProjectGeneralSection — reset preview', () => {
+  it('says when the reset could not be counted instead of dropping the count silently', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects/demo') && (init?.method ?? 'GET') === 'GET') {
+        return jsonResponse(PROJECT)
+      }
+      if (url.endsWith('/danger/reset-drifts') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ detail: 'Count unavailable' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset drifts' }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent('Permanently delete schema and distribution drift detections')
+    expect(dialog).toHaveTextContent("The count couldn't be read first. This cannot be undone.")
   })
 })
 

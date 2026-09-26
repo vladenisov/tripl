@@ -570,6 +570,7 @@ export function TextArea({
   onChange,
   placeholder,
   rows = 3,
+  autoGrow = false,
   mono,
   disabled,
   id,
@@ -581,6 +582,13 @@ export function TextArea({
   onChange?: (value: string) => void
   placeholder?: string
   rows?: number
+  /**
+   * Grow with the text from `rows` lines up to 8, then scroll. A fixed box cut
+   * a longer description through the middle of a line and read as broken
+   * rather than scrollable (ST-37). Browsers without `field-sizing` keep the
+   * fixed `rows` height.
+   */
+  autoGrow?: boolean
   mono?: boolean
   disabled?: boolean
   id?: string
@@ -603,9 +611,11 @@ export function TextArea({
   return (
     <textarea
       {...props}
-      className={cn(INPUT_CLASS, mono && 'mono')}
+      className={cn(INPUT_CLASS, mono && 'mono', autoGrow && 'field-sizing-content')}
       style={{
         width: '100%',
+        // 18px = the vertical padding plus the two border lines.
+        ...(autoGrow ? { minHeight: `calc(${rows}lh + 18px)`, maxHeight: 'calc(8lh + 18px)' } : {}),
         borderRadius: INPUT_RADIUS,
         border: INPUT_EDGE,
         background: 'var(--bg)',
@@ -635,6 +645,7 @@ export function NativeSelect({
   options,
   disabled,
   id,
+  width = 'compact',
   'aria-required': ariaRequired,
   'aria-label': ariaLabel,
   'aria-invalid': ariaInvalid,
@@ -644,6 +655,13 @@ export function NativeSelect({
   onChange?: (value: string) => void
   options: readonly SelectOption[]
   disabled?: boolean
+  /**
+   * `compact` (default) caps the select at 280px, for short enums beside a
+   * button or in a toolbar. `fill` takes the whole control column of a form
+   * row, so its right edge lines up with the text inputs above and below and
+   * a long option label is not cut mid-word (ST-27).
+   */
+  width?: 'compact' | 'fill'
   id?: string
   'aria-required'?: boolean
   'aria-label'?: string
@@ -653,7 +671,7 @@ export function NativeSelect({
 }) {
   const { id: controlId, aria: fieldAria } = useFieldControl(id)
   return (
-    <div className="relative" style={{ maxWidth: 280 }}>
+    <div className="relative" style={width === 'compact' ? { maxWidth: 280 } : undefined}>
       <select
         id={controlId}
         value={value}

@@ -8,7 +8,8 @@ Two categories are cleared independently:
   there is no separate signal table to touch.
 - **Drifts** — ``schema_drifts`` + ``distribution_drifts``.
 
-Both operations are destructive and irreversible. They use bulk
+Both operations are destructive and irreversible unless called with
+``dry_run=True``, which counts the same rows and deletes nothing. They use bulk
 ``delete(...).where(...)`` with ``synchronize_session=False`` (no ORM objects are
 loaded), commit, and return per-table deleted counts. They are idempotent: a
 second call over the same (now-empty) period deletes nothing and returns zeros.
@@ -27,7 +28,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
@@ -40,6 +41,27 @@ from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.scan_config import ScanConfig
 from tripl.models.schema_drift import SchemaDrift
+
+
+async def _count_or_delete(
+    session: AsyncSession,
+    model: type[object],
+    conditions: list[ColumnElement[bool]],
+    *,
+    dry_run: bool,
+) -> int:
+    """Delete the rows matching *conditions*, or only count them on a dry run.
+
+    One filter feeds both statements, so the preview can never describe a
+    different set of rows than the delete would remove.
+    """
+    if dry_run:
+        count = await session.execute(select(func.count()).select_from(model).where(*conditions))
+        return int(count.scalar() or 0)
+    result = await session.execute(
+        delete(model).where(*conditions).execution_options(synchronize_session=False)
+    )
+    return int(getattr(result, "rowcount", 0) or 0)
 
 
 def _period_conditions(
@@ -66,6 +88,7 @@ async def reset_project_anomalies(
     *,
     before: datetime | None,
     after: datetime | None,
+    dry_run: bool = False,
 ) -> dict[str, int]:
     """Delete every metric + breakdown anomaly in *project_id* within the period.
 
@@ -94,32 +117,32 @@ async def reset_project_anomalies(
             MetricAnomaly.scope_ref.in_(metric_scope_refs),
         ),
     )
-    anomaly_result = await session.execute(
-        delete(MetricAnomaly)
-        .where(
-            anomaly_scope,
-            *_period_conditions(MetricAnomaly.bucket, before=before, after=after),
-        )
-        .execution_options(synchronize_session=False)
+    anomaly_count = await _count_or_delete(
+        session,
+        MetricAnomaly,
+        [anomaly_scope, *_period_conditions(MetricAnomaly.bucket, before=before, after=after)],
+        dry_run=dry_run,
     )
 
     # Breakdown anomalies always carry a non-NULL ``scan_config_id`` (metric-scope
     # rows have no breakdowns), so scan-config scoping is complete on its own.
-    breakdown_result = await session.execute(
-        delete(MetricBreakdownAnomaly)
-        .where(
+    breakdown_count = await _count_or_delete(
+        session,
+        MetricBreakdownAnomaly,
+        [
             MetricBreakdownAnomaly.scan_config_id.in_(
                 select(ScanConfig.id).where(ScanConfig.project_id == project_id)
             ),
             *_period_conditions(MetricBreakdownAnomaly.bucket, before=before, after=after),
-        )
-        .execution_options(synchronize_session=False)
+        ],
+        dry_run=dry_run,
     )
 
-    await session.commit()
+    if not dry_run:
+        await session.commit()
     return {
-        "metric_anomalies": int(getattr(anomaly_result, "rowcount", 0) or 0),
-        "metric_breakdown_anomalies": int(getattr(breakdown_result, "rowcount", 0) or 0),
+        "metric_anomalies": anomaly_count,
+        "metric_breakdown_anomalies": breakdown_count,
     }
 
 
@@ -129,6 +152,7 @@ async def reset_project_drifts(
     *,
     before: datetime | None,
     after: datetime | None,
+    dry_run: bool = False,
 ) -> dict[str, int]:
     """Delete schema + distribution drifts in *project_id* within the period.
 
@@ -138,29 +162,32 @@ async def reset_project_drifts(
     the project's scan configs. Returns per-table deleted counts. Commits;
     idempotent.
     """
-    schema_result = await session.execute(
-        delete(SchemaDrift)
-        .where(
+    schema_count = await _count_or_delete(
+        session,
+        SchemaDrift,
+        [
             SchemaDrift.event_type_id.in_(
                 select(EventType.id).where(EventType.project_id == project_id)
             ),
             *_period_conditions(SchemaDrift.detected_at, before=before, after=after),
-        )
-        .execution_options(synchronize_session=False)
+        ],
+        dry_run=dry_run,
     )
-    distribution_result = await session.execute(
-        delete(DistributionDrift)
-        .where(
+    distribution_count = await _count_or_delete(
+        session,
+        DistributionDrift,
+        [
             DistributionDrift.scan_config_id.in_(
                 select(ScanConfig.id).where(ScanConfig.project_id == project_id)
             ),
             *_period_conditions(DistributionDrift.bucket, before=before, after=after),
-        )
-        .execution_options(synchronize_session=False)
+        ],
+        dry_run=dry_run,
     )
 
-    await session.commit()
+    if not dry_run:
+        await session.commit()
     return {
-        "schema_drifts": int(getattr(schema_result, "rowcount", 0) or 0),
-        "distribution_drifts": int(getattr(distribution_result, "rowcount", 0) or 0),
+        "schema_drifts": schema_count,
+        "distribution_drifts": distribution_count,
     }

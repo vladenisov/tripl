@@ -248,7 +248,13 @@ export interface ScanActivityItem {
   // Consecutive failed runs, newest first, looking past queued/running jobs.
   failing_streak: number
   // Rows read by jobs stamped (completed, else started) inside the window.
+  // Mixes two units; the split pair below sums to it.
   rows_read_24h: number
+  // Warehouse rows metrics runs read, and the GROUP BY ALL combinations catalog
+  // runs read back, over the same window (#247 DA-4). Always sent; optional so
+  // fixtures written before the split still type.
+  warehouse_rows_24h?: number
+  catalog_combinations_24h?: number
 }
 
 export interface ScanActivityResponse {

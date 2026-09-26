@@ -884,6 +884,13 @@ class AlertDestinationResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# ``config``: our own validators refused a stored value; ``policy``: this
+# project may not send outside (a demo); ``other``: nothing more specific fits.
+DestinationTestErrorKind = Literal[
+    "config", "policy", "dns", "timeout", "tls", "network", "http_status", "smtp", "other"
+]
+
+
 class AlertDestinationTestResponse(BaseModel):
     """Result of a manual test send — did this destination reach its channel?
 
@@ -902,6 +909,12 @@ class AlertDestinationTestResponse(BaseModel):
     # both values explicitly, including the ``None`` half of each pair.
     error: str | None
     sent_at: datetime | None
+    # What kind of failure ``error`` describes (AL-30), so the dialog can pick its
+    # advice without pattern-matching exception text; ``http_status`` carries the
+    # code when the kind is ``http_status``. Null on success. Defaulted, unlike
+    # the two above, because older clients and fixtures predate them.
+    error_kind: DestinationTestErrorKind | None = None
+    http_status: int | None = None
 
 
 class AlertDeliveryItemResponse(BaseModel):
@@ -1129,9 +1142,24 @@ class AlertInboxGroupResponse(BaseModel):
         return self
 
 
+class AlertInboxStatusCounts(BaseModel):
+    """Incidents per effective status over the whole window (AL-14).
+
+    Counted after the non-status filters and before the status one, so a chip
+    reads what choosing it would list, without loading every page.
+    """
+
+    open: int = 0
+    acknowledged: int = 0
+    muted: int = 0
+    resolved: int = 0
+    false_positive: int = 0
+
+
 class AlertInboxListResponse(BaseModel):
     items: list[AlertInboxGroupResponse]
     total: int
+    status_counts: AlertInboxStatusCounts = Field(default_factory=AlertInboxStatusCounts)
     # Where the list's window ACTUALLY starts when `INBOX_MAX_SOURCE_ITEMS` cut
     # it shorter than `INBOX_LOOKBACK_DAYS`, and `None` when the documented
     # window held — which is every deployment measured so far.

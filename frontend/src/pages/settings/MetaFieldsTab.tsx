@@ -3,8 +3,9 @@ import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { List, Pencil, Plus, Trash2, X } from "lucide-react"
 import { metaFieldsApi } from "@/api/metaFields"
+import { metaFieldDeleteMessage } from "./metaFieldDelete"
 import { useActiveBranchId } from "@/hooks/useBranch"
-import type { MetaFieldDefinition, Sensitivity } from "@/types"
+import type { MetaFieldDefinition, MetaFieldUsage, Sensitivity } from "@/types"
 import { SENSITIVITY_OPTIONS } from "@/types"
 import { SensitivityChip } from "@/components/primitives/sensitivity-chip"
 import { useConfirm } from "@/hooks/useConfirm"
@@ -14,7 +15,6 @@ import { PageHeader } from "@/components/primitives/page-header"
 import { FieldError } from "@/components/forms/FieldError"
 import { examplePlaceholder } from "@/components/forms/placeholders"
 import { REQUIRED_MESSAGE, focusFirstInvalid, invalidAria } from "@/components/forms/validation"
-import { SELECT_CLASS } from "@/components/data-sources/connection-settings"
 import { Button } from "@/components/ui/button"
 import { IconButton } from "@/components/ui/icon-button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -25,7 +25,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton"
 import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
-import { Panel } from "@/components/settings/kit"
+import { NativeSelect, Panel } from "@/components/settings/kit"
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import {
   META_FIELD_LINK_EXAMPLE_KEY,
@@ -142,7 +142,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
   const editEnumOptionsId = useId()
   const editLinkTemplateId = useId()
 
-  const metaFieldTypes = ['string', 'url', 'boolean', 'enum', 'date']
+  const metaFieldTypes = ['string', 'url', 'boolean', 'enum', 'date'] as const
 
   // Switching to `boolean` or `date` while the box is ticked would send a pair
   // the server rejects, so the type decides the VALUE sent, not whether it is
@@ -210,10 +210,16 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
 
   const handleDelete = async (mf: MetaFieldDefinition) => {
     deleteMut.reset()
+    // The loss is counted when the usage call answers, and named when it does
+    // not: a failed count must not block the delete (AU-37).
+    const usage: MetaFieldUsage | null = await metaFieldsApi.usage(slug, mf.id, branchId).then(
+      result => result ?? null,
+      () => null,
+    )
     const ok = await confirm({
       title: 'Delete meta field',
-      message: `Delete "${mf.display_name}"? Meta values for this field will be removed from all events.`,
-      confirmLabel: 'Delete',
+      message: metaFieldDeleteMessage(mf.display_name, usage),
+      confirmLabel: 'Delete meta field',
       variant: 'danger',
     })
     if (ok) deleteMut.mutate(mf.id)
@@ -313,15 +319,11 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="grid gap-2">
                   <Label htmlFor={createTypeId}>Type</Label>
-                  <select id={createTypeId} value={fieldType} onChange={e => setFieldType(e.target.value)} className={SELECT_CLASS}>
-                    {metaFieldTypes.map(t => <option key={t}>{t}</option>)}
-                  </select>
+                  <NativeSelect id={createTypeId} value={fieldType} onChange={setFieldType} options={metaFieldTypes} />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor={createSensitivityId}>Sensitivity</Label>
-                  <select id={createSensitivityId} value={sensitivity} onChange={e => setSensitivity(e.target.value as Sensitivity)} className={SELECT_CLASS}>
-                    {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                  </select>
+                  <NativeSelect id={createSensitivityId} value={sensitivity} onChange={value => setSensitivity(value as Sensitivity)} options={SENSITIVITY_OPTIONS} />
                 </div>
                 <div className="flex flex-col justify-end gap-2 sm:pb-2">
                   <div className="flex items-center gap-2">
@@ -403,24 +405,21 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
               if (editingMf) updateMut.mutate(editingMf.id)
             }}
           >
-            <DialogHeader><DialogTitle>Edit: {editingMf?.name}</DialogTitle></DialogHeader>
+            {/* Named by what people read in the table, not the raw key (AU-14). */}
+            <DialogHeader className="pr-8"><DialogTitle>Edit meta field · {editingMf?.display_name}</DialogTitle></DialogHeader>
             <DialogBody className="grid gap-4">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="grid gap-2"><Label htmlFor={editDisplayNameId}>Display name</Label><Input id={editDisplayNameId} value={editDisplayName} onChange={e => setEditDisplayName(e.target.value)} /></div>
                 <div className="grid gap-2">
                   <Label htmlFor={editTypeId}>Type</Label>
-                  <select id={editTypeId} value={editFieldType} onChange={e => setEditFieldType(e.target.value)} className={SELECT_CLASS}>
-                    {metaFieldTypes.map(t => <option key={t}>{t}</option>)}
-                  </select>
+                  <NativeSelect id={editTypeId} value={editFieldType} onChange={setEditFieldType} options={metaFieldTypes} />
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="grid gap-2"><Label htmlFor={editDefaultValueId} optional>Default value</Label><Input id={editDefaultValueId} value={editDefaultValue} onChange={e => setEditDefaultValue(e.target.value)} placeholder="Optional" /></div>
                 <div className="grid gap-2">
                   <Label htmlFor={editSensitivityId}>Sensitivity</Label>
-                  <select id={editSensitivityId} value={editSensitivity} onChange={e => setEditSensitivity(e.target.value as Sensitivity)} className={SELECT_CLASS}>
-                    {SENSITIVITY_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                  </select>
+                  <NativeSelect id={editSensitivityId} value={editSensitivity} onChange={value => setEditSensitivity(value as Sensitivity)} options={SENSITIVITY_OPTIONS} />
                 </div>
                 <div className="flex flex-col justify-end gap-2 sm:pb-2">
                   <div className="flex items-center gap-2">
@@ -491,7 +490,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       </Dialog>
 
       <Panel
-        title="Meta fields"
+        title="All meta fields"
         subtitle={metaFieldsQuery.isPending
           ? 'Loading…'
           : `${metaFields.length} field${metaFields.length === 1 ? '' : 's'}`}
@@ -529,10 +528,12 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   <TableHead>Name</TableHead>
                   <TableHead>Display</TableHead>
                 <TableHead className="w-20">Type</TableHead>
-                <TableHead className="w-24">PII</TableHead>
+                <TableHead className="w-24">Sensitivity</TableHead>
                 <TableHead className="w-20">Required</TableHead>
                 <TableHead>Default</TableHead>
-                <TableHead className="w-24"></TableHead>
+                {/* Pinned right, so the row actions stay on screen on a
+                    phone (AU-27). */}
+                <TableHead className="sticky right-0 w-24 bg-surface"><span className="sr-only">Actions</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -559,7 +560,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   </TableCell>
                   <TableCell>{mf.is_required ? <span className="text-success font-medium text-body-sm">✓</span> : <span className="text-muted-foreground">—</span>}</TableCell>
                   <TableCell className="text-body-sm text-muted-foreground">{mf.default_value ?? '—'}</TableCell>
-                  <TableCell>
+                  <TableCell className="sticky right-0 bg-surface">
                     {canWrite && (
                       <div className="flex gap-1 justify-end">
                         <IconButton variant="ghost" className="h-7 w-7" label={`Edit ${mf.display_name}`} onClick={() => startEdit(mf)}><Pencil className="h-3 w-3" aria-hidden="true" /></IconButton>
@@ -579,7 +580,16 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
           </>
         ) : (
           <div className="px-4 py-8">
-            <EmptyState icon={List} title="No meta fields" description="Define meta fields to add structured metadata to your events." />
+            <EmptyState
+              icon={List}
+              title="No meta fields"
+              description="Meta fields are attributes every event carries, like an owner team or a Jira ticket."
+              action={canWrite ? (
+                <Button type="button" size="sm" onClick={() => setShowForm(true)}>
+                  <Plus className="size-3.5" />Create your first meta field
+                </Button>
+              ) : undefined}
+            />
           </div>
         )}
       </Panel>

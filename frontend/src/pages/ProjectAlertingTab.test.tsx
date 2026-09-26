@@ -357,7 +357,7 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     // in flight, so asserting its absence before this resolves would be timing,
     // not behaviour.
     expect(
-      await screen.findByText(/No alert rules yet, so nothing can raise an incident/),
+      await screen.findByRole('heading', { name: 'No alert rules yet' }),
     ).toBeInTheDocument()
     expect(screen.queryByText('No correlated alert groups.')).toBeNull()
     // Destinations exist → out of guided setup.
@@ -507,7 +507,7 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     )
   }
 
-  it('asks for a full page and no status, until a filter says otherwise', async () => {
+  it('asks for a full page of open incidents, until a filter says otherwise', async () => {
     const { inboxUrls } = mockPagedInbox([makeInboxGroup()])
     renderInboxTab()
 
@@ -516,7 +516,18 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     // identical database work.
     expect(inboxUrls[0]).toContain('limit=50')
     expect(inboxUrls[0]).toContain('offset=0')
-    expect(inboxUrls[0]).not.toContain('status=')
+    // The triage queue opens on Open (AL-14), and standing on the default is
+    // not a filter the reader set, so there is nothing to clear.
+    expect(inboxUrls[0]).toContain('status=open')
+    expect(screen.queryByRole('button', { name: /Clear filters/ })).toBeNull()
+  })
+
+  it('asks for every status on ?status=all (AL-14)', async () => {
+    const { inboxUrls } = mockPagedInbox([makeInboxGroup()])
+    renderInboxTab(undefined, '/p/demo/settings/alerting?section=inbox&status=all')
+
+    await screen.findByText(/Showing 1 of 1/)
+    for (const url of inboxUrls) expect(url).not.toContain('status=')
   })
 
   it('narrows to one status, and back, without stranding the offset', async () => {
@@ -531,7 +542,7 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
         scope_ref: 'scope-2',
       }),
     ])
-    renderInboxTab()
+    renderInboxTab(undefined, '/p/demo/settings/alerting?section=inbox&status=all')
 
     await screen.findByText(/Showing 2 of 2/)
     // Muting freezes a row's sort key, so a muted incident sinks past the page
@@ -586,8 +597,14 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
       ),
     ).toBeInTheDocument()
 
-    // ...and "All" removes the key rather than leaving `status=`.
+    // ...and "All" is spelled out, because no key now means Open (AL-14)...
     await pickInboxStatus('any')
+    expect(
+      await screen.findByText('alerting-location:/p/demo/settings/alerting?section=inbox&status=all'),
+    ).toBeInTheDocument()
+
+    // ...while Open, the default, drops the key.
+    await pickInboxStatus('Open')
     expect(
       await screen.findByText('alerting-location:/p/demo/settings/alerting?section=inbox'),
     ).toBeInTheDocument()
@@ -635,8 +652,9 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
 
     fireEvent.click(await screen.findByRole('button', { name: 'Show all' }))
 
+    // Every status, not the default Open queue (AL-14).
     expect(
-      await screen.findByText('alerting-location:/p/demo/settings/alerting?section=inbox'),
+      await screen.findByText('alerting-location:/p/demo/settings/alerting?section=inbox&status=all'),
     ).toBeInTheDocument()
   })
 
@@ -1095,12 +1113,14 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
    * provider where there was none changes the tree shape and remounts the page,
    * taking the selection with it.
    */
+  // `?status=all`: these fixtures mix open and muted incidents, and the inbox
+  // opens on Open by default (AL-14).
   function renderInboxSection(role?: Role) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const treeAtRole = (current?: Role) => {
       const tree = (
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+          <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox&status=all']}>
             <ProjectAlertingTab slug="demo" />
           </MemoryRouter>
         </QueryClientProvider>
@@ -1988,7 +2008,7 @@ describe('ProjectAlertingTab — viewer role (tripl-oxkt.9)', () => {
     for (const name of [
       'Send a test message through Main Slack',
       'Edit destination Main Slack',
-      'Delete destination',
+      'Delete destination Main Slack',
     ]) {
       expect(screen.queryByRole('button', { name })).toBeNull()
     }
@@ -2073,7 +2093,7 @@ describe('ProjectAlertingTab — the destination confirm states the cascade (tri
     ])
     renderTab('destinations')
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete destination' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete destination Main Slack' }))
 
     const dialog = await screen.findByRole('alertdialog')
     expect(
@@ -2089,7 +2109,7 @@ describe('ProjectAlertingTab — the destination confirm states the cascade (tri
     ])
     renderTab('destinations')
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete destination' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete destination Main Slack' }))
 
     const dialog = await screen.findByRole('alertdialog')
     expect(
@@ -2744,7 +2764,9 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit destination Local demo sink' }))
     const dialog = await screen.findByRole('dialog')
 
-    expect(within(dialog).getByRole('combobox', { name: 'Channel' })).toHaveTextContent('Local sink')
+    // A read-only line, not a select: a channel is fixed once saved (AL-32).
+    expect(within(dialog).getByTestId('dest-channel')).toHaveTextContent('Local sink')
+    expect(within(dialog).queryByRole('combobox', { name: 'Channel' })).toBeNull()
     expect(within(dialog).queryByLabelText('API key')).toBeNull()
     fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Sink' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
@@ -2804,7 +2826,7 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
     expect(screen.queryByText('Could not load alert destinations')).toBeNull()
   })
 
-  it('drops the previous channel\'s server error when the channel changes (ALR-7)', async () => {
+  it('offers no channel switch on create, so no channel inherits another\'s error (AL-32 / ALR-7)', async () => {
     mockDestinationWrites(configured(), {
       refuse: { loc: ['body', 'webhook_url'], msg: 'Value error, Slack webhook URL must start with https://hooks.slack.com/' },
     })
@@ -2816,15 +2838,12 @@ describe('ProjectAlertingTab — the destination dialog (#197)', () => {
       expect(within(dialog).getByLabelText('Webhook URL')).toHaveAttribute('aria-invalid', 'true'),
     )
 
-    // Radix Select drives selection through pointer capture, which jsdom omits.
-    if (!Element.prototype.hasPointerCapture) Element.prototype.hasPointerCapture = () => false
-    if (!Element.prototype.releasePointerCapture) Element.prototype.releasePointerCapture = () => {}
-    fireEvent.click(within(dialog).getByRole('combobox', { name: 'Channel' }))
-    fireEvent.click(await screen.findByRole('option', { name: 'Telegram' }))
-
-    expect(await within(dialog).findByText('New Telegram destination')).toBeInTheDocument()
-    expect(within(dialog).queryByText(/must start with https:\/\/hooks\.slack\.com/)).toBeNull()
-    expect(within(dialog).queryByRole('alert')).toBeNull()
+    // The button that opened the form chose the channel and the title carries
+    // it; the select that used to sit here only offered to wipe the form, and
+    // carried the last channel's server error onto the next (ALR-7).
+    expect(within(dialog).getByText('New Slack destination')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('combobox', { name: 'Channel' })).toBeNull()
+    expect(within(dialog).queryByTestId('dest-channel')).toBeNull()
   })
 
   it('announces a cadence the server refused and points the schedule input at it', async () => {
@@ -2887,6 +2906,6 @@ describe('ProjectAlertingTab — the Inbox when destinations will not load (ALR-
     expect(
       await screen.findByText(/Could not load alert destinations and rules/),
     ).toBeInTheDocument()
-    expect(screen.queryByText(/No alert rules yet, so nothing can raise an incident/)).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'No alert rules yet' })).toBeNull()
   })
 })

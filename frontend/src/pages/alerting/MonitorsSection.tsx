@@ -2,7 +2,7 @@ import { formatNumber } from '@/lib/format'
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bell, BellOff, ChevronDown, ChevronRight, History, MoreHorizontal, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { alertingApi, type AlertRuleUpdatePayload } from '@/api/alerting'
@@ -51,6 +51,7 @@ import {
   isDefaultMessageTemplate,
   messageFormatForDestination,
   ruleConditionSummary,
+  makeFilterUid,
   ruleFormToPayload,
   ruleToForm,
   scopeSummary,
@@ -163,6 +164,7 @@ export function MonitorsSection({
   onGoToDestinations,
 }: MonitorsSectionProps) {
   const qc = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { confirm, dialog } = useConfirm()
   const { notifyStepCompleted } = useDemoScenarioActions()
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
@@ -352,8 +354,25 @@ export function MonitorsSection({
 
   const openNewRule = () => {
     resetRuleMutations()
+    openBlankRuleForm(null)
+  }
+
+  // `metricId` scopes the new rule to one catalog metric: metrics on, the
+  // other scopes off, and a metric filter naming it (#246 JR-16).
+  function openBlankRuleForm(metricId: string | null) {
     setEditingRule(null)
-    setRuleForm(defaultRuleForm())
+    setRuleForm(
+      metricId
+        ? {
+            ...defaultRuleForm(),
+            include_project_total: false,
+            include_event_types: false,
+            include_events: false,
+            include_metrics: true,
+            filters: [{ uid: makeFilterUid(), field: 'metric', operator: 'in', values: [metricId] }],
+          }
+        : defaultRuleForm(),
+    )
     // Prefill only when there is no choice to make: exactly one ENABLED
     // destination (AL-3) — a disabled one next to it is not a real choice.
     // With several, the picker starts empty and Create names it on submit,
@@ -366,6 +385,33 @@ export function MonitorsSection({
     )
     setRuleDialogOpen(true)
   }
+
+  // `?new=rule` opens the create form on arrival — the inbox's "Create a rule"
+  // (AL-18) and a metric page's "Create alert…" (`&metric=<id>`, JR-16) link
+  // here. Latched during render like the guided-setup hand-off above, then the
+  // params are dropped so Back or a refresh does not reopen it.
+  const newRuleRequested = searchParams.get('new') === 'rule'
+  const newRuleMetricId = searchParams.get('metric')
+  const [newRuleConsumed, setNewRuleConsumed] = useState(false)
+  if (newRuleRequested && canWrite && !newRuleConsumed) {
+    setNewRuleConsumed(true)
+    openBlankRuleForm(newRuleMetricId)
+  } else if (!newRuleRequested && newRuleConsumed) {
+    // Spent and stripped: the next `?new=rule` opens the form again.
+    setNewRuleConsumed(false)
+  }
+  useEffect(() => {
+    if (!newRuleRequested) return
+    setSearchParams(
+      current => {
+        const params = new URLSearchParams(current)
+        params.delete('new')
+        params.delete('metric')
+        return params
+      },
+      { replace: true },
+    )
+  }, [newRuleRequested, setSearchParams])
 
   const openEditRule = (rule: RuleWithDestination) => {
     resetRuleMutations()
@@ -441,10 +487,12 @@ export function MonitorsSection({
             value={summary ? formatNumber(summary.warning_count) : <StatValueSkeleton />}
             tone={summary && summary.warning_count > 0 ? 'warning' : 'neutral'}
           />
+          {/* Neutral: a green figure beside two grey zeros made the one
+              count that needs nothing the loudest tile on the strip (AL-47).
+              Colour is for Firing and Warning, and only when non-zero. */}
           <MiniStat
             label="Healthy"
             value={summary ? formatNumber(summary.healthy_count) : <StatValueSkeleton />}
-            tone={summary ? 'success' : 'neutral'}
           />
           <MiniStat label="Rules" value={formatNumber(rules.length)} />
         </MiniStatStrip>

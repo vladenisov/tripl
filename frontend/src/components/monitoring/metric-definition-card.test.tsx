@@ -102,6 +102,9 @@ function renderCard(definition: MetricDefinitionDetailResponse, role: Role = 'ed
         order: 0,
         data_source_id: null,
         timestamp_column: 'created_at',
+        metric_count: 0,
+        column_count: 0,
+        identifier_count: 0,
         created_at: '2026-01-01T00:00:00Z',
         updated_at: '2026-01-01T00:00:00Z',
       },
@@ -115,6 +118,9 @@ function renderCard(definition: MetricDefinitionDetailResponse, role: Role = 'ed
         order: 1,
         data_source_id: null,
         timestamp_column: 'created_at',
+        metric_count: 0,
+        column_count: 0,
+        identifier_count: 0,
         created_at: '2026-01-01T00:00:00Z',
         updated_at: '2026-01-01T00:00:00Z',
       },
@@ -341,7 +347,23 @@ describe('MetricDefinitionCard filters', () => {
         </MemoryRouter>
       </QueryClientProvider>,
     )
-    expect(screen.getByText('Not scheduled')).toBeInTheDocument()
+    expect(screen.getByText('Not collected while draft')).toBeInTheDocument()
+
+    // An active metric with no interval leads to the editor (#246 JR-16).
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter>
+          <MetricDefinitionCard
+            slug="demo"
+            definition={factDefinition({ status: 'active', interval: null, collection_due: false })}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    expect(screen.getByRole('link', { name: 'Set a schedule' })).toHaveAttribute(
+      'href',
+      expect.stringMatching(/^\/p\/demo\/metrics\/[^/]+\/edit$/),
+    )
   })
 })
 

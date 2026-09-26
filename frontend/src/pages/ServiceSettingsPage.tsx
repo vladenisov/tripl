@@ -32,6 +32,7 @@ import {
   type SectionKey,
   EMPTY_SECRET_DRAFTS,
   SECTION_LABELS,
+  SOURCE_LEGEND,
   adoptSection,
   adoptSectionKeepingEdits,
   applyNote,
@@ -49,7 +50,7 @@ import {
   updateHasInvalidNumber,
 } from './settings-service/serviceSettingsHelpers'
 import { isOwner } from '@/lib/permissions'
-import { aiStatusRootKey, serviceSettingsKey } from '@/lib/queryKeys'
+import { aiStatusRootKey, authStatusKey, serviceSettingsKey } from '@/lib/queryKeys'
 
 const UNSAVED_MESSAGE =
   'Instance settings you edited here have not been saved. Leaving this page drops them — anything typed into a prompt or a field is gone.'
@@ -122,6 +123,9 @@ export default function ServiceSettingsSection({
       // (useAiStatus); without this an owner who just turned AI on went back
       // to a project and still saw it off.
       if (writesAi(write)) void qc.invalidateQueries({ queryKey: aiStatusRootKey() })
+      // /auth/status reports whether email is configured, which the Security
+      // section and the sign-in page's password reset read.
+      void qc.invalidateQueries({ queryKey: authStatusKey() })
       // A write settles only what it wrote. `form` spans all six sections, so
       // replacing it here threw away an unsaved prompt or field in a section
       // this action never touched (tripl-l8v2).
@@ -230,7 +234,7 @@ export default function ServiceSettingsSection({
       <div className="max-w-3xl">
         <Card>
           <CardContent>
-            <PageHeader title="Service settings" />
+            <PageHeader title="Instance settings" />
             <p className="mt-2 text-body text-muted-foreground">
               Owner role is required to view or change instance-level settings.
             </p>
@@ -263,6 +267,13 @@ export default function ServiceSettingsSection({
   return (
     <div className="min-w-0 space-y-5">
       {dialog}
+      {section !== 'system' && (
+        // The badge legend and the fallback rule, once, above the fields
+        // rather than inside the sticky bar (ST-25, ST-28).
+        <p className="m-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          {SOURCE_LEGEND}
+        </p>
+      )}
       {section !== 'system' && (
         // The one settings save model (ST-3): the kit's sticky bar, shared
         // with Project · General. The only Save control used to be a

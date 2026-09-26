@@ -47,6 +47,8 @@ import type { InboxActionVariables, InboxStatusFilter } from './alerting/Alertin
 import { recordInboxActionFailure, type InboxActionFailure } from './alerting/inboxActionErrors'
 import type { InboxBulkActionRequest } from './alerting/InboxBulkActionBar'
 import {
+  INBOX_ALL_STATUS_PARAM,
+  INBOX_DEFAULT_STATUS,
   INBOX_FILTER_PARAM_KEYS,
   inboxFilterQuery,
   readInboxFilters,
@@ -418,18 +420,24 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // already apply. Changing it changes the query key, which starts a fresh first
   // page, so resetting the filter resets the offset by construction and no state
   // can be left pointing into a set that no longer exists.
-  const requestedInboxStatus = searchParams.get('status') ?? ''
-  const inboxStatus: InboxStatusFilter = (ALERT_INBOX_STATUSES as readonly string[]).includes(
-    requestedInboxStatus,
-  )
-    ? (requestedInboxStatus as InboxStatusFilter)
-    : ''
+  //
+  // With no `?status=` the queue opens on Open (AL-14): "All" mixed resolved,
+  // muted and false-positive incidents into the triage list. All is then an
+  // explicit `?status=all` (a bare `?status=` reads the same), so the default
+  // is the absence of the key and a Clear returns to it.
+  const requestedInboxStatus = searchParams.get('status')
+  const inboxStatus: InboxStatusFilter =
+    requestedInboxStatus === null
+      ? INBOX_DEFAULT_STATUS
+      : (ALERT_INBOX_STATUSES as readonly string[]).includes(requestedInboxStatus)
+        ? (requestedInboxStatus as InboxStatusFilter)
+        : ''
   const setInboxStatus = (next: InboxStatusFilter) =>
     setSearchParams(
       current => {
         const params = new URLSearchParams(current)
-        if (next) params.set('status', next)
-        else params.delete('status')
+        if (next === INBOX_DEFAULT_STATUS) params.delete('status')
+        else params.set('status', next || INBOX_ALL_STATUS_PARAM)
         return params
       },
       { replace: true },
@@ -452,16 +460,22 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // Status and every other filter off, in one navigation — see
   // `AlertingInbox`'s `onClearAllFilters` for why two setter calls in one
   // click lost the first.
-  const clearAllInboxFilters = () =>
+  // "Clear filters" returns to the default queue (Open); the empty state's
+  // "Show all" asks for every status, which on an empty Open queue is the only
+  // step that shows anything new.
+  const resetInboxFilters = (status: string | null) =>
     setSearchParams(
       current => {
         const params = new URLSearchParams(current)
-        params.delete('status')
+        if (status === null) params.delete('status')
+        else params.set('status', status)
         for (const key of INBOX_FILTER_PARAM_KEYS) params.delete(key)
         return params
       },
       { replace: true },
     )
+  const clearAllInboxFilters = () => resetInboxFilters(null)
+  const showAllInboxStatuses = () => resetInboxFilters(INBOX_ALL_STATUS_PARAM)
   const inboxRequest = inboxFilterQuery(inboxFilters, inboxStatus)
   // Spread into the key, not the state object: two states that ask the server
   // the same question must share one cache entry, and only the request says
@@ -1279,6 +1293,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           filters={inboxFilters}
           onFiltersChange={setInboxFilters}
           onClearAllFilters={clearAllInboxFilters}
+          onShowAll={showAllInboxStatuses}
+          defaultStatusFilter={INBOX_DEFAULT_STATUS}
           onLoadMore={() => void inboxQuery.fetchNextPage()}
           hasMore={inboxQuery.hasNextPage}
           isLoadingMore={inboxQuery.isFetchingNextPage}
@@ -1291,7 +1307,16 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           onAction={onInboxAction}
           pendingGroupIds={pendingActionGroupIds}
           actionErrors={actionErrors}
-          onGoToMonitors={() => selectSection('monitors')}
+          // "Create a rule" opens the rule form itself, not just the section
+          // that holds it (AL-18): Monitors reads `?new=rule` on arrival.
+          onGoToMonitors={() =>
+            setSearchParams(current => {
+              const params = new URLSearchParams(current)
+              params.set('section', 'monitors')
+              params.set('new', 'rule')
+              return params
+            })
+          }
           focusDeliveryId={focusDeliveryId}
           focusItemKey={focusItemKey}
         />

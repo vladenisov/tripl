@@ -1,7 +1,5 @@
 import { Panel } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { FilterBar, FilterSelect } from '@/components/ui/filter-bar'
 import { formatIsoDate } from '@/lib/datetime'
 import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
@@ -17,6 +15,7 @@ import type {
 
 import { AlertDeliveryRow, DeliveryTable } from './AlertDeliveryRow'
 import { CHANNEL_META } from './channelMeta'
+import { DateRangeFilter } from './inboxDateFilter'
 import {
   NO_DELIVERY_FILTERS,
   hasActiveDeliveryFilters,
@@ -119,6 +118,9 @@ export function AlertAuditPanel({
   const hasNewer = deliveryOffset > 0
   const hasOlder = rangeEnd < total
   const filtersActive = hasActiveDeliveryFilters(deliveryFilters)
+  // The range as the date inputs hold it: the reader's calendar days.
+  const dateFrom = formatIsoDate(deliveryFilters.date_from)
+  const dateTo = formatIsoDate(deliveryFilters.date_to)
   // Parked past the end of a list that shrank under the offset (ALR-38): a
   // retry moved a row out of Status=Failed, or a destination went elsewhere.
   // The rows exist — `total` says so — the page the reader is on just no longer
@@ -199,7 +201,12 @@ export function AlertAuditPanel({
     <div className="min-w-0 space-y-4">
       {/* "delivery"/"deliveries" is why countOf takes both forms rather than
           appending an "s" — the first alert a project ever sends lands here. */}
-      <Panel title="Delivery log" subtitle={countOf(total, 'delivery', 'deliveries')}>
+      {/* No count until the first answer: "0 deliveries" while loading
+          stated something false for a moment, then jumped (AL-21). */}
+      <Panel
+        title="Delivery log"
+        subtitle={deliveries ? countOf(total, 'delivery', 'deliveries') : undefined}
+      >
         <div className="min-w-0 space-y-4 p-4">
           <p className="text-body-sm text-muted-foreground">
             Every alert this project actually sent — the deliveries behind the incidents in the Inbox.
@@ -253,28 +260,23 @@ export function AlertAuditPanel({
               onValueChange={value => updateFilters({ scan_config_id: value === ANY ? '' : value })}
               options={scans.map(scan => ({ value: scan.id, label: scan.name }))}
             />
-            {/* No format hint on either input: these are native
+            {/* One chip for the range, as on the Inbox beside it (AL-19). No
+                format hint on the inputs inside: they are native
                 <input type="date"> controls, which render and parse in the
                 browser's own locale, so a hard-coded "(YYYY-MM-DD)" would
-                contradict what the control shows (tripl-jfm3.37). */}
-            <div className="flex items-center gap-1.5">
-              <Label htmlFor="filter-date-from" className="text-caption font-normal text-fg-muted">From</Label>
-              <Input
-                id="filter-date-from"
-                type="date"
-                className="h-7 w-auto text-caption"
-                value={formatIsoDate(deliveryFilters.date_from)}
-                onChange={event => updateFilters({ date_from: toDayBoundary(event.target.value, false) })}
-              />
-              <Label htmlFor="filter-date-to" className="text-caption font-normal text-fg-muted">To</Label>
-              <Input
-                id="filter-date-to"
-                type="date"
-                className="h-7 w-auto text-caption"
-                value={formatIsoDate(deliveryFilters.date_to)}
-                onChange={event => updateFilters({ date_to: toDayBoundary(event.target.value, true) })}
-              />
-            </div>
+                contradict what the control shows (tripl-jfm3.37). Only the
+                end that changed is rewritten, so the other keeps its bound. */}
+            <DateRangeFilter
+              label="Sent"
+              from={dateFrom}
+              to={dateTo}
+              onRangeChange={({ from, to }) =>
+                updateFilters({
+                  ...(from !== dateFrom ? { date_from: toDayBoundary(from, false) } : {}),
+                  ...(to !== dateTo ? { date_to: toDayBoundary(to, true) } : {}),
+                })
+              }
+            />
           </FilterBar>
 
           {renderDeliveries()}
@@ -298,7 +300,7 @@ export function AlertAuditPanel({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-9 px-3 text-body-sm sm:h-7 sm:px-2"
+                  className="max-sm:h-9"
                   disabled={!hasNewer}
                   onClick={() => onDeliveryOffsetChange(newerDeliveryOffset(deliveryOffset, total, deliveryLimit))}
                 >
@@ -308,7 +310,7 @@ export function AlertAuditPanel({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-9 px-3 text-body-sm sm:h-7 sm:px-2"
+                  className="max-sm:h-9"
                   disabled={!hasOlder}
                   onClick={() => onDeliveryOffsetChange(deliveryOffset + deliveryLimit)}
                 >

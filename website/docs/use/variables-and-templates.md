@@ -136,7 +136,10 @@ event's field refers to this variable through that binding. The context and the
 values are separate facts, and the context comes first: it exists as soon as
 something matches the variable to the field, whether or not any value has been
 stored into it. So an empty context is a real state, not a missing one, and the
-UI names it rather than showing a blank. The Variables table says **No values
+UI names it rather than showing a blank. (On the Variables table the column
+listing the events a variable was seen in is **Observed in**, and each type chip
+shows the schema key — `string`, `number_array` — rather than a prose label.)
+The Variables table says **No values
 stored** for a variable that has contexts but no samples, and an event's value
 popover distinguishes a context that holds no value from one whose values were
 counted without an example being kept. Each popover line speaks for its own

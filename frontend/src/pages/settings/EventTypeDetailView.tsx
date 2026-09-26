@@ -1,9 +1,9 @@
 import { DEFAULT_ENTITY_COLOR } from '@/types'
 import { Panel } from '@/components/settings/kit'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, ExternalLink, Settings as SettingsIcon, Trash2 } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Trash2 } from 'lucide-react'
 import { eventsApi } from '@/api/events'
 import { eventTypeOwnersApi } from '@/api/eventTypeOwners'
 import { eventTypesApi } from '@/api/eventTypes'
@@ -12,6 +12,7 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { requestPageLeave } from '@/hooks/useUnsavedChangesGuard'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
+import { usePageTitle } from '@/components/shell-chrome-context'
 import { EntityNotFound, PageSkeleton, ReadOnlyNotice } from '@/components/states'
 import { ErrorState } from '@/components/error-state'
 import type { EventType, EventTypeOwner } from '@/types'
@@ -30,6 +31,7 @@ import {
   eventTypeOwnersKey,
   eventTypesKey,
   projectEventTypesKey,
+  projectKey,
 } from '@/lib/queryKeys'
 import {
   ColorPicker,
@@ -48,9 +50,10 @@ const requiredFieldCount = (et: EventType): number =>
 
 type DetailTab = 'events' | 'summary' | 'settings'
 
+// In the order they open: Summary is the default, so it comes first (AU-17).
 const TABS: { id: DetailTab; label: string }[] = [
-  { id: 'events', label: 'Events' },
   { id: 'summary', label: 'Summary' },
+  { id: 'events', label: 'Events' },
   { id: 'settings', label: 'Settings' },
 ]
 
@@ -93,6 +96,8 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
   const eventTypes = data ?? []
 
   const et = eventTypes.find((e) => e.id === eventTypeId)
+  // The top bar ends on the type, not on "Event types" (AU-18).
+  usePageTitle(et?.display_name)
   // Branches deep-copy event types under new ids, so the id in the URL belongs
   // to ONE branch. Switching branch on this page used to end at "Event type not
   // found." (PLAN-44); the type is followed by name instead, the identity that
@@ -178,17 +183,13 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
           </>
         }
         description={et.description || undefined}
+        // No "Settings" button: it did exactly what the Settings tab beside
+        // it does (AU-17).
         actions={
-          <>
-            <Button variant="outline" size="sm" onClick={goEvents}>
-              <ExternalLink className="size-3.5" />
-              View events
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => setTab('settings')}>
-              <SettingsIcon className="size-3.5" />
-              Settings
-            </Button>
-          </>
+          <Button variant="outline" size="sm" onClick={goEvents}>
+            <ExternalLink className="size-3.5" />
+            View events
+          </Button>
         }
       />
       {isError && (
@@ -267,13 +268,22 @@ function SummaryTab({ et }: { et: EventType }) {
           <div className="flex flex-col gap-2.5 px-4 py-3">
             <KeyValue label="Name" value={<span className="mono">{et.name}</span>} />
             <KeyValue label="Description" value={et.description || '—'} />
+            {/* The field list itself, not the counts again: the strip above
+                already has them (AU-17). */}
             <KeyValue
               label="Fields"
-              value={`${et.field_definitions.length} (${requiredFieldCount(et)} required)`}
-            />
-            <KeyValue
-              label="Sensitive"
-              value={sensitive > 0 ? `${sensitive} field${sensitive > 1 ? 's' : ''}` : 'None'}
+              value={
+                et.field_definitions.length === 0 ? (
+                  '—'
+                ) : (
+                  <span className="mono break-words">
+                    {[...et.field_definitions]
+                      .sort((a, b) => a.order - b.order)
+                      .map((f) => f.name)
+                      .join(', ')}
+                  </span>
+                )
+              }
             />
           </div>
         </Panel>
@@ -329,15 +339,30 @@ interface SettingsTabProps {
 
 function SettingsTab({ slug, eventType, branchId, onDeleted }: SettingsTabProps) {
   const canWrite = useCanWriteProject()
+  // While a field is being added or edited, the other cards step aside, so the
+  // page holds one form with one Save instead of the field page wedged between
+  // General's and the Danger zone (AU-15). `hidden`, not unmounted: a General
+  // draft typed before "Add field" is still there on the way back.
+  const [editingField, setEditingField] = useState(false)
+  const onEditingChange = useCallback((editing: boolean) => setEditingField(editing), [])
   return (
     <div className="max-w-[880px]">
       {!canWrite && <ReadOnlyNotice className="mb-3" />}
-      <GeneralCard slug={slug} eventType={eventType} branchId={branchId} canWrite={canWrite} />
-      <FieldsEditor slug={slug} eventType={eventType} branchId={branchId} />
-      {branchId === null && <OwnersEditor slug={slug} eventType={eventType} />}
-      {canWrite && (
-        <DangerZoneCard slug={slug} eventType={eventType} branchId={branchId} onDeleted={onDeleted} />
-      )}
+      <div hidden={editingField}>
+        <GeneralCard slug={slug} eventType={eventType} branchId={branchId} canWrite={canWrite} />
+      </div>
+      <FieldsEditor
+        slug={slug}
+        eventType={eventType}
+        branchId={branchId}
+        onEditingChange={onEditingChange}
+      />
+      <div hidden={editingField}>
+        {branchId === null && <OwnersEditor slug={slug} eventType={eventType} />}
+        {canWrite && (
+          <DangerZoneCard slug={slug} eventType={eventType} branchId={branchId} onDeleted={onDeleted} />
+        )}
+      </div>
     </div>
   )
 }
@@ -394,7 +419,9 @@ function GeneralCard({
               <SaveFooter
                 pending={updateMut.isPending}
                 disabled={!dirty}
-                status={updateMut.isSuccess && !dirty ? 'Saved' : undefined}
+                // Says why Save is off, so the disabled button is not read
+                // as a stray text link (AU-35).
+                status={!dirty ? (updateMut.isSuccess ? 'Saved' : 'No changes') : undefined}
               />
             ) : undefined
           }
@@ -443,6 +470,8 @@ function DangerZoneCard({
     mutationFn: () => eventTypesApi.del(slug, eventType.id, branchId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
+      // The sidebar's event-type count reads the project summary (AU-32).
+      qc.invalidateQueries({ queryKey: projectKey(slug) })
       onDeleted()
     },
   })
@@ -538,7 +567,8 @@ function MergeGateChip({ slug, eventType }: { slug: string; eventType: EventType
           : 'No owners — anyone can merge changes to this type'
       }
     >
-      {gated ? 'gated' : 'ungated'}
+      {/* Who must approve a merge, in words (AU-12). */}
+      {gated ? 'Owner approval' : 'Open to merge'}
     </Chip>
   )
 }

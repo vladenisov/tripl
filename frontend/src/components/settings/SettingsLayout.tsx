@@ -8,13 +8,20 @@ import {
   type ReactNode,
 } from 'react'
 import { Link, useBlocker, useNavigate, type Location } from 'react-router-dom'
-import { ArrowUpRight, ChevronLeft, LogOut, Menu } from 'lucide-react'
+import { ArrowUpRight, Check, ChevronLeft, ChevronsUpDown, LogOut, Menu, X } from 'lucide-react'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
 import { UserAvatar } from '@/components/ui/user-avatar'
 import { Chip } from '@/components/primitives/chip'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { SETTINGS_CONTENT_ID } from './landmarks'
-import { sectionPathForUrl, visibleGroupsAll } from './nav'
+import { backToLabel, sectionLabel, sectionPathForUrl, visibleGroupsAll } from './nav'
 import { SettingsCommandPalette } from './settings-palette'
 import {
   LEAVE_CONFIRMED,
@@ -98,16 +105,17 @@ export function SettingsLayout({
 
   // Personalize group sub-labels with live identity, matching the mockup
   // (Project → project name, Account → "You · <name>"). Workspace stays
-  // generic until a workspace entity exists.
+  // generic until a workspace entity exists. A sub-label that only repeats its
+  // group ("Project Project", "Workspace Workspace") is dropped (ST-7).
   const userName = auth.user?.name?.split(/\s+/)[0] ?? auth.user?.email ?? ''
   const subFor = (group: { label: string; sub: string }): string => {
     if (group.label === 'Project' && projectName) return projectName
     if (group.label === 'Account' && userName) return `You · ${userName}`
-    // Avoid the redundant "Workspace · Workspace" until a real workspace name
-    // is available in auth context.
-    if (group.label === 'Workspace' && group.sub === group.label) return ''
+    if (group.sub === group.label) return ''
     return group.sub
   }
+  const backLabel = backToLabel(backHref, projectName)
+  const sectionTitle = sectionLabel(activePath)
 
   // Off-canvas rail state, used only below `md` — above it the `md:*` utilities
   // pin the rail to static flow regardless of this flag.
@@ -231,6 +239,25 @@ export function SettingsLayout({
   }
 
   /**
+   * Rebind the Project sections to another project without leaving settings
+   * (ST-6). The address keeps the section when it is a project one and opens
+   * General otherwise; `?project=` outranks every other source of the slug.
+   *
+   * The blocker would wave this through — the destination is the same section,
+   * which "keeps" its draft — yet the draft belongs to the old project and dies
+   * with the switch. So it asks as for a way out, and tells the blocker so.
+   */
+  const switchProject = (slug: string) => {
+    if (slug === projectSlug) return
+    const path = activePath.startsWith('project/') ? activePath : 'project/general'
+    void confirmLeave(null).then((leave) => {
+      if (!leave) return
+      closeRail()
+      navigate(`/settings/${path}?project=${encodeURIComponent(slug)}`, { state: LEAVE_CONFIRMED })
+    })
+  }
+
+  /**
    * Sign out is the one exit the blocker cannot own, because the destructive
    * part is not the navigation: logging out first and asking afterwards would
    * end a session the user might have chosen to keep. So it asks, then logs out,
@@ -330,7 +357,9 @@ export function SettingsLayout({
         backHref={backHref}
         isOwner={isOwner}
         projects={projects}
+        backLabel={backLabel}
         onLeave={leaveTo}
+        onSwitchProject={switchProject}
         onSignOut={signOut}
       />
       {/* Same bypass block as the app shell — the settings rail is a ~20-stop
@@ -349,7 +378,20 @@ export function SettingsLayout({
         style={{ background: 'var(--bg-sunken)', borderRight: '1px solid var(--border)' }}
       >
         {/* Header: back to app */}
-        <div className="px-4 pb-2.5 pt-3.5">
+        <div className="relative px-4 pb-2.5 pt-3.5">
+          {/* The drawer's own way out below md, beside the backdrop tap and
+              Escape it already closed on (ST-13), as the app sidebar's drawer
+              has one. Pinned, there is nothing to close. */}
+          {!railPinned && (
+            <button
+              type="button"
+              aria-label="Close navigation"
+              onClick={closeRail}
+              className="absolute right-2 top-2.5 flex h-10 w-10 items-center justify-center rounded-md text-fg-subtle transition-colors hover:bg-sidebar-hover hover:text-fg focus-visible:text-fg md:hidden"
+            >
+              <X className="size-4" aria-hidden="true" />
+            </button>
+          )}
           <Link
             to={backHref}
             onClick={guardLeave}
@@ -358,37 +400,55 @@ export function SettingsLayout({
             className="-ml-1 inline-flex items-center gap-[7px] rounded-md px-2 py-1 pr-2 text-body-sm text-fg-muted no-underline transition-colors hover:text-fg focus-visible:text-fg"
           >
             <ChevronLeft className="size-4" />
-            <span>Back to project</span>
+            <span>{backLabel}</span>
           </Link>
           {/* Deliberately not a heading: the rail is chrome, and an <h2> here
               sat above every page's <h1> in DOM order, so the heading outline
               opened with a level-2 skip (tripl-jfm3.69). It names the nav
               landmark instead. */}
+          {/* No subtitle: "Workspace & account configuration" left out the
+              Project and Instance groups, which describe themselves (ST-10). */}
           <div id={RAIL_TITLE_ID} className="mx-1 mt-2.5 text-heading font-semibold tracking-[-0.01em]">
             Settings
           </div>
-          <p className="mx-1 mt-1 text-caption leading-snug" style={{ color: 'var(--fg-subtle)' }}>
-            Workspace &amp; account configuration
-          </p>
         </div>
 
         {/* Grouped nav — every settings group in one rail, no context toggle */}
-        <nav aria-labelledby={RAIL_TITLE_ID} className="flex-1 overflow-y-auto px-3 pb-4 pt-1">
-          {visibleGroupsAll(isOwner).map((group) => (
+        {/* The bottom fade says the list goes on under the footer: in the
+            phone drawer the last items sat cut off with no hint (ST-13). */}
+        <nav
+          aria-labelledby={RAIL_TITLE_ID}
+          className="flex-1 overflow-y-auto px-3 pb-6 pt-1 [mask-image:linear-gradient(to_bottom,black_calc(100%_-_24px),transparent)]"
+        >
+          {visibleGroupsAll(isOwner).map((group) => {
+            // Sentence case, not an uppercase eyebrow: these are names ("Demo
+            // project 2", "You · Ada"), and caps shouted them (ST-7).
+            const sub = subFor(group)
+            return (
             <div key={group.label} className="mb-4">
               <div className="px-[9px] pb-1.5">
-                <div className="flex items-baseline gap-1.5">
-                  <span className="text-caption font-semibold" style={{ color: 'var(--fg)' }}>
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="shrink-0 text-caption font-semibold" style={{ color: 'var(--fg)' }}>
                     {group.label}
                   </span>
-                  <span
-                    className="micro-label"
-                    style={{ color: 'var(--fg-faint)' }}
-                  >
-                    {subFor(group)}
-                  </span>
+                  {group.label === 'Project' && projects.length > 0 ? (
+                    <RailProjectSwitcher
+                      projects={projects}
+                      currentSlug={projectSlug}
+                      currentName={projectName}
+                      onPick={switchProject}
+                    />
+                  ) : (
+                    sub && (
+                      <span className="min-w-0 truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                        {sub}
+                      </span>
+                    )
+                  )}
                 </div>
-                <p className="mt-0.5 text-micro leading-snug" style={{ color: 'var(--fg-faint)' }}>
+                {/* Phones get the labels alone: three lines of chrome per group
+                    pushed the last items under the drawer's footer (ST-13). */}
+                <p className="mt-0.5 hidden text-micro leading-snug md:block" style={{ color: 'var(--fg-faint)' }}>
                   {group.desc}
                 </p>
               </div>
@@ -411,18 +471,19 @@ export function SettingsLayout({
                       aria-current={active ? 'page' : undefined}
                       aria-label={dirty ? `${item.label}, unsaved changes` : item.label}
                       onClick={guardLeave}
-                      // Match the app shell: the main sidebar marks the active
-                      // nav item with --surface-hover, so this takeover shell
-                      // uses the same token instead of the heavier
-                      // --surface-active, which read as a foreign grey block.
-                      // Hover is a class, not a JS style swap: the swap left a
-                      // stale fill when the active item changed under the
-                      // pointer and never answered keyboard focus (DS-21).
+                      // Match the app shell's sidebar: the current item carries
+                      // the sidebar's active tint and an accent bar on its left
+                      // edge. The old --surface-hover on the sunken rail was a
+                      // 1-2% change in light theme, so the selection read from
+                      // the icon alone (ST-8). Hover is a class, not a JS style
+                      // swap: the swap left a stale fill when the active item
+                      // changed under the pointer and never answered keyboard
+                      // focus (DS-21).
                       className={
                         // 40px rows in the phone drawer, the dense 31px rail
                         // from md up (ST-12).
-                        'flex items-center gap-2 rounded-md px-[9px] py-2.5 md:py-[7px] text-left text-body-sm font-medium no-underline transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover ' +
-                        (active ? 'bg-surface-hover text-fg' : 'text-fg-muted')
+                        'relative flex items-center gap-2 rounded-md px-[9px] py-2.5 md:py-[7px] text-left text-body-sm no-underline transition-colors hover:bg-sidebar-hover focus-visible:bg-sidebar-hover ' +
+                        (active ? RAIL_ACTIVE_CLASS : 'font-medium text-fg-muted')
                       }
                     >
                       <Icon
@@ -456,7 +517,7 @@ export function SettingsLayout({
                   <Link
                     to={`/p/${encodeURIComponent(projectSlug)}/settings/event-types`}
                     onClick={guardLeave}
-                    className="flex items-center gap-2 rounded-md px-[9px] py-2.5 md:py-[7px] text-left text-body-sm font-medium text-fg-muted no-underline transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover"
+                    className="flex items-center gap-2 rounded-md px-[9px] py-2.5 md:py-[7px] text-left text-body-sm font-medium text-fg-muted no-underline transition-colors hover:bg-sidebar-hover focus-visible:bg-sidebar-hover"
                   >
                     <ArrowUpRight className="size-4 shrink-0" style={{ color: 'var(--fg-subtle)' }} aria-hidden="true" />
                     <span className="flex-1">Tracking plan &amp; alerting</span>
@@ -464,7 +525,8 @@ export function SettingsLayout({
                 )}
               </div>
             </div>
-          ))}
+            )
+          })}
         </nav>
 
         {/* Footer user */}
@@ -534,7 +596,30 @@ export function SettingsLayout({
           >
             <Menu className="h-4 w-4" />
           </button>
-          <span className="text-body font-semibold">Settings</span>
+          {/* Where you are once the h1 has scrolled away, and a one-tap way
+              back to the app without opening the drawer (ST-11). */}
+          <span className="flex min-w-0 flex-1 items-baseline gap-1.5 text-body">
+            <span className="shrink-0 font-semibold">Settings</span>
+            {sectionTitle && (
+              <>
+                <span aria-hidden="true" style={{ color: 'var(--fg-faint)' }}>
+                  /
+                </span>
+                <span className="truncate" style={{ color: 'var(--fg-muted)' }}>
+                  {sectionTitle}
+                </span>
+              </>
+            )}
+          </span>
+          <Link
+            to={backHref}
+            aria-label="Close settings"
+            title={backLabel}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
+            style={{ color: 'var(--fg-muted)' }}
+          >
+            <X className="size-4" aria-hidden="true" />
+          </Link>
         </div>
         {/* The narrow content width every form and settings page shares
             (DS-3), left-aligned against the rail instead of floating centred. */}
@@ -543,6 +628,64 @@ export function SettingsLayout({
         </div>
       </main>
     </div>
+  )
+}
+
+/** The current rail item: the app sidebar's active tint and accent bar (ST-8). */
+const RAIL_ACTIVE_CLASS =
+  "bg-sidebar-active hover:bg-sidebar-active focus-visible:bg-sidebar-active font-semibold text-fg before:absolute before:inset-y-1.5 before:left-0 before:w-[2px] before:rounded-full before:bg-[var(--accent)] before:content-['']"
+
+/**
+ * The Project group's sub-label as a switcher (ST-6): the bound project, or
+ * "Pick a project", opening the workspace's projects. Picking one rebinds the
+ * Project sections in place instead of sending the user out to the app and
+ * back.
+ */
+function RailProjectSwitcher({
+  projects,
+  currentSlug,
+  currentName,
+  onPick,
+}: {
+  projects: readonly Project[]
+  currentSlug: string | undefined
+  currentName: string | undefined
+  onPick: (slug: string) => void
+}) {
+  const shown = currentName ?? (currentSlug ? currentSlug : 'Pick a project')
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={currentName ? `Switch project (current: ${currentName})` : 'Pick a project'}
+          className="-my-0.5 inline-flex min-w-0 items-center gap-1 rounded-sm px-1 py-0.5 text-caption transition-colors hover:bg-sidebar-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          style={{ color: 'var(--fg-subtle)' }}
+        >
+          <span className="min-w-0 truncate">{shown}</span>
+          <ChevronsUpDown className="size-3 shrink-0" aria-hidden="true" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" sideOffset={4} className="w-[240px]">
+        <DropdownMenuLabel className="micro-label" style={{ color: 'var(--fg-faint)' }}>
+          Project settings for
+        </DropdownMenuLabel>
+        <div className="max-h-[320px] overflow-y-auto">
+          {projects.map((project) => (
+            <DropdownMenuItem
+              key={project.slug}
+              onSelect={() => onPick(project.slug)}
+              className="flex items-center gap-2 text-body-sm"
+            >
+              <span className="min-w-0 flex-1 truncate">{project.name}</span>
+              {project.slug === currentSlug && (
+                <Check className="size-3.5 shrink-0" style={{ color: 'var(--accent)' }} aria-hidden="true" />
+              )}
+            </DropdownMenuItem>
+          ))}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

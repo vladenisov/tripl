@@ -12,8 +12,10 @@ describe('demo local state (DEMO-17)', () => {
     window.localStorage.setItem('tripl-tour:demo-a', '1')
     window.localStorage.setItem('tripl-tour:demo-b', '1')
     window.sessionStorage.setItem('tripl-demo-hints-muted:demo-a', '1')
+    window.sessionStorage.setItem('tripl-tour-dock:demo-a', '3')
 
     forgetDemoLocalState('demo-a')
+    expect(window.sessionStorage.getItem('tripl-tour-dock:demo-a')).toBeNull()
 
     expect(window.localStorage.getItem('tripl-tour:demo-a')).toBeNull()
     expect(window.sessionStorage.getItem('tripl-demo-hints-muted:demo-a')).toBeNull()
@@ -27,8 +29,12 @@ describe('demo local state (DEMO-17)', () => {
     window.localStorage.setItem('tripl-tour:kept', '1')
     window.localStorage.setItem('unrelated-key', 'x')
     window.sessionStorage.setItem('tripl-demo-hints-muted:gone', '1')
+    window.sessionStorage.setItem('tripl-tour-dock:gone', '3')
+    window.sessionStorage.setItem('tripl-tour-dock:kept', '3')
 
     sweepOrphanedDemoLocalState(['kept'])
+    expect(window.sessionStorage.getItem('tripl-tour-dock:gone')).toBeNull()
+    expect(window.sessionStorage.getItem('tripl-tour-dock:kept')).toBe('3')
 
     expect(window.localStorage.getItem('tripl-tour:gone')).toBeNull()
     expect(window.localStorage.getItem('tripl-demo-scenario:gone')).toBeNull()

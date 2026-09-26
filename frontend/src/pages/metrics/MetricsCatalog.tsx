@@ -18,6 +18,7 @@ import { CSS } from '@dnd-kit/utilities'
 import {
   Archive,
   ArchiveRestore,
+  CheckCircle2,
   Copy,
   GripVertical,
   LineChart,
@@ -80,7 +81,9 @@ import {
 } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
-import { metricsCatalogKey, metricsCatalogListKey } from '@/lib/queryKeys'
+import { metricsCatalogKey, metricsCatalogListKey, usersKey } from '@/lib/queryKeys'
+import { usersApi } from '@/api/users'
+import { UserAvatar } from '@/components/ui/user-avatar'
 
 // The metric name gets the widest flexible track on purpose. Its cell packs a
 // dot, a truncating name and a nowrap kind chip, so the widest chip ("Event
@@ -90,11 +93,22 @@ import { metricsCatalogKey, metricsCatalogListKey } from '@/lib/queryKeys'
 // name; Latest still fits its widest realistic value ("1,234,567 sessions").
 const METRIC_GRID =
   'grid grid-cols-[18px_20px_minmax(0,2fr)_minmax(0,1fr)_104px_84px_84px_28px] items-center gap-3 px-4'
+  // Tablet (md-lg): the Updated column goes, or the grid ran 22px wider than
+  // its card and clipped the row menus at 768 (MT-24).
+  + ' max-lg:grid-cols-[18px_20px_minmax(0,2fr)_minmax(0,1fr)_104px_84px_28px]'
   // Below md each row is a two-line card instead of a 748px-wide strip the
   // phone scrolls sideways through: handle, checkbox, name and menu on top,
   // the latest value and status under the name. The trend sparkline and the
   // relative "updated" time are the columns a phone does without (DS-5).
   + ' max-md:grid-cols-[18px_20px_minmax(0,1fr)_auto_28px] max-md:gap-y-1'
+/**
+ * A viewer can neither reorder, select nor act on a row, so their grid has no
+ * handle, checkbox or menu tracks: those left an empty 44px gutter (MT-29).
+ */
+const VIEWER_GRID =
+  'grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_104px_84px_84px] items-center gap-3 px-4'
+  + ' max-lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_104px_84px]'
+  + ' max-md:grid-cols-[minmax(0,1fr)_auto] max-md:gap-y-1'
 /** Where each cell sits in the phone card; no effect from md up. */
 const PHONE_CELL = {
   grip: 'max-md:col-start-1 max-md:row-start-1',
@@ -105,6 +119,25 @@ const PHONE_CELL = {
   menu: 'max-md:col-start-5 max-md:row-start-1',
   dropped: 'max-md:hidden',
 } as const
+/** {@link PHONE_CELL} for the viewer grid, which starts at the name. */
+const VIEWER_PHONE_CELL = {
+  ...PHONE_CELL,
+  name: 'max-md:col-span-2 max-md:col-start-1 max-md:row-start-1',
+  latest: 'max-md:col-start-1 max-md:row-start-2',
+  status: 'max-md:col-start-2 max-md:row-start-2',
+} as const
+/** The Updated column: dropped on tablets as well as phones (MT-24). */
+const UPDATED_CELL = 'max-lg:hidden'
+
+/**
+ * The kind chip in a row: short, so it stops eating the name at tablet width
+ * (MT-24). The full label rides in its title.
+ */
+const KIND_CHIP_LABEL: Record<MetricKind, string> = {
+  fact: 'Fact',
+  sql: 'SQL',
+  event_composition: 'Events',
+}
 
 const STATUS_TONE: Record<MetricStatus, ChipTone> = {
   draft: 'neutral',
@@ -124,6 +157,11 @@ const STATUS_FILTER_OPTIONS = METRIC_STATUSES.map(status => ({
   value: status,
   label: METRIC_STATUS_LABEL[status],
 }))
+type ReviewFilter = 'reviewed' | 'unreviewed'
+const REVIEW_FILTER_OPTIONS: { value: ReviewFilter; label: string }[] = [
+  { value: 'reviewed', label: 'Reviewed' },
+  { value: 'unreviewed', label: 'Not reviewed' },
+]
 
 // Interval → milliseconds, for the staleness threshold (tripl-nxk2.10).
 const INTERVAL_MS: Record<MetricScanInterval, number> = {
@@ -143,10 +181,13 @@ type SignalFilter = 'anomalies' | 'stale'
 const SIGNAL_FILTERS: readonly SignalFilter[] = ['anomalies', 'stale']
 
 /** The URL search params the catalog's filters live in (MET-24). */
-type FilterParam = 'q' | 'status' | 'kind' | 'signal'
+type FilterParam = 'q' | 'status' | 'kind' | 'review' | 'signal'
 
 /** How long the search box waits after the last keystroke before writing `q`. */
 const SEARCH_URL_WRITE_MS = 250
+
+/** How long an archive/restore toast (and its Undo) stays up (MT-38). */
+const ARCHIVE_TOAST_MS = 10_000
 
 // The list endpoint caps a page at 1000 rows (backend metrics_catalog.py).
 const CATALOG_PAGE_SIZE = 1000
@@ -412,6 +453,10 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   const statusFilter: '' | MetricStatus = METRIC_STATUSES.includes(statusParam as MetricStatus)
     ? (statusParam as MetricStatus)
     : ''
+  // Review status is a server-side filter like status and kind (MT-25).
+  const reviewParam = searchParams.get('review')
+  const reviewFilter: '' | ReviewFilter =
+    reviewParam === 'reviewed' || reviewParam === 'unreviewed' ? reviewParam : ''
   // Client-side derived filter driven by the operational stat cells; layered on
   // top of the server-side status/kind/search filters (tripl-nxk2.10).
   const signalParam = searchParams.get('signal')
@@ -454,7 +499,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set())
   const search = useDebouncedValue(searchInput, SEARCH_URL_WRITE_MS)
 
-  const queryKey = metricsCatalogListKey(slug, statusFilter, kindFilter, search)
+  const queryKey = metricsCatalogListKey(slug, statusFilter, kindFilter, search, reviewFilter)
   const metricsQuery = useQuery({
     queryKey,
     queryFn: () =>
@@ -462,6 +507,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
         status: statusFilter ? [statusFilter] : undefined,
         kind: kindFilter || undefined,
         search: search || undefined,
+        reviewed: reviewFilter ? reviewFilter === 'reviewed' : undefined,
       }),
     enabled: !!slug,
     staleTime: 30_000,
@@ -472,6 +518,19 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
     placeholderData: keepPreviousData,
   })
   const isRefreshing = metricsQuery.isPlaceholderData
+  // The stat strip is a project-level summary, so it reads the UNFILTERED
+  // catalog: counted from the filtered list, a search made the project look
+  // like it had 0 metrics (MT-23). With no filter on this is the same cache
+  // entry as the list above, so it costs no second request.
+  const summaryQuery = useQuery({
+    queryKey: metricsCatalogListKey(slug, '', '', ''),
+    queryFn: () => fetchWholeCatalog(slug!, {}),
+    enabled: !!slug,
+    staleTime: 30_000,
+    meta: SILENT_ERROR_META,
+  })
+  const summary = summaryQuery.data
+  const summaryItems = useMemo(() => summary?.items ?? [], [summary])
 
   const data = metricsQuery.data
   const metrics = useMemo(() => data?.items ?? [], [data])
@@ -485,20 +544,20 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   // Server-side, so it sits on the same basis as the Metrics total beside it.
   // Counting the loaded page made the two stats disagree the moment the catalog
   // outgrew one page (tripl-jfm3.109).
-  const active = data?.active_total ?? metrics.filter(m => m.status === 'active').length
+  const summaryTotal = summary ? summary.total : 0
+  const active = summary?.active_total ?? summaryItems.filter(m => m.status === 'active').length
   // Staleness is judged against a clock that keeps moving. A "now" frozen at
   // mount never counted a metric that went stale while the tab stayed open —
   // the normal life of a monitoring surface (MET-26). A fresh fetch moves it
   // too, so the count agrees with the rows it just received.
   const tickMs = useNow(60_000)
   const nowMs = Math.max(tickMs, metricsQuery.dataUpdatedAt)
-  // Operational rollups derived from the loaded list (tripl-nxk2.10). Counts
-  // reflect every loaded metric regardless of the client-side signal filter, so
-  // clicking a stat to filter never changes its own number.
-  const anomalyCount = useMemo(() => metrics.filter(hasActiveSignal).length, [metrics])
+  // Operational rollups over the whole catalog (tripl-nxk2.10, MT-23): no
+  // filter — search, status, kind or the stat toggles themselves — changes them.
+  const anomalyCount = useMemo(() => summaryItems.filter(hasActiveSignal).length, [summaryItems])
   const staleCount = useMemo(
-    () => metrics.filter(m => isStaleMetric(m, nowMs)).length,
-    [metrics, nowMs],
+    () => summaryItems.filter(m => isStaleMetric(m, nowMs)).length,
+    [summaryItems, nowMs],
   )
   // Widest sparkline in the loaded set → the real "last N points" the Trend
   // column represents (tripl-nxk2.11). Each spark is a trailing, bounded window
@@ -525,7 +584,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
   // The debounced search counts too: for 250ms after "Clear" the list still
   // holds the old search's (empty) result, which is not "no metrics yet".
   const hasFilters =
-    !!statusFilter || !!kindFilter || !!searchInput || !!search || !!signalFilter
+    !!statusFilter || !!kindFilter || !!reviewFilter || !!searchInput || !!search || !!signalFilter
   // Loaded with no metrics AND no active filters — the true "nothing here yet"
   // state, distinct from loading, error, and "filters matched nothing".
   const isEmpty = !metricsQuery.isError && !!data && metrics.length === 0 && !hasFilters
@@ -541,6 +600,8 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
     searchInput ? `search “${searchInput}”` : null,
     statusFilter ? `status ${METRIC_STATUS_LABEL[statusFilter]}` : null,
     kindFilter ? `kind ${METRIC_KIND_LABEL[kindFilter]}` : null,
+    reviewFilter === 'reviewed' ? 'reviewed metrics' : null,
+    reviewFilter === 'unreviewed' ? 'metrics not yet reviewed' : null,
     signalFilter === 'anomalies' ? 'metrics with anomalies' : null,
     signalFilter === 'stale' ? 'stale metrics' : null,
   ].filter((label): label is string => label !== null)
@@ -594,7 +655,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
     window.clearTimeout(searchWriteTimer.current)
     setSearchInput('')
     setWrittenSearch('')
-    setFilterParams({ q: null, status: null, kind: null, signal: null })
+    setFilterParams({ q: null, status: null, kind: null, review: null, signal: null })
   }
 
   const bulkStatusMut = useMutation({
@@ -634,6 +695,23 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
             }
           : undefined,
       )
+    },
+  })
+
+  // Marks every selected metric reviewed in one call (MT-25).
+  const bulkReviewMut = useMutation({
+    meta: SILENT_ERROR_META,
+    mutationFn: async () => {
+      await metricsCatalogApi.bulkUpdate(slug!, {
+        metric_ids: selected.map(m => m.id),
+        reviewed: true,
+      })
+      return selected.length
+    },
+    onSuccess: count => {
+      setSelectedIds(new Set())
+      invalidateCatalog(qc, slug)
+      toast.success(`${pluralMetrics(count)} marked reviewed.`)
     },
   })
 
@@ -692,14 +770,14 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
           compact
         />
       ) : (
-        <MiniStatStrip boxed className={isEmpty ? 'opacity-60' : undefined}>
+        <MiniStatStrip boxed phoneGrid className={isEmpty ? 'opacity-60' : undefined}>
           {/* Pending values are a skeleton bar with no tone, never "—" or a
               green 0 that reads as an answer (#237 DS-25 / MT-33). */}
-          <MiniStat label="Metrics" value={data ? formatNumber(total) : <StatValueSkeleton />} />
+          <MiniStat label="Metrics" value={summary ? formatNumber(summaryTotal) : <StatValueSkeleton />} />
           <MiniStat
             label="Active"
-            value={data ? formatNumber(active) : <StatValueSkeleton />}
-            tone={data ? 'success' : undefined}
+            value={summary ? formatNumber(active) : <StatValueSkeleton />}
+            tone={summary ? 'success' : undefined}
           />
           <StatFilter
             active={signalFilter === 'anomalies'}
@@ -714,10 +792,11 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               // across every scope (event, event type, project total). A project
               // whose anomalies all sit outside the metric catalog therefore
               // renders 0 here beside a red 3 in the nav ~300px away, and a
-              // reader stops trusting both numbers (tripl-vsw2).
-              label="Metrics with anomalies"
+              // reader stops trusting both numbers (tripl-vsw2). "With" keeps
+              // that scope beside the "Metrics" tile without repeating it (MT-26).
+              label="With anomalies"
               value={
-                data ? (
+                summary ? (
                   <span style={{ color: anomalyCount > 0 ? 'var(--danger)' : undefined }}>
                     {formatNumber(anomalyCount)}
                   </span>
@@ -725,7 +804,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                   <StatValueSkeleton />
                 )
               }
-              tone={data && anomalyCount > 0 ? 'danger' : 'neutral'}
+              tone={summary && anomalyCount > 0 ? 'danger' : 'neutral'}
             />
           </StatFilter>
           <StatFilter
@@ -736,7 +815,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
             <MiniStat
               label="Stale"
               value={
-                data ? (
+                summary ? (
                   <span style={{ color: staleCount > 0 ? 'var(--warning)' : undefined }}>
                     {formatNumber(staleCount)}
                   </span>
@@ -744,7 +823,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                   <StatValueSkeleton />
                 )
               }
-              tone={data && staleCount > 0 ? 'warning' : 'neutral'}
+              tone={summary && staleCount > 0 ? 'warning' : 'neutral'}
             />
           </StatFilter>
         </MiniStatStrip>
@@ -774,7 +853,11 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
             title="Catalog"
             subtitle={
               data
-                ? `${formatNumber(total)} total${isRefreshing ? ' · Updating…' : ''}`
+                ? `${
+                    hasFilters && summary
+                      ? `${formatNumber(visibleMetrics.length)} of ${pluralMetrics(summaryTotal)}`
+                      : `${formatNumber(total)} total`
+                  }${isRefreshing ? ' · Updating…' : ''}`
                 : undefined
             }
           >
@@ -799,6 +882,12 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 onValueChange={value => setServerFilter('kind', value === ANY_FILTER ? '' : value)}
                 options={KIND_FILTER_OPTIONS}
               />
+              <FilterSelect
+                label="Review status"
+                value={reviewFilter || ANY_FILTER}
+                onValueChange={value => setServerFilter('review', value === ANY_FILTER ? '' : value)}
+                options={REVIEW_FILTER_OPTIONS}
+              />
             </FilterBar>
             {canWrite && selected.length > 0 && (
               <div
@@ -821,14 +910,22 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                 ))}
                 <Button
                   size="sm"
+                  variant="outline"
+                  disabled={bulkReviewMut.isPending}
+                  onClick={() => bulkReviewMut.mutate()}
+                >
+                  Mark reviewed
+                </Button>
+                <Button
+                  size="sm"
                   variant="ghost"
                   onClick={() => setSelectedIds(new Set())}
                 >
                   Clear
                 </Button>
-                {bulkStatusMut.isError && (
+                {(bulkStatusMut.isError || bulkReviewMut.isError) && (
                   <span className="text-caption" style={{ color: 'var(--danger)' }}>
-                    {getErrorMessage(bulkStatusMut.error)}
+                    {getErrorMessage(bulkStatusMut.error ?? bulkReviewMut.error)}
                   </span>
                 )}
               </div>
@@ -886,34 +983,42 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
                     role="table"
                     aria-label="Metrics"
                     aria-busy={isRefreshing || undefined}
-                    className="md:min-w-[748px]"
+                    className="md:min-w-[652px] lg:min-w-[748px]"
                   >
                     <div role="rowgroup">
                       <div
                         role="row"
-                        className={`${METRIC_GRID} border-b py-2 micro-label`}
+                        className={`${canWrite ? METRIC_GRID : VIEWER_GRID} border-b py-2 micro-label`}
                         style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                       >
-                        <span role="columnheader" aria-label="Reorder" />
-                        <span role="columnheader">
-                          {canWrite && (
-                            <Checkbox
-                              aria-label="Select all metrics"
-                              checked={allSelected ? true : selected.length > 0 ? 'indeterminate' : false}
-                              onCheckedChange={toggleAll}
-                            />
-                          )}
-                        </span>
+                        {canWrite && (
+                          <>
+                            <span role="columnheader" aria-label="Reorder" />
+                            <span role="columnheader">
+                              <Checkbox
+                                aria-label="Select all metrics"
+                                checked={allSelected ? true : selected.length > 0 ? 'indeterminate' : false}
+                                onCheckedChange={toggleAll}
+                              />
+                            </span>
+                          </>
+                        )}
                         <span role="columnheader" className="max-md:col-span-2">Metric</span>
                         {/* The card shows these two under the name, unlabelled;
                             screen readers still get the header. */}
-                        <span role="columnheader" className="max-md:sr-only">Latest</span>
-                        <span role="columnheader" className={PHONE_CELL.dropped}>
-                          {trendPoints > 0 ? `Trend · ${trendPoints} pts` : 'Trend'}
+                        <span role="columnheader" className="text-right max-md:sr-only">Latest</span>
+                        {/* "20 pts" said nothing about the time span; the
+                            count of collections sits in the tooltip (MT-34). */}
+                        <span
+                          role="columnheader"
+                          className={PHONE_CELL.dropped}
+                          title={trendPoints > 0 ? `Last ${trendPoints} collections` : undefined}
+                        >
+                          Trend
                         </span>
                         <span role="columnheader" className="max-md:sr-only">Status</span>
-                        <span role="columnheader" className={`text-right ${PHONE_CELL.dropped}`}>Updated</span>
-                        <span role="columnheader" aria-label="Actions" />
+                        <span role="columnheader" className={`text-right ${UPDATED_CELL}`}>Updated</span>
+                        {canWrite && <span role="columnheader" aria-label="Actions" />}
                       </div>
                     </div>
                     <SortableContext
@@ -975,6 +1080,16 @@ function MetricRow({
 }: MetricRowProps) {
   const navigate = useNavigate()
   const href = slug ? getMetricMonitoringPath(slug, metric.id) : undefined
+  // The roster names an owned metric's owner; rows share the one request,
+  // and a catalog with no owners makes none (MT-25).
+  const { data: users } = useQuery({
+    queryKey: usersKey(),
+    queryFn: () => usersApi.list(),
+    enabled: !!metric.owner_id,
+    meta: SILENT_ERROR_META,
+  })
+  const owner = metric.owner_id ? users?.find(user => user.id === metric.owner_id) : undefined
+  const ownerName = owner ? owner.name || owner.email : null
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: metric.id,
     disabled: !canReorder,
@@ -991,6 +1106,7 @@ function MetricRow({
       : 'danger'
     : undefined
   const anomalyIdx = isActiveSignal && metric.spark.length > 0 ? metric.spark.length - 1 : null
+  const cell = canWrite ? PHONE_CELL : VIEWER_PHONE_CELL
 
   // Latest-cell tooltip (tripl-nxk2.11): prefer the actual bucket time of the
   // latest value, then a signal's bucket, else fall back to the collection
@@ -1013,7 +1129,7 @@ function MetricRow({
       role="row"
       // Height follows the Appearance density (DS-9): `--row-h` is the floor,
       // so compact rows sit tighter and comfy rows open up like the Events table.
-      className={`${METRIC_GRID} min-h-(--row-h) border-b py-1.5 last:border-0 ${
+      className={`${canWrite ? METRIC_GRID : VIEWER_GRID} min-h-(--row-h) border-b py-1.5 last:border-0 ${
         href ? 'cursor-pointer transition-colors hover:bg-[var(--surface-hover)]' : 'cursor-default'
       }`}
       style={{
@@ -1026,32 +1142,36 @@ function MetricRow({
       }}
       onClick={href ? () => navigate(href) : undefined}
     >
-      <span role="cell" className={PHONE_CELL.grip}>
-        {canReorder ? (
-          <button
-            type="button"
-            aria-label={`Reorder ${metric.display_name}`}
-            className="flex cursor-grab touch-none items-center justify-center rounded-sm p-0.5 hover:bg-[var(--surface-hover)] active:cursor-grabbing"
-            style={{ color: 'var(--fg-faint)' }}
-            onClick={event => event.stopPropagation()}
-            {...attributes}
-            {...listeners}
-          >
-            <GripVertical className="h-3.5 w-3.5" />
-          </button>
-        ) : null}
-      </span>
-      <span role="cell" className={PHONE_CELL.select}>
-        {canWrite && (
-          <Checkbox
-            aria-label={`Select ${metric.display_name}`}
-            checked={isSelected}
-            onCheckedChange={onToggleSelected}
-            onClick={event => event.stopPropagation()}
-          />
-        )}
-      </span>
-      <span role="cell" className={`flex min-w-0 items-center gap-2 ${PHONE_CELL.name}`}>
+      {canWrite && (
+        <>
+          <span role="cell" className={PHONE_CELL.grip}>
+            {canReorder ? (
+              <button
+                type="button"
+                aria-label={`Reorder ${metric.display_name}`}
+                // Dragging a row on a phone is impractical; the handle stays
+                // for a pointer from md up (MT-26).
+                className="flex cursor-grab touch-none items-center justify-center rounded-sm p-0.5 hover:bg-[var(--surface-hover)] active:cursor-grabbing max-md:hidden"
+                style={{ color: 'var(--fg-faint)' }}
+                onClick={event => event.stopPropagation()}
+                {...attributes}
+                {...listeners}
+              >
+                <GripVertical className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </span>
+          <span role="cell" className={PHONE_CELL.select}>
+            <Checkbox
+              aria-label={`Select ${metric.display_name}`}
+              checked={isSelected}
+              onCheckedChange={onToggleSelected}
+              onClick={event => event.stopPropagation()}
+            />
+          </span>
+        </>
+      )}
+      <span role="cell" className={`flex min-w-0 items-center gap-2 ${cell.name}`}>
         {signalTone ? (
           <Dot tone={signalTone} pulse size={7} />
         ) : (
@@ -1085,16 +1205,20 @@ function MetricRow({
           </span>
         )}
         {/* A kind tag is an outline pill, a status a soft one (DS-6). */}
-        <Chip variant="outline">
-          {METRIC_KIND_LABEL[metric.kind]}
+        <Chip variant="outline" title={METRIC_KIND_LABEL[metric.kind]}>
+          {KIND_CHIP_LABEL[metric.kind]}
         </Chip>
+        {/* Who answers for the metric (MT-25). In the name's flexible track:
+            the 84px Status cell has no room left beside its chip and check. */}
+        {ownerName && <UserAvatar name={ownerName} size={18} label={`Owner: ${ownerName}`} />}
       </span>
       <span
         role="cell"
         title={latestTitle}
-        // A figure, not an identifier: sans with tabular digits (DS-17).
-        className={`tnum truncate text-body-sm ${PHONE_CELL.latest}`}
-        style={{ color: signalTone ? `var(--${signalTone})` : 'var(--fg-subtle)' }}
+        // A figure, not an identifier: sans with tabular digits (DS-17),
+        // right-aligned so magnitudes line up (MT-34).
+        className={`tnum truncate text-body-sm font-medium md:text-right ${cell.latest}`}
+        style={{ color: signalTone ? `var(--${signalTone})` : 'var(--fg)' }}
       >
         {formatMetricValue(metric.latest_value, metric.unit)}
       </span>
@@ -1107,28 +1231,38 @@ function MetricRow({
           </span>
         )}
       </span>
-      <span role="cell" className={PHONE_CELL.status}>
+      <span role="cell" className={`flex items-center gap-1 ${cell.status}`}>
         <Chip tone={STATUS_TONE[metric.status]}>
           {METRIC_STATUS_LABEL[metric.status]}
         </Chip>
+        {/* The review state events already show, so a reader can tell which
+            metrics are vetted (MT-25). */}
+        {metric.reviewed && (
+          <span title="Reviewed" className="inline-flex shrink-0" style={{ color: 'var(--success)' }}>
+            <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="sr-only">Reviewed</span>
+          </span>
+        )}
       </span>
       <span
         role="cell"
-        className={`tnum text-right text-micro ${PHONE_CELL.dropped}`}
+        className={`tnum text-right text-micro ${UPDATED_CELL}`}
         style={{ color: 'var(--fg-faint)' }}
       >
         {formatRelativeTime(metric.updated_at)}
       </span>
-      <span role="cell" className={`flex justify-end ${PHONE_CELL.menu}`}>
-        {slug && canWrite ? (
-          <MetricRowMenu
-            metric={metric}
-            slug={slug}
-            existingNames={existingNames}
-            isCoachTarget={isCoachTarget}
-          />
-        ) : null}
-      </span>
+      {canWrite && (
+        <span role="cell" className={`flex justify-end ${PHONE_CELL.menu}`}>
+          {slug ? (
+            <MetricRowMenu
+              metric={metric}
+              slug={slug}
+              existingNames={existingNames}
+              isCoachTarget={isCoachTarget}
+            />
+          ) : null}
+        </span>
+      )}
     </div>
   )
 }
@@ -1187,19 +1321,39 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
     mutationFn: (status: MetricStatus) => metricsCatalogApi.update(slug, metric.id, { status }),
     onSuccess: (_data, status) => {
       invalidateCatalog(qc, slug)
-      // Archiving stops collection; the toast carries the way back (MET-23).
+      // Archiving stops collection; the toast carries the way back (MET-23),
+      // names the metric and stays long enough to be read: a misclicked
+      // Archive went unnoticed behind the default ~4s toast (MT-38).
       const previousStatus = metric.status
-      toast.success(status === 'archived' ? 'Metric archived.' : 'Metric restored.', {
-        action: {
-          label: 'Undo',
-          onClick: () => {
-            metricsCatalogApi.update(slug, metric.id, { status: previousStatus }).then(
-              () => invalidateCatalog(qc, slug),
-              (error: unknown) => toast.error(`Could not undo — ${getErrorMessage(error)}`),
-            )
+      const name = `“${metric.display_name}”`
+      toast.success(
+        status === 'archived' ? `${name} archived — collection stopped.` : `${name} restored.`,
+        {
+          duration: ARCHIVE_TOAST_MS,
+          action: {
+            label: 'Undo',
+            onClick: () => {
+              metricsCatalogApi.update(slug, metric.id, { status: previousStatus }).then(
+                () => invalidateCatalog(qc, slug),
+                (error: unknown) => toast.error(`Could not undo — ${getErrorMessage(error)}`),
+              )
+            },
           },
         },
-      })
+      )
+    },
+  })
+
+  // The review state metrics carry but no screen could set (MT-25).
+  const reviewMut = useMutation({
+    mutationFn: (reviewed: boolean) => metricsCatalogApi.update(slug, metric.id, { reviewed }),
+    onSuccess: (_data, reviewed) => {
+      invalidateCatalog(qc, slug)
+      toast.success(
+        reviewed
+          ? `“${metric.display_name}” marked reviewed.`
+          : `“${metric.display_name}” marked not reviewed.`,
+      )
     },
   })
 
@@ -1228,7 +1382,11 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
   })
 
   const busy =
-    duplicateMut.isPending || statusMut.isPending || collectMut.isPending || isCollecting
+    duplicateMut.isPending
+    || statusMut.isPending
+    || reviewMut.isPending
+    || collectMut.isPending
+    || isCollecting
 
   return (
     <DropdownMenu>
@@ -1276,6 +1434,14 @@ function MetricRowMenu({ metric, slug, existingNames, isCoachTarget }: MetricRow
           onSelect={() => collectMut.mutate()}
         >
           <RefreshCw className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Collect now
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="text-body-sm"
+          disabled={busy}
+          onSelect={() => reviewMut.mutate(!metric.reviewed)}
+        >
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />{' '}
+          {metric.reviewed ? 'Mark not reviewed' : 'Mark reviewed'}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem

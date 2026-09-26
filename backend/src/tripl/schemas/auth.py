@@ -68,6 +68,11 @@ class AuthStatusResponse(BaseModel):
     # instance regardless of policy — the first owner must always be able to
     # claim it.
     registration_enabled: bool = True
+    # Whether the instance can send mail (SMTP host AND From: address), so the
+    # forgot-password form can say up front that no email will come instead of
+    # after the request (ST-24). Instance-wide, and already returned by the
+    # unauthenticated reset request, so exposing it here leaks nothing new.
+    email_configured: bool = False
 
 
 class AuthUserResponse(BaseModel):

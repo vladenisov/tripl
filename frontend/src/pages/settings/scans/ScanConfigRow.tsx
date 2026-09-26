@@ -169,17 +169,20 @@ export function ScanListRow({
   // (tripl-q7i1.5).
   // The shared Button at the dense row-action size (DS-14), not a hand-rolled
   // 11px bordered button.
+  // A run already in flight disables Run now and says so: a second click only
+  // earned the backend's 409 (#247 DA-6). Stop lives on the scan's page.
+  const runActive = runInfo.status === 'running'
   const runButton = onRun ? (
     <Button
       type="button"
       size="xs"
       variant="outline"
       aria-label={`Run ${sc.name} now`}
-      disabled={runPending}
+      disabled={runPending || runActive}
       onClick={e => { e.stopPropagation(); onRun() }}
     >
       <Play className="size-3" aria-hidden="true" />
-      {runPending ? 'Starting…' : 'Run now'}
+      {runPending ? 'Starting…' : runActive ? 'Running…' : 'Run now'}
     </Button>
   ) : null
 

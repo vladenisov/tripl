@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/error-state'
 import type { ScanConfigPreview, ScanDryRunResponse } from '@/types'
 import { ScanDryRunSummary } from './ScanDryRunSummary'
+import type { NamingFixTarget } from './scanDryRunWarnings'
 import { formatPreviewCell } from './scanUtils'
 
 /**
@@ -44,6 +45,7 @@ export function ScanPreviewPanel({
   dryRunError,
   eventTargetMissing,
   onRecheck,
+  onFixNaming,
 }: {
   preview: ScanConfigPreview
   /** Null until the first dry run resolves — the rows still render without it. */
@@ -59,6 +61,8 @@ export function ScanPreviewPanel({
    */
   eventTargetMissing: boolean
   onRecheck: () => void
+  /** Opens the naming control the dry run's flood warning names (#247 DA-1). */
+  onFixNaming?: (target: NamingFixTarget) => void
 }) {
   const [rowsOpen, setRowsOpen] = useState(false)
   const rows = preview.rows.slice(0, 5)
@@ -84,8 +88,10 @@ export function ScanPreviewPanel({
       {offerFirstCheck && (
         <div className="flex flex-wrap items-center gap-2">
           <p className="m-0 flex-1 text-body-sm text-muted-foreground">{NOT_CHECKED_YET_TEXT}</p>
+          {/* Names what it does: "Check" read as "validate the SQL"
+              (#247 DA-14). */}
           <Button type="button" variant="outline" size="sm" onClick={onRecheck}>
-            Check
+            Show what this scan would create
           </Button>
         </div>
       )}
@@ -110,14 +116,14 @@ export function ScanPreviewPanel({
           {dryRunStale && !dryRunPending && (
             <div className="flex flex-wrap items-center gap-2">
               <p className="m-0 flex-1 text-caption" style={{ color: 'var(--warning)' }}>
-                The form changed since this check ran, so it no longer describes this scan.
+                The form changed since this was worked out, so it no longer describes this scan.
               </p>
               <Button type="button" variant="outline" size="sm" onClick={onRecheck}>
-                Check again
+                Recalculate
               </Button>
             </div>
           )}
-          <ScanDryRunSummary dryRun={dryRun} />
+          <ScanDryRunSummary dryRun={dryRun} onFixNaming={onFixNaming} />
         </div>
       )}
 

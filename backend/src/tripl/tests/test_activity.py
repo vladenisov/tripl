@@ -539,13 +539,28 @@ class TestScanJobDetail:
         detail = _scan_job_detail("completed", {"events_created": 0}, None)
         assert detail == "no new events discovered"
 
-    def test_true_zero_run_still_reports_rows_scanned(self):
+    def test_true_zero_run_still_reports_what_it_scanned(self):
         detail = _scan_job_detail(
             "completed",
             {"events_created": 0, "scan_rows_processed": 512},
             None,
         )
-        assert detail == "no new events discovered · 512 rows scanned"
+        assert detail == "no new events discovered · 512 column combinations"
+
+    def test_catalog_run_names_combinations_not_rows(self):
+        """scan_rows_processed counts the catalog analyzer's GROUP BY breakdown:
+        distinct column combinations, not warehouse rows. The scan page prints
+        "153 combos" for the same run, so this line must not say "rows" (#247
+        DA-4). A run reporting query_rows_scanned still reads as rows."""
+        catalog = _scan_job_detail("completed", {"scan_rows_processed": 153}, None)
+        assert catalog == "153 column combinations"
+        assert "row" not in catalog
+        both = _scan_job_detail(
+            "completed",
+            {"scan_rows_processed": 900, "query_rows_scanned": 12345},
+            None,
+        )
+        assert both == "12345 rows scanned"
 
     def test_non_zero_events_and_signals_are_summarised(self):
         detail = _scan_job_detail(
@@ -570,10 +585,12 @@ class TestScanJobDetail:
     def test_singular_units(self):
         detail = _scan_job_detail(
             "completed",
-            {"events_created": 1, "type_metrics": 1, "scan_rows_processed": 1},
+            {"events_created": 1, "type_metrics": 1, "query_rows_scanned": 1},
             None,
         )
         assert detail == "1 new event · 1 metric point · 1 row scanned"
+        catalog = _scan_job_detail("completed", {"scan_rows_processed": 1}, None)
+        assert catalog == "1 column combination"
 
     def test_failed_status_surfaces_error_message(self):
         detail = _scan_job_detail("failed", {"events_created": 3}, "connection refused")
