@@ -1112,8 +1112,8 @@ describe('AlertingInbox — narrowing the list past its status', () => {
     // The app's calendar rather than a native date input (AL-15): the bound
     // is a disabled day, not a `min` attribute.
     const earliest = earliestReachableDay(new Date())
-    const [year, month, day] = earliest.split('-').map(Number)
-    const bound = new Date(year, month - 1, day)
+    // A date-only string with a time and no zone parses as LOCAL midnight.
+    const bound = new Date(`${earliest}T00:00:00`)
     fireEvent.click(screen.getByLabelText('Last fired from'))
     const grid = await screen.findByRole('grid')
     const now = new Date()
@@ -1124,8 +1124,8 @@ describe('AlertingInbox — narrowing the list past its status', () => {
     const dayName = (date: Date) =>
       date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
     expect(within(grid).getByRole('button', { name: dayName(bound) })).toBeEnabled()
-    if (day > 1) {
-      const before = new Date(year, month - 1, day - 1)
+    if (bound.getDate() > 1) {
+      const before = new Date(bound.getFullYear(), bound.getMonth(), bound.getDate() - 1)
       expect(within(grid).getByRole('button', { name: dayName(before) })).toBeDisabled()
     }
   })

@@ -152,7 +152,7 @@ describe('HistoryTab — what wrote each revision (PL-21)', () => {
     // The selected merge links to the branch it came from.
     expect(await screen.findByRole('link', { name: 'feature/checkout-funnel' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/branches/b-7',
+      '/p/demo/branches/b-7',
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Show branch openings' }))
@@ -209,7 +209,7 @@ describe('HistoryTab — what wrote each revision (PL-21)', () => {
 
     expect(await screen.findByRole('link', { name: 'renamed/branch' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/branches/b-7',
+      '/p/demo/branches/b-7',
     )
   })
 

@@ -780,7 +780,7 @@ export function EventForm({
                 <p className="text-body-sm text-fg-secondary">
                   This project has no event types yet, and an event belongs to one.{' '}
                   <Link
-                    to={`/p/${slug}/settings/event-types`}
+                    to={`/p/${slug}/event-types`}
                     className="underline underline-offset-2 text-accent"
                   >
                     Create an event type

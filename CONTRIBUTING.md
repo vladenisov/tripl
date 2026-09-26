@@ -100,6 +100,7 @@ cd backend
 uv sync --extra dev                           # install deps from uv.lock, incl. dev extras
 uv run pytest                                 # full test suite
 uv run pytest src/tripl/tests/test_events.py -v   # single test file
+uv run pytest --cov=tripl --cov-report=term-missing:skip-covered   # with coverage (see "Coverage")
 uv run ruff check                             # lint
 uv run ruff format --check                    # formatting check (drop --check to apply)
 uv run mypy                                   # strict type check
@@ -262,6 +263,7 @@ cd frontend
 pnpm install        # install deps from pnpm-lock.yaml
 pnpm dev            # Vite dev server on :5173
 pnpm test           # vitest run
+pnpm test:coverage  # the same run with v8 coverage and its thresholds (see "Coverage")
 pnpm lint           # oxlint plus the project rule tests  (zero-warning policy)
 pnpm build          # tsc -b && vite build  (full type check with TypeScript 7 + production build)
 pnpm check:bundle   # after a build: first-load JavaScript stays inside its budget
@@ -342,6 +344,43 @@ notes describe:
 on TypeScript 6 (its command is `tsc6`), and
 `"@typescript/native": "npm:typescript@^7…"` provides `tsc`. So
 `pnpm exec tsc` is TypeScript 7 and `pnpm exec tsc6` is TypeScript 6.
+
+## Coverage
+
+CI measures coverage on both sides and fails when it drops below a recorded
+floor. **No floor is recorded yet:** every threshold is `0` until a baseline
+is measured on CI (the `Pytest` job log and the `frontend-coverage-summary`
+artifact) and written in by a maintainer, so today the numbers are reported but
+nothing fails on them.
+
+```bash
+# backend, from backend/
+uv run pytest -m "not conformance and not relevance and not pg_concurrency" \
+  --cov=tripl --cov-report=term-missing:skip-covered
+# frontend, from frontend/
+pnpm test:coverage
+```
+
+- **Backend:** pytest-cov over the `tripl` package, test modules and
+  migrations omitted. The floor is `fail_under` in `[tool.coverage.report]`
+  of `backend/pyproject.toml`; pytest-cov applies it whenever `--cov` is on, so
+  CI passes no `--cov-fail-under` of its own. Use the same `-m` expression as
+  CI when you compare numbers: a local run that also executes (or skips) the
+  PostgreSQL lanes measures a different set.
+- **Frontend:** `@vitest/coverage-v8`, configured under `test.coverage` in
+  `frontend/vite.config.ts`. Every file under `src/` counts, whether a test
+  imports it or not; tests, `src/test/`, the generated `src/types/api.gen.ts`
+  and `src/main.tsx` are excluded. Besides the app-wide `thresholds`,
+  `src/lib/**` and `src/demo/**` carry their own, so a drop there cannot hide
+  behind the average. CI uploads `coverage/coverage-summary.json` as the
+  `frontend-coverage-summary` artifact, from red runs too.
+
+The floors are a ratchet, starting from that recorded baseline — a PR does not
+set the first one. Once it is in, when your change raises coverage, raise the matching
+threshold to the new measured value (rounded down) in the same PR. Never lower
+one to get a red run through: write the missing test instead, or, if code with
+its tests really was deleted, say so in the PR description where the reviewer
+can check it.
 
 ## Database Migrations (Alembic)
 

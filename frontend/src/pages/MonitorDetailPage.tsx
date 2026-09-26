@@ -118,7 +118,7 @@ export default function MonitorDetailPage() {
   const muteError = muteMut.error ?? unmuteMut.error
 
   // The list this rule lives in: Alerting, on its Rules section.
-  const rulesListPath = `/p/${slug}/settings/alerting?section=monitors`
+  const rulesListPath = `/p/${slug}/alerting?section=monitors`
 
   if (monitorQuery.isError) {
     // A rule that does not exist is not a failure to retry (#237 SH-33): a
@@ -654,7 +654,7 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
           </Chip>
           {slug ? (
             <Link
-              to={`/p/${slug}/settings/alerting?section=destinations`}
+              to={`/p/${slug}/alerting?section=destinations`}
               className="min-w-0 truncate text-body-sm no-underline hover:underline text-fg"
               title={monitor.destination_name}
             >

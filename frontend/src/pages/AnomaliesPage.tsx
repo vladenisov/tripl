@@ -1,6 +1,6 @@
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Activity, ArrowDown, ArrowUp, BellRing, CalendarPlus, ExternalLink, MoreHorizontal, Play, Settings2 } from 'lucide-react'
+import { Activity, ArrowDown, ArrowUp, Play, Settings2 } from 'lucide-react'
 import { scansApi } from '@/api/scans'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
@@ -9,12 +9,6 @@ import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
 import { TermHint, TERM_HINTS } from '@/components/term-hint'
 import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { FilterBar, FilterSelect } from '@/components/ui/filter-bar'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
@@ -24,7 +18,6 @@ import { APP_LOCALE, formatNumber } from '@/lib/format'
 import { formatSignalEffect, formatSignalEffectDetail, getMonitoringPath } from '@/lib/monitoring'
 import { getAlertingPath } from '@/lib/navigation'
 import { alertInboxStatusLabel } from '@/lib/alertStatus'
-import { useCanWriteProject } from '@/lib/permissions'
 import {
   DEFAULT_MAGNITUDE_LEVEL,
   MAGNITUDE_PRESETS,
@@ -51,6 +44,8 @@ import {
 import { Sparkline, SparklineSkeleton } from '@/components/primitives/sparkline'
 import type { MonitoringSignal, SignalSeries } from '@/types'
 import { scansKey } from '@/lib/queryKeys'
+import { SignalActions } from './anomalies/SignalActions'
+import { countHiddenSignals, triageStatusLabel } from './anomalies/signalTriage'
 
 // Change sits right after the scope and its trend, the one figure a reader
 // scans for (MO-19). The trend column is sm+ only: its cell is `hidden` below,
@@ -191,7 +186,24 @@ export default function AnomaliesPage() {
     (scansQuery.data ?? []).map((s) => [s.id, s.name]),
   )
 
-  const signals = signalsQuery.data ?? []
+  // Muted and expected signals (MO-4 / JR-5) are left out of the list and every
+  // count here, as they are from the bell, Overview and the sidebar badge;
+  // `?hidden=1` brings them back, flagged, so a verdict can be reviewed or undone.
+  const showHidden = searchParams.get('hidden') === '1'
+  const setShowHidden = (next: boolean) => {
+    setSearchParams(
+      (previous) => {
+        const params = new URLSearchParams(previous)
+        if (next) params.set('hidden', '1')
+        else params.delete('hidden')
+        return params
+      },
+      { replace: true },
+    )
+  }
+  const allSignals = signalsQuery.data ?? []
+  const hiddenTotal = countHiddenSignals(allSignals)
+  const signals = showHidden ? allSignals : allSignals.filter((s) => !s.hidden)
   const total = signals.length
   // Row sparklines, one batched request beside the signals list rather than
   // inside its shared 30 s cache (MO-19).
@@ -264,6 +276,21 @@ export default function AnomaliesPage() {
       ? byMagnitude
       : byMagnitude.filter((s) => facetKey(s.scan_config_id) === activeScanId)
   const sorted = [...filtered].sort(compareSignalsByMagnitude)
+  // What "Show hidden" would bring back into THIS view: hidden signals that pass
+  // the magnitude level and scan facet. Counting the whole list offered rows the
+  // filters would then keep out. `hiddenTotal` (unfiltered) still decides
+  // whether anything is hidden at all.
+  const hiddenInView = countHiddenSignals(
+    allSignals.filter(
+      (s) =>
+        relativeEffect(s) >= threshold
+        && (activeScanId === ALL_SCANS || facetKey(s.scan_config_id) === activeScanId),
+    ),
+  )
+  // No number when every hidden signal is outside the filters: the empty state
+  // still offers the way back, and a "(0)" would read as "nothing is hidden".
+  const showHiddenLabel =
+    hiddenInView > 0 ? `Show hidden (${formatNumber(hiddenInView)})` : 'Show hidden'
   const visibleCount = filtered.length
   const hiddenCount = total - visibleCount
   // Split so the subtitle can name the filter responsible for each omission.
@@ -291,7 +318,7 @@ export default function AnomaliesPage() {
   // "No anomalies right now" was a false all-clear for a project that has not
   // started monitoring (MO-23). Decided only once the scan list has loaded.
   const monitoringIsOff =
-    isEmpty && scansQuery.isSuccess && !(scansQuery.data ?? []).some((scan) => scan.interval)
+    isEmpty && hiddenTotal === 0 && scansQuery.isSuccess && !(scansQuery.data ?? []).some((scan) => scan.interval)
   // First load: a skeleton of the stat strip and the table, never zeros.
   const isFirstLoad = signalsQuery.isPending && !signalsQuery.isError
 
@@ -311,7 +338,8 @@ export default function AnomaliesPage() {
               <Link to={getAlertingPath(slug)} className="text-accent">
                 Alerting
               </Link>
-              , are the ones an alert rule routed to your team; triage happens there.
+              , are the ones an alert rule routed to your team; triage those there. Acknowledge,
+              mute or mark the rest as expected from each row’s menu.
             </>
           ) : undefined
         }
@@ -401,6 +429,15 @@ export default function AnomaliesPage() {
                 icon={Activity}
                 title="No anomalies right now"
                 description="When detection flags a spike or drop against the learned baseline, it shows up here. Tune sensitivity in detection settings."
+                action={
+                  // Everything open was muted or marked expected: say so, and
+                  // offer the way back to those verdicts.
+                  hiddenTotal > 0 ? (
+                    <Button type="button" variant="outline" size="sm" onClick={() => setShowHidden(true)}>
+                      {showHiddenLabel}
+                    </Button>
+                  ) : undefined
+                }
               />
             )}
           </div>
@@ -426,6 +463,18 @@ export default function AnomaliesPage() {
               // current value ("Magnitude: Significant") and applies instantly.
               // A segmented control is for switching views, not for filtering.
               <FilterBar className="min-w-0 max-w-full">
+                {/* Muted / expected signals, back in the list on demand. */}
+                {(hiddenInView > 0 || showHidden) && (
+                  <Button
+                    type="button"
+                    variant={showHidden ? 'secondary' : 'ghost'}
+                    size="sm"
+                    aria-pressed={showHidden}
+                    onClick={() => setShowHidden(!showHidden)}
+                  >
+                    {showHiddenLabel}
+                  </Button>
+                )}
                 {/* Only worth the header room once there is something to choose
                     between: a single-scan project gains nothing from it. */}
                 {scanOptions.length > 1 && (
@@ -595,6 +644,7 @@ function AnomalyRow({
   const severityColor = signalDirectionColor(signal.direction)
   const effectDetail = formatSignalEffectDetail(signal)
   const href = slug && isLinkableScope(signal) ? getMonitoringPath(slug, signal) : undefined
+  const triageStatus = triageStatusLabel(signal)
   // The "Spike on" / "Drop on" prefix is visual on sm+ only: on a phone the
   // arrow already carries the direction and the words cost the scope name
   // most of its width (MO-20). `sr-only` rather than `hidden` keeps it in the
@@ -617,7 +667,7 @@ function AnomalyRow({
       // table's does.
       className={`${ANOMALY_GRID} relative min-h-(--row-h) border-b py-2 last:border-0 ${
         href ? 'transition-colors hover:bg-[var(--surface-hover)]' : ''
-      } border-border-subtle`}
+      } ${signal.hidden ? 'opacity-70' : ''} border-border-subtle`}
     >
       <span role="cell" className="flex min-w-0 items-center gap-2">
         {/* Static in a list: with every row pulsing, a flooded project
@@ -648,6 +698,16 @@ function AnomalyRow({
                 (MO-22). A child is keyed to its parent by direction too, so a
                 drop child sits under a total drop, never a spike. */}
             · within total {isDrop ? 'drop' : 'spike'}
+          </span>
+        )}
+        {/* The verdict a user gave this signal (MO-4 / JR-5). A hidden one is
+            listed only under "Show hidden". */}
+        {triageStatus && (
+          <span
+            className="relative shrink-0 whitespace-nowrap text-micro text-fg-tertiary"
+            title={signal.expected_note ?? undefined}
+          >
+            · {triageStatus}
           </span>
         )}
         {/* The incident a rule routed this signal into, so the queue that
@@ -731,57 +791,5 @@ function AnomalyRow({
         {slug && <SignalActions slug={slug} signal={signal} href={href} />}
       </span>
     </div>
-  )
-}
-
-/**
- * The row's action menu (MO-4): open the detail, jump to the alerts it raised,
- * or start an annotation on its bucket. Mute and "Mark as expected" wait on a
- * backend action for a single signal.
- */
-function SignalActions({
-  slug,
-  signal,
-  href,
-}: {
-  slug: string
-  signal: MonitoringSignal
-  href: string | undefined
-}) {
-  const navigate = useNavigate()
-  const canWrite = useCanWriteProject()
-  const iconStyle = { color: 'var(--fg-subtle)' }
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon-sm" aria-label="Signal actions" className="text-fg-muted">
-          <MoreHorizontal aria-hidden="true" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" sideOffset={6} className="w-[180px]">
-        {href && (
-          <DropdownMenuItem asChild className="text-body-sm">
-            <Link to={href}>
-              <ExternalLink className="h-3.5 w-3.5 shrink-0" style={iconStyle} /> Open detail
-            </Link>
-          </DropdownMenuItem>
-        )}
-        <DropdownMenuItem asChild className="text-body-sm">
-          <Link to={getAlertingPath(slug, { incidentId: signal.incident_id })}>
-            <BellRing className="h-3.5 w-3.5 shrink-0" style={iconStyle} /> View alerts
-          </Link>
-        </DropdownMenuItem>
-        {/* The detail page's banner Annotate, from here: its Volume tab with
-            the form prefilled on this bucket (JR-5). */}
-        {href && canWrite && (
-          <DropdownMenuItem
-            className="text-body-sm"
-            onSelect={() => navigate(href, { state: { annotateBucket: signal.bucket } })}
-          >
-            <CalendarPlus className="h-3.5 w-3.5 shrink-0" style={iconStyle} /> Annotate
-          </DropdownMenuItem>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
   )
 }

@@ -40,7 +40,7 @@ from tripl.models.project import Project
 from tripl.worker.tasks import alerts_messages as am
 
 _URL = (
-    "https://tripl.windyapp.co/p/windy-ios/settings/alerting/"
+    "https://tripl.windyapp.co/p/windy-ios/alerting/"
     "c33ed139-da4d-429f-8ee9-f9c61e67d02c?item=event:12e1e41c&incident=514450c0"
 )
 

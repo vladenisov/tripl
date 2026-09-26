@@ -91,6 +91,40 @@ export interface MonitoringSignal {
   // rule delivered it; filled on the expanded list only.
   incident_id?: string | null
   incident_status?: AlertInboxStatus | null
+  // Triage of a signal NO rule routed to an incident (MO-4 / JR-5); a signal
+  // with `incident_id` is triaged in the inbox and never carries these. Read
+  // `muted_until` together with `muted`: null means both "not muted" and
+  // "muted until someone unmutes". `hidden` (muted or expected) is what every
+  // open-signal count gates on; the collapsed list drops hidden signals, the
+  // expanded list keeps them so the Anomalies page can offer "Show hidden".
+  // Optional: locally-synthesised signals need not carry them.
+  acknowledged_at?: string | null
+  muted?: boolean
+  muted_until?: string | null
+  expected?: boolean
+  expected_note?: string | null
+  hidden?: boolean
+}
+
+/** The scope a triage verdict is about, keyed like the signal (MO-4 / JR-5). */
+export interface SignalTriageScope {
+  // Null for a catalog `metric` scope; required for every other one.
+  scan_config_id: string | null
+  scope_type: MetricScopeType
+  scope_ref: string
+  bucket: string
+}
+
+export type SignalMuteDuration = '24h' | '7d' | 'until_unmuted'
+
+/** A signal's triage fields after a write, as the lists will show them. */
+export interface SignalTriageState {
+  acknowledged_at: string | null
+  muted: boolean
+  muted_until: string | null
+  expected: boolean
+  expected_note: string | null
+  hidden: boolean
 }
 
 export interface TopMoverItem {

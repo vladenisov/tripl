@@ -44,7 +44,7 @@ from tripl.schemas.event_metric import (
     SignalSeriesScope,
     TopMoverItem,
 )
-from tripl.services import alerting_service
+from tripl.services import alerting_service, signal_triage_service
 from tripl.services.metrics_service import (
     _get_anomaly_rows,
     _get_metric_rows,
@@ -351,6 +351,23 @@ async def _count_active_metric_signals_by_project(
 ) -> dict[uuid.UUID, int]:
     """Batched per-project count of open ``metric``-scope signals.
 
+    The size of :func:`_active_metric_signals_by_project` per project; callers
+    that also need to drop triaged (hidden) signals read the keys instead.
+    """
+    return {
+        project_id: len(keys)
+        for project_id, keys in (
+            await _active_metric_signals_by_project(session, project_ids)
+        ).items()
+    }
+
+
+async def _active_metric_signals_by_project(
+    session: AsyncSession,
+    project_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, list[tuple[str, datetime]]]:
+    """Batched per-project ``(scope_ref, bucket)`` of open, significant ``metric``-scope signals.
+
     A single-project :func:`_get_active_metric_signals` call issues three queries;
     the ProjectsPage / sidebar badge needs these counts for N projects at once, so
     this loads the same three datasets once for all projects and classifies in
@@ -427,7 +444,7 @@ async def _count_active_metric_signals_by_project(
     recent_windows = await _get_project_recent_signal_windows(session, project_ids)
 
     now = datetime.now(UTC)
-    counts: dict[uuid.UUID, int] = defaultdict(int)
+    keys: dict[uuid.UUID, list[tuple[str, datetime]]] = defaultdict(list)
     for scope_ref, anomaly in latest_anomalies.items():
         grid = grid_by_scope_ref.get(scope_ref)
         project_id = grid.project_id if grid is not None else None
@@ -447,8 +464,8 @@ async def _count_active_metric_signals_by_project(
                 count_shaped=scope_ref not in fractional_refs,
             )
         ):
-            counts[project_id] += 1
-    return dict(counts)
+            keys[project_id].append((scope_ref, anomaly.bucket))
+    return dict(keys)
 
 
 IncidentKey = tuple[uuid.UUID | None, datetime, str]
@@ -670,10 +687,8 @@ async def get_active_signals(
         cached = await cache.get_json(cache_key)
         if cached is not None:
             cached_signals = [MetricSignalResponse.model_validate(item) for item in cached]
-            if not expanded:
-                return cached_signals
             project = await _resolve_project(session, slug)
-            return await _with_incident_refs(session, project.id, cached_signals)
+            return await _with_live_state(session, project.id, cached_signals, expanded=expanded)
 
     project = await _resolve_project(session, slug)
     scope_types = [SCOPE_PROJECT_TOTAL, SCOPE_EVENT_TYPE]
@@ -778,9 +793,32 @@ async def get_active_signals(
             [signal.model_dump(mode="json") for signal in signals],
             ttl_seconds=30,
         )
+    return await _with_live_state(session, project.id, signals, expanded=expanded)
+
+
+async def _with_live_state(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    signals: list[MetricSignalResponse],
+    *,
+    expanded: bool,
+) -> list[MetricSignalResponse]:
+    """The per-fetch state layered over the (cacheable) signal list.
+
+    Incident refs on the expanded list, then triage (MO-4 / JR-5) on both: the
+    collapsed list drops muted / expected signals outright, because the top bar,
+    Overview and Events count what it returns; the expanded list keeps them
+    flagged ``hidden`` so the Anomalies page can offer "Show hidden (n)".
+    """
     if expanded:
-        return await _with_incident_refs(session, project.id, signals)
-    return signals
+        signals = await _with_incident_refs(session, project_id, signals)
+    return await signal_triage_service.apply_triage(
+        session,
+        project_id,
+        signals,
+        drop_hidden=not expanded,
+        incidents_resolved=expanded,
+    )
 
 
 async def _with_incident_refs(

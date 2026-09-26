@@ -8,6 +8,11 @@ type SearchParams = {
   limit?: number
   /** `false` skips the embedding leg: a keyword-only answer, much sooner. */
   semantic?: boolean
+  /**
+   * Fold events that differ only in one naming-rule placeholder into their
+   * best-ranked member, which then carries `variant_group` (#238 JR-20).
+   */
+  group_variants?: boolean
 }
 
 export const searchApi = {
@@ -25,6 +30,9 @@ export const searchApi = {
     }
     if (params.limit !== undefined) sp.set('limit', String(params.limit))
     if (params.semantic !== undefined) sp.set('semantic', String(params.semantic))
+    if (params.group_variants !== undefined) {
+      sp.set('group_variants', String(params.group_variants))
+    }
     return api.get<SearchResponse>(
       withBranch(`/projects/${slug}/search?${sp.toString()}`, branchId),
       signal,

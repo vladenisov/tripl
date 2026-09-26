@@ -271,13 +271,13 @@ describe('TopBar notifications', () => {
     expect(screen.getByText(/^Failed · Slack · 1 matched · /)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Spike alerts/ })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting/delivery-1',
+      '/p/demo/alerting/delivery-1',
     )
     // Both full lists, from the footer (JR-9).
     expect(screen.getByRole('link', { name: 'All anomalies →' })).toHaveAttribute('href', '/p/demo/anomalies')
     expect(screen.getByRole('link', { name: 'Alert inbox →' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting?section=inbox',
+      '/p/demo/alerting?section=inbox',
     )
   })
 
@@ -346,7 +346,7 @@ describe('TopBar notifications', () => {
     const incidents = await screen.findByRole('region', { name: 'Open incidents' })
     expect(await within(incidents).findByRole('link', { name: /Spike on Checkout/ })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting?incident=incident-1',
+      '/p/demo/alerting?incident=incident-1',
     )
     expect(screen.getByText('1 open')).toBeInTheDocument()
     const sections = screen.getAllByRole('region').map(region => region.getAttribute('aria-label'))
@@ -548,7 +548,7 @@ describe('TopBar notifications — all projects (i9mt.19 / SH-17)', () => {
       'Noisy project3 signals',
     ])
     // Open incidents lead to the inbox, signals alone to Anomalies.
-    expect(rows[0]).toHaveAttribute('href', '/p/burning/settings/alerting?section=inbox')
+    expect(rows[0]).toHaveAttribute('href', '/p/burning/alerting?section=inbox')
     expect(rows[1]).toHaveAttribute('href', '/p/noisy/anomalies')
     expect(screen.getByRole('link', { name: 'All projects →' })).toHaveAttribute('href', '/workspace')
     expect(screen.queryByText(/Open a project/)).toBeNull()
@@ -689,7 +689,7 @@ describe('BranchStrip (#243 PL-1)', () => {
     expect(strip).toHaveTextContent('Ready for review')
     expect(screen.getByRole('link', { name: 'Review changes' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/branches/b-1',
+      '/p/demo/branches/b-1',
     )
     fireEvent.click(screen.getByRole('button', { name: 'Back to main' }))
     expect(setBranchId).toHaveBeenCalledWith(null)

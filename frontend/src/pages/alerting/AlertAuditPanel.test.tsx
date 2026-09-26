@@ -319,15 +319,18 @@ describe('AlertAuditPanel filters', () => {
     expect(screen.queryByRole('button', { name: /Clear filters/ })).toBeNull()
   })
 
-  it('sends the reader back to the first page when the filter changes', () => {
+  it('sends the reader back to the first page when the filter changes', async () => {
     // The offset is an index INTO the filtered set: narrowing 115 rows to 4
     // while parked on page 3 lands on a blank page that reads as "nothing
     // matches".
     const onOffset = vi.fn()
     renderPanel({ deliveries: page(2, 5), initialOffset: 2, onOffset })
+    expect(onOffset).toHaveBeenLastCalledWith(2)
 
+    // From is the app's DatePicker now (AL-19), not a native date input, so
+    // pick a day through its calendar rather than typing into it.
     openDates()
-    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-08-12' } })
+    await pickTwelfth('From')
 
     expect(onOffset).toHaveBeenLastCalledWith(0)
   })

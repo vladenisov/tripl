@@ -375,7 +375,7 @@ describe('MetricsCatalog — filters live in the URL (MET-24)', () => {
     )
     expect(screen.getByLabelText('Search metrics')).toHaveValue('sign')
     expect(screen.getByRole('combobox', { name: /^Status filter/ })).toHaveTextContent(/Status:\s*Active/)
-    expect(screen.getByRole('button', { name: 'Filter by active anomalies' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /^With anomalies\b/ })).toHaveAttribute(
       'aria-pressed',
       'true',
     )
@@ -438,12 +438,27 @@ describe('MetricsCatalog — filters live in the URL (MET-24)', () => {
     )
   })
 
+  it('renders the stat filters as MiniStat toggles, not a padded wrapper', async () => {
+    // A padded role=button div around the stat shifted the phone grid's
+    // second row sideways; the primitive's own button cancels its padding.
+    renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?signal=stale`)
+
+    const stale = await screen.findByRole('button', { name: /^Stale\b/ })
+    expect(stale.tagName).toBe('BUTTON')
+    expect(stale).toHaveAttribute('data-slot', 'mini-stat-pressable')
+    expect(stale).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /^With anomalies\b/ })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+  })
+
   it('ignores values that are not filters', async () => {
     renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?status=bogus&signal=bogus&review=bogus`)
 
     await screen.findByText('Signups')
     expect(listCallParams(0)).toMatchObject({ status: undefined, reviewed: undefined })
-    expect(screen.getByRole('button', { name: 'Filter by active anomalies' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /^With anomalies\b/ })).toHaveAttribute(
       'aria-pressed',
       'false',
     )

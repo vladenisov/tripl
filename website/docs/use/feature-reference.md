@@ -631,7 +631,7 @@ the existing note; send an explicit null to clear it, or reopen the drift.
 The event detail repeats the
 affected event's review panel.
 
-Each variable has its own page, `/p/:slug/settings/variables/:id`, opened from
+Each variable has its own page, `/p/:slug/variables/:id`, opened from
 the `${name}` link in its row. Its tabs are **Definition** (name, type,
 description, documented values and bindings), **Drift**, **Overrides** (the
 per-event lists) and **Observed** (the scan-observed contexts, with **Clear
@@ -747,7 +747,7 @@ confirmation it appears only when main changed fields the branch also changed.
 Once your own approval stands, **Approve** is no longer the primary button. A long text change is
 shown as one paragraph with the edits marked, not as two full copies.
 
-The selected branch is part of the route (`/p/:slug/settings/branches/:branchId`),
+The selected branch is part of the route (`/p/:slug/branches/:branchId`),
 so a review is linkable. Each diff row expands to its field-level changes;
 collection-valued fields (an event's field values and meta values, its tags, a
 variable's documented values and per-event overrides) are broken out member by
@@ -756,7 +756,7 @@ the event, event type, or variable — opened in the branch, or on `main` when t
 branch deleted it. Events and variables additionally carry **Edit** on the
 collapsed row, without expanding it first: an event opens its editor on that
 branch, and a variable opens its own page
-(`/p/:slug/settings/variables/:id`) — including a renamed row, whose Edit reaches the branch-side copy
+(`/p/:slug/variables/:id`) — including a renamed row, whose Edit reaches the branch-side copy
 rather than the base one it is drawn from. A merged or closed branch offers no
 Edit, matching what its writes would be refused for: the API answers a plan
 write sent with `?branch=` naming a merged branch, or a closed one until it is
@@ -955,7 +955,7 @@ it needs an owner signed in through the browser.
 ### Plan history & revisions
 
 **Where:** Plan › **Plan history** in the sidebar (route
-`/p/<slug>/settings/history`). Named plan revisions (snapshots): create a
+`/p/<slug>/history`). Named plan revisions (snapshots): create a
 revision, list them, and diff any two. Each revision is labelled with its kind,
 branch openings are folded together, and a diff is grouped by entity and can be
 filtered. A merge or a branch opening links to its branch's review by id and
@@ -1040,7 +1040,7 @@ opened it — and edit shows the channel read-only.
 ### Alert rules
 
 **Where:** Observe › Alerting › **Rules** (route
-`/p/<slug>/settings/alerting?section=monitors`; the tab used to be called
+`/p/<slug>/alerting?section=monitors`; the tab used to be called
 *Monitors*, and the `section=` key kept its old name so saved links still work). Every alert **rule** in the
 project, across all destinations, in one list: the **condition** it watches for
 (spike/drop direction, threshold, cooldown), the **destination** it routes to,
@@ -1468,7 +1468,7 @@ on failures, plus channel, destination, rule, and **scan**. That third section's
 not the project-wide **Govern › Audit log** below.
 
 The scan filter is deep-linkable the same way Anomalies' is:
-`/p/<slug>/settings/alerting?scan=<scan_config_id>` opens the delivery log already
+`/p/<slug>/alerting?scan=<scan_config_id>` opens the delivery log already
 narrowed to one scan, which is where a scan run's **Alerts queued** counter
 links. As on Anomalies, an id this project does not have degrades to **All**
 once the scan list resolves, so a link to a since-deleted scan shows the full
@@ -2184,9 +2184,11 @@ headings and filtered by role exactly as the sidebar filters them, plus a
 Concepts, Detection settings); a **Projects** switcher; an
 **Event types** jump list; **branch-aware knowledge search** (from 2 characters)
 across events, event types, fields, meta fields, variables, relations, tags,
-metrics, fact tables, scans and alert rules, each with a
-confidence badge — the keyword answer is shown as soon as it lands and the
-semantic re-ranking replaces it when that arrives; **Ask AI** (when AI is
+metrics, fact tables, scans and alert rules — events that differ only in one
+naming-rule placeholder are folded into one row ("+ N variants") with a
+**Show/Hide N variants** row that expands them in place (see
+[Searching events](./searching-events.md)); the keyword answer is shown as soon
+as it lands and the semantic re-ranking replaces it when that arrives; **Ask AI** (when AI is
 enabled and the query is at least 8 characters, with cited sources); an
 **Actions** group; and **Sign out**.
 

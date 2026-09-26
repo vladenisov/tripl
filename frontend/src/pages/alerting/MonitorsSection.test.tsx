@@ -507,7 +507,7 @@ describe('MonitorsSection guided-setup handoff (tripl-oxkt.15)', () => {
 describe('MonitorsSection ?new=rule (AL-18, JR-16)', () => {
   it('opens a blank rule form on arrival', async () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
-    renderSection({ entry: '/p/windy-ios/settings/alerting?section=monitors&new=rule' })
+    renderSection({ entry: '/p/windy-ios/alerting?section=monitors&new=rule' })
 
     expect(await screen.findByText('New alert rule')).toBeInTheDocument()
     expect(screen.getByLabelText('Name')).toHaveValue('')
@@ -517,7 +517,7 @@ describe('MonitorsSection ?new=rule (AL-18, JR-16)', () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
     renderSection({
       canWrite: false,
-      entry: '/p/windy-ios/settings/alerting?section=monitors&new=rule',
+      entry: '/p/windy-ios/alerting?section=monitors&new=rule',
     })
 
     await screen.findByRole('link', { name: 'Prod drops' })

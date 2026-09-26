@@ -37,7 +37,7 @@ import {
 } from './variableDetailPath'
 
 /**
- * One variable's own page, `/p/:slug/settings/variables/:id` (AU-26).
+ * One variable's own page, `/p/:slug/variables/:id` (AU-26).
  *
  * Everything about a variable used to live in one `max-w-4xl` edit dialog: the
  * definition form, value-drift triage, per-event overrides with their own

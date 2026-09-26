@@ -437,7 +437,7 @@ function ProjectGeneralBody({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => navigate(`/p/${slug}/settings/event-types`)}
+              onClick={() => navigate(`/p/${slug}/event-types`)}
             >
               {/* Named for what it opens: event types, meta fields, alerting…
                   "Project operations" described none of them (#238 ST-5). */}

@@ -69,6 +69,20 @@ describe('relativeEffect', () => {
     expect(selectSignificantSignals([asNull])).toHaveLength(0)
   })
 
+  it('leaves out signals a triage verdict hid, so the bell and Overview match the badge', () => {
+    // Muted or marked expected (MO-4 / JR-5): the backend's badge count skips
+    // them, so every client count must too. Acknowledged ones stay.
+    const hidden = signal({ scope_ref: 'muted', relative_effect: 3, hidden: true, muted: true })
+    const acknowledged = signal({
+      scope_ref: 'seen',
+      relative_effect: 3,
+      acknowledged_at: '2026-08-19T01:00:00Z',
+    })
+    expect(selectSignificantSignals([hidden, acknowledged]).map(s => s.scope_ref)).toEqual([
+      'seen',
+    ])
+  })
+
   it('sorts by the server value, biggest first', () => {
     const small = signal({ scope_ref: 'a', relative_effect: 0.6 })
     const big = signal({ scope_ref: 'b', relative_effect: 3 })

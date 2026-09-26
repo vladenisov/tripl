@@ -454,7 +454,7 @@ function ActivityRow({
   }
 
   // Not `item.target_path` directly: the feed's alert rows arrive with the bare
-  // /p/:slug/settings/alerting, which drops the reader at the top of a page
+  // /p/:slug/alerting, which drops the reader at the top of a page
   // holding every delivery and every incident — strictly worse than the telegram
   // message the same delivery sent, which links to the exact row.
   // `resolveActivityTargetPath` rebuilds the deep link from the delivery id the

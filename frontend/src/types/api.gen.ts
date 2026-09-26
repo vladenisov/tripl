@@ -669,6 +669,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/alert-destinations/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Alert Destination Draft
+         * @description Send the test message through settings that are not saved yet (AL-30).
+         *
+         *     The destination dialog's "Send test": an unsaved destination, or an edit
+         *     in progress, where ``destination_id`` lends the stored secrets the form
+         *     left blank. Same contract as the saved destination's Test — editor-only,
+         *     always 200 with ``ok``/``error`` — and the same audit action, so "who
+         *     pressed Test" has one place to look whichever button it was.
+         */
+        post: operations["test_alert_destination_draft_api_v1_projects__slug__alert_destinations_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/alert-destinations/{destination_id}": {
         parameters: {
             query?: never;
@@ -912,6 +938,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/anomalies/signals/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Acknowledge Signal */
+        post: operations["acknowledge_signal_api_v1_projects__slug__anomalies_signals_acknowledge_post"];
+        /** Unacknowledge Signal */
+        delete: operations["unacknowledge_signal_api_v1_projects__slug__anomalies_signals_acknowledge_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/anomalies/signals/expected": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark Signal Expected
+         * @description Record a known cause: annotate the signal's bucket and hide the signal.
+         */
+        post: operations["mark_signal_expected_api_v1_projects__slug__anomalies_signals_expected_post"];
+        /** Unmark Signal Expected */
+        delete: operations["unmark_signal_expected_api_v1_projects__slug__anomalies_signals_expected_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/anomalies/signals/mute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mute Signal Scope
+         * @description Hide every signal on the scope for 24 h, 7 d or until unmuted.
+         */
+        post: operations["mute_signal_scope_api_v1_projects__slug__anomalies_signals_mute_post"];
+        /** Unmute Signal Scope */
+        delete: operations["unmute_signal_scope_api_v1_projects__slug__anomalies_signals_mute_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/anomalies/signals/query": {
         parameters: {
             query?: never;
@@ -923,6 +1009,27 @@ export interface paths {
         put?: never;
         /** Query Active Signals */
         post: operations["query_active_signals_api_v1_projects__slug__anomalies_signals_query_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/anomalies/signals/series": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Query Signal Series
+         * @description Row sparklines for many open signals in one request (MO-19). POST for
+         *     the same reason as ``/signals/query``: the batch outgrows a query string.
+         */
+        post: operations["query_signal_series_api_v1_projects__slug__anomalies_signals_series_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2251,6 +2358,34 @@ export interface paths {
         head?: never;
         /** Reorder Metric Definitions */
         patch: operations["reorder_metric_definitions_api_v1_projects__slug__metrics_reorder_patch"];
+        trace?: never;
+    };
+    "/api/v1/projects/{slug}/metrics/series-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Metric Series
+         * @description Stateless dry-run of a fact or event-composition metric's series (editor-gated).
+         *
+         *     The body is the definition a save would send. A fact metric is aggregated by
+         *     the collector's own code over its last closed buckets (up to 50, capped at
+         *     a month of wall clock); an event
+         *     composition is composed from already-collected event counts on its newest
+         *     scan grid. Nothing is persisted. Expected mistakes and warehouse errors
+         *     return 200 with ``error`` set; an unknown fact table or data source is a
+         *     404, an event outside the project a 422.
+         */
+        post: operations["preview_metric_series_api_v1_projects__slug__metrics_series_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/projects/{slug}/metrics/total": {
@@ -4010,6 +4145,69 @@ export interface components {
             /** Webhook Url */
             webhook_url?: string | null;
         };
+        /**
+         * AlertDestinationDraftTestRequest
+         * @description A destination's settings as the dialog holds them, to test before saving (AL-30).
+         *
+         *     Setting up Slack used to take Create, close, find the card, then Test — and
+         *     a wrong webhook was a stored destination by the time anyone learned it.
+         *
+         *     ``destination_id`` names the saved destination an EDIT dialog is open on.
+         *     The dialog never holds that row's secrets (they are write-only), so a
+         *     secret left blank here means "the one on file", exactly as the PATCH reads
+         *     it; every other field is taken as sent. Without it this is an unsaved
+         *     destination and nothing is borrowed from anywhere.
+         *
+         *     Deliberately lenient about what is MISSING: a half-filled form is the
+         *     normal state of a draft, and the answer to testing one is the same
+         *     ``ok: false`` / ``config`` result a stored destination with a bad value gets
+         *     — not a 422 the dialog would render as "the request was wrong". What is
+         *     checked here is only what a send must never carry at all: header names and
+         *     values that could inject, and ids that could reach another endpoint's path.
+         *     Fields the form sends that a test does not use (``enabled``, the cadence,
+         *     the subject template) are ignored.
+         */
+        AlertDestinationDraftTestRequest: {
+            /** Bot Token */
+            bot_token?: string | null;
+            /** Chat Id */
+            chat_id?: string | null;
+            /** Destination Id */
+            destination_id?: string | null;
+            /** Email From Address */
+            email_from_address?: string | null;
+            /** Email Recipients */
+            email_recipients?: string | null;
+            /** Jira Api Token */
+            jira_api_token?: string | null;
+            /** Jira Auth Email */
+            jira_auth_email?: string | null;
+            /** Jira Base Url */
+            jira_base_url?: string | null;
+            /** Jira Issue Type */
+            jira_issue_type?: string | null;
+            /** Jira Project Key */
+            jira_project_key?: string | null;
+            /** Linear Api Key */
+            linear_api_key?: string | null;
+            /** Linear Label Ids */
+            linear_label_ids?: string | null;
+            /** Linear State Id */
+            linear_state_id?: string | null;
+            /** Linear Team Id */
+            linear_team_id?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Target Url */
+            target_url?: string | null;
+            type: components["schemas"]["AlertDestinationType"];
+            /** Webhook Header Name */
+            webhook_header_name?: string | null;
+            /** Webhook Header Value */
+            webhook_header_value?: string | null;
+            /** Webhook Url */
+            webhook_url?: string | null;
+        };
         /** AlertDestinationResponse */
         AlertDestinationResponse: {
             /** Bot Token Set */
@@ -5040,7 +5238,7 @@ export interface components {
          *     Deliberately WITHOUT ``payload``. The tab renders a payload only for the
          *     rows the reader expanded (AuditTab.tsx), so shipping one per row sent a page
          *     of JSON blobs across the wire to be displayed nowhere: on the only project
-         *     with real audit history, ``/p/*\/settings/audit`` had the slowest first
+         *     with real audit history, ``/p/*\/audit`` had the slowest first
          *     content of the 75 routes in the 2026-08-17 walk. The payload now travels one
          *     row at a time, as ``AuditEntryDetailResponse`` (tripl-5ydt).
          *
@@ -5606,6 +5804,8 @@ export interface components {
              * @default 0
              */
             scan_run_count: number;
+            /** Scans */
+            scans?: components["schemas"]["DataSourceScanRef"][];
             /** Timeout Seconds */
             timeout_seconds?: number | null;
             /**
@@ -5615,6 +5815,23 @@ export interface components {
             updated_at: string;
             /** Username */
             username: string;
+        };
+        /**
+         * DataSourceScanRef
+         * @description One scan reading a data source, enough to link to it (DA-40).
+         */
+        DataSourceScanRef: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Project Name */
+            project_name: string;
+            /** Project Slug */
+            project_slug: string;
         };
         /** DataSourceSchemaResponse */
         DataSourceSchemaResponse: {
@@ -6416,7 +6633,13 @@ export interface components {
              */
             forecast: components["schemas"]["ForecastPoint"][];
             interval?: components["schemas"]["ScanInterval"] | null;
+            /** Last Collected At */
+            last_collected_at?: string | null;
             latest_signal?: components["schemas"]["MetricSignalResponse"] | null;
+            /** Next Collection At */
+            next_collection_at?: string | null;
+            /** Prior Week Total */
+            prior_week_total?: number | null;
             /** Scan Config Id */
             scan_config_id?: string | null;
             /** Scan Config Name */
@@ -6428,6 +6651,8 @@ export interface components {
              * @default 4
              */
             sigma_threshold: number;
+            /** Week Total */
+            week_total?: number | null;
         };
         /** EventMove */
         EventMove: {
@@ -8334,6 +8559,8 @@ export interface components {
         };
         /** MetricSignalResponse */
         MetricSignalResponse: {
+            /** Acknowledged At */
+            acknowledged_at?: string | null;
             /** Actual Count */
             actual_count: number;
             /**
@@ -8348,8 +8575,20 @@ export interface components {
             event_id?: string | null;
             /** Event Type Id */
             event_type_id?: string | null;
+            /**
+             * Expected
+             * @default false
+             */
+            expected: boolean;
             /** Expected Count */
             expected_count: number;
+            /** Expected Note */
+            expected_note?: string | null;
+            /**
+             * Hidden
+             * @default false
+             */
+            hidden: boolean;
             /**
              * Incident Child
              * @default false
@@ -8358,6 +8597,13 @@ export interface components {
             /** Incident Id */
             incident_id?: string | null;
             incident_status?: components["schemas"]["AlertInboxStatus"] | null;
+            /**
+             * Muted
+             * @default false
+             */
+            muted: boolean;
+            /** Muted Until */
+            muted_until?: string | null;
             /** Relative Effect */
             relative_effect?: number | null;
             /** Scan Config Id */
@@ -9866,6 +10112,103 @@ export interface components {
             /** Time Column */
             time_column?: string | null;
         };
+        /**
+         * ScanConfigDetailResponse
+         * @description One scan config with its metrics schedule (DA-5).
+         *
+         *     Only ``GET /scans/{id}`` computes these, so they are not on the list rows.
+         *     ``last_metrics_run_at`` is when the newest scheduled metrics collection
+         *     finished; ``next_metrics_run_at`` the earliest moment the scheduler
+         *     considers the config due again (``now`` when it is due already). Both are
+         *     null for a scan the scheduler never collects (no interval or no time
+         *     column), and ``last_metrics_run_at`` also before its first collection.
+         */
+        ScanConfigDetailResponse: {
+            /** App Version Active Share Min */
+            app_version_active_share_min: number | null;
+            /** App Version Column */
+            app_version_column: string | null;
+            /**
+             * App Version Keep Releases
+             * @deprecated
+             * @description Deprecated compatibility mirror of Project.app_version_keep_releases.
+             */
+            app_version_keep_releases: number | null;
+            /** App Version Prerelease Pattern */
+            app_version_prerelease_pattern: string | null;
+            /** Base Query */
+            base_query: string;
+            /** Cardinality Threshold */
+            cardinality_threshold: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Data Source Id
+             * Format: uuid
+             */
+            data_source_id: string;
+            /** Distribution Drift Fields */
+            distribution_drift_fields: string[];
+            /** Event Group Rules */
+            event_group_rules: components["schemas"]["EventGroupRule"][];
+            /** Event Name Format */
+            event_name_format: string | null;
+            /** Event Type Column */
+            event_type_column: string | null;
+            /** Event Type Id */
+            event_type_id: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            interval: components["schemas"]["ScanInterval"] | null;
+            /** Json Value Paths */
+            json_value_paths: string[];
+            /** Last Metrics Run At */
+            last_metrics_run_at?: string | null;
+            /** Metric Breakdown Columns */
+            metric_breakdown_columns: string[];
+            /** Metric Breakdown Values Limit */
+            metric_breakdown_values_limit: number | null;
+            /** Metrics Row Limit */
+            metrics_row_limit: number | null;
+            /**
+             * Monitoring Enabled
+             * @description Whether the scheduler collects metrics for this scan (MO-23).
+             *
+             *     Derived, never stored: the beat schedule and every monitoring read path
+             *     select on ``interval IS NOT NULL``, so this is that test said out loud
+             *     rather than a second switch that could disagree with it.
+             */
+            readonly monitoring_enabled: boolean;
+            /** Name */
+            name: string;
+            /** Next Metrics Run At */
+            next_metrics_run_at?: string | null;
+            /** Platform Column */
+            platform_column: string | null;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            replay_chunk_interval: components["schemas"]["ScanInterval"] | null;
+            /** Scan Lookback Hours */
+            scan_lookback_hours: number | null;
+            /** Scan Row Limit */
+            scan_row_limit: number | null;
+            /** Time Column */
+            time_column: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** ScanConfigPreviewRequest */
         ScanConfigPreviewRequest: {
             /** Base Query */
@@ -10522,6 +10865,64 @@ export interface components {
              * @default []
              */
             variable_values: components["schemas"]["SearchEventVariableValue"][];
+            variant_group?: components["schemas"]["SearchVariantGroup"] | null;
+        };
+        /**
+         * SearchVariant
+         * @description One folded member of a :class:`SearchVariantGroup` (JR-20).
+         *
+         *     Deliberately slim — enough to render and open the event, not a second full
+         *     :class:`SearchResult`: a group of 40 scan variants would otherwise carry 40
+         *     copies of snippets, highlights and variable bindings nobody reads until the
+         *     group is expanded, and then only the name.
+         */
+        SearchVariant: {
+            /**
+             * Confidence
+             * @default 0
+             */
+            confidence: number;
+            /**
+             * Entity Id
+             * Format: uuid
+             */
+            entity_id: string;
+            /** Event Id */
+            event_id?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Route Path */
+            route_path: string;
+            /** Score */
+            score: number;
+            /** Title */
+            title: string;
+            /** Value */
+            value: string;
+        };
+        /**
+         * SearchVariantGroup
+         * @description Event hits folded under their best-ranked member (JR-20).
+         *
+         *     Events of ONE event type whose names differ only in the value substituted
+         *     for ONE naming-rule placeholder — the scan's ``event_name_format``, or the
+         *     default ``column=value | column=value`` name a scan without one writes.
+         *     ``search_service.group_event_variants`` owns the rule.
+         */
+        SearchVariantGroup: {
+            /** Count */
+            count: number;
+            /** Key */
+            key: string;
+            /** Pattern */
+            pattern: string;
+            /** Placeholder */
+            placeholder: string;
+            /** Variants */
+            variants: components["schemas"]["SearchVariant"][];
         };
         /**
          * SeasonalityCell
@@ -10763,6 +11164,10 @@ export interface components {
             last_seen_at: string;
             /** Observed Count */
             observed_count: number;
+            /** Sample Properties */
+            sample_properties?: {
+                [key: string]: string;
+            }[];
             /**
              * Scan Config Id
              * Format: uuid
@@ -10795,6 +11200,138 @@ export interface components {
          * @enum {string}
          */
         ShadowEventStatus: "new" | "accepted" | "dismissed";
+        /** SignalExpectedRequest */
+        SignalExpectedRequest: {
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            /** Note */
+            note?: string | null;
+            /** Scan Config Id */
+            scan_config_id?: string | null;
+            /** Scope Ref */
+            scope_ref: string;
+            scope_type: components["schemas"]["MetricScopeType"];
+        };
+        /** SignalMuteRequest */
+        SignalMuteRequest: {
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            /**
+             * Duration
+             * @enum {string}
+             */
+            duration: "24h" | "7d" | "until_unmuted";
+            /** Scan Config Id */
+            scan_config_id?: string | null;
+            /** Scope Ref */
+            scope_ref: string;
+            scope_type: components["schemas"]["MetricScopeType"];
+        };
+        /** SignalSeriesQuery */
+        SignalSeriesQuery: {
+            /** Scopes */
+            scopes: components["schemas"]["SignalSeriesScope"][];
+        };
+        /**
+         * SignalSeriesResponse
+         * @description Up to ``SIGNAL_SERIES_BUCKETS`` buckets around one signal's flagged bucket.
+         *
+         *     The window opens 20 buckets before ``bucket`` and closes 4 after it, so the
+         *     row shows the run-up and whether the move held. Gaps inside the stored range
+         *     are zero-filled (an absent row is a zero count); buckets past the newest
+         *     stored one are simply absent.
+         */
+        SignalSeriesResponse: {
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            /** Data */
+            data: components["schemas"]["BreakdownTimelinePoint"][];
+            interval?: components["schemas"]["ScanInterval"] | null;
+            /**
+             * Scan Config Id
+             * Format: uuid
+             */
+            scan_config_id: string;
+            /** Scope Ref */
+            scope_ref: string;
+            scope_type: components["schemas"]["MetricScopeType"];
+        };
+        /**
+         * SignalSeriesScope
+         * @description One open signal whose recent series a row sparkline draws (MO-19).
+         */
+        SignalSeriesScope: {
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            /**
+             * Scan Config Id
+             * Format: uuid
+             */
+            scan_config_id: string;
+            /** Scope Ref */
+            scope_ref: string;
+            scope_type: components["schemas"]["MetricScopeType"];
+        };
+        /**
+         * SignalTriageScope
+         * @description The scope a triage verdict is about, keyed like the signal itself.
+         *
+         *     ``scan_config_id`` is NULL for a catalog ``metric`` scope and required for
+         *     every other one. ``bucket`` names the signal the user acted on: the
+         *     per-signal verdicts pin it, and a mute uses it to refuse a signal that was
+         *     routed to an incident (that one is triaged in the inbox).
+         */
+        SignalTriageScope: {
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            /** Scan Config Id */
+            scan_config_id?: string | null;
+            /** Scope Ref */
+            scope_ref: string;
+            scope_type: components["schemas"]["MetricScopeType"];
+        };
+        /**
+         * SignalTriageState
+         * @description The triage fields of one signal after a write, as the list would show them.
+         */
+        SignalTriageState: {
+            /** Acknowledged At */
+            acknowledged_at?: string | null;
+            /**
+             * Expected
+             * @default false
+             */
+            expected: boolean;
+            /** Expected Note */
+            expected_note?: string | null;
+            /**
+             * Hidden
+             * @default false
+             */
+            hidden: boolean;
+            /**
+             * Muted
+             * @default false
+             */
+            muted: boolean;
+            /** Muted Until */
+            muted_until?: string | null;
+        };
         /**
          * SimulatedRuleFiring
          * @description One virtual delivery the rule would have triggered during the window.
@@ -12800,6 +13337,41 @@ export interface operations {
             };
         };
     };
+    test_alert_destination_draft_api_v1_projects__slug__alert_destinations_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertDestinationDraftTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertDestinationTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_alert_destination_api_v1_projects__slug__alert_destinations__destination_id__get: {
         parameters: {
             query?: never;
@@ -13356,6 +13928,212 @@ export interface operations {
             };
         };
     };
+    acknowledge_signal_api_v1_projects__slug__anomalies_signals_acknowledge_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignalTriageScope"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignalTriageState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unacknowledge_signal_api_v1_projects__slug__anomalies_signals_acknowledge_delete: {
+        parameters: {
+            query: {
+                scope_type: components["schemas"]["MetricScopeType"];
+                scope_ref: string;
+                bucket: string;
+                scan_config_id?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_signal_expected_api_v1_projects__slug__anomalies_signals_expected_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignalExpectedRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignalTriageState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unmark_signal_expected_api_v1_projects__slug__anomalies_signals_expected_delete: {
+        parameters: {
+            query: {
+                scope_type: components["schemas"]["MetricScopeType"];
+                scope_ref: string;
+                bucket: string;
+                scan_config_id?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mute_signal_scope_api_v1_projects__slug__anomalies_signals_mute_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignalMuteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignalTriageState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unmute_signal_scope_api_v1_projects__slug__anomalies_signals_mute_delete: {
+        parameters: {
+            query: {
+                scope_type: components["schemas"]["MetricScopeType"];
+                scope_ref: string;
+                scan_config_id?: string | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     query_active_signals_api_v1_projects__slug__anomalies_signals_query_post: {
         parameters: {
             query?: never;
@@ -13378,6 +14156,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MetricSignalResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    query_signal_series_api_v1_projects__slug__anomalies_signals_series_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignalSeriesQuery"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignalSeriesResponse"][];
                 };
             };
             /** @description Validation Error */
@@ -16426,6 +17239,7 @@ export interface operations {
                 search?: string | null;
                 reviewed?: boolean | null;
                 owner_id?: string | null;
+                fact_table_id?: string | null;
                 offset?: number;
                 limit?: number;
             };
@@ -16617,6 +17431,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MetricDefinitionResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_metric_series_api_v1_projects__slug__metrics_series_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactMetricDefinition"] | components["schemas"]["EventCompositionMetricDefinition"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricPreviewResponse"];
                 };
             };
             /** @description Validation Error */
@@ -18164,7 +19013,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ScanConfigResponse"];
+                    "application/json": components["schemas"]["ScanConfigDetailResponse"];
                 };
             };
             /** @description Validation Error */
@@ -18485,6 +19334,8 @@ export interface operations {
                 limit?: number;
                 /** @description Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false. */
                 semantic?: boolean;
+                /** @description Fold events of one event type whose names differ only in one naming-rule placeholder into their best-ranked member, which then carries ``variant_group``. ``limit`` and ``total`` count the folded rows. */
+                group_variants?: boolean;
                 /** @description Plan branch id (UUID) to read and write instead of the main branch. */
                 branch?: string | null;
             };

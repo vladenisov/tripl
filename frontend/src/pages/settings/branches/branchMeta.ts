@@ -118,9 +118,9 @@ export function entityPath(slug: string, entry: PlanDiffEntry): string | null {
     case 'event':
       return `/p/${slug}/events/all/${entry.entity_id}`
     case 'event_type':
-      return `/p/${slug}/settings/event-types/${entry.entity_id}`
+      return `/p/${slug}/event-types/${entry.entity_id}`
     case 'variable':
-      return `/p/${slug}/settings/variables/${entry.entity_id}`
+      return `/p/${slug}/variables/${entry.entity_id}`
     default:
       return null
   }
@@ -151,7 +151,7 @@ export function entityEditPath(
     case 'event':
       return `/p/${slug}/events/all/${entityId}/edit`
     case 'variable':
-      return `/p/${slug}/settings/variables/${entityId}`
+      return `/p/${slug}/variables/${entityId}`
     default:
       return null
   }

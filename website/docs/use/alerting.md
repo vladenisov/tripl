@@ -1045,7 +1045,7 @@ volume over the rollout-overlap window — so the message writes it as
 ```
 - Release regression spot:open:wind:: down, actual=345, expected=715.7 (adoption-adjusted), delta=370.7 (51.8%)
   release: dropped in 15.7.5 vs 15.7.4 over the 51h rollout overlap; 715.7 is 15.7.4's share of this event at 15.7.5's own volume, so 51.8% is share-for-share
-  details: https://your-tripl/p/windy-ios/settings/alerting/<delivery-id>?item=release_regression:<scope-ref>
+  details: https://your-tripl/p/windy-ios/alerting/<delivery-id>?item=release_regression:<scope-ref>
 ```
 
 This answers the obvious objection before you raise it: *"the release only just
@@ -1062,7 +1062,8 @@ window rather than a scope over a bucket:
   monitoring view that can reproduce these numbers: the event's chart shows all
   versions over its own range, scored against the seasonal baseline — a
   different numerator, denominator, window and estimator. So `details:` opens
-  this delivery's own row in **Settings → Alerting → Delivery log**, expanded, with
+  this delivery's own row in **Observe → Alerting → Delivery log**
+  (`/p/<slug>/alerting`), expanded, with
   the exact scope, actual, expected and percentage the message quoted. Those are
   read back from the delivery's frozen record, so the page can never drift from
   the message, and the link keeps working after the next release ships. Release
@@ -1406,7 +1407,7 @@ first load. **All** is an explicit `?status=all`.
 
 **The filter is in the page URL as well.** Picking a status writes
 `?status=<acknowledged|muted|resolved|false_positive|all>` onto
-`/p/<slug>/settings/alerting`, beside `?section=` and `?scan=` (Open, the
+`/p/<slug>/alerting`, beside `?section=` and `?scan=` (Open, the
 default, drops the parameter). So a filtered queue can be bookmarked or pasted
 to a colleague, and opening an incident to check the scope that fired — a page
 off this route entirely — and pressing Back returns the queue you were working
@@ -1594,7 +1595,7 @@ and tightened nothing".
    records it in the Inbox and Delivery log views.
 
 The Delivery log can be filtered to a single scan with
-`?scan=<scan_config_id>` — `/p/<slug>/settings/alerting?scan=<scan_config_id>`.
+`?scan=<scan_config_id>` — `/p/<slug>/alerting?scan=<scan_config_id>`.
 That is the link behind a scan run's **Alerts queued** counter, so an alert
 naming a scan is reachable from the run that queued it. An id the project does
 not have degrades to **All**.

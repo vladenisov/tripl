@@ -65,7 +65,7 @@ const SCOPE_COPY: Record<DriftScope, ScopeCopy> = {
       'Value drift is on, but no variable that scans observe documents an allowed-values list on the main branch — this scope cannot fire until one does.',
     note: 'Variables opens on the branch you have selected; a list documented on a working branch counts only once it merges.',
     linkLabel: 'Variables',
-    href: (slug) => `/p/${slug}/settings/variables`,
+    href: (slug) => `/p/${slug}/variables`,
   },
 }
 

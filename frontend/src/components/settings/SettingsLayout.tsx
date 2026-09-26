@@ -514,7 +514,7 @@ export function SettingsLayout({
                   // "Project operations" button on General as the only way
                   // there (#238 ST-5). The arrow marks it as leaving the area.
                   <Link
-                    to={`/p/${encodeURIComponent(projectSlug)}/settings/event-types`}
+                    to={`/p/${encodeURIComponent(projectSlug)}/event-types`}
                     onClick={guardLeave}
                     className="flex items-center gap-2 rounded-md px-[9px] py-2.5 md:py-[7px] text-left text-body-sm font-medium text-fg-muted no-underline transition-colors hover:bg-sidebar-hover focus-visible:bg-sidebar-hover"
                   >

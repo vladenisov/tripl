@@ -88,9 +88,11 @@ function channelLabel(channel: string): string {
  * that link — useful in a telegram message, useless in a cell on the page it
  * names. Matched on the route rather than on the full URL because the stored
  * value carries whatever `app_base_url` was set to when the alert was sent.
+ * Both addresses count: `/p/:slug/alerting` now, and the `/settings/alerting`
+ * one every alert stored before the page moved still carries (#238 JR-25).
  */
 function isAlertingPagePath(path: string): boolean {
-  return path.includes('/settings/alerting')
+  return /\/p\/[^/]+\/(?:settings\/)?alerting(?:[/?#]|$)/.test(path)
 }
 
 /**

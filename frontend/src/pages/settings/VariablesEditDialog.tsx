@@ -17,7 +17,7 @@ import { variableDetailPath } from './variable-detail/variableDetailPath'
  * with drift review, per-event overrides and observed values under it.
  *
  * The same sections make up the variable's own page
- * (`/p/:slug/settings/variables/:id`, AU-26), which the header links to: the
+ * (`/p/:slug/variables/:id`, AU-26), which the header links to: the
  * page gives each section room and a shareable address; this dialog is for a
  * quick fix without leaving the list.
  *

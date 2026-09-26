@@ -626,7 +626,7 @@ function AuditLog({ slug }: { slug?: string }) {
                             ) : null}
                             {entry.branch_id && entry.project_slug ? (
                               <Link
-                                to={`/p/${entry.project_slug}/settings/branches/${entry.branch_id}`}
+                                to={`/p/${entry.project_slug}/branches/${entry.branch_id}`}
                                 className="inline-flex items-center gap-0.5 font-medium hover:underline text-accent"
                               >
                                 Open branch {entry.branch_name}

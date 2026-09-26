@@ -38,7 +38,9 @@ import {
   PHONE_DROPPED_CELL,
   PHONE_NAME_CELL,
   PHONE_NAME_CONTENT,
+  PHONE_QUIET_CELL,
   PHONE_ROW,
+  PHONE_SELECT_CELL,
 } from './eventsPhoneCard'
 import {
   computeWindowDelta,
@@ -318,7 +320,10 @@ export const EventRow = memo(function EventRow({
           </button>
         )}
       </TableCell>
-      <TableCell className="tripl-pin-l w-10 pl-5" data-no-row-click={canWrite || undefined}>
+      <TableCell
+        className={`tripl-pin-l w-10 pl-5 ${PHONE_SELECT_CELL}`}
+        data-no-row-click={canWrite || undefined}
+      >
         {canWrite && (
           <Checkbox
             checked={selected}
@@ -430,13 +435,14 @@ export const EventRow = memo(function EventRow({
         </div>
       </TableCell>
       {!hideMonitor && (
-        <TableCell>
+        <TableCell className={rowSignal ? undefined : PHONE_QUIET_CELL}>
           {/* "Open"/"Recent", never "Live": Live is the lifecycle status in
               green one column over, and one word must map to one tone
               (EV-5 / DS-7). The label comes from SIGNAL_LEVEL. With no open
               signal the cell is a faint dash: a "Monitored" pill on 16 of 17
               rows drowned the one chip the column exists for (EV-6); the
-              coverage stays in the dash's title. */}
+              coverage stays in the dash's title. A phone card drops the
+              quiet cell: with no column over it the dash was a stray mark. */}
           {rowSignal ? (
             <Chip tone={signalLevel?.tone ?? 'danger'} size="xs">
               {signalLevel?.label ?? SIGNAL_LEVEL.firing.label}

@@ -91,7 +91,11 @@ export function signalMagnitudeWord(
 export const DEFAULT_MAGNITUDE_LEVEL: MagnitudeLevel = 'significant'
 
 /**
- * The significant open signals, biggest effect first.
+ * The significant open signals a user has not hidden, biggest effect first.
+ *
+ * Hidden is a triage verdict — the scope was muted, or this signal was marked
+ * expected (MO-4 / JR-5). The backend's badge count leaves those out too, so the
+ * bell, the Overview headline and the sidebar still agree.
  *
  * Callers MUST pass the EXPANDED signal list (`getActiveSignals(slug, undefined,
  * { expanded: true })`). The collapsed variant queries only project_total and
@@ -105,7 +109,7 @@ export function selectSignificantSignals(
   signals: readonly MonitoringSignal[] | undefined,
 ): MonitoringSignal[] {
   return (signals ?? [])
-    .filter(signal => relativeEffect(signal) >= SIGNIFICANT_MIN_REL_EFFECT)
+    .filter(signal => !signal.hidden && relativeEffect(signal) >= SIGNIFICANT_MIN_REL_EFFECT)
     // The shared comparator, so a tie on relative effect breaks on |z| here
     // exactly as it does on the Anomalies page.
     .sort(compareSignalsByMagnitude)

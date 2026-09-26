@@ -92,7 +92,12 @@ describe('TweaksPanel', () => {
     expect(await screen.findByRole('dialog')).toBeInTheDocument()
     await settle()
 
+    // Radix's Popover defers an outside dismissal from a primary-button
+    // pointerdown to the click that completes the press, so press the way a
+    // user does: pointerdown, then click. The pointerdown alone keeps it open.
     fireEvent.pointerDown(document.body)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    fireEvent.click(document.body)
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 

@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -104,6 +105,21 @@ class MetricSignalResponse(BaseModel):
     # incident's status without touching any signal.
     incident_id: uuid.UUID | None = None
     incident_status: AlertInboxStatus | None = None
+    # Triage of a signal NO rule routed to an incident (MO-4 / JR-5); a signal
+    # with ``incident_id`` is triaged in the inbox and never carries these.
+    # Filled after the signals cache, like the incident fields, so a click shows
+    # up on the next fetch. ``muted`` is the live state (a lapsed mute reads
+    # False); ``muted_until`` is NULL both when unmuted and when muted until
+    # someone unmutes, so read it together with ``muted``. ``hidden`` is the one
+    # flag every count gates on: muted or expected. The collapsed list drops
+    # hidden signals outright; the expanded list keeps them so the Anomalies
+    # page can offer "Show hidden".
+    acknowledged_at: datetime | None = None
+    muted: bool = False
+    muted_until: datetime | None = None
+    expected: bool = False
+    expected_note: str | None = None
+    hidden: bool = False
 
 
 class SeasonalityCell(BaseModel):
@@ -381,6 +397,44 @@ class EventWindowMetricsRequest(BaseModel):
 
 class ActiveSignalsQuery(BaseModel):
     event_ids: list[uuid.UUID] = []
+
+
+class SignalTriageScope(BaseModel):
+    """The scope a triage verdict is about, keyed like the signal itself.
+
+    ``scan_config_id`` is NULL for a catalog ``metric`` scope and required for
+    every other one. ``bucket`` names the signal the user acted on: the
+    per-signal verdicts pin it, and a mute uses it to refuse a signal that was
+    routed to an incident (that one is triaged in the inbox).
+    """
+
+    scan_config_id: uuid.UUID | None = None
+    scope_type: MetricScopeType
+    scope_ref: str = Field(min_length=1, max_length=64)
+    bucket: datetime
+
+
+SignalMuteDuration = Literal["24h", "7d", "until_unmuted"]
+
+
+class SignalMuteRequest(SignalTriageScope):
+    duration: SignalMuteDuration
+
+
+class SignalExpectedRequest(SignalTriageScope):
+    # Also the chart annotation's description, so the marker explains itself.
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class SignalTriageState(BaseModel):
+    """The triage fields of one signal after a write, as the list would show them."""
+
+    acknowledged_at: datetime | None = None
+    muted: bool = False
+    muted_until: datetime | None = None
+    expected: bool = False
+    expected_note: str | None = None
+    hidden: bool = False
 
 
 # Longest batch ``POST /anomalies/signals/series`` accepts. The Anomalies page

@@ -260,7 +260,7 @@ describe('MetaFieldsTab — naming (#238 AU-10)', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Meta fields' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'event type' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/event-types',
+      '/p/demo/event-types',
     )
   })
 })

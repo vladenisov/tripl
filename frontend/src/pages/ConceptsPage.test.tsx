@@ -143,7 +143,7 @@ describe('ConceptsPage', () => {
     // (tripl-89ps).
     expect(screen.getByRole('link', { name: 'Open Alerting, for Alert rules' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting?section=monitors',
+      '/p/demo/alerting?section=monitors',
     )
   })
 

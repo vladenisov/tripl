@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   keepPreviousData,
@@ -246,49 +246,6 @@ function isStaleMetric(metric: MetricDefinitionListItem, now: number): boolean {
   const bucketTs = Date.parse(metric.latest_bucket)
   if (Number.isNaN(bucketTs)) return false
   return now - bucketTs > STALE_INTERVAL_MULTIPLIER * intervalMs
-}
-
-// A clickable stat cell: wraps a MiniStat (a <dl>, not a button) in an
-// accessible role="button" so an operational count doubles as a one-click table
-// filter (tripl-nxk2.10). Keyboard (Enter/Space) + aria-pressed included; the
-// negative vertical margin keeps the hover/focus padding from shifting the
-// stat-bar baseline.
-function StatFilter({
-  active,
-  onToggle,
-  label,
-  title,
-  children,
-}: {
-  active: boolean
-  onToggle: () => void
-  label: string
-  /** Hover text spelling out what the stat counts, where the caption alone can
-   *  be read as a wider number than it is (tripl-vsw2). */
-  title?: string
-  children: ReactNode
-}) {
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      aria-pressed={active}
-      aria-label={label}
-      title={title}
-      onClick={onToggle}
-      onKeyDown={event => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          onToggle()
-        }
-      }}
-      className={`-my-1 cursor-pointer rounded-md px-2 py-1 outline-none transition-colors hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-        active ? 'bg-[var(--surface-hover)]' : ''
-      }`}
-    >
-      {children}
-    </div>
-  )
 }
 
 // A metric's internal name is a lowercase [a-z0-9_] identifier. Derive a unique
@@ -805,53 +762,50 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
             value={summary ? formatNumber(active) : <StatValueSkeleton />}
             tone={summary ? 'success' : undefined}
           />
-          <StatFilter
-            active={signalFilter === 'anomalies'}
-            onToggle={() => toggleSignalFilter('anomalies')}
-            label="Filter by active anomalies"
+          {/* A pressable stat doubles as a one-click table filter
+              (tripl-nxk2.10): MiniStat renders the <button aria-pressed>
+              itself and cancels its own hover padding, so the phone grid's
+              second row lines up with the first. */}
+          <MiniStat
+            // Scoped label, not the bare word "Anomalies": this counts CATALOG
+            // METRICS whose latest scan still carries a signal, while the
+            // sidebar's "Anomalies" badge is every significant open signal
+            // across every scope (event, event type, project total). A project
+            // whose anomalies all sit outside the metric catalog therefore
+            // renders 0 here beside a red 3 in the nav ~300px away, and a
+            // reader stops trusting both numbers (tripl-vsw2). "With" keeps
+            // that scope beside the "Metrics" tile without repeating it (MT-26).
+            label="With anomalies"
+            value={
+              summary ? (
+                <span style={{ color: anomalyCount > 0 ? 'var(--danger)' : undefined }}>
+                  {formatNumber(anomalyCount)}
+                </span>
+              ) : (
+                <StatValueSkeleton />
+              )
+            }
+            tone={summary && anomalyCount > 0 ? 'danger' : 'neutral'}
+            onPress={() => toggleSignalFilter('anomalies')}
+            pressed={signalFilter === 'anomalies'}
             title="Catalog metrics whose latest scan still carries an anomaly signal. The Anomalies page counts open signals across every scope, so its total can be higher."
-          >
-            <MiniStat
-              // Scoped label, not the bare word "Anomalies": this counts CATALOG
-              // METRICS whose latest scan still carries a signal, while the
-              // sidebar's "Anomalies" badge is every significant open signal
-              // across every scope (event, event type, project total). A project
-              // whose anomalies all sit outside the metric catalog therefore
-              // renders 0 here beside a red 3 in the nav ~300px away, and a
-              // reader stops trusting both numbers (tripl-vsw2). "With" keeps
-              // that scope beside the "Metrics" tile without repeating it (MT-26).
-              label="With anomalies"
-              value={
-                summary ? (
-                  <span style={{ color: anomalyCount > 0 ? 'var(--danger)' : undefined }}>
-                    {formatNumber(anomalyCount)}
-                  </span>
-                ) : (
-                  <StatValueSkeleton />
-                )
-              }
-              tone={summary && anomalyCount > 0 ? 'danger' : 'neutral'}
-            />
-          </StatFilter>
-          <StatFilter
-            active={signalFilter === 'stale'}
-            onToggle={() => toggleSignalFilter('stale')}
-            label="Filter by stale metrics"
-          >
-            <MiniStat
-              label="Stale"
-              value={
-                summary ? (
-                  <span style={{ color: staleCount > 0 ? 'var(--warning)' : undefined }}>
-                    {formatNumber(staleCount)}
-                  </span>
-                ) : (
-                  <StatValueSkeleton />
-                )
-              }
-              tone={summary && staleCount > 0 ? 'warning' : 'neutral'}
-            />
-          </StatFilter>
+          />
+          <MiniStat
+            label="Stale"
+            value={
+              summary ? (
+                <span style={{ color: staleCount > 0 ? 'var(--warning)' : undefined }}>
+                  {formatNumber(staleCount)}
+                </span>
+              ) : (
+                <StatValueSkeleton />
+              )
+            }
+            tone={summary && staleCount > 0 ? 'warning' : 'neutral'}
+            onPress={() => toggleSignalFilter('stale')}
+            pressed={signalFilter === 'stale'}
+            title="Catalog metrics whose latest bucket is more than three collection intervals old."
+          />
         </MiniStatStrip>
       )}
 

@@ -647,7 +647,7 @@ function RevisionHeader({
       {branch ? (
         branchId ? (
           <Link
-            to={`/p/${slug}/settings/branches/${branchId}`}
+            to={`/p/${slug}/branches/${branchId}`}
             className="mono font-medium hover:underline text-accent"
           >
             {branch}

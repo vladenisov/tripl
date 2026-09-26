@@ -204,7 +204,7 @@ export function BranchStrip({ slug }: { slug: string | undefined }) {
       </span>
       <div className="flex-1" />
       <Link
-        to={`/p/${slug}/settings/branches/${branchId}`}
+        to={`/p/${slug}/branches/${branchId}`}
         className="hidden shrink-0 font-medium underline-offset-2 hover:underline sm:inline text-fg"
       >
         Review changes

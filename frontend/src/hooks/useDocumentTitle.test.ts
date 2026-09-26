@@ -99,8 +99,36 @@ describe('resolveTitleFromPath', () => {
     })
   })
 
+  it('titles the Plan, Observe and Govern surfaces at their top-level routes (JR-25)', () => {
+    const cases: Array<[string, string]> = [
+      ['/p/acme/event-types', 'Event types'],
+      ['/p/acme/event-types/abc123', 'Event types'],
+      ['/p/acme/meta-fields', 'Meta fields'],
+      ['/p/acme/variables', 'Variables'],
+      ['/p/acme/variables/v-1', 'Variables'],
+      ['/p/acme/relations', 'Relations'],
+      ['/p/acme/branches', 'Plan branches'],
+      ['/p/acme/branches/b-1', 'Plan branches'],
+      ['/p/acme/history', 'Plan history'],
+      ['/p/acme/alerting', 'Alerting'],
+      ['/p/acme/alerting/d-1', 'Alerting'],
+      ['/p/acme/audit', 'Audit log'],
+    ]
+    for (const [path, label] of cases) {
+      expect(resolveTitleFromPath(path)).toEqual({ label, slug: 'acme' })
+    }
+  })
+
   it('keeps redirect-only surfaces on a real label so they never flash not-found', () => {
-    expect(resolveTitleFromPath('/p/acme/alerting')).toEqual({ label: 'Alerting', slug: 'acme' })
+    // The old /settings/<surface> addresses redirect to the top-level routes.
+    expect(resolveTitleFromPath('/p/acme/settings/alerting')).toEqual({
+      label: 'Alerting',
+      slug: 'acme',
+    })
+    expect(resolveTitleFromPath('/p/acme/settings/audit')).toEqual({
+      label: 'Audit log',
+      slug: 'acme',
+    })
     expect(resolveTitleFromPath('/p/acme/fact-tables')).toEqual({
       label: 'Fact tables',
       slug: 'acme',
@@ -110,7 +138,7 @@ describe('resolveTitleFromPath', () => {
   })
 
   it('labels a sub-surface that is its own destination rather than its parent surface', () => {
-    // Sidebar destinations that happen to be routed under /settings/.
+    // Old /settings/<surface> addresses, which redirect to the top-level route.
     expect(resolveTitleFromPath('/p/acme/settings/event-types')).toEqual({
       label: 'Event types',
       slug: 'acme',

@@ -415,11 +415,11 @@ describe('Layout detail crumbs from the entity (MO-13)', () => {
     // The surfaces are links back to their lists; the nav group is not a page.
     expect(within(banner).getByRole('link', { name: 'Alerting' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting',
+      '/p/demo/alerting',
     )
     expect(within(banner).getByRole('link', { name: 'Rules' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting?section=monitors',
+      '/p/demo/alerting?section=monitors',
     )
     expect(within(banner).queryByRole('link', { name: 'Observe' })).toBeNull()
   })

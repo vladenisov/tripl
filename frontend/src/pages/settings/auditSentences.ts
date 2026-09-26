@@ -136,11 +136,11 @@ export function targetPath(entry: AuditEntry): string | null {
     case 'event':
       return `${base}/events/all/${entry.target_id}`
     case 'event_type':
-      return `${base}/settings/event-types/${entry.target_id}`
+      return `${base}/event-types/${entry.target_id}`
     case 'variable':
-      return `${base}/settings/variables/${entry.target_id}`
+      return `${base}/variables/${entry.target_id}`
     case 'plan_branch':
-      return `${base}/settings/branches/${entry.target_id}`
+      return `${base}/branches/${entry.target_id}`
     default:
       return null
   }

@@ -131,6 +131,7 @@ PROJECT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "fact_table.preview",
             "metric.preview",
             "metric.fact_preview",
+            "metric.series_preview",
         ),
     ),
     (
@@ -149,6 +150,17 @@ PROJECT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             *_family("alert_inbox", AlertInboxAction),
             "anomaly_scope_override.delete",
             "anomaly_settings.update",
+        ),
+    ),
+    (
+        "Signals",
+        (
+            "signal.acknowledge",
+            "signal.unacknowledge",
+            "signal.mute",
+            "signal.unmute",
+            "signal.mark_expected",
+            "signal.unmark_expected",
         ),
     ),
     (

@@ -96,11 +96,12 @@ describe('DestinationDialog — Send test before saving (AL-30)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send test' }))
 
     await screen.findByText('Test message reached the channel.')
-    const body = testDestinationDraft.mock.lastCall?.[1] as Record<string, unknown>
-    expect(body.destination_id).toBe('dest-1')
-    expect(body.type).toBe('slack')
+    const body = testDestinationDraft.mock.lastCall?.[1]
+    expect(body).toBeDefined()
+    expect(body?.destination_id).toBe('dest-1')
+    expect(body?.type).toBe('slack')
     // Absent, not '': the server reads a missing secret as "the one on file".
-    expect(body.webhook_url).toBeUndefined()
+    expect(body?.webhook_url).toBeUndefined()
   })
 
   it('reads a refusal in plain words, with the raw error behind Details', async () => {

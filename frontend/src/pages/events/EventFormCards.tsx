@@ -203,7 +203,7 @@ export function FieldValuesCard({
         <>
           Columns defined by the{' '}
           {eventTypeId ? (
-            <SubtitleLink to={`/p/${slug}/settings/event-types/${eventTypeId}`}>{typeLabel}</SubtitleLink>
+            <SubtitleLink to={`/p/${slug}/event-types/${eventTypeId}`}>{typeLabel}</SubtitleLink>
           ) : (
             typeLabel
           )}{' '}
@@ -329,7 +329,7 @@ export function MetaFieldsCard({
           {slug && (
             <>
               {' '}
-              <SubtitleLink to={`/p/${slug}/settings/meta-fields`}>Manage meta fields</SubtitleLink>
+              <SubtitleLink to={`/p/${slug}/meta-fields`}>Manage meta fields</SubtitleLink>
             </>
           )}
         </>

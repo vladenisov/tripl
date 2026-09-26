@@ -264,9 +264,41 @@ describe('App', () => {
     })
   })
 
-  it('redirects the legacy /p/:slug/variables/:id link to the Variables surface', async () => {
-    // #245 JR-10: the event Spec card linked here before variables moved under
-    // settings; the old address must keep landing on the variable.
+  it.each([
+    ['/p/demo/settings/alerting', '/p/demo/alerting', ''],
+    // An alert message sent before the move: the delivery id and both anchors
+    // must survive the hop, or the link opens on the page index.
+    [
+      '/p/demo/settings/alerting/dlv-1?item=event:e1&incident=g1',
+      '/p/demo/alerting/dlv-1',
+      '?item=event:e1&incident=g1',
+    ],
+    ['/p/demo/settings/event-types/et-1?tab=settings', '/p/demo/event-types/et-1', '?tab=settings'],
+    ['/p/demo/settings/variables/var-how', '/p/demo/variables/var-how', ''],
+    ['/p/demo/settings/branches/br-1', '/p/demo/branches/br-1', ''],
+    ['/p/demo/settings/history', '/p/demo/history', ''],
+    ['/p/demo/settings/audit', '/p/demo/audit', ''],
+  ])('redirects the old %s address to its top-level route (JR-25)', async (from, pathname, search) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/auth/me')) return Promise.resolve(jsonResponse(OWNER))
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([makeProject('demo', 'Demo')]))
+      }
+      return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
+    })
+
+    renderApp(from)
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe(pathname)
+    })
+    expect(decodeURIComponent(window.location.search)).toBe(search)
+  })
+
+  it('serves /p/:slug/variables/:id as the variable page, not a redirect', async () => {
+    // #245 JR-10 kept this address alive as a redirect into /settings; it is
+    // the canonical variable page now (JR-25).
     vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
       const url = urlOf(input)
       if (url.endsWith('/api/v1/auth/me')) return Promise.resolve(jsonResponse(OWNER))
@@ -278,9 +310,10 @@ describe('App', () => {
 
     renderApp('/p/demo/variables/var-how')
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/p/demo/settings/variables/var-how')
-    })
+    // The variable page itself has mounted (its fetch 404s here, so it shows its
+    // own error state), which means any redirect would already have committed.
+    expect(await screen.findByRole('heading', { name: /load this variable/ })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/p/demo/variables/var-how')
   })
 
   it('sends the bare /p/:slug to the project home', async () => {

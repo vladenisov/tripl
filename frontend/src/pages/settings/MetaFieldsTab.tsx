@@ -269,7 +269,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
           <>
             Extra attributes every event carries whatever its type: owner team, Jira ticket,
             review date. Per-type fields live on each{' '}
-            <Link to={`/p/${slug}/settings/event-types`} className="text-accent no-underline hover:underline">
+            <Link to={`/p/${slug}/event-types`} className="text-accent no-underline hover:underline">
               event type
             </Link>
             .

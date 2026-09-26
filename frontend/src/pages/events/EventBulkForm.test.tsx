@@ -284,7 +284,7 @@ describe('EventBulkForm', () => {
     )
     expect(within(callout).getByRole('link', { name: 'Edit Structured Event fields' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/event-types/et-se',
+      '/p/demo/event-types/et-se',
     )
     expect(screen.queryByRole('button', { name: /^Create/ })).toBeNull()
   })

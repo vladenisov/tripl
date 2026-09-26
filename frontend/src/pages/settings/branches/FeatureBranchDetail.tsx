@@ -122,7 +122,7 @@ export function BranchDetail({
       <EntityNotFound
         title="Branch not found"
         description="This branch no longer exists: it may have been deleted."
-        back={{ to: `/p/${slug}/settings/branches`, label: 'Back to main' }}
+        back={{ to: `/p/${slug}/branches`, label: 'Back to main' }}
         className="rounded-card border border-border bg-surface"
       />
     )
@@ -277,7 +277,7 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
       toast.success(`Branch “${branch.name}” deleted`)
       // Leave the deleted id's URL before the list refetches, so the pane
       // does not flash "Branch not found" for a branch the user just removed.
-      navigate(`/p/${slug}/settings/branches`)
+      navigate(`/p/${slug}/branches`)
       qc.removeQueries({ queryKey: planBranchDetailKey(slug, branch.id) })
       qc.removeQueries({ queryKey: planBranchDiffKey(slug, branch.id) })
       return qc.invalidateQueries({ queryKey: planBranchesKey(slug) })
@@ -1021,7 +1021,7 @@ function MainBranchPane({
             <li>
               Last merged:{' '}
               <Link
-                to={`/p/${slug}/settings/branches/${lastMerged.id}`}
+                to={`/p/${slug}/branches/${lastMerged.id}`}
                 className="mono hover:underline text-fg"
               >
                 {lastMerged.name}
@@ -1035,7 +1035,7 @@ function MainBranchPane({
           </li>
         </ul>
         <Link
-          to={`/p/${slug}/settings/history`}
+          to={`/p/${slug}/history`}
           className="inline-flex w-fit items-center gap-1 text-caption font-medium hover:underline text-accent"
         >
           <History className="size-3" aria-hidden="true" />

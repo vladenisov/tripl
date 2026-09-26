@@ -11,8 +11,11 @@ import type {
   OverviewKpiSeries,
   ReleaseRegressionsResponse,
   SeasonalityHeatmap,
+  SignalMuteDuration,
   SignalSeries,
   SignalSeriesScope,
+  SignalTriageScope,
+  SignalTriageState,
   TopEvent,
   TopMoverItem,
 } from '../types'
@@ -24,6 +27,14 @@ export interface EventsMetricsParams {
   tag?: string
   from?: string
   to?: string
+}
+
+/** A triage DELETE's scope as query parameters; a mute is per scope, so no bucket. */
+function triageQuery(scope: SignalTriageScope, withBucket: boolean): string {
+  const sp = new URLSearchParams({ scope_type: scope.scope_type, scope_ref: scope.scope_ref })
+  if (scope.scan_config_id) sp.set('scan_config_id', scope.scan_config_id)
+  if (withBucket) sp.set('bucket', scope.bucket)
+  return sp.toString()
 }
 
 /**
@@ -123,6 +134,39 @@ export const eventMetricsApi = {
    */
   getSignalSeries: (slug: string, scopes: SignalSeriesScope[]) =>
     api.post<SignalSeries[]>(`/projects/${slug}/anomalies/signals/series`, { scopes }),
+
+  // --- Signal triage (MO-4 / JR-5) --------------------------------------------
+  // Only for signals no rule routed to an incident (the server answers 409
+  // otherwise). Each POST returns the signal's new triage fields; each DELETE
+  // is the Undo and is idempotent.
+
+  acknowledgeSignal: (slug: string, scope: SignalTriageScope) =>
+    api.post<SignalTriageState>(`/projects/${slug}/anomalies/signals/acknowledge`, scope),
+
+  unacknowledgeSignal: (slug: string, scope: SignalTriageScope) =>
+    api.del<void>(
+      `/projects/${slug}/anomalies/signals/acknowledge?${triageQuery(scope, true)}`,
+    ),
+
+  muteSignalScope: (slug: string, scope: SignalTriageScope, duration: SignalMuteDuration) =>
+    api.post<SignalTriageState>(`/projects/${slug}/anomalies/signals/mute`, {
+      ...scope,
+      duration,
+    }),
+
+  unmuteSignalScope: (slug: string, scope: SignalTriageScope) =>
+    api.del<void>(`/projects/${slug}/anomalies/signals/mute?${triageQuery(scope, false)}`),
+
+  markSignalExpected: (slug: string, scope: SignalTriageScope, note: string | null) =>
+    api.post<SignalTriageState>(`/projects/${slug}/anomalies/signals/expected`, {
+      ...scope,
+      note,
+    }),
+
+  unmarkSignalExpected: (slug: string, scope: SignalTriageScope) =>
+    api.del<void>(
+      `/projects/${slug}/anomalies/signals/expected?${triageQuery(scope, true)}`,
+    ),
 
   getTopMovers: (
     slug: string,

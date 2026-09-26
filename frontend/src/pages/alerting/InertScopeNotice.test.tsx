@@ -29,7 +29,7 @@ function renderNotice(
 describe('InertScopeNotice', () => {
   it.each([
     ['distribution_drift', 'Scan settings', '/p/windy-ios/scans'],
-    ['variable_value_drift', 'Variables', '/p/windy-ios/settings/variables'],
+    ['variable_value_drift', 'Variables', '/p/windy-ios/variables'],
   ] as const)('sends %s to the screen that supplies its data', (scope, label, href) => {
     renderNotice(scope, 'windy-ios')
 
@@ -72,7 +72,7 @@ describe('InertScopeNotice', () => {
 
     expect(screen.getByRole('link', { name: 'Variables' })).toHaveAttribute(
       'href',
-      '/p/windy-ios/settings/variables',
+      '/p/windy-ios/variables',
     )
   })
 

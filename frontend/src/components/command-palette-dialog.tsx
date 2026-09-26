@@ -45,6 +45,7 @@ import { ActiveProjectContext } from '@/components/active-project-context'
 import { useAuth } from '@/components/auth-context'
 import { useCommandPalette } from '@/components/command-palette-context'
 import { PALETTE_ITEM_CLASS } from '@/components/palette-item'
+import { SearchVariantCount, SearchVariantRows } from '@/components/search-variants'
 import { PROJECT_GROUPS, WORKSPACE_GROUPS } from '@/components/settings/nav'
 import { useTheme } from '@/components/theme-provider'
 import { eventNameLabel } from '@/lib/eventName'
@@ -155,6 +156,7 @@ const paletteValue = {
   project: (projectId: string) => `project:${projectId}` as PaletteValue,
   eventType: (eventTypeId: string) => `event-type:${eventTypeId}` as PaletteValue,
   search: (documentId: string) => `search:${documentId}` as PaletteValue,
+  variants: (groupKey: string) => `variants:${groupKey}` as PaletteValue,
   account: (action: string) => `account:${action}` as PaletteValue,
   action: (action: string) => `action:${action}` as PaletteValue,
   branch: (branchId: string) => `branch:${branchId}` as PaletteValue,
@@ -404,7 +406,12 @@ export default function CommandPalette({
     // Every debounce boundary supersedes the previous key; the signal cancels
     // the superseded request instead of letting it queue on the backend.
     queryFn: ({ signal }) =>
-      searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12, semantic: false }, null, signal),
+      searchApi.search(
+        searchSlug!,
+        { q: debouncedQuery, limit: 12, semantic: false, group_variants: true },
+        null,
+        signal,
+      ),
     enabled: searchEnabled,
     staleTime: 30_000,
   })
@@ -412,7 +419,12 @@ export default function CommandPalette({
     meta: SILENT_ERROR_META,
     queryKey: commandPaletteSearchKey(searchSlug, debouncedQuery),
     queryFn: ({ signal }) =>
-      searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12 }, null, signal),
+      searchApi.search(
+        searchSlug!,
+        { q: debouncedQuery, limit: 12, group_variants: true },
+        null,
+        signal,
+      ),
     enabled: searchEnabled,
     staleTime: 30_000,
     // The key carries the DEBOUNCED text, so every 200ms boundary mints a new
@@ -703,7 +715,7 @@ export default function CommandPalette({
           // nav:<branches path>, and cmdk selects by value, so a shared one
           // would highlight both rows at once.
           {
-            ...navRow(`/p/${activeProject.slug}/settings/branches`, 'Switch branch…', GitBranch, [
+            ...navRow(`/p/${activeProject.slug}/branches`, 'Switch branch…', GitBranch, [
               'branch',
               'checkout',
             ]),
@@ -720,7 +732,7 @@ export default function CommandPalette({
       ? [
           navRow(`/p/${activeProject.slug}/events/all/new`, 'New event', Plus, ['create', 'add']),
           navRow(`/p/${activeProject.slug}/metrics/new`, 'New metric', Plus, ['create', 'add']),
-          navRow(`/p/${activeProject.slug}/settings/branches?new=1`, 'New branch', GitBranch, [
+          navRow(`/p/${activeProject.slug}/branches?new=1`, 'New branch', GitBranch, [
             'create',
             'add',
           ]),
@@ -1024,7 +1036,8 @@ export default function CommandPalette({
                             // a scan-config name — non-empty by schema, so
                             // "(unnamed event)" on one of those would be a lie.
                             const label = isEvent ? eventNameLabel(result.title) : result.title
-                            return (
+                            const group = result.variant_group
+                            const row = (
                               <Item
                                 key={result.id}
                                 value={paletteValue.search(result.id)}
@@ -1032,9 +1045,33 @@ export default function CommandPalette({
                                 icon={meta.icon}
                                 iconColor={eventType?.color}
                                 label={label}
+                                variants={group?.variants.length}
                                 hint={result.subtitle || undefined}
                                 description={result.description || result.snippet || undefined}
                                 semantic={result.semantic_used}
+                              />
+                            )
+                            if (!group) return row
+                            // Folded server-side (#238 JR-20). Keyed by the
+                            // group, so an expanded group stays open when the
+                            // full answer replaces the keyword-only one.
+                            return (
+                              <SearchVariantRows
+                                key={group.key}
+                                group={group}
+                                representative={row}
+                                toggleValue={paletteValue.variants(group.key)}
+                                renderVariant={variant => (
+                                  <Item
+                                    key={variant.id}
+                                    value={paletteValue.search(variant.id)}
+                                    onSelect={() => goToResult(variant.route_path)}
+                                    icon={meta.icon}
+                                    iconColor={eventType?.color}
+                                    label={eventNameLabel(variant.title)}
+                                    hint={variant.value || undefined}
+                                  />
+                                )}
                               />
                             )
                           })}
@@ -1120,9 +1157,12 @@ function Item({
   description,
   semantic,
   active,
+  variants,
 }: PaletteRow & {
   description?: string
   semantic?: boolean
+  /** Folded variants behind this search row (#238 JR-20). */
+  variants?: number
 }) {
   // No "80%" badge (#238 JR-20): the exact event and eight scan variants all
   // read 80%, so the list looked like duplicates, and the figure meant nothing
@@ -1138,7 +1178,10 @@ function Item({
         style={{ color: iconColor ?? 'var(--fg-subtle)' }}
       />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate">{label}</span>
+        <span className="truncate">
+          {label}
+          {variants ? <SearchVariantCount count={variants} /> : null}
+        </span>
         {description && (
           <span className="truncate text-micro text-fg-tertiary">
             {description}

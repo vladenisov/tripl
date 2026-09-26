@@ -661,7 +661,7 @@ describe('EventForm — authoring an event the scan will recognise', () => {
     expect(await screen.findByText(/This project has no event types yet/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Create an event type/i })).toHaveAttribute(
       'href',
-      '/p/demo/settings/event-types',
+      '/p/demo/event-types',
     )
     expect(screen.queryByRole('combobox', { name: /Event type/ })).not.toBeInTheDocument()
   })
@@ -2062,12 +2062,12 @@ describe('EventForm card subtitles (AU-22)', () => {
     expect(screen.getByText(/scans match the event on these/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Checkout' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/event-types/et-1',
+      '/p/demo/event-types/et-1',
     )
     expect(screen.getByText(/Project-wide attributes for people, not scans/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Manage meta fields' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/meta-fields',
+      '/p/demo/meta-fields',
     )
   })
 })

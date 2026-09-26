@@ -231,7 +231,7 @@ export default function EventEditPage() {
       toast.success(`Added ${created.name} to branch ${activeBranchName}`, {
         action: {
           label: 'View changes',
-          onClick: () => navigate(`/p/${slug}/settings/branches/${branchId}`),
+          onClick: () => navigate(`/p/${slug}/branches/${branchId}`),
         },
       })
       return

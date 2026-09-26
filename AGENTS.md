@@ -346,8 +346,12 @@ Defined in [frontend/src/App.tsx](frontend/src/App.tsx):
 - `/p/:slug/metrics` and `/p/:slug/metrics/:metricId/edit`
 - `/p/:slug/metrics/fact-tables[/:factTableId/edit]`
 - `/p/:slug/reconciliation`, `/p/:slug/anomalies`, `/p/:slug/coverage`
-- `/p/:slug/settings`
-- `/p/:slug/settings/:tab[/:itemId]`
+- `/p/:slug/scans[/:scanId]`
+- `/p/:slug/{event-types|variables|branches|alerting}[/:itemId]`
+- `/p/:slug/{meta-fields|relations|history|audit}`
+- `/p/:slug/settings` and `/p/:slug/settings/monitoring` (detection settings)
+- Old `/p/:slug/settings/<surface>[/:itemId]` addresses (and `settings/scans`)
+  redirect to the canonical paths above, so bookmarks and alert links keep working.
 
 Main pages:
 - `ProjectsPage`: project portfolio, create/demo, health rollups.
@@ -363,16 +367,7 @@ Main pages:
   configuration.
 
 Settings tabs currently include:
-- `event-types`
-- `meta-fields`
-- `relations`
-- `variables`
 - `monitoring`
-- `alerting`
-- `scans`
-- `branches`
-- `history`
-- `audit`
 
 ## Async Pipeline Map
 

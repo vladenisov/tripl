@@ -216,7 +216,7 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   }
   // One branch: "Plan › Plan branches › <name>", the page naming the branch
   // once it has loaded (#243 PL-17). The bare list keeps its nav crumb.
-  if (/^\/p\/[^/]+\/settings\/branches\/[^/]+/.test(pathname)) {
+  if (/^\/p\/[^/]+\/branches\/[^/]+/.test(pathname)) {
     return { crumbs: withProject('Plan', nav('Plan branches')), title: DETAIL_PENDING_TITLE }
   }
   // An alert rule's history: "Observe › Alerting › Rules › <rule>", the tab

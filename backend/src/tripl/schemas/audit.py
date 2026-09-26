@@ -13,7 +13,7 @@ class AuditEntryResponse(BaseModel):
     Deliberately WITHOUT ``payload``. The tab renders a payload only for the
     rows the reader expanded (AuditTab.tsx), so shipping one per row sent a page
     of JSON blobs across the wire to be displayed nowhere: on the only project
-    with real audit history, ``/p/*/settings/audit`` had the slowest first
+    with real audit history, ``/p/*/audit`` had the slowest first
     content of the 75 routes in the 2026-08-17 walk. The payload now travels one
     row at a time, as ``AuditEntryDetailResponse`` (tripl-5ydt).
 

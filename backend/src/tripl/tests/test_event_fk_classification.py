@@ -317,6 +317,15 @@ NON_FK_EVENT_REFERENCES: dict[tuple[str, str], str] = {
         "status while destroying the operator's note and their acted_by/acted_at attribution. "
         "The one accepted cost is an in-force timed mute, which does not transfer."
     ),
+    ("signal_triage", "scope_ref"): (
+        "Signal acknowledge / mute / expected state, keyed on str(event.id) when "
+        "scope_type == 'event', with no event_id column. NEITHER carried NOR deleted on MERGE or "
+        "DELETE: a triage row only matters while a signal matches it, and both paths delete that "
+        "event's anomalies (_delete_event_anomalies, _event_reference_cleanup), so no signal can "
+        "match the orphan again. Not carried for the same reason as alert_rule_states.scope_ref: "
+        "the survivor's baseline was just wiped, and inheriting a mute would hide its first "
+        "genuine signal."
+    ),
 }
 
 _ALL_CLASSIFICATIONS: dict[str, dict[tuple[str, str], str]] = {

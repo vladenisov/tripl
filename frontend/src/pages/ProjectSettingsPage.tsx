@@ -1,7 +1,11 @@
 import { Suspense } from 'react'
-import { Navigate, useParams, useSearchParams } from 'react-router-dom'
+import { Navigate, useLocation, useParams, useSearchParams } from 'react-router-dom'
 import { PageSkeleton, type PageSkeletonVariant } from '@/components/states'
 import { lazyWithReload } from '@/lib/lazyWithReload'
+import {
+  legacySettingsRedirectPath,
+  type ProjectSurfaceMovedFromSettings,
+} from '@/lib/navigation'
 
 // Each surface is its own chunk. They are separate sidebar destinations and
 // only one renders at a time, but importing them statically put all nine —
@@ -63,18 +67,21 @@ function TabFallback({ tab, detail }: { tab: FunctionalTab; detail: boolean }) {
 }
 
 /**
- * Functional project surfaces (event types, meta fields, monitoring,
- * alerting, branches, audit, history). The redesign collapsed the old
- * 11-tab settings strip: these surfaces are now first-class sidebar pages, so
- * this page renders the requested one full-width at its existing route with no
- * tab strip. The `general` config tab moved into the full-takeover Settings
- * area, so requests for it (and the bare /settings index) redirect there.
+ * Functional project surfaces (event types, meta fields, variables, relations,
+ * branches, history, alerting, audit) plus the detection settings.
+ *
+ * The Plan, Observe and Govern surfaces are first-class sidebar pages routed at
+ * `/p/:slug/<surface>[/:itemId]` (#238 JR-25 / AL-42 / ST-5); App.tsx mounts
+ * this page for each with `surface` set. `/p/:slug/settings/<tab>` keeps only
+ * project settings: `monitoring` (detection) renders here, `general` and
+ * `plan-rules` go to the full-takeover Settings area, and every surface that
+ * moved out redirects to its new address with the item id, query string and
+ * hash intact — alert messages already sent carry `?item=` / `?incident=`.
  *
  * `scans` is deliberately absent: it moved to the top-level `/p/:slug/scans`
  * route, and the legacy `/p/:slug/settings/scans[/:itemId]` paths are claimed by
  * `ScansRedirect` in App.tsx — a more specific match than `/settings/:tab`, so
- * this component never sees the tab. Re-adding it here would only create
- * branches nothing can reach.
+ * this component never sees the tab.
  */
 type FunctionalTab =
   | 'event-types'
@@ -87,20 +94,15 @@ type FunctionalTab =
   | 'history'
   | 'audit'
 
-const FUNCTIONAL_TABS: FunctionalTab[] = [
-  'event-types',
-  'meta-fields',
-  'relations',
-  'variables',
-  'monitoring',
-  'alerting',
-  'branches',
-  'history',
-  'audit',
-]
-
-export default function ProjectSettingsPage() {
+// Every surface except detection is routed outside `/settings` — only
+// `monitoring` is still reached through the `:tab` segment.
+export default function ProjectSettingsPage({
+  surface,
+}: {
+  surface?: ProjectSurfaceMovedFromSettings
+}) {
   const { slug, tab: urlTab, itemId } = useParams<{ slug: string; tab?: string; itemId?: string }>()
+  const location = useLocation()
   // `?item=<scope_type>:<scope_ref>` names ONE row inside the delivery `itemId`
   // points at. A delivery carries up to 8 items, so the path segment alone
   // identifies the page but not the line the alert message quoted.
@@ -113,24 +115,30 @@ export default function ProjectSettingsPage() {
   // Mute. `item` still picks the row the message quoted inside it.
   const focusIncidentId = searchParams.get('incident') ?? undefined
   // `?focus=<id>` marks one row of the variables list: where the variable
-  // page's back link returns to. `/settings/variables/:id` is that variable's
+  // page's back link returns to. `/p/:slug/variables/:id` is that variable's
   // own page now (AU-26), so a branch diff's links — focus and Edit alike
   // (tripl-htfn.2) — land on it, Definition tab first.
   const focusListId = searchParams.get('focus') ?? undefined
 
   if (!slug) return null
 
-  // Bare /p/:slug/settings and the old general config tab both belong to the
-  // full-takeover Settings area now.
-  if (!urlTab || urlTab === 'general') {
-    return <Navigate to={`/settings/project/general?project=${encodeURIComponent(slug)}`} replace />
+  let tab: FunctionalTab
+  if (surface) {
+    tab = surface
+  } else {
+    // Bare /p/:slug/settings and the old general config tab both belong to the
+    // full-takeover Settings area now, as do the plan rules.
+    if (!urlTab || urlTab === 'general') {
+      return <Navigate to={`/settings/project/general?project=${encodeURIComponent(slug)}`} replace />
+    }
+    if (urlTab === 'plan-rules') {
+      return <Navigate to={`/settings/project/plan-rules?project=${encodeURIComponent(slug)}`} replace />
+    }
+    const moved = legacySettingsRedirectPath(slug, urlTab, itemId, location.search, location.hash)
+    if (moved) return <Navigate to={moved} replace />
+    if (urlTab !== 'monitoring') return <Navigate to={`/p/${slug}/events`} replace />
+    tab = urlTab
   }
-
-  if (!FUNCTIONAL_TABS.includes(urlTab as FunctionalTab)) {
-    return <Navigate to={`/p/${slug}/events`} replace />
-  }
-
-  const tab = urlTab as FunctionalTab
 
   return (
     // No "Project operations" signpost above the header any more (#238 JR-25 /

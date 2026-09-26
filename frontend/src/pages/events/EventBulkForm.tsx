@@ -448,7 +448,7 @@ export default function EventBulkForm() {
                 <Link to={`/p/${slug}/events/${tab ?? 'all'}/new${location.search}`}>Add one at a time</Link>
               </Button>
               <Button asChild size="sm" variant="outline">
-                <Link to={`/p/${slug}/settings/event-types/${selectedEt.id}`}>
+                <Link to={`/p/${slug}/event-types/${selectedEt.id}`}>
                   Edit {selectedEt.display_name} fields
                 </Link>
               </Button>

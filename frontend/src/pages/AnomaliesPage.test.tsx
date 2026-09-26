@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -370,7 +370,7 @@ describe('AnomaliesPage — row actions (MO-4, JR-6)', () => {
     )
     expect(screen.getByRole('menuitem', { name: 'View alerts' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting',
+      '/p/demo/alerting',
     )
   })
 
@@ -389,7 +389,7 @@ describe('AnomaliesPage — row actions (MO-4, JR-6)', () => {
 
     expect(await screen.findByRole('link', { name: 'Incident · acknowledged' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting?incident=inc-1',
+      '/p/demo/alerting?incident=inc-1',
     )
   })
 })
@@ -981,7 +981,7 @@ describe('AnomaliesPage — page states (MO-17, MO-23, JR-6, DS-25)', () => {
     expect(screen.getByText(/Signals are what detection found/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Alerting' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting',
+      '/p/demo/alerting',
     )
   })
 })
@@ -1022,7 +1022,7 @@ describe('AnomaliesPage — row sparklines (MO-19)', () => {
     // The sparkline's flagged-bucket marker (r=2.5); the row menu's ellipsis
     // icon draws circles too, so the marker is matched by its radius.
     const marker = 'circle[r="2.5"]'
-    await vi.waitFor(() => expect(row.querySelector(marker)).not.toBeNull())
+    await waitFor(() => expect(row.querySelector(marker)).not.toBeNull())
     expect(eventMetricsApi.getSignalSeries).toHaveBeenCalledTimes(1)
     expect(eventMetricsApi.getSignalSeries).toHaveBeenCalledWith('demo', [
       { scan_config_id: 'scan-1', scope_type: 'event', scope_ref: 'ev-1', bucket: flagged },

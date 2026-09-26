@@ -196,9 +196,7 @@ def _build_alert_audit_url(
         return None
     base = app_base_url.rstrip("/")
     anchor = _alert_audit_item_anchor(scope_type, scope_ref)
-    url = (
-        f"{base}/p/{project_slug}/settings/alerting/{delivery_id}?{ALERT_AUDIT_ITEM_PARAM}={anchor}"
-    )
+    url = f"{base}/p/{project_slug}/alerting/{delivery_id}?{ALERT_AUDIT_ITEM_PARAM}={anchor}"
     # The incident is what the page acts on — Ack / Resolve / Mute / False
     # positive all key on it — so the link carries it and the page can open the
     # right card with its actions in view. Without it the reader landed on the

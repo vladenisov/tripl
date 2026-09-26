@@ -151,7 +151,7 @@ def test_a_release_regression_never_links_to_the_event_monitoring_page() -> None
         monitoring_path,
     )
     # Section (d) pins the ``?item=`` anchor; here only the destination matters.
-    assert (details_path or "").startswith(f"{BASE}/p/{SLUG}/settings/alerting/{delivery_id}")
+    assert (details_path or "").startswith(f"{BASE}/p/{SLUG}/alerting/{delivery_id}")
     # One link, not two labels on the same URL: there is no monitoring page.
     assert monitoring_path is None
 
@@ -177,7 +177,7 @@ def test_an_event_type_scoped_regression_does_not_get_an_event_url() -> None:
 
     assert f"/monitoring/event/{event_type_id}" not in (details_path or "")
     assert f"/monitoring/event/{event_type_id}" not in (monitoring_path or "")
-    assert (details_path or "").startswith(f"{BASE}/p/{SLUG}/settings/alerting/{delivery_id}")
+    assert (details_path or "").startswith(f"{BASE}/p/{SLUG}/alerting/{delivery_id}")
 
 
 def test_a_regression_without_a_delivery_id_gets_no_link_rather_than_a_wrong_one() -> None:
@@ -273,7 +273,7 @@ def test_every_scope_links_to_the_incident_when_there_is_one(scope_type: str) ->
     )
 
     assert details_path is not None
-    assert details_path.startswith(f"{BASE}/p/{SLUG}/settings/alerting/{delivery_id}?")
+    assert details_path.startswith(f"{BASE}/p/{SLUG}/alerting/{delivery_id}?")
     assert f"incident={group_id}" in details_path
     assert "item=" in details_path
     assert monitoring_path is None
@@ -508,7 +508,7 @@ def test_the_audit_link_names_the_item_it_was_printed_for() -> None:
     )
 
     assert details_path == (
-        f"{BASE}/p/{SLUG}/settings/alerting/{delivery_id}?item=release_regression:{event_id}"
+        f"{BASE}/p/{SLUG}/alerting/{delivery_id}?item=release_regression:{event_id}"
     )
 
 
@@ -679,7 +679,7 @@ def test_value_drift_is_not_sent_to_the_audit_row() -> None:
     )
     # Prefix, not equality: the audit URL now carries a ``?item=`` anchor, and
     # an equality check would pass against any anchored variant of it.
-    audit_prefix = f"{BASE}/p/{SLUG}/settings/alerting/{delivery_id}"
+    audit_prefix = f"{BASE}/p/{SLUG}/alerting/{delivery_id}"
     assert not (details_path or "").startswith(audit_prefix)
     assert not (monitoring_path or "").startswith(audit_prefix)
 

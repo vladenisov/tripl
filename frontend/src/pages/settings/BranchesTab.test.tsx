@@ -203,7 +203,7 @@ function mockBranchDetailQueries(items: PlanBranchSummary[]) {
 }
 
 /** The selected branch comes from the route, so the tab is mounted behind the
- * real `/p/:slug/settings/branches/:branchId` routes — selecting a branch in the
+ * real `/p/:slug/branches/:branchId` routes — selecting a branch in the
  * list navigates, exactly as it does in the app. */
 function BranchesTabRoute() {
   const { branchId } = useParams<{ branchId?: string }>()
@@ -232,14 +232,14 @@ function authAs(role: Role): AuthContextValue {
  * owner-only, and most tests here exercise the full set of actions. */
 function renderTab(branchId?: string, role: Role = 'owner') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const path = `/p/demo/settings/branches${branchId ? `/${branchId}` : ''}`
+  const path = `/p/demo/branches${branchId ? `/${branchId}` : ''}`
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={authAs(role)}>
         <MemoryRouter initialEntries={[path]}>
           <Routes>
-            <Route path="/p/:slug/settings/branches" element={<BranchesTabRoute />} />
-            <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
+            <Route path="/p/:slug/branches" element={<BranchesTabRoute />} />
+            <Route path="/p/:slug/branches/:branchId" element={<BranchesTabRoute />} />
           </Routes>
         </MemoryRouter>
       </AuthContext.Provider>
@@ -879,7 +879,7 @@ describe('BranchesTab', () => {
     const editVariable = await screen.findByRole('link', { name: 'Edit variant' })
     expect(editVariable).toHaveAttribute(
       'href',
-      '/p/demo/settings/variables/var-3?branch=feat-1',
+      '/p/demo/variables/var-3?branch=feat-1',
     )
 
     // Field definitions still have no editor to point at, so the row must not
@@ -1100,11 +1100,11 @@ describe('BranchesTab', () => {
     render(
       <QueryClientProvider client={queryClient}>
         <AuthContext.Provider value={authAs('owner')}>
-          <MemoryRouter initialEntries={[`/p/demo/settings/branches/${FEATURE.id}`]}>
+          <MemoryRouter initialEntries={[`/p/demo/branches/${FEATURE.id}`]}>
             <BranchProvider slug="demo">
               <ActiveBranch />
               <Routes>
-                <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
+                <Route path="/p/:slug/branches/:branchId" element={<BranchesTabRoute />} />
               </Routes>
             </BranchProvider>
           </MemoryRouter>
@@ -2312,7 +2312,7 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
     expect(await screen.findByText('Branch not found')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Back to main' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/branches',
+      '/p/demo/branches',
     )
     expect(screen.queryByText(/every change merges here/i)).not.toBeInTheDocument()
   })
@@ -2619,12 +2619,12 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
     render(
       <QueryClientProvider client={queryClient}>
         <AuthContext.Provider value={authAs('owner')}>
-          <MemoryRouter initialEntries={[`/p/demo/settings/branches/${FEATURE.id}`]}>
+          <MemoryRouter initialEntries={[`/p/demo/branches/${FEATURE.id}`]}>
             <BranchProvider slug="demo">
               <ActiveBranch />
               <Routes>
-                <Route path="/p/:slug/settings/branches" element={<BranchesTabRoute />} />
-                <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
+                <Route path="/p/:slug/branches" element={<BranchesTabRoute />} />
+                <Route path="/p/:slug/branches/:branchId" element={<BranchesTabRoute />} />
               </Routes>
             </BranchProvider>
           </MemoryRouter>
@@ -2705,8 +2705,8 @@ describe('BranchesTab — creating a branch and starting work on it (PL-4, PL-5,
             <BranchProvider slug="demo">
               <ActiveBranch />
               <Routes>
-                <Route path="/p/:slug/settings/branches" element={<BranchesTabRoute />} />
-                <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
+                <Route path="/p/:slug/branches" element={<BranchesTabRoute />} />
+                <Route path="/p/:slug/branches/:branchId" element={<BranchesTabRoute />} />
               </Routes>
             </BranchProvider>
           </MemoryRouter>
@@ -2717,7 +2717,7 @@ describe('BranchesTab — creating a branch and starting work on it (PL-4, PL-5,
 
   it("opens the New branch dialog from the switcher's ?new=1", async () => {
     mockBranchDetailQueries([MAIN, FEATURE])
-    renderAt('/p/demo/settings/branches?new=1')
+    renderAt('/p/demo/branches?new=1')
 
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('New branch')).toBeInTheDocument()
@@ -2725,7 +2725,7 @@ describe('BranchesTab — creating a branch and starting work on it (PL-4, PL-5,
 
   it('refuses a name with spaces, offers a usable one, and a taken one', async () => {
     mockBranchDetailQueries([MAIN, FEATURE])
-    renderAt('/p/demo/settings/branches?new=1')
+    renderAt('/p/demo/branches?new=1')
 
     const dialog = await screen.findByRole('dialog')
     const name = within(dialog).getByLabelText('Name')
@@ -2748,7 +2748,7 @@ describe('BranchesTab — creating a branch and starting work on it (PL-4, PL-5,
     const created = makeBranch({ id: 'feat-new', name: 'paywall-copy', kind: 'working', status: 'draft' })
     vi.mocked(planBranchesApi.create).mockResolvedValue(created)
     const success = vi.spyOn(toast, 'success')
-    renderAt('/p/demo/settings/branches')
+    renderAt('/p/demo/branches')
 
     // The empty project's pane teaches the flow and offers the first branch.
     expect(await screen.findByText('Propose plan changes safely')).toBeInTheDocument()

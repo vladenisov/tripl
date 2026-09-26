@@ -62,7 +62,7 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
   // (PL-13 / JR-11). Managing the list is its own item.
   const goToBranches = (create: boolean) => {
     setOpen(false)
-    navigate(`/p/${slug}/settings/branches${create ? '?new=1' : ''}`)
+    navigate(`/p/${slug}/branches${create ? '?new=1' : ''}`)
   }
 
   return (

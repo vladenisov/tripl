@@ -16,17 +16,24 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import re
 import uuid
+from collections.abc import Iterable, Mapping, Sequence
 
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tripl.core.name_template import NAME_FORMAT_PATTERN, apply_name_format, format_keys
+from tripl.models.event import Event
 from tripl.models.project import Project
+from tripl.models.scan_config import ScanConfig
 from tripl.models.search_document import SearchDocument
 from tripl.schemas.search import (
     SearchEntityType,
     SearchResponse,
     SearchResult,
+    SearchVariant,
+    SearchVariantGroup,
 )
 from tripl.services import app_settings_service
 from tripl.services._celery_dispatch import dispatch
@@ -84,6 +91,7 @@ __all__ = [
     "_sanitize_query",
     "_token_boundary_regex",
     "fallback_score",
+    "group_event_variants",
     "merge_results",
     "reindex_branch",
     "reindex_project_branch",
@@ -475,6 +483,7 @@ async def search_project(
     include_archived: bool = False,
     limit: int = 20,
     semantic: bool = True,
+    group_variants: bool = False,
 ) -> SearchResponse:
     # Sanitize here rather than in the router: this is the single funnel every
     # caller goes through (HTTP search and ai_service.ask_plan),
@@ -522,10 +531,31 @@ async def search_project(
         )
         semantic_used = False
 
+    # Whether hits exist past the window, observed on the raw retrieval: after
+    # folding, a full window can shrink to fewer rows than the page holds, and
+    # the row count alone would then claim the answer is complete.
+    window_overflowed = False
+    if group_variants:
+        window_overflowed = len(items) > candidate_limit
+        # Rank the WHOLE window, fold, and only then trim (JR-20): folding after
+        # the trim would let a group of eight fill eight of twelve rows and then
+        # shrink the page to five, and the members past the page would never be
+        # counted. Ranking is a sort and confidence a per-row stamp, so running
+        # `finalize_results` at window size first gives the same rows the same
+        # ranks and figures the page-size call would have. Trimming to the
+        # window drops the probe row, which must not be folded into a group or
+        # surface as a row of its own.
+        items = await _group_event_variants(
+            session,
+            _finalize_results(items, candidate_limit),
+            project_id=project_id,
+            branch_id=resolved_branch_id,
+        )
     # The retrieved set, measured BEFORE the trim: `total` is `len(items)` by
     # construction and therefore equals `limit` on any full page, so it can never
     # say whether hits were dropped (tripl-wkwv.3). This count is free — the rows
-    # are already in memory — and answers that.
+    # are already in memory — and answers that. After folding it counts rows,
+    # which is what the page is made of.
     candidate_count = len(items)
     items = _finalize_results(items, capped_limit)
     await _enrich_event_hits(
@@ -549,8 +579,286 @@ async def search_project(
         # exactly 100 documents fills the window while the body carries every hit
         # either leg can produce, and the flag would have said `true` with no
         # `limit` left to raise.
-        truncated=candidate_count > len(items),
+        #
+        # With `group_variants` the probe is gone before folding, so the raw
+        # overflow is carried in `window_overflowed` instead.
+        truncated=window_overflowed or candidate_count > len(items),
         semantic_used=semantic_used,
+    )
+
+
+#: What ``render_default_event_name`` joins ``column=value`` segments with — the
+#: name a scan writes when it has no ``event_name_format``.
+_DEFAULT_NAME_SEPARATOR = " | "
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ParsedName:
+    """An event name read back through one naming rule."""
+
+    # ``None`` for the default ``column=value | …`` grammar.
+    name_format: str | None
+    slots: tuple[str, ...]
+    values: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _VariantBucket:
+    """Names that agree on everything but the value in slot ``position``."""
+
+    event_type_id: uuid.UUID
+    name_format: str | None
+    slots: tuple[str, ...]
+    position: int
+    others: tuple[str, ...]
+
+    def pattern(self) -> str:
+        placeholder = self.slots[self.position]
+        values = dict(zip(self.slots, self._with_placeholder(), strict=True))
+        if self.name_format is None:
+            return _DEFAULT_NAME_SEPARATOR.join(f"{slot}={values[slot]}" for slot in self.slots)
+        # The varying slot is left out of the mapping, so it renders as its own
+        # literal ``{placeholder}`` — ``apply_name_format`` keeps a missing key.
+        del values[placeholder]
+        return apply_name_format(self.name_format, values)[0]
+
+    def _with_placeholder(self) -> tuple[str, ...]:
+        placeholder = "{" + self.slots[self.position] + "}"
+        return self.others[: self.position] + (placeholder,) + self.others[self.position :]
+
+
+def _name_format_regex(name_format: str) -> re.Pattern[str] | None:
+    """A matcher that reads a name back into its placeholder values, or ``None``.
+
+    ``None`` for a format that cannot be read back unambiguously enough to
+    group on: a repeated placeholder, two placeholders with no literal between
+    them (``{a}{b}`` splits ``xyz`` any way you like), or a bare ``{column}``
+    with no literal at all — every event of the type would "differ only in
+    that placeholder" and fold into one row.
+    """
+    keys = format_keys(name_format)
+    if not keys or len(set(keys)) != len(keys):
+        return None
+    literals = NAME_FORMAT_PATTERN.split(name_format)[::2]
+    if not "".join(literals) or any(not literal for literal in literals[1:-1]):
+        return None
+    pattern = "(.*?)".join(re.escape(literal) for literal in literals)
+    return re.compile(pattern, re.DOTALL)
+
+
+def _parse_is_unambiguous(name_format: str, values: Sequence[str]) -> bool:
+    """Whether a lazy read-back of a name is the only way to read it.
+
+    A value that contains a literal next to its placeholder could have been
+    split at that literal instead: with ``{screen} | {action}``, the name
+    ``A | B | Click`` reads as ``A`` + ``B | Click`` or ``A | B`` + ``Click``.
+    Two such events can then look like they differ in one placeholder when both
+    differ, so a name like that is left out of grouping rather than guessed at.
+    """
+    literals = NAME_FORMAT_PATTERN.split(name_format)[::2]
+    for position, value in enumerate(values):
+        for literal in (literals[position], literals[position + 1]):
+            if literal and literal in value:
+                return False
+    return True
+
+
+def _parse_default_name(name: str) -> _ParsedName | None:
+    slots: list[str] = []
+    values: list[str] = []
+    for segment in name.split(_DEFAULT_NAME_SEPARATOR):
+        slot, separator, value = segment.partition("=")
+        if not separator or not slot.strip():
+            return None
+        slots.append(slot)
+        values.append(value)
+    if len(set(slots)) != len(slots):
+        return None
+    return _ParsedName(name_format=None, slots=tuple(slots), values=tuple(values))
+
+
+def _parse_event_name(
+    name: str,
+    formats: Sequence[tuple[str, re.Pattern[str]]],
+) -> list[_ParsedName]:
+    parsed: list[_ParsedName] = []
+    default = _parse_default_name(name)
+    if default is not None:
+        parsed.append(default)
+    for name_format, regex in formats:
+        match = regex.fullmatch(name)
+        if match is not None and _parse_is_unambiguous(name_format, match.groups()):
+            parsed.append(
+                _ParsedName(
+                    name_format=name_format,
+                    slots=tuple(format_keys(name_format)),
+                    values=match.groups(),
+                )
+            )
+    return parsed
+
+
+def _fold_group(
+    representative: SearchResult,
+    members: Sequence[SearchResult],
+    bucket: _VariantBucket,
+    values: Mapping[uuid.UUID, str],
+) -> SearchResult:
+    pattern = bucket.pattern()
+    group = SearchVariantGroup(
+        key=f"{bucket.event_type_id}:{pattern}",
+        pattern=pattern,
+        placeholder=bucket.slots[bucket.position],
+        count=len(members) + 1,
+        variants=[
+            SearchVariant(
+                id=member.id,
+                entity_id=member.entity_id,
+                event_id=member.parent_event_id,
+                title=member.title,
+                value=values[member.id],
+                route_path=member.route_path,
+                score=member.score,
+                confidence=member.confidence,
+            )
+            for member in members
+        ],
+    )
+    # A copy, not an edit: the caller's ranked list stays what it was handed.
+    # ``model_copy`` carries the private cosine / identity flags along, which the
+    # second ``finalize_results`` pass reads to re-stamp the same confidence.
+    return representative.model_copy(update={"variant_group": group})
+
+
+def group_event_variants(
+    ranked: Sequence[SearchResult],
+    *,
+    event_types: Mapping[uuid.UUID, uuid.UUID],
+    name_formats: Iterable[str],
+) -> list[SearchResult]:
+    """Fold event hits that are variants of one another under the best-ranked one (JR-20).
+
+    Two events are variants when they share an event type and their names,
+    read back through the same naming rule, differ in the value of exactly ONE
+    placeholder. The rules are the project's scan ``event_name_format``\\ s plus
+    the default ``column=value | column=value`` name a scan without a format
+    writes. A name no rule reads back — hand-written, or renamed by a group rule
+    — is never folded: the palette reported ``Home Screen View`` and eight
+    ``event_name=Home Screen View | …`` rows as look-alikes, and only the eight
+    are variants.
+
+    Greedy in rank order: the best-ranked hit not yet folded picks, among the
+    placeholders it could vary on, the one that gathers the most unfolded hits,
+    and becomes that group's representative in its own rank position. The other
+    members leave the list. Every other row keeps its place, so the result is
+    still in rank order.
+    """
+    formats = [
+        (name_format, regex)
+        for name_format in dict.fromkeys(name_formats)
+        if (regex := _name_format_regex(name_format)) is not None
+    ]
+    buckets: dict[_VariantBucket, list[int]] = {}
+    buckets_by_index: dict[int, list[_VariantBucket]] = {}
+    values_by_bucket: dict[_VariantBucket, dict[uuid.UUID, str]] = {}
+    for index, item in enumerate(ranked):
+        if item.entity_type != "event" or item.parent_event_id is None:
+            continue
+        event_type_id = event_types.get(item.parent_event_id)
+        if event_type_id is None:
+            continue
+        for parsed in _parse_event_name(item.title, formats):
+            for position, value in enumerate(parsed.values):
+                bucket = _VariantBucket(
+                    event_type_id=event_type_id,
+                    name_format=parsed.name_format,
+                    slots=parsed.slots,
+                    position=position,
+                    others=parsed.values[:position] + parsed.values[position + 1 :],
+                )
+                buckets.setdefault(bucket, []).append(index)
+                buckets_by_index.setdefault(index, []).append(bucket)
+                values_by_bucket.setdefault(bucket, {})[item.id] = value
+
+    folded: set[int] = set()
+    groups: dict[int, tuple[_VariantBucket, list[int]]] = {}
+    for index in range(len(ranked)):
+        if index in folded:
+            continue
+        best: tuple[_VariantBucket, list[int]] | None = None
+        for bucket in buckets_by_index.get(index, []):
+            members = [member for member in buckets[bucket] if member not in folded]
+            if best is None or len(members) > len(best[1]):
+                best = (bucket, members)
+        if best is None or len(best[1]) < 2:
+            continue
+        # `index` is the first member: an earlier unfolded member of this bucket
+        # would have had at least this many to gather and folded it already.
+        folded.update(best[1])
+        groups[index] = best
+
+    grouped: list[SearchResult] = []
+    for index, item in enumerate(ranked):
+        if index in groups:
+            bucket, members = groups[index]
+            grouped.append(
+                _fold_group(
+                    item,
+                    [ranked[member] for member in members[1:]],
+                    bucket,
+                    values_by_bucket[bucket],
+                )
+            )
+        elif index not in folded:
+            grouped.append(item)
+    return grouped
+
+
+async def _group_event_variants(
+    session: AsyncSession,
+    ranked: list[SearchResult],
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+) -> list[SearchResult]:
+    """Load what :func:`group_event_variants` needs and run it."""
+    event_ids = {
+        item.parent_event_id
+        for item in ranked
+        if item.entity_type == "event" and item.parent_event_id is not None
+    }
+    if len(event_ids) < 2:
+        return ranked
+    event_types = dict(
+        (
+            await session.execute(
+                select(Event.id, Event.event_type_id).where(
+                    Event.project_id == project_id,
+                    Event.branch_id == branch_id,
+                    Event.id.in_(event_ids),
+                )
+            )
+        )
+        .tuples()
+        .all()
+    )
+    # Scan configs are project-scoped, and one grouped scan names events of many
+    # types, so every format the project uses is tried on every event hit; the
+    # event-type half of the rule keeps them apart.
+    name_formats = (
+        await session.scalars(
+            select(ScanConfig.event_name_format)
+            .where(
+                ScanConfig.project_id == project_id,
+                ScanConfig.event_name_format.is_not(None),
+            )
+            .distinct()
+        )
+    ).all()
+    return group_event_variants(
+        ranked,
+        event_types=event_types,
+        name_formats=sorted(name_format for name_format in name_formats if name_format),
     )
 
 

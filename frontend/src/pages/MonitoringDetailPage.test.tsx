@@ -1067,7 +1067,7 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(screen.getByRole('button', { name: 'Discuss' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'View alerts' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting',
+      '/p/demo/alerting',
     )
   })
 

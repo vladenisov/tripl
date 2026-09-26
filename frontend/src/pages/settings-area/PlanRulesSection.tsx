@@ -57,7 +57,7 @@ export default function PlanRulesSection({ slug }: { slug?: string } = {}) {
         Approvals for plan changes already work: they are set in{' '}
         {slug ? (
           <Link
-            to={`/p/${slug}/settings/branches`}
+            to={`/p/${slug}/branches`}
             className="font-medium underline underline-offset-2 text-accent"
           >
             Plan branches › Merge policy

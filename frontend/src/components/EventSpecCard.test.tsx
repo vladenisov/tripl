@@ -101,7 +101,7 @@ describe('EventSpecCard (tripl-kjhi.8)', () => {
     expect(screen.getByText('{category}:{action}:{label}')).toBeInTheDocument()
     expect(screen.getAllByText('names the event')).toHaveLength(3)
     // The documented values sit beside the template value, linked to the variable.
-    expect(screen.getByRole('link', { name: '${property.how}' })).toHaveAttribute('href', '/p/demo/settings/variables/var-how')
+    expect(screen.getByRole('link', { name: '${property.how}' })).toHaveAttribute('href', '/p/demo/variables/var-how')
     expect(screen.getByText(/= tap, swipe/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'WND-4563' })).toHaveAttribute(
       'href',

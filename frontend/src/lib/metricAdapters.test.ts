@@ -135,6 +135,9 @@ describe('metricSignalToMonitoringSignal', () => {
     z_score: -8,
     direction: 'drop',
     incident_child: false,
+    expected: false,
+    hidden: false,
+    muted: false,
   }
 
   it('carries the unit and detection time the server sent (MON-34, MON-40)', () => {

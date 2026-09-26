@@ -72,7 +72,7 @@ const AREAS: readonly Area[] = [
         term: 'Event types',
         definition:
           'Categories that group related events (for example lifecycle or commerce) so they can be organised and colour-coded together.',
-        path: '/settings/event-types',
+        path: '/event-types',
       },
       {
         // Named as the sidebar names it (#238 AU-10). Not "Schema & fields":
@@ -80,31 +80,31 @@ const AREAS: readonly Area[] = [
         term: 'Meta fields',
         definition:
           'Extra attributes every event carries whatever its type — owner team, Jira ticket, review date. The payload fields an event sends are defined per event type.',
-        path: '/settings/meta-fields',
+        path: '/meta-fields',
       },
       {
         term: 'Variables',
         definition:
           'Reusable named values (thresholds, identifiers, constants) referenced across the plan so a value is defined once and used everywhere.',
-        path: '/settings/variables',
+        path: '/variables',
       },
       {
         term: 'Relations',
         definition:
           'Declared links between events — one event follows, depends on, or belongs with another — describing how the plan fits together.',
-        path: '/settings/relations',
+        path: '/relations',
       },
       {
         term: 'Plan branches',
         definition:
           'Isolated copies of the plan you can edit and review before merging, like version-control branches for your tracking plan.',
-        path: '/settings/branches',
+        path: '/branches',
       },
       {
         term: 'Plan history',
         definition:
           'The snapshots of the plan taken at each merge (and on demand), so you can see what the plan looked like at any point and what changed.',
-        path: '/settings/history',
+        path: '/history',
       },
       {
         term: 'In review',
@@ -175,21 +175,21 @@ const AREAS: readonly Area[] = [
         term: 'Alert rules',
         definition:
           'Rules layered on top of detection: an alert rule decides which signals matter for a scope and where they are sent, and carries its own live state — firing, warning or healthy. A project with no alert rules still raises signals — it just does not notify anyone about them.',
-        path: '/settings/alerting?section=monitors',
+        path: '/alerting?section=monitors',
         surface: 'Alerting',
       },
       {
         term: 'Incidents',
         definition:
           'A group of signals an alert rule routed to your team, with a triage state: open, acknowledged, resolved or false positive. Signals are what detection found; incidents are the ones somebody owes an answer on.',
-        path: '/settings/alerting',
+        path: '/alerting',
         surface: 'Alerting',
       },
       {
         term: 'Alerting',
         definition:
           'Everything that turns a signal into a notification somebody owes an answer on: the incident Inbox, the rules that route, the destinations (Slack, Telegram, webhooks, email, Jira, Linear) they route to, and the delivery log behind them.',
-        path: '/settings/alerting',
+        path: '/alerting',
       },
     ],
   },
@@ -255,7 +255,7 @@ const AREAS: readonly Area[] = [
         term: 'Audit log',
         definition:
           "A chronological record of who changed what in this project's plan, so every adoption, edit, and archive is traceable. Workspace-level changes (members, API keys) are in the instance audit log.",
-        path: '/settings/audit',
+        path: '/audit',
       },
     ],
   },

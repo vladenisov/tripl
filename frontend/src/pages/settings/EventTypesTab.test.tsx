@@ -81,8 +81,8 @@ function renderWithRoutes(
       <AuthContext.Provider value={auth}>
         <MemoryRouter initialEntries={[initialPath]}>
           <Routes>
-            <Route path="/p/:slug/settings/event-types/:itemId" element={<DetailRoute />} />
-            <Route path="/p/:slug/settings/event-types" element={<EventTypesTab slug="demo" />} />
+            <Route path="/p/:slug/event-types/:itemId" element={<DetailRoute />} />
+            <Route path="/p/:slug/event-types" element={<EventTypesTab slug="demo" />} />
             <Route path="/p/:slug/events/:tab" element={<div>events for tab</div>} />
           </Routes>
         </MemoryRouter>
@@ -104,8 +104,8 @@ function renderInBranch(initialPath: string, fetchImpl: typeof fetch) {
       <BranchContext.Provider value={{ branchId: 'branch-1', setBranchId: () => {}, slug: 'demo' }}>
         <MemoryRouter initialEntries={[initialPath]}>
           <Routes>
-            <Route path="/p/:slug/settings/event-types/:itemId" element={<DetailRoute />} />
-            <Route path="/p/:slug/settings/event-types" element={<EventTypesTab slug="demo" />} />
+            <Route path="/p/:slug/event-types/:itemId" element={<DetailRoute />} />
+            <Route path="/p/:slug/event-types" element={<EventTypesTab slug="demo" />} />
           </Routes>
         </MemoryRouter>
       </BranchContext.Provider>
@@ -119,7 +119,7 @@ afterEach(() => {
 
 describe('EventTypesTab list', () => {
   it('renders types in a table with fields/sensitive columns', async () => {
-    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+    renderWithRoutes('/p/demo/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
       throw new Error(`Unhandled fetch: ${url}`)
@@ -138,7 +138,7 @@ describe('EventTypesTab list', () => {
     // rendered this one-item list above without asserting the subtitle, which is
     // how it survived. `countOf` from @/lib/plural, same as the Scans list
     // (tripl-3y7z).
-    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+    renderWithRoutes('/p/demo/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
       throw new Error(`Unhandled fetch: ${url}`)
@@ -149,7 +149,7 @@ describe('EventTypesTab list', () => {
   })
 
   it('opens a page-style create view instead of a dialog', async () => {
-    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+    renderWithRoutes('/p/demo/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
       throw new Error(`Unhandled fetch: ${url}`)
@@ -165,7 +165,7 @@ describe('EventTypesTab list', () => {
 
   it('offers a viewer no New type, and says why once', async () => {
     renderWithRoutes(
-      '/p/demo/settings/event-types',
+      '/p/demo/event-types',
       async (input) => {
         const url = String(input)
         if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
@@ -181,7 +181,7 @@ describe('EventTypesTab list', () => {
   })
 
   it('shows an understandable merge approval ("Open") instead of "open merge"', async () => {
-    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+    renderWithRoutes('/p/demo/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
       if (url.endsWith('/api/v1/projects/demo/event-type-owners'))
@@ -209,7 +209,7 @@ describe('EventTypesTab list', () => {
       granted_by: null,
       created_at: '2026-01-01T00:00:00Z',
     }
-    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+    renderWithRoutes('/p/demo/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
       if (url.endsWith('/api/v1/projects/demo/event-type-owners'))
@@ -222,7 +222,7 @@ describe('EventTypesTab list', () => {
   })
 
   it('renders the list as an accessible table with a full-word Required header', async () => {
-    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+    renderWithRoutes('/p/demo/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
       if (url.endsWith('/api/v1/projects/demo/event-type-owners'))
@@ -361,7 +361,7 @@ describe('EventTypeDetail tabbed page', () => {
   }
 
   it('shows tabs and the summary tab by default', async () => {
-    renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
+    renderWithRoutes('/p/demo/event-types/type-1', async (input) => detailFetch(input))
 
     expect(await screen.findAllByText('Checkout')).not.toHaveLength(0)
     expect(screen.getByRole('tab', { name: 'Events' })).toBeInTheDocument()
@@ -372,7 +372,7 @@ describe('EventTypeDetail tabbed page', () => {
   })
 
   it('renders settings tab with page-style cards and no dialogs', async () => {
-    renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
+    renderWithRoutes('/p/demo/event-types/type-1', async (input) => detailFetch(input))
 
     selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     expect(await screen.findByText('General')).toBeInTheDocument()
@@ -384,7 +384,7 @@ describe('EventTypeDetail tabbed page', () => {
   })
 
   it('edits a field via an in-place subpage (no popup)', async () => {
-    renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
+    renderWithRoutes('/p/demo/event-types/type-1', async (input) => detailFetch(input))
 
     selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     // open the field edit subpage for order_id
@@ -403,7 +403,7 @@ describe('EventTypeDetail tabbed page', () => {
   })
 
   it('shows a viewer the settings with no way to change them', async () => {
-    renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input), VIEWER)
+    renderWithRoutes('/p/demo/event-types/type-1', async (input) => detailFetch(input), VIEWER)
 
     selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     expect(await screen.findByText('General')).toBeInTheDocument()
@@ -425,7 +425,7 @@ describe('EventTypeDetail tabbed page', () => {
   })
 
   it('asks before a tab switch throws away a field draft (DATA-12)', async () => {
-    renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
+    renderWithRoutes('/p/demo/event-types/type-1', async (input) => detailFetch(input))
 
     selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: /Add field/i }))
@@ -446,7 +446,7 @@ describe('EventTypeDetail tabbed page', () => {
   })
 
   it('switches tabs at once with no draft', async () => {
-    renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
+    renderWithRoutes('/p/demo/event-types/type-1', async (input) => detailFetch(input))
 
     selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: /Add field/i }))
@@ -457,7 +457,7 @@ describe('EventTypeDetail tabbed page', () => {
   })
 
   it('opens a page-style add-field subpage', async () => {
-    renderWithRoutes('/p/demo/settings/event-types/type-1', async (input) => detailFetch(input))
+    renderWithRoutes('/p/demo/event-types/type-1', async (input) => detailFetch(input))
 
     selectTab(await screen.findByRole('tab', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: /Add field/i }))
@@ -474,7 +474,7 @@ describe('EventTypesTab in branch context (tripl-kjhi.11)', () => {
         return mockJsonResponse([CHECKOUT])
       throw new Error(`Unhandled fetch: ${url}`)
     })
-    renderInBranch('/p/demo/settings/event-types', fetchImpl as unknown as typeof fetch)
+    renderInBranch('/p/demo/event-types', fetchImpl as unknown as typeof fetch)
 
     expect(await screen.findByText('Checkout')).toBeInTheDocument()
     const asked = fetchImpl.mock.calls.map(([input]) => String(input))
@@ -498,7 +498,7 @@ describe('EventTypesTab in branch context (tripl-kjhi.11)', () => {
         return mockJsonResponse([])
       throw new Error(`Unhandled fetch: ${url}`)
     })
-    renderInBranch('/p/demo/settings/event-types/type-1', fetchImpl as unknown as typeof fetch)
+    renderInBranch('/p/demo/event-types/type-1', fetchImpl as unknown as typeof fetch)
 
     expect(await screen.findByRole('heading', { name: 'Checkout' })).toBeInTheDocument()
     const asked = fetchImpl.mock.calls.map(([input]) => String(input))
@@ -509,14 +509,14 @@ describe('EventTypesTab in branch context (tripl-kjhi.11)', () => {
 
 describe('EventTypesTab list states and rows (PLAN-39 / PLAN-41)', () => {
   it('shows a skeleton, not "No event types yet", while the list loads', async () => {
-    renderWithRoutes('/p/demo/settings/event-types', () => new Promise<Response>(() => {}))
+    renderWithRoutes('/p/demo/event-types', () => new Promise<Response>(() => {}))
 
     expect(await screen.findByLabelText('Loading event types')).toBeInTheDocument()
     expect(screen.queryByText(/No event types yet/)).not.toBeInTheDocument()
   })
 
   it('shows a failed load as an error with a retry, not as an empty list', async () => {
-    renderWithRoutes('/p/demo/settings/event-types', async () =>
+    renderWithRoutes('/p/demo/event-types', async () =>
       new Response(JSON.stringify({ detail: 'Database is unavailable' }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
@@ -529,7 +529,7 @@ describe('EventTypesTab list states and rows (PLAN-39 / PLAN-41)', () => {
   })
 
   it('opens a type through a real link, keeping the row a table row', async () => {
-    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+    renderWithRoutes('/p/demo/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
       if (url.endsWith('/api/v1/projects/demo/event-type-owners')) return mockJsonResponse([])
@@ -537,7 +537,7 @@ describe('EventTypesTab list states and rows (PLAN-39 / PLAN-41)', () => {
     })
 
     const link = await screen.findByRole('link', { name: 'Checkout' })
-    expect(link).toHaveAttribute('href', '/p/demo/settings/event-types/type-1')
+    expect(link).toHaveAttribute('href', '/p/demo/event-types/type-1')
     const table = screen.getByRole('table', { name: 'Event types' })
     expect(within(table).queryAllByRole('button')).toHaveLength(0)
     expect(within(table).getAllByRole('row').length).toBeGreaterThan(1)
@@ -693,7 +693,7 @@ describe('EventTypeDetail settings (PLAN-42 / PLAN-43 / PLAN-45)', () => {
   }
 
   it('opens the tab named in ?tab=', async () => {
-    renderWithRoutes('/p/demo/settings/event-types/type-1?tab=settings', async (input) => {
+    renderWithRoutes('/p/demo/event-types/type-1?tab=settings', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
       if (url.endsWith('/owners')) return mockJsonResponse([])
@@ -707,7 +707,7 @@ describe('EventTypeDetail settings (PLAN-42 / PLAN-43 / PLAN-45)', () => {
   })
 
   it('keeps Delete shut until the affected events are counted', async () => {
-    renderWithRoutes('/p/demo/settings/event-types/type-1?tab=settings', async (input) => {
+    renderWithRoutes('/p/demo/event-types/type-1?tab=settings', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
       if (url.endsWith('/owners')) return mockJsonResponse([])
@@ -722,7 +722,7 @@ describe('EventTypeDetail settings (PLAN-42 / PLAN-43 / PLAN-45)', () => {
   })
 
   it('states the worst case when the count failed, instead of "nothing else is affected"', async () => {
-    renderWithRoutes('/p/demo/settings/event-types/type-1?tab=settings', async (input) => {
+    renderWithRoutes('/p/demo/event-types/type-1?tab=settings', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
       if (url.endsWith('/owners')) return mockJsonResponse([])
@@ -742,7 +742,7 @@ describe('EventTypeDetail settings (PLAN-42 / PLAN-43 / PLAN-45)', () => {
 
   it('confirms an owner removal and shows a refusal', async () => {
     const calls: string[] = []
-    renderWithRoutes('/p/demo/settings/event-types/type-1?tab=settings', async (input, init) => {
+    renderWithRoutes('/p/demo/event-types/type-1?tab=settings', async (input, init) => {
       const url = String(input)
       if (init?.method === 'DELETE') {
         calls.push(url)
@@ -770,7 +770,7 @@ describe('EventTypeDetail settings (PLAN-42 / PLAN-43 / PLAN-45)', () => {
 
   it('disables Save until the general settings change, and says when they saved', async () => {
     let types = [CHECKOUT]
-    renderWithRoutes('/p/demo/settings/event-types/type-1?tab=settings', async (input, init) => {
+    renderWithRoutes('/p/demo/event-types/type-1?tab=settings', async (input, init) => {
       const url = String(input)
       if (init?.method === 'PATCH' && url.endsWith('/event-types/type-1')) {
         const body = JSON.parse(String(init.body))
@@ -822,9 +822,9 @@ describe('EventTypeDetail across a branch switch (PLAN-44)', () => {
     const tree = (branchId: string | null) => (
       <QueryClientProvider client={queryClient}>
         <BranchContext.Provider value={{ branchId, setBranchId: () => {}, slug: 'demo' }}>
-          <MemoryRouter initialEntries={['/p/demo/settings/event-types/type-1']}>
+          <MemoryRouter initialEntries={['/p/demo/event-types/type-1']}>
             <Routes>
-              <Route path="/p/:slug/settings/event-types/:itemId" element={<ParamRoute />} />
+              <Route path="/p/:slug/event-types/:itemId" element={<ParamRoute />} />
             </Routes>
           </MemoryRouter>
         </BranchContext.Provider>
@@ -836,7 +836,7 @@ describe('EventTypeDetail across a branch switch (PLAN-44)', () => {
     view.rerender(tree('branch-1'))
 
     await waitFor(() =>
-      expect(screen.getByTestId('path')).toHaveTextContent('/p/demo/settings/event-types/type-9'),
+      expect(screen.getByTestId('path')).toHaveTextContent('/p/demo/event-types/type-9'),
     )
     expect(screen.getByRole('heading', { name: 'Checkout' })).toBeInTheDocument()
     expect(screen.queryByText(/does not exist|Event type not found/)).not.toBeInTheDocument()
@@ -870,9 +870,9 @@ describe('FieldsEditor reordering (PLAN-37)', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/event-types/type-1?tab=settings']}>
+        <MemoryRouter initialEntries={['/p/demo/event-types/type-1?tab=settings']}>
           <Routes>
-            <Route path="/p/:slug/settings/event-types/:itemId" element={<DetailRoute />} />
+            <Route path="/p/:slug/event-types/:itemId" element={<DetailRoute />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -913,9 +913,9 @@ describe('review 204 follow-ups', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/event-types/type-1?tab=settings']}>
+        <MemoryRouter initialEntries={['/p/demo/event-types/type-1?tab=settings']}>
           <Routes>
-            <Route path="/p/:slug/settings/event-types/:itemId" element={<DetailRoute />} />
+            <Route path="/p/:slug/event-types/:itemId" element={<DetailRoute />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -934,7 +934,7 @@ describe('review 204 follow-ups', () => {
   })
 
   it('renders both tables through the shared table component', async () => {
-    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+    renderWithRoutes('/p/demo/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
       if (url.endsWith('/api/v1/projects/demo/event-type-owners')) return mockJsonResponse([])
@@ -959,7 +959,7 @@ describe('EventTypesTab owners in one request (PLAN-42)', () => {
       created_at: '2026-01-01T00:00:00Z',
     }
     const asked: string[] = []
-    renderWithRoutes('/p/demo/settings/event-types', async (input) => {
+    renderWithRoutes('/p/demo/event-types', async (input) => {
       const url = String(input)
       asked.push(url)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT, SIGNUP])

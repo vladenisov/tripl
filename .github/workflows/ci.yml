@@ -54,8 +54,17 @@ jobs:
       # and anomaly tests that would otherwise pile up on one worker. The final
       # summary line still counts every selected test: compare it with
       # `pytest --collect-only -q` under the same -m expression (tripl-la1i).
+      #
+      # Coverage (pytest-cov, which combines the xdist workers' data): the floor
+      # is [tool.coverage.report] fail_under in pyproject.toml, which pytest-cov
+      # applies on its own, so no --cov-fail-under here to drift from it. It is
+      # 0 until the first measured baseline is recorded, so for now it reports
+      # and does not gate.
       - name: Pytest
-        run: uv run pytest -q -n auto --dist worksteal --durations=30 -m "not conformance and not relevance and not pg_concurrency"
+        run: >-
+          uv run pytest -q -n auto --dist worksteal --durations=30
+          -m "not conformance and not relevance and not pg_concurrency"
+          --cov=tripl --cov-report=term-missing:skip-covered
 
   # The two client packages. NEITHER ran in PR CI before tripl-ey6j.1 —
   # mcp-server's suite executed only in publish-mcp.yml, at tag time, and cli/
@@ -751,8 +760,23 @@ jobs:
       - name: Bundle budget
         run: pnpm check:bundle
 
-      - name: Test
-        run: pnpm test
+      # Same test set as `pnpm test`, plus v8 coverage. The thresholds in
+      # vite.config.ts fail this step when coverage drops below them; they are
+      # 0 until the first measured baseline is recorded (CONTRIBUTING.md,
+      # "Coverage"), so for now this step reports and does not gate.
+      - name: Test (with coverage)
+        run: pnpm test:coverage
+
+      # The summary is uploaded even from a red run, so a threshold failure can
+      # be compared against the numbers without re-running locally.
+      - name: Upload coverage summary
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-coverage-summary
+          path: frontend/coverage/coverage-summary.json
+          if-no-files-found: warn
+          retention-days: 14
 
   image-scope:
     name: Detect image-definition changes

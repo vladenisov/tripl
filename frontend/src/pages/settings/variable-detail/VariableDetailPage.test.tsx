@@ -62,8 +62,8 @@ function renderPage(path: string, role: Role = 'owner') {
       <AuthContext.Provider value={authAs(role)}>
         <MemoryRouter initialEntries={[path]}>
           <Routes>
-            <Route path="/p/:slug/settings/variables/:id" element={<PageRoute />} />
-            <Route path="/p/:slug/settings/variables" element={<ListProbe />} />
+            <Route path="/p/:slug/variables/:id" element={<PageRoute />} />
+            <Route path="/p/:slug/variables" element={<ListProbe />} />
           </Routes>
         </MemoryRouter>
       </AuthContext.Provider>
@@ -95,16 +95,16 @@ afterEach(() => {
 
 describe('variableDetailPath', () => {
   it('builds the page, tab and back-to-list addresses', () => {
-    expect(variableDetailPath('demo', 'var-1')).toBe('/p/demo/settings/variables/var-1')
-    expect(variableDetailPath('demo', 'var-1', 'definition')).toBe('/p/demo/settings/variables/var-1')
-    expect(variableDetailPath('demo', 'var-1', 'drift')).toBe('/p/demo/settings/variables/var-1?tab=drift')
-    expect(variableListPath('demo', 'var-1')).toBe('/p/demo/settings/variables?focus=var-1')
+    expect(variableDetailPath('demo', 'var-1')).toBe('/p/demo/variables/var-1')
+    expect(variableDetailPath('demo', 'var-1', 'definition')).toBe('/p/demo/variables/var-1')
+    expect(variableDetailPath('demo', 'var-1', 'drift')).toBe('/p/demo/variables/var-1?tab=drift')
+    expect(variableListPath('demo', 'var-1')).toBe('/p/demo/variables?focus=var-1')
   })
 })
 
 describe('VariableDetailPage (AU-26)', () => {
   it('titles the page after the variable and opens on its definition', async () => {
-    renderPage('/p/demo/settings/variables/var-1')
+    renderPage('/p/demo/variables/var-1')
 
     expect(await screen.findByRole('heading', { level: 1, name: '${variant}' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Definition' })).toHaveAttribute('aria-selected', 'true')
@@ -116,7 +116,7 @@ describe('VariableDetailPage (AU-26)', () => {
 
   it('saves the definition and stays on the page', async () => {
     vi.mocked(variablesApi.update).mockResolvedValue(VARIANT)
-    renderPage('/p/demo/settings/variables/var-1')
+    renderPage('/p/demo/variables/var-1')
 
     fireEvent.change(await screen.findByLabelText('Description'), { target: { value: 'Arm of the test' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
@@ -139,14 +139,14 @@ describe('VariableDetailPage (AU-26)', () => {
   })
 
   it('opens the tab named in the URL and says when there is no drift', async () => {
-    renderPage('/p/demo/settings/variables/var-1?tab=drift')
+    renderPage('/p/demo/variables/var-1?tab=drift')
 
     expect(await screen.findByText('No value drift')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /Drift/ })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('shows a viewer the definition as a read view, with nothing that writes', async () => {
-    renderPage('/p/demo/settings/variables/var-1', 'viewer')
+    renderPage('/p/demo/variables/var-1', 'viewer')
 
     await screen.findByRole('heading', { level: 1, name: '${variant}' })
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
@@ -156,18 +156,18 @@ describe('VariableDetailPage (AU-26)', () => {
   })
 
   it('offers the way back to the list, with the row focused', async () => {
-    renderPage('/p/demo/settings/variables/var-1')
+    renderPage('/p/demo/variables/var-1')
 
     fireEvent.click(await screen.findByRole('link', { name: 'Variables' }))
     expect(await screen.findByText('list at ?focus=var-1')).toBeInTheDocument()
   })
 
   it('says the variable is gone, with the way back, when the list has no such id', async () => {
-    renderPage('/p/demo/settings/variables/var-missing')
+    renderPage('/p/demo/variables/var-missing')
 
     expect(await screen.findByText('Variable not found')).toBeInTheDocument()
     const back = screen.getByRole('link', { name: 'Back to variables' })
-    expect(back).toHaveAttribute('href', '/p/demo/settings/variables')
+    expect(back).toHaveAttribute('href', '/p/demo/variables')
   })
 
   it('lists overrides on their own tab, read-only for a viewer', async () => {
@@ -180,7 +180,7 @@ describe('VariableDetailPage (AU-26)', () => {
         values: ['c'],
       } as never,
     ])
-    renderPage('/p/demo/settings/variables/var-1?tab=overrides', 'viewer')
+    renderPage('/p/demo/variables/var-1?tab=overrides', 'viewer')
 
     const panel = await screen.findByRole('tabpanel')
     expect(await within(panel).findByText('checkout')).toBeInTheDocument()

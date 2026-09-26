@@ -116,7 +116,7 @@ export function ScanConfigReadView({
   ]
 
   return (
-    <SCard title="Scan configuration">
+    <SCard title="Scan settings">
       <div className="px-4 py-3.5">
         <ReadOnlyDefinition items={items} />
       </div>

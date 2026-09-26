@@ -57,7 +57,7 @@ describe('auditSentences', () => {
   })
 
   it('links a target that has a page, never a deleted one', () => {
-    expect(targetPath(entry({ target_type: 'variable', action: 'variable.update' }))).toBe('/p/demo/settings/variables/t1')
+    expect(targetPath(entry({ target_type: 'variable', action: 'variable.update' }))).toBe('/p/demo/variables/t1')
     expect(targetPath(entry({ action: 'event.delete' }))).toBeNull()
     expect(targetPath(entry({ target_type: 'alert_rule' }))).toBeNull()
   })

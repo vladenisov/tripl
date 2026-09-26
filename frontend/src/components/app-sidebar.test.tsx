@@ -214,23 +214,23 @@ describe('AppSidebar', () => {
     const expected: Record<string, string> = {
       Events: '/p/demo/events',
       Overview: '/p/demo/overview',
-      'Meta fields': '/p/demo/settings/meta-fields',
-      'Plan branches': '/p/demo/settings/branches',
+      'Meta fields': '/p/demo/meta-fields',
+      'Plan branches': '/p/demo/branches',
       Anomalies: '/p/demo/anomalies',
-      Alerting: '/p/demo/settings/alerting',
+      Alerting: '/p/demo/alerting',
       Reconciliation: '/p/demo/reconciliation',
       Coverage: '/p/demo/coverage',
       Scans: '/p/demo/scans',
-      'Audit log': '/p/demo/settings/audit',
+      'Audit log': '/p/demo/audit',
     }
     for (const [label, href] of Object.entries(expected)) {
       expect(screen.getByRole('link', { name: new RegExp(label) })).toHaveAttribute('href', href)
     }
     expect(screen.getByRole('link', { name: 'Page view' })).toHaveAttribute('href', '/p/demo/events/page_view')
     expect(screen.getByRole('link', { name: 'Track click' })).toHaveAttribute('href', '/p/demo/events/track_click')
-    // Event types is a plain leaf to its settings page, with no gear (#238 SH-38).
+    // Event types is a plain leaf to its page, with no gear (#238 SH-38).
     const eventTypes = screen.getByRole('link', { name: /^Event types/ })
-    expect(eventTypes).toHaveAttribute('href', '/p/demo/settings/event-types')
+    expect(eventTypes).toHaveAttribute('href', '/p/demo/event-types')
     expect(eventTypes.querySelectorAll('svg')).toHaveLength(1)
     expect(container).toBeInTheDocument()
     // Footer: project settings point at the full-takeover area and name THIS
@@ -369,11 +369,11 @@ describe('AppSidebar', () => {
     await screen.findByText('Events')
 
     // M6: Variables and Relations must be reachable from the sidebar (not only
-    // via the command palette), pointing at their project-scoped settings routes.
+    // via the command palette), pointing at their project-scoped routes.
     const variables = await screen.findByRole('link', { name: /Variables/ })
-    expect(variables).toHaveAttribute('href', '/p/demo/settings/variables')
+    expect(variables).toHaveAttribute('href', '/p/demo/variables')
     const relations = screen.getByRole('link', { name: /Relations/ })
-    expect(relations).toHaveAttribute('href', '/p/demo/settings/relations')
+    expect(relations).toHaveAttribute('href', '/p/demo/relations')
   })
 
   it('marks the active surface based on the current route', async () => {

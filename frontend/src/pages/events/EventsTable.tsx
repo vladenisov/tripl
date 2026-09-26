@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowDown, ChevronDown, ChevronRight, Inbox, Layers, ListPlus, Loader2, Plus, X } from 'lucide-react'
 import {
@@ -48,7 +48,13 @@ import {
   type EventNameGroup,
 } from './eventNameGroups'
 import { PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
-import { PHONE_FULL_ROW, PHONE_HEADER_ROW, PHONE_TABLE } from './eventsPhoneCard'
+import {
+  PHONE_FULL_ROW,
+  PHONE_HEADER_ROW,
+  PHONE_SELECT_ALL_CAPTION,
+  PHONE_SELECT_ALL_HEAD,
+  PHONE_TABLE,
+} from './eventsPhoneCard'
 import { useFillViewportHeight } from './useFillViewportHeight'
 import type { EventsSortOrder } from './useEventsQuery'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
@@ -226,6 +232,8 @@ export function EventsTable({
   const branchId = useActiveBranchId()
   // Selecting is only ever for a bulk edit, which a viewer cannot make.
   const canWrite = useCanWriteProject()
+  // Ties the phone-only "Select all" caption to the select-all checkbox.
+  const selectAllId = useId()
   const emptyCopy = eventsEmptyCopy(
     emptyContext ?? { activeTab: 'all', hasActiveFilters: false, search: '' },
   )
@@ -437,10 +445,16 @@ export function EventsTable({
                     (EV-17). On a phone the bar is only the select-all
                     checkbox, so a viewer, who has none, gets no bar (EV-28). */}
                 <TableRow className={`${PHONE_HEADER_ROW} ${isEmpty || !canWrite ? 'max-md:hidden' : ''}`}>
-                  <TableHead className="w-8 px-1" aria-label="Reorder" />
-                  <TableHead className="tripl-pin-l w-10 pl-5">
+                  {/* The spacer over the drag handles; a card with no handle
+                      hides its empty cell, so the spacer goes with it. */}
+                  <TableHead
+                    className={`w-8 px-1 ${canReorder ? '' : 'max-md:hidden'}`}
+                    aria-label="Reorder"
+                  />
+                  <TableHead className={`tripl-pin-l w-10 pl-5 ${PHONE_SELECT_ALL_HEAD}`}>
                     {canWrite && (
                       <Checkbox
+                        id={selectAllId}
                         checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
                         // From the mixed state a click CLEARS the selection:
                         // the minus reads "some selected", and Radix would
@@ -450,6 +464,13 @@ export function EventsTable({
                         }
                         aria-label="Select all visible events"
                       />
+                    )}
+                    {/* On a phone the bar holds only this checkbox: a caption
+                        says what it does instead of leaving an empty header. */}
+                    {canWrite && (
+                      <label htmlFor={selectAllId} className={PHONE_SELECT_ALL_CAPTION}>
+                        Select all
+                      </label>
                     )}
                   </TableHead>
                   {/* Pinned left with the checkbox: 8 of 17 columns sit

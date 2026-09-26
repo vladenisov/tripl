@@ -28,7 +28,7 @@ const TARGET_LINK: Record<
     title: 'View anomalies from this scan',
   },
   alerts: {
-    href: (slug, scanConfigId) => `/p/${slug}/settings/alerting?scan=${scanConfigId}`,
+    href: (slug, scanConfigId) => `/p/${slug}/alerting?scan=${scanConfigId}`,
     title: 'View alerts from this scan',
   },
 }
@@ -136,7 +136,8 @@ export function JobDetails({
   const signalsAdded = summary?.signals_added ?? 0
   const openSignalsQuery = useExpandedSignals(slug, { enabled: signalsAdded > 0 })
   const openSignals = openSignalsQuery.data
-    ? openSignalsQuery.data.filter(signal => signal.scan_config_id === scanConfigId).length
+    // Muted and expected signals are out of every open count (MO-4 / JR-5).
+    ? openSignalsQuery.data.filter(signal => signal.scan_config_id === scanConfigId && !signal.hidden).length
     : null
 
   const report = buildRunReport(job, mode, openSignals)
