@@ -172,6 +172,20 @@ class SuppressedRange:
 
 
 @dataclass(frozen=True)
+class BaselinePoint:
+    """The band one bucket was judged against, flagged or not (tripl-i9mt.25).
+
+    ``effective_stddev`` is the floored stddev the z-score divides by, so the
+    chart band ``expected_count ± sigma_threshold * effective_stddev`` is the
+    detector's own decision boundary for the bucket.
+    """
+
+    bucket: datetime
+    expected_count: float
+    effective_stddev: float
+
+
+@dataclass(frozen=True)
 class DetectionResult:
     """What one detection pass has to say about its evaluation window.
 
@@ -183,6 +197,15 @@ class DetectionResult:
 
     anomalies: list[DetectedAnomaly]
     suppressed_ranges: tuple[SuppressedRange, ...] = ()
+    # The per-bucket (phase / rolling / fractional) baseline of every bucket
+    # this pass SCORED — cleared the volume gate inside the emission window —
+    # whether or not it was flagged, so the chart can draw a continuous band
+    # (tripl-i9mt.25). Buckets the pass skipped (history too short, below the
+    # volume floor, settling, a fractional ramp, a provably silent series)
+    # carry none, and so do buckets whose own flag was dropped in favour of the
+    # one row reporting a trend shift or outage (see ``_drawable_baselines``).
+    # Trend rows keep their own expectation on the anomaly row.
+    baselines: tuple[BaselinePoint, ...] = ()
 
 
 def expand_series(
@@ -437,6 +460,69 @@ def _select_phase_period(interval: timedelta, slot: int) -> int | None:
     return None
 
 
+@dataclass(frozen=True)
+class _Baseline:
+    """What a per-bucket path expects of one bucket, before the sigma test.
+
+    ``scale`` is the raw robust spread, ``effective_stddev`` the floored one the
+    z-score divides by. Built for EVERY bucket that clears the volume gate, so
+    the caller can persist the band even where nothing was flagged.
+    """
+
+    expected_count: float
+    scale: float
+    effective_stddev: float
+
+
+def _score_against_baseline(
+    point: SeriesPoint,
+    baseline: _Baseline,
+    settings: AnomalyDetectionSettings,
+    *,
+    kind: str,
+) -> DetectedAnomaly | None:
+    z_score = (point.count - baseline.expected_count) / baseline.effective_stddev
+    # ``abs(nan) < sigma`` is False, so without the finiteness test a NaN z
+    # slipped through as an "anomaly" (tripl-0zpq.101).
+    if not isfinite(z_score) or abs(z_score) < settings.sigma_threshold:
+        return None
+
+    return DetectedAnomaly(
+        bucket=point.bucket,
+        actual_count=point.count,
+        expected_count=baseline.expected_count,
+        stddev=baseline.scale,
+        z_score=z_score,
+        direction="spike" if point.count >= baseline.expected_count else "drop",
+        effective_stddev=baseline.effective_stddev,
+        kind=kind,
+    )
+
+
+def _rolling_baseline_at(
+    counts: list[float],
+    idx: int,
+    settings: AnomalyDetectionSettings,
+    *,
+    stddev_absolute_floor: float = 1.0,
+    poisson: bool = False,
+    signed: bool = False,
+) -> _Baseline | None:
+    window_start = max(0, idx - settings.baseline_window_buckets)
+    baseline = counts[window_start:idx]
+    if len(baseline) < settings.min_history_buckets:
+        return None
+
+    expected_count, stddev = _rolling_stats(baseline)
+    if not _clears_volume_gate(expected_count, settings, signed=signed):
+        return None
+
+    effective_stddev = _effective_stddev(
+        stddev, expected_count, absolute_floor=stddev_absolute_floor, poisson=poisson
+    )
+    return _Baseline(expected_count=expected_count, scale=stddev, effective_stddev=effective_stddev)
+
+
 def _rolling_anomaly_at(
     counts: list[float],
     idx: int,
@@ -450,34 +536,17 @@ def _rolling_anomaly_at(
 ) -> DetectedAnomaly | None:
     """Seasonality-blind rolling-mean z-score. Fallback for series too short to
     have a usable phase period (brand-new scans, very sparse data)."""
-    window_start = max(0, idx - settings.baseline_window_buckets)
-    baseline = counts[window_start:idx]
-    if len(baseline) < settings.min_history_buckets:
-        return None
-
-    expected_count, stddev = _rolling_stats(baseline)
-    if not _clears_volume_gate(expected_count, settings, signed=signed):
-        return None
-
-    effective_stddev = _effective_stddev(
-        stddev, expected_count, absolute_floor=stddev_absolute_floor, poisson=poisson
+    baseline = _rolling_baseline_at(
+        counts,
+        idx,
+        settings,
+        stddev_absolute_floor=stddev_absolute_floor,
+        poisson=poisson,
+        signed=signed,
     )
-    z_score = (point.count - expected_count) / effective_stddev
-    # ``abs(nan) < sigma`` is False, so without the finiteness test a NaN z
-    # slipped through as an "anomaly" (tripl-0zpq.101).
-    if not isfinite(z_score) or abs(z_score) < settings.sigma_threshold:
+    if baseline is None:
         return None
-
-    return DetectedAnomaly(
-        bucket=point.bucket,
-        actual_count=point.count,
-        expected_count=expected_count,
-        stddev=stddev,
-        z_score=z_score,
-        direction="spike" if point.count >= expected_count else "drop",
-        effective_stddev=effective_stddev,
-        kind=kind,
-    )
+    return _score_against_baseline(point, baseline, settings, kind=kind)
 
 
 def _phase_level_window(interval: timedelta, period: int) -> int:
@@ -563,6 +632,45 @@ def _seasonal_factors(
     return factors, current_level
 
 
+def _phase_baseline_at(
+    counts: list[float],
+    slots: Sequence[int],
+    idx: int,
+    period: int,
+    settings: AnomalyDetectionSettings,
+    *,
+    level_window: int,
+    stddev_absolute_floor: float = 1.0,
+    poisson: bool = False,
+    signed: bool = False,
+) -> _Baseline | None:
+    same_phase = [counts[j] for j in _same_phase_indices(slots, idx, period)]
+    if not same_phase:
+        return None
+
+    factors, current_level = _seasonal_factors(
+        counts, slots, idx, period, level_window, signed=signed
+    )
+    if factors and current_level > 0:
+        expected_count = median(factors) * current_level
+        scale = _robust_scale(factors) * current_level
+    else:
+        expected_count = median(same_phase)
+        scale = _robust_scale(same_phase)
+
+    if not _clears_volume_gate(expected_count, settings, signed=signed):
+        return None
+
+    effective_stddev = _effective_stddev(
+        scale,
+        expected_count,
+        ratio=_PHASE_STDDEV_FLOOR_RATIO,
+        absolute_floor=stddev_absolute_floor,
+        poisson=poisson,
+    )
+    return _Baseline(expected_count=expected_count, scale=scale, effective_stddev=effective_stddev)
+
+
 def _phase_anomaly_at(
     counts: list[float],
     slots: Sequence[int],
@@ -592,46 +700,20 @@ def _phase_anomaly_at(
     back to the raw same-phase median, so brand-new series behave as before — and
     so does a SIGNED series, whose level is not a safe divisor at all (see
     :func:`_seasonal_factors`)."""
-    same_phase = [counts[j] for j in _same_phase_indices(slots, idx, period)]
-    if not same_phase:
-        return None
-
-    factors, current_level = _seasonal_factors(
-        counts, slots, idx, period, level_window, signed=signed
-    )
-    if factors and current_level > 0:
-        expected_count = median(factors) * current_level
-        scale = _robust_scale(factors) * current_level
-    else:
-        expected_count = median(same_phase)
-        scale = _robust_scale(same_phase)
-
-    if not _clears_volume_gate(expected_count, settings, signed=signed):
-        return None
-
-    effective_stddev = _effective_stddev(
-        scale,
-        expected_count,
-        ratio=_PHASE_STDDEV_FLOOR_RATIO,
-        absolute_floor=stddev_absolute_floor,
+    baseline = _phase_baseline_at(
+        counts,
+        slots,
+        idx,
+        period,
+        settings,
+        level_window=level_window,
+        stddev_absolute_floor=stddev_absolute_floor,
         poisson=poisson,
+        signed=signed,
     )
-    z_score = (point.count - expected_count) / effective_stddev
-    # ``abs(nan) < sigma`` is False, so without the finiteness test a NaN z
-    # slipped through as an "anomaly" (tripl-0zpq.101).
-    if not isfinite(z_score) or abs(z_score) < settings.sigma_threshold:
+    if baseline is None:
         return None
-
-    return DetectedAnomaly(
-        bucket=point.bucket,
-        actual_count=point.count,
-        expected_count=expected_count,
-        stddev=scale,
-        z_score=z_score,
-        direction="spike" if point.count >= expected_count else "drop",
-        effective_stddev=effective_stddev,
-        kind=kind,
-    )
+    return _score_against_baseline(point, baseline, settings, kind=kind)
 
 
 @dataclass(frozen=True)
@@ -1203,6 +1285,7 @@ def detect_anomalies(
     per_bucket_kind = "phase" if is_count_shaped else "fractional"
     rolling_kind = "rolling" if is_count_shaped else "fractional"
     primary: list[DetectedAnomaly] = []
+    baselines: list[BaselinePoint] = []
     has_phase_period = False
 
     for idx, point in enumerate(expanded):
@@ -1221,31 +1304,42 @@ def detect_anomalies(
         period = _select_phase_period(interval, slots[idx])
         if period is not None:
             has_phase_period = True
-            anomaly = _phase_anomaly_at(
+            baseline = _phase_baseline_at(
                 counts,
                 slots,
                 idx,
-                point,
                 period,
                 settings,
                 level_window=_phase_level_window(interval, period),
                 stddev_absolute_floor=stddev_absolute_floor,
                 poisson=is_count_shaped,
                 signed=signed,
-                kind=per_bucket_kind,
             )
+            kind = per_bucket_kind
         else:
-            anomaly = _rolling_anomaly_at(
+            baseline = _rolling_baseline_at(
                 counts,
                 idx,
-                point,
                 settings,
                 stddev_absolute_floor=stddev_absolute_floor,
                 poisson=is_count_shaped,
                 signed=signed,
-                kind=rolling_kind,
             )
+            kind = rolling_kind
+        if baseline is None:
+            continue
 
+        # Kept for every scored bucket, flagged or not (tripl-i9mt.25). A NaN
+        # or infinite band cannot be drawn and is not stored.
+        if isfinite(baseline.expected_count) and isfinite(baseline.effective_stddev):
+            baselines.append(
+                BaselinePoint(
+                    bucket=point.bucket,
+                    expected_count=baseline.expected_count,
+                    effective_stddev=baseline.effective_stddev,
+                )
+            )
+        anomaly = _score_against_baseline(point, baseline, settings, kind=kind)
         if anomaly is not None:
             primary.append(anomaly)
 
@@ -1275,7 +1369,9 @@ def detect_anomalies(
         merged = _merge_anomalies(settled_primary, trend.anomalies)
 
     if not is_count_shaped:
-        return DetectionResult(anomalies=merged)
+        return DetectionResult(
+            anomalies=merged, baselines=_drawable_baselines(baselines, primary, merged)
+        )
     collapsed, suppressed_ranges = _collapse_outage_runs(
         merged,
         expanded,
@@ -1283,7 +1379,34 @@ def detect_anomalies(
         interval=interval,
         evaluation_start=evaluation_start,
     )
-    return DetectionResult(anomalies=collapsed, suppressed_ranges=suppressed_ranges)
+    return DetectionResult(
+        anomalies=collapsed,
+        suppressed_ranges=suppressed_ranges,
+        baselines=_drawable_baselines(baselines, primary, collapsed),
+    )
+
+
+def _drawable_baselines(
+    baselines: Sequence[BaselinePoint],
+    primary: Sequence[DetectedAnomaly],
+    emitted: Sequence[DetectedAnomaly],
+) -> tuple[BaselinePoint, ...]:
+    """The baselines the chart may draw without contradicting the stored rows.
+
+    The chart's contract is "outside the band == flagged". A bucket whose own
+    per-bucket anomaly was dropped because it belongs to a reported trend shift
+    (``shifted_buckets``) or was folded into an outage's single announcement
+    (``_collapse_outage_runs``) sits outside its band with no row of its own, so
+    its baseline is withheld: the incident is reported once, by the row the
+    pass kept, and the buckets it swallowed show no band. Every other scored
+    bucket keeps its band — flagged buckets still carry a row, and unflagged
+    ones sit inside the band by construction.
+    """
+    emitted_buckets = {anomaly.bucket for anomaly in emitted}
+    silenced = {anomaly.bucket for anomaly in primary} - emitted_buckets
+    if not silenced:
+        return tuple(baselines)
+    return tuple(point for point in baselines if point.bucket not in silenced)
 
 
 def forecast_next_buckets(

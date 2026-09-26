@@ -3,9 +3,10 @@
  *
  * Shown across every surface of a demo project (mounted in the app Layout). It
  * makes the workspace's synthetic/local nature unmistakable, shows the recipe
- * version and runtime freshness, and exposes Reset / Delete — both confirmed,
- * both scoped to the demo endpoints, both offered only to the demo's creator or
- * a workspace owner. On delete it returns to the Projects list.
+ * version and runtime freshness, and exposes Reset / Delete behind a "Manage
+ * demo" menu — both confirmed, both scoped to the demo endpoints, both offered
+ * only to the demo's creator or a workspace owner. On delete it returns to the
+ * Projects list.
  *
  * It also owns the one way back into the guided onboarding (tripl-imco): being
  * mounted on every demo surface, its "Tour & chapters" opens the tour, and the
@@ -24,7 +25,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { ChevronDown, Compass, FlaskConical, Info, RotateCcw, Trash2 } from 'lucide-react'
+import { ChevronDown, Compass, FlaskConical, Info, MoreHorizontal, RotateCcw, Trash2 } from 'lucide-react'
 import { ApiError } from '@/api/client'
 import { projectsApi } from '@/api/projects'
 import { clearProtectedQueries, useAuth } from '@/components/auth-context'
@@ -38,6 +39,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useBranchContext } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { formatRelativeTime } from '@/lib/datetime'
@@ -306,6 +314,8 @@ export function DemoBanner({
   // delete) started now would race it.
   const reseedRunning = resetMut.isPending || watchedFromId !== null
   const busy = reseedRunning || deleteMut.isPending
+  // What the "Manage demo" trigger says while one of its actions runs.
+  const busyLabel = reseedRunning ? 'Resetting…' : deleteMut.isPending ? 'Deleting…' : null
 
   // A failed reset or delete says so until the user does something else here
   // (DEMO-23): the message used to stay pinned under the banner through every
@@ -464,41 +474,50 @@ export function DemoBanner({
               <BannerLabel>Tour &amp; chapters</BannerLabel>
             </Button>
 
-            {/* Reset and Delete stay in the row, ahead of the page in DOM order
-                (#238 JR-21, won't do): the layout's "Skip to main content" link
-                already jumps past the banner, both open a confirm first, and
-                hiding them in a menu costs the demo's owner a click each.
-                The same goes for the "Manage demo" overflow menu #251 SH-6
-                asked for (won't do): only the demo's creator or a workspace
-                owner sees these two, and from `lg` to `2xl` the icon-only
-                buttons keep their names and a `title` each. */}
+            {/* Reset and Delete sit behind one "Manage demo" menu (#238 JR-21,
+                #251 SH-6): the banner is ahead of the page in tab order on every
+                demo surface, and a keyboard user walked through two
+                destructive buttons before reaching the page. Now it is one
+                stop, and both still open a confirm. Only the demo's creator or
+                a workspace owner is offered them. While a reset or delete runs
+                the trigger says so, as the buttons used to. */}
             {canManage && (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  title="Reset"
-                  onClick={() => void handleReset()}
-                  disabled={busy}
-                >
-                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                  <BannerLabel>{reseedRunning ? 'Resetting…' : 'Reset'}</BannerLabel>
-                </Button>
-                {/* Bare red, the hierarchy's destructive-in-a-row look; the
-                    solid red is kept for the confirm it opens (DS-20). */}
-                <Button
-                  type="button"
-                  variant="danger"
-                  size="sm"
-                  title="Delete"
-                  onClick={() => void handleDelete()}
-                  disabled={busy}
-                >
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                  <BannerLabel>{deleteMut.isPending ? 'Deleting…' : 'Delete'}</BannerLabel>
-                </Button>
-              </>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    title="Manage demo"
+                    aria-label={busyLabel ? `Manage demo (${busyLabel})` : 'Manage demo'}
+                  >
+                    <MoreHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+                    <BannerLabel>{busyLabel ?? 'Manage'}</BannerLabel>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" sideOffset={6} className="w-44">
+                  <DropdownMenuItem
+                    className="text-body-sm"
+                    disabled={busy}
+                    onSelect={() => void handleReset()}
+                  >
+                    <RotateCcw aria-hidden="true" />
+                    {reseedRunning ? 'Resetting…' : 'Reset…'}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {/* Red, the hierarchy's destructive-in-a-list look; the solid
+                      red is kept for the confirm it opens (DS-20). */}
+                  <DropdownMenuItem
+                    variant="destructive"
+                    className="text-body-sm"
+                    disabled={busy}
+                    onSelect={() => void handleDelete()}
+                  >
+                    <Trash2 aria-hidden="true" />
+                    {deleteMut.isPending ? 'Deleting…' : 'Delete…'}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
           </div>
         </div>

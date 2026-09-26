@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { commandPaletteShortcutLabel } from '@/lib/platform'
+import { GO_TO_SHORTCUTS } from './shell-shortcuts'
 
 /**
  * The `?` sheet (JR-21): every key the app answers to, in one place. There
@@ -37,9 +38,30 @@ export default function ShortcutsDialog({
             <Shortcut keys={<Kbd>?</Kbd>}>Show these shortcuts</Shortcut>
             <Shortcut keys={<Kbd>Esc</Kbd>}>Close a dialog, menu or drawer</Shortcut>
           </dl>
+          {/* Two keys, one after the other, within a second; inside a project
+              only, since every target is a project page. */}
+          <h3 className="mt-4 text-caption font-medium text-fg-secondary">Go to, inside a project</h3>
+          <dl className="divide-y divide-border-subtle text-body-sm">
+            {GO_TO_SHORTCUTS.map(({ key, label }) => (
+              <Shortcut key={key} keys={<Sequence second={key.toUpperCase()} />}>
+                {label}
+              </Shortcut>
+            ))}
+          </dl>
         </DialogBody>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** `G` then a letter, read as a sequence rather than a chord. */
+function Sequence({ second }: { second: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-caption text-fg-secondary">
+      <Kbd>G</Kbd>
+      then
+      <Kbd>{second}</Kbd>
+    </span>
   )
 }
 

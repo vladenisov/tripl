@@ -123,6 +123,12 @@ In plain terms: on a series running around 1,000 events, a phase baseline won't 
   deferred from per-bucket detection to this trend path so they surface once.
 - **The sigma threshold** is the headline sensitivity dial: it sets how many "normal wobbles" of deviation are required before anything is flagged. Every chart draws its confidence band with the same multiplier the detector used for that scope — the project setting, or the scope's own tightened value once the false-positive ratchet has raised it — so "outside the band" always means "flagged". That includes catalog metrics.
 
+### The baseline band on the chart
+
+The volume chart of an event, an event type and the project total draws the expected value and its normal range (`expected ± sigma × effective stddev`) on **every bucket the detector scored**, not only on flagged ones: each scan stores the baseline it judged each bucket against, flagged or not. A bucket carries no band when the detector did not score it — too little history yet, an expectation under `min_expected_count`, a bucket still inside the ingestion settling allowance, or a series too quiet to ever clear the volume floor. A flagged bucket shows the expectation of the anomaly itself, which for a trend shift is the pre-shift level rather than the per-bucket one. A reported level shift or outage is one row for the whole run, not one per bucket, so the other buckets inside it that left their band show **no band** rather than an unflagged point outside it: the incident is marked once, on the bucket that carries its row, and "outside the band" still always means "flagged".
+
+Baselines are stored from the release that introduced them onward and are not backfilled: history scored before that shows the band on flagged buckets only. A scheduled scan re-scores only its own trailing evaluation window, so from then on only the buckets inside each scan's evaluation window gain a band, plus any older range you re-score with **Replay a period…**; history older than that keeps flagged-only bands. Catalog metric charts and breakdown series still draw the band on flagged buckets only.
+
 ### A worked example
 
 Suppose an hourly event type's Monday-9am buckets over the last several weeks were:

@@ -144,6 +144,7 @@ class DemoCancelResponse(BaseModel):
 class AnomalyResetCounts(BaseModel):
     metric_anomalies: int
     metric_breakdown_anomalies: int
+    metric_baselines: int
 
 
 class DriftResetCounts(BaseModel):

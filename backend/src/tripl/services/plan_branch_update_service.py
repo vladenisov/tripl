@@ -44,7 +44,8 @@ from tripl.schemas.plan_branch import (
     UpdateFromMainResult,
 )
 from tripl.services._plan_branch_locks import lock_main_plan_for_merge
-from tripl.services._plan_branch_three_way import ENTITY_TYPES, ThreeWay, plan_three_way
+from tripl.services._plan_branch_three_way import plan_three_way
+from tripl.services._plan_branch_three_way_model import ENTITY_TYPES, ThreeWay
 from tripl.services._plan_branch_update_apply import apply_update_plan
 from tripl.services.plan_branch_conflicts import (
     _load_resolutions,

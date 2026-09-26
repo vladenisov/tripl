@@ -4970,6 +4970,8 @@ export interface components {
         AnomalyResetCounts: {
             /** Metric Anomalies */
             metric_anomalies: number;
+            /** Metric Baselines */
+            metric_baselines: number;
             /** Metric Breakdown Anomalies */
             metric_breakdown_anomalies: number;
         };
@@ -6709,6 +6711,10 @@ export interface components {
         /** EventMetricPoint */
         EventMetricPoint: {
             anomaly_direction?: components["schemas"]["AnomalyDirection"] | null;
+            /** Baseline Expected */
+            baseline_expected?: number | null;
+            /** Baseline Stddev */
+            baseline_stddev?: number | null;
             /**
              * Bucket
              * Format: date-time

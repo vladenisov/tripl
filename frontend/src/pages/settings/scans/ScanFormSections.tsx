@@ -701,9 +701,17 @@ export function MetricsDriftSection({ form, readOnly }: SectionProps) {
       explanation="Extra columns to split metrics by, and columns whose value mix you want watched for drift. Leave this alone to collect one series per event."
       defaultOpen={defaultOpen}
     >
-      <div className="space-y-4 px-4 py-4">
-        {preview ? (
-          <>
+      {/* Field rows like the essentials card and App version, so the section
+          reads down the same label column instead of opening two bordered
+          cards with their own stacked headings (#247 DA-12). The pickers hold
+          no single labelable control, so their rows name them as groups. */}
+      {preview ? (
+        <>
+          <Field
+            label="Metric breakdowns"
+            htmlFor={false}
+            hint="Each selected column gets its own series per value (e.g. one per platform), grouped in the warehouse."
+          >
             <MetricBreakdownPicker
               columns={preview.columns}
               selectedColumns={state.metricBreakdownColumns}
@@ -711,11 +719,41 @@ export function MetricsDriftSection({ form, readOnly }: SectionProps) {
               timeColumn={state.timeColumn}
               appVersionColumn={state.appVersionColumn}
               platformColumn={state.platformColumn}
-              valuesLimit={state.metricBreakdownValuesLimit}
-              valuesLimitError={fieldErrors.metricBreakdownValuesLimit}
               onToggleColumn={toggleMetricBreakdownColumn}
-              onValuesLimitChange={value => set('metricBreakdownValuesLimit', value)}
             />
+          </Field>
+          {/* The label matches SCAN_NUMERIC_FIELD_LABEL, which the blocked-save
+              summary names this field by. */}
+          <Field
+            label="Value limit"
+            htmlFor="breakdown-value-limit"
+            hint="Keeps each breakdown's top values and aggregates the rest into Other. Empty means unlimited."
+          >
+            <Input
+              id="breakdown-value-limit"
+              type="number"
+              min={1}
+              value={state.metricBreakdownValuesLimit}
+              onChange={e => set('metricBreakdownValuesLimit', e.target.value)}
+              className="font-mono max-w-[280px]"
+              placeholder="Unlimited"
+              {...invalidAria('breakdown-value-limit', fieldErrors.metricBreakdownValuesLimit)}
+            />
+            <FieldError inputId="breakdown-value-limit" message={fieldErrors.metricBreakdownValuesLimit} />
+            {state.metricBreakdownColumns.length > 0 && !state.metricBreakdownValuesLimit && (
+              <p className="mt-2 rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-body-sm text-warning">
+                Unlimited breakdowns can be expensive for high-cardinality columns. Set a limit to keep top values and aggregate the rest into Other.
+              </p>
+            )}
+          </Field>
+          {/* Plain words first; "PSI" and "scalar" explained nothing to the
+              reader choosing columns (#247 DA-16). */}
+          <Field
+            label="Distribution drift"
+            htmlFor={false}
+            hint="tripl watches the mix of values in these columns (e.g. the share of iOS vs Android) and flags when it shifts from the usual pattern (population stability index)."
+            last
+          >
             <DistributionDriftPicker
               columns={preview.columns}
               selectedFields={state.distributionDriftFields}
@@ -725,11 +763,13 @@ export function MetricsDriftSection({ form, readOnly }: SectionProps) {
               platformColumn={state.platformColumn}
               onToggleField={toggleDistributionDriftField}
             />
-          </>
-        ) : (
+          </Field>
+        </>
+      ) : (
+        <div className="px-4 py-4">
           <PreviewGate />
-        )}
-      </div>
+        </div>
+      )}
     </CollapsibleSection>
   )
 }

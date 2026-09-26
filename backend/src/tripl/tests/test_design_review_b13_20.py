@@ -299,7 +299,11 @@ async def test_reset_anomalies_dry_run_counts_without_deleting(client: AsyncClie
         json={"before": _RESET_BEFORE, "dry_run": True},
     )
     assert preview.status_code == 200, preview.text
-    assert preview.json() == {"metric_anomalies": 1, "metric_breakdown_anomalies": 0}
+    assert preview.json() == {
+        "metric_anomalies": 1,
+        "metric_breakdown_anomalies": 0,
+        "metric_baselines": 0,
+    }
     async with TestSessionLocal() as session:
         assert len((await session.execute(select(MetricAnomaly))).scalars().all()) == 1
         actions = (await session.execute(select(AuditLog.action))).scalars().all()
@@ -313,7 +317,11 @@ async def test_reset_anomalies_dry_run_counts_without_deleting(client: AsyncClie
     real = await client.post(
         "/api/v1/projects/st39/danger/reset-anomalies", json={"before": _RESET_BEFORE}
     )
-    assert real.json() == {"metric_anomalies": 1, "metric_breakdown_anomalies": 0}
+    assert real.json() == {
+        "metric_anomalies": 1,
+        "metric_breakdown_anomalies": 0,
+        "metric_baselines": 0,
+    }
     async with TestSessionLocal() as session:
         assert (await session.execute(select(MetricAnomaly))).scalars().all() == []
 

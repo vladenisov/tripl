@@ -22,6 +22,15 @@ export interface EventMetricPoint {
   anomaly_direction: 'spike' | 'drop' | null
   z_score: number | null
   detector_kind?: string | null
+  /**
+   * The baseline the detector scored this bucket against, flagged or not: the
+   * expected value and the floored effective stddev (the band is
+   * `baseline_expected ± sigma_threshold * baseline_stddev`). Null where no
+   * baseline was stored — older buckets, unscored ones and routes other than
+   * the event, event-type and project-total drilldowns.
+   */
+  baseline_expected?: number | null
+  baseline_stddev?: number | null
 }
 
 export interface TopEvent {

@@ -14,7 +14,8 @@ import pytest
 from pydantic import ValidationError
 
 from tripl.schemas.plan_branch import ResolutionCreate
-from tripl.services._plan_branch_three_way import PRESENCE_FIELD, plan_three_way
+from tripl.services._plan_branch_three_way import plan_three_way
+from tripl.services._plan_branch_three_way_model import PRESENCE_FIELD
 from tripl.services.plan_branch_conflicts import (
     _detect_merge_conflicts,
     detect_field_conflicts,

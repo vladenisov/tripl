@@ -5,6 +5,11 @@ import { isJsonPreviewType } from './scanUtils'
 
 const RESERVED_TITLE = 'Used by this scan as its event type, time, app version or platform column.'
 
+/**
+ * The drift column checkboxes. The caption and its explanation belong to the
+ * enclosing `Field` row, which also names this group, so the section shares the
+ * form's one label column (#247 DA-12).
+ */
 export function DistributionDriftPicker({
   columns,
   selectedFields,
@@ -27,48 +32,40 @@ export function DistributionDriftPicker({
     [eventTypeColumn, timeColumn, appVersionColumn, platformColumn].filter(Boolean),
   )
 
+  if (availableColumns.length === 0) {
+    return (
+      <p className="text-body-sm text-fg-tertiary">
+        The preview has no plain-value columns to watch (JSON columns cannot be).
+      </p>
+    )
+  }
+
   return (
-    <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
-      <div>
-        <div className="text-body font-medium">Distribution drift</div>
-        {/* Plain words first; "PSI" and "scalar" explained nothing to the
-            reader choosing columns (#247 DA-16). */}
-        <p className="text-body-sm text-fg-tertiary">
-          tripl watches the mix of values in these columns (e.g. the share of iOS vs Android) and flags
-          when it shifts from the usual pattern (population stability index).
-        </p>
-      </div>
-      <div className="grid gap-2 sm:grid-cols-2">
-        {availableColumns.map(column => {
-          const disabled = reservedColumns.has(column.name)
-          return (
-            <label
-              key={column.name}
-              className="flex items-center gap-2 rounded-md border bg-background p-2 text-body"
-            >
-              <Checkbox
-                checked={selectedFields.includes(column.name)}
-                disabled={disabled}
-                aria-label={`Distribution ${column.name}`}
-                onCheckedChange={() => {
-                  if (!disabled) onToggleField(column.name)
-                }}
-              />
-              <span className="min-w-0 flex-1 truncate font-mono text-body-sm">{column.name}</span>
-              {disabled && (
-                <Chip variant="outline" size="xs" title={RESERVED_TITLE}>
-                  reserved
-                </Chip>
-              )}
-            </label>
-          )
-        })}
-      </div>
-      {availableColumns.length === 0 && (
-        <p className="text-body-sm text-fg-tertiary">
-          The preview has no plain-value columns to watch (JSON columns cannot be).
-        </p>
-      )}
+    <div className="grid gap-2 sm:grid-cols-2">
+      {availableColumns.map(column => {
+        const disabled = reservedColumns.has(column.name)
+        return (
+          <label
+            key={column.name}
+            className="flex items-center gap-2 rounded-md border bg-background p-2 text-body"
+          >
+            <Checkbox
+              checked={selectedFields.includes(column.name)}
+              disabled={disabled}
+              aria-label={`Distribution ${column.name}`}
+              onCheckedChange={() => {
+                if (!disabled) onToggleField(column.name)
+              }}
+            />
+            <span className="min-w-0 flex-1 truncate font-mono text-body-sm">{column.name}</span>
+            {disabled && (
+              <Chip variant="outline" size="xs" title={RESERVED_TITLE}>
+                reserved
+              </Chip>
+            )}
+          </label>
+        )
+      })}
     </div>
   )
 }

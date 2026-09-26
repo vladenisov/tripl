@@ -322,6 +322,33 @@ function markPartialBuckets(points: ChartDataPoint[], partial: PartialWindow) {
   }
 }
 
+/**
+ * The expected value and stddev a bucket's band is drawn from (tripl-i9mt.25).
+ * A flagged bucket uses its anomaly row's (`expected_count`/`stddev`): a trend
+ * row's expectation is not the per-bucket one. Every other scored bucket uses
+ * the baseline the detector stored for it; an unscored bucket has none.
+ */
+function bandSource(point: EventMetricPoint): [number, number] | null {
+  if (point.expected_count != null && point.stddev != null) {
+    return [point.expected_count, point.stddev]
+  }
+  if (point.baseline_expected != null && point.baseline_stddev != null) {
+    return [point.baseline_expected, point.baseline_stddev]
+  }
+  return null
+}
+
+/**
+ * Whether the expected-value line paints a hollow point on this row: exactly
+ * where it carries the normal-range whisker (a flagged bucket, or one whose
+ * neighbours have no band), so the whisker is never a bare error bar and a run
+ * of scored buckets stays a plain dashed line.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function hasExpectedDot(point: ChartDataPoint | undefined): boolean {
+  return point?.expected_count != null && point.expected_error != null
+}
+
 // Exported for unit tests only — recharts never paints in jsdom, so the band
 // geometry is verified on the pure builder.
 // eslint-disable-next-line react-refresh/only-export-components
@@ -339,19 +366,29 @@ export function buildChartData(
   // A count's band stops at zero (MON-21); a signed metric's does not.
   const floor = (value: number) => (nonNegative ? Math.max(0, value) : value)
   const points: ChartDataPoint[] = data.map(point => {
-    if (point.expected_count == null || point.stddev == null) {
+    const baseline = bandSource(point)
+    if (baseline == null) {
       return { ...point }
     }
-    const offset = k * point.stddev
-    const band: [number, number] = [floor(point.expected_count - offset), point.expected_count + offset]
+    const [expected, stddev] = baseline
+    const offset = k * stddev
+    const band: [number, number] = [floor(expected - offset), expected + offset]
     return {
       ...point,
+      expected_count: expected,
+      stddev,
       band,
-      // The normal range as a whisker on the expected point: the backend only
-      // scores flagged buckets, so the band is usually one isolated point that
-      // an area cannot paint (MO-1).
-      expected_error: [point.expected_count - band[0], band[1] - point.expected_count],
     }
+  })
+  // The normal range as a whisker on the expected point wherever the area
+  // cannot paint it: a bucket whose neighbours carry no band (MO-1). With
+  // stored baselines most scored buckets form a run the area fills; a flagged
+  // bucket keeps its whisker regardless, so its range reads at a glance.
+  points.forEach((point, index) => {
+    if (!point.band || point.expected_count == null) return
+    const isolated = !points[index - 1]?.band && !points[index + 1]?.band
+    if (!point.is_anomaly && !isolated) return
+    point.expected_error = [point.expected_count - point.band[0], point.band[1] - point.expected_count]
   })
 
   if (partial?.first || partial?.last) markPartialBuckets(points, partial)
@@ -794,7 +831,7 @@ export function MetricsChart({
   const forecastBuckets = (forecast ?? []).map(point => point.bucket)
   const hasPartial = Boolean(partial?.first || partial?.last)
   const curve = curveFor(data.length)
-  const expectedCount = data.filter(point => point.expected_count != null).length
+  const hasExpected = chartData.some(point => point.expected_count != null)
   const hasBand = chartData.some(point => point.band)
   const sigmaLabel = Number.isFinite(sigmaThreshold) && sigmaThreshold > 0
     ? sigmaThreshold
@@ -914,19 +951,36 @@ export function MetricsChart({
             activeDot={false}
             legendType="none"
           />
-          {/* Expected value: dashed where buckets run together, and a hollow
-              point with its normal-range whisker where only an isolated,
-              flagged bucket carries one — which is every bucket today, since
-              the backend scores flagged buckets only (MO-1). */}
+          {/* Expected value: dashed where buckets run together (every bucket
+              the detector scored stores its baseline, tripl-i9mt.25), and a
+              hollow point with its normal-range whisker where a bucket carries
+              one alone — a flagged bucket, or history scored before baselines
+              were stored (MO-1). */}
           <Line
             type={curve}
             dataKey="expected_count"
             stroke="var(--fg-subtle)"
             strokeDasharray="4 4"
             strokeWidth={1.5}
-            dot={expectedCount <= POINT_DOTS_MAX_POINTS
-              ? { r: 3, fill: 'var(--background)', stroke: 'var(--fg-subtle)', strokeWidth: 1.5 }
-              : false}
+            dot={(props: { cx?: number; cy?: number; payload?: ChartDataPoint }) => {
+              // Per point, not per chart: a flagged or isolated expected value
+              // keeps its hollow point however long the chart is, and a run of
+              // scored buckets stays a plain dashed line (tripl-i9mt.25).
+              if (!hasExpectedDot(props.payload) || props.cx === undefined || props.cy === undefined) {
+                return <></>
+              }
+              return (
+                <circle
+                  cx={props.cx}
+                  cy={props.cy}
+                  r={3}
+                  fill="var(--background)"
+                  stroke="var(--fg-subtle)"
+                  strokeWidth={1.5}
+                  data-testid="expected-point"
+                />
+              )
+            }}
             activeDot={false}
             isAnimationActive={false}
             connectNulls={false}
@@ -1028,7 +1082,7 @@ export function MetricsChart({
       {chart}
       <ChartLegend
         color={chartColor}
-        expected={expectedCount > 0}
+        expected={hasExpected}
         band={hasBand ? sigmaLabel : null}
         anomaly={anomalyCount > 0}
         partial={hasPartial}

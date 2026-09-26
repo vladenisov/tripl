@@ -64,6 +64,11 @@ opens the shortcut sheet, which lists them all. **c** presses the page's
 its own when it is labelled otherwise (**Add rule**, **Add connection**,
 **Create key**). **/** focuses the list's search box, and **Ctrl K** (**⌘K** on a
 Mac) opens **Search or jump**. **Esc** closes a dialog, menu or drawer.
+Inside a project, **g** then a letter, pressed within a second, goes to a page:
+**g o** Overview, **g e** Events, **g t** Event types, **g m** Metrics, **g n**
+Anomalies, **g a** Alerting, **g s** Scans and **g b** Plan branches. Like the
+other letter keys, the sequence is ignored while you type in a field or while a
+dialog or menu is open.
 
 **List filters on a phone.** Below 640px, a list page's filter chips fold into
 one **Filters (n)** button, n being how many are set. It opens a bottom sheet
@@ -933,7 +938,8 @@ rejects the slug as taken, the **Project URL** field opens with "Another project
 already uses this URL. Choose a different one." under it.
 Older releases are combined into **Other**. **Reset anomalies**
 removes metric and breakdown anomaly records (and
-their derived active signals) across every scan/catalog metric. **Reset drifts**
+their derived active signals), plus the stored expected-value bands charts draw,
+across every scan/catalog metric. **Reset drifts**
 removes schema and distribution drift, but not variable-value drift. Both can be
 limited to a selected historical period and cannot be undone.
 
@@ -1117,6 +1123,12 @@ it moved — up and red for a spike, down and amber for a drop (an outlined bar 
 bar style) — and its tooltip says so with the z-score. The time axis spans the
 whole range you picked, so a series that began partway through starts partway
 along rather than at the left edge, and a count's confidence band stops at zero.
+The Volume chart draws the expected value and confidence band on every bucket
+the detector scored, flagged or not; buckets scored before baselines were
+stored (only each scan's evaluation window and replayed ranges gain one later),
+buckets not scored at all, and the buckets folded into a reported level shift or
+outage show no band (see
+[Anomaly detection](anomaly-detection.md#the-baseline-band-on-the-chart)).
 For an `event` scope it
 additionally renders variable-value drift review and the Photos & specs panel.
 An event that is not yet `live` also gets a **Spec** card ahead of the charts:

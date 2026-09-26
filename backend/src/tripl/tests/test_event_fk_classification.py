@@ -198,6 +198,13 @@ NON_FK_EVENT_REFERENCES: dict[tuple[str, str], str] = {
         "Same as metric_anomalies.scope_ref, breakdown variant. MERGE: _delete_event_anomalies. "
         "DELETE: _event_reference_cleanup. Two-key delete on both paths."
     ),
+    ("metric_baselines", "scope_ref"): (
+        "str(event.id) when scope_type == 'event'; the table has no event_id column, so this is "
+        "its only key. MERGE: _delete_event_anomalies deletes the rows for both events — the "
+        "bands describe pre-merge series and the next metrics run rescores. DELETE: "
+        "_event_reference_cleanup deletes them; nothing else would, so an orphan band would be "
+        "kept forever for a series that no longer exists."
+    ),
     ("alert_delivery_items", "scope_ref"): (
         "str(event.id) copied off the anomaly for event-scope items; other scopes carry their "
         "own id (a value drift's is the drift id). Handled: _merge_event_into_group rewrites it "

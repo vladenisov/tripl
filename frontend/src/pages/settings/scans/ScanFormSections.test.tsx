@@ -272,7 +272,7 @@ describe('ScanFormSections — the answer comes after the questions', () => {
     fireEvent.change(screen.getByPlaceholderText(/SELECT \* FROM analytics\.events/), {
       target: { value: 'SELECT * FROM analytics.events' },
     })
-    fireEvent.click(screen.getByRole('button', { name: /Load preview/ }))
+    fireEvent.click(screen.getByRole('button', { name: /(Load|Reload) preview/ }))
 
     const panel = await screen.findByTestId('scan-preview-panel')
 
@@ -290,7 +290,7 @@ describe('ScanFormSections — the answer comes after the questions', () => {
     renderCreatePage()
 
     await screen.findByText('New scan')
-    const button = screen.getByRole('button', { name: /Load preview/ })
+    const button = screen.getByRole('button', { name: /(Load|Reload) preview/ })
 
     expect(button.compareDocumentPosition(screen.getByLabelText('Time column'))).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
@@ -599,6 +599,79 @@ describe('ScanFormSections — field labelling', () => {
     expect(captions).not.toContain('Base query')
     expect(captions).not.toContain('Preview')
     expect(captions).not.toContain('Lookback (hours)')
+  })
+
+  // The two pickers used to open bordered cards with their own stacked
+  // headings, the one section that did not read down the form's label column.
+  // They now sit in Field rows like the essentials card and App version, so
+  // their captions are the rows' — naming each checkbox list as a group — and
+  // the value limit is a row of its own (#247 DA-12).
+  it('lays the breakdown and drift pickers out as Field rows in the shared label column', async () => {
+    setupFetch([eventType])
+    const { container } = renderCreatePage()
+
+    await screen.findByText('New scan')
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
+    fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByPlaceholderText(/SELECT \* FROM analytics\.events/), {
+      target: { value: 'SELECT * FROM analytics.events' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /(Load|Reload) preview/ }))
+    await screen.findByTestId('scan-preview-panel')
+    fireEvent.click(screen.getByRole('button', { name: /Metric breakdowns and drift/ }))
+
+    const breakdowns = screen.getByRole('group', { name: 'Metric breakdowns' })
+    expect(within(breakdowns).getByRole('checkbox', { name: 'Breakdown by event_name' })).toBeInTheDocument()
+    const drift = screen.getByRole('group', { name: 'Distribution drift' })
+    expect(within(drift).getByRole('checkbox', { name: 'Distribution event_ts' })).toBeInTheDocument()
+
+    const limit = screen.getByLabelText('Value limit')
+    expect(limit).toHaveAttribute('id', 'breakdown-value-limit')
+    expect(within(breakdowns).queryByLabelText('Value limit')).toBeNull()
+
+    const captions = Array.from(container.querySelectorAll('label'), el => el.textContent)
+    expect(captions).not.toContain('Metric breakdowns')
+    expect(captions).not.toContain('Distribution drift')
+  })
+
+  it('ties an invalid breakdown value limit to its message', async () => {
+    setupFetch()
+    renderConfigurationTab({
+      id: 'sc-1',
+      data_source_id: 'ds-1',
+      name: 'Nightly',
+      base_query: 'SELECT * FROM analytics.events',
+      event_type_column: 'event_name',
+      time_column: 'event_ts',
+      interval: '1h',
+      cardinality_threshold: 100,
+      metric_breakdown_values_limit: 10,
+    } as unknown as ScanConfig)
+
+    fireEvent.click(await screen.findByRole('button', { name: /(Load|Reload) preview/ }))
+    await screen.findByTestId('scan-preview-panel')
+
+    // A saved limit opens the section on its own.
+    const limit = screen.getByLabelText('Value limit')
+    fireEvent.change(limit, { target: { value: '0' } })
+
+    expect(limit).toHaveAttribute('aria-invalid', 'true')
+    expect(limit).toHaveAccessibleDescription(/whole number of 1 or more/)
+
+    // The limit is a Field row of its own (#247 DA-12): outside the
+    // breakdown checkboxes' group, captioned in the shared label column
+    // rather than by a label squeezed in beside the checkboxes.
+    const breakdowns = screen.getByRole('group', { name: 'Metric breakdowns' })
+    expect(breakdowns).not.toContainElement(limit)
+    const row = limit.closest<HTMLElement>('[data-slot="form-row"]')
+    expect(row).not.toBeNull()
+    expect(row).not.toContainElement(breakdowns)
+    const caption = row?.querySelector<HTMLElement>('[data-slot="form-row-caption"]')
+    expect(caption).toBeTruthy()
+    const label = within(caption as HTMLElement).getByText('Value limit')
+    expect(label.tagName).toBe('LABEL')
+    expect(label).toHaveAttribute('for', 'breakdown-value-limit')
+    expect(row?.querySelector('[data-slot="form-row-control"]')).toContainElement(limit)
   })
 })
 

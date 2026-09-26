@@ -89,7 +89,7 @@ function copyFor(
   if (status === 'error' && refusal === 'limit') {
     return {
       title: 'Demo limit reached',
-      description: 'Nothing was created. Reset or delete one of your demos from its banner first.',
+      description: "Nothing was created. Reset or delete one of your demos from its banner's Manage demo menu first.",
     }
   }
   if (status === 'error') {
@@ -129,7 +129,7 @@ function copyFor(
       return {
         title: 'Too late to cancel',
         description:
-          'The demo had already finished generating on the server, so it will appear in your projects list. Delete it from its banner if you do not want it.',
+          "The demo had already finished generating on the server, so it will appear in your projects list. Delete it from its banner's Manage demo menu if you do not want it.",
       }
     }
     // The server found nothing still seeding — the create may never have
@@ -139,7 +139,7 @@ function copyFor(
     return {
       title: 'Nothing left to cancel',
       description:
-        'The server had nothing left to cancel. If the demo finished first it is in your projects list — delete it from its banner if you do not want it.',
+        "The server had nothing left to cancel. If the demo finished first it is in your projects list — delete it from its banner's Manage demo menu if you do not want it.",
     }
   }
   return {

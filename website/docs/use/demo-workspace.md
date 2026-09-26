@@ -228,17 +228,17 @@ The demo offers two guides, and they do different jobs.
   listening. If it is still seeding, the workspace is discarded and nothing is
   added to your projects or left behind in the audit log. If the demo finished
   just before the cancel arrived, the dialog says it is in your list — delete it
-  from its banner if you do not want it. If the server had nothing left to
+  from its banner's **Manage demo** menu if you do not want it. If the server had nothing left to
   cancel at all, the dialog says only that.
 - **How many** — you can hold up to **three** demo workspaces at a time. At
   three, **Generate demo project** is disabled with the reason beside it: reset
-  or delete one first. Beyond the first, generating another asks for
+  or delete one first from its banner's **Manage demo** menu. Beyond the first, generating another asks for
   confirmation and points at Reset; each
   extra demo is named `Demo Project 2`, `Demo Project 3`, … so they are
   distinguishable in the workspace list. A new demo takes the lowest name you
   are not already using, so after deleting `Demo Project` the next one is named
   `Demo Project` again rather than repeating a name you still have.
-- **Reset** — re‑seed the demo in place under the same URL, preserving ownership
+- **Reset** — chosen from the banner's **Manage demo** menu; re‑seeds the demo in place under the same URL, preserving ownership
   and its name. Reset re‑runs the current recipe, so it is also how you refresh a
   demo built from an older one. It re‑seeds everything in one transaction and
   takes about as long as a create; a progress dialog narrates the wait. If the
@@ -246,9 +246,9 @@ The demo offers two guides, and they do different jobs.
   server may still be re‑seeding. It leaves for the Overview and drops the
   cached data and branch selection at once, then keeps checking for a few
   minutes: when the re‑seeded demo appears it finishes the reset as usual
-  (fresh chapter progress, welcome panel back). Reset and Delete stay off while
-  it checks.
-- **Delete** — removes the demo and its owned synthetic warehouse and leaves every
+  (fresh chapter progress, welcome panel back). Reset and Delete stay off in the
+  **Manage demo** menu while it checks.
+- **Delete** — chosen from the banner's **Manage demo** menu; removes the demo and its owned synthetic warehouse and leaves every
   real workspace source untouched. The creator or an owner can delete it. The
   tour position, chapter progress and welcome/hint choices your browser kept
   for it are cleared too — and the workspace page clears them for any demo that

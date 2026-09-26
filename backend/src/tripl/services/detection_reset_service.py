@@ -5,7 +5,10 @@ Two categories are cleared independently:
 - **Anomalies** — ``metric_anomalies`` + ``metric_breakdown_anomalies``. Catalog
   monitoring signals (catalog/anomalies inbox) are *derived* from
   ``metric_anomalies`` rows, so deleting the anomalies clears the signals too;
-  there is no separate signal table to touch.
+  there is no separate signal table to touch. The per-bucket detector bands in
+  ``metric_baselines`` go with them over the same period: they are the other
+  half of what the detector stored, and a reset that left them would keep
+  drawing the old band over the rescored series.
 - **Drifts** — ``schema_drifts`` + ``distribution_drifts``.
 
 Both operations are destructive and irreversible unless called with
@@ -37,6 +40,7 @@ from tripl.core.analyzers.anomaly_detector import SCOPE_METRIC
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_baseline import MetricBaseline
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.scan_config import ScanConfig
@@ -90,7 +94,7 @@ async def reset_project_anomalies(
     after: datetime | None,
     dry_run: bool = False,
 ) -> dict[str, int]:
-    """Delete every metric + breakdown anomaly in *project_id* within the period.
+    """Delete every metric + breakdown anomaly and baseline in *project_id* within the period.
 
     Returns per-table deleted counts. Commits; idempotent.
     """
@@ -138,11 +142,27 @@ async def reset_project_anomalies(
         dry_run=dry_run,
     )
 
+    # Baselines are written only for scan-scoped series (never ``metric``
+    # scope), and ``scan_config_id`` is NOT NULL, so scan-config scoping is
+    # complete here too.
+    baseline_count = await _count_or_delete(
+        session,
+        MetricBaseline,
+        [
+            MetricBaseline.scan_config_id.in_(
+                select(ScanConfig.id).where(ScanConfig.project_id == project_id)
+            ),
+            *_period_conditions(MetricBaseline.bucket, before=before, after=after),
+        ],
+        dry_run=dry_run,
+    )
+
     if not dry_run:
         await session.commit()
     return {
         "metric_anomalies": anomaly_count,
         "metric_breakdown_anomalies": breakdown_count,
+        "metric_baselines": baseline_count,
     }
 
 
