@@ -106,9 +106,9 @@ class Settings(BaseSettings):
     frontend_dist_dir: str = ""
 
     # Rate limiting for auth endpoints. Counts are per (ip, route).
-    # 0 disables rate limiting on that route. Backed by in-memory token bucket
-    # per worker; for multi-worker deployments, run behind a fronting LB or
-    # swap to a shared store.
+    # 0 disables rate limiting on that route. The token buckets live in Redis
+    # when redis_url is set (one quota across workers), in memory per worker
+    # otherwise.
     rate_limit_enabled: bool = True
     rate_limit_login_per_minute: int = 5
     rate_limit_register_per_hour: int = 3

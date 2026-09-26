@@ -4,14 +4,17 @@ Scope: protect login, registration, status, invitations, and password-reset
 routes from abuse by a single source IP. Each limiter is keyed on the client
 IP plus its limiter name; routes using the same limiter share a quota.
 
-This implementation is per-worker. For multi-worker deployments behind a
-reverse proxy, terminate rate limiting at the proxy (or replace this with a
-Redis-backed bucket) — the limits here are still useful as a defence in depth
-but won't cap aggregate concurrent requests across workers.
+When ``REDIS_URL`` is set the buckets live in Redis, so every worker (and
+every replica pointed at the same Redis) draws on one quota per client. Without
+Redis — or while Redis is unreachable — each worker falls back to its own
+in-memory bucket, which multiplies the effective limit by the worker count;
+the limits are then defence in depth rather than an aggregate cap.
 """
 
 from __future__ import annotations
 
+import logging
+import math
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -19,7 +22,37 @@ from dataclasses import dataclass
 
 from fastapi import Request
 
+from tripl import cache
 from tripl.config import settings
+
+logger = logging.getLogger(__name__)
+
+# One atomic refill-and-take on a Redis hash, timed by the Redis clock so every
+# worker agrees on "now". Returns the wait in seconds as a string (0 = taken);
+# a string because Redis truncates a Lua number reply to an integer.
+_TAKE_TOKEN_LUA = """
+local t = redis.call('TIME')
+local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
+local capacity = tonumber(ARGV[1])
+local rate = tonumber(ARGV[2])
+local state = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(state[1])
+local ts = tonumber(state[2])
+if tokens == nil or ts == nil then
+  tokens = capacity
+  ts = now
+end
+tokens = math.min(capacity, tokens + math.max(0, now - ts) * rate)
+local wait = 0
+if tokens < 1 then
+  wait = (1 - tokens) / rate
+else
+  tokens = tokens - 1
+end
+redis.call('HSET', KEYS[1], 'tokens', tostring(tokens), 'ts', tostring(now))
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+return tostring(wait)
+"""
 
 
 class RateLimitExceeded(Exception):
@@ -89,6 +122,38 @@ class TokenBucketLimiter:
     def _evict_oldest_locked(self) -> None:
         oldest_key = min(self._buckets, key=lambda k: self._buckets[k].updated_at)
         del self._buckets[oldest_key]
+
+    async def acquire_shared(self, key: str) -> None:
+        """Consume one token for ``key`` from the Redis bucket all workers share.
+
+        Falls back to this worker's in-memory bucket when Redis is not configured
+        or the call fails: an outage must degrade the limit, not the login page.
+        """
+        if not self.enabled:
+            return
+        client = cache.get_async_client()
+        if client is None:
+            self.acquire(key)
+            return
+        # A full bucket refills in ``per_seconds``; past that the stored state
+        # is indistinguishable from a fresh one, so it can expire.
+        ttl = math.ceil(self.per_seconds) + 1
+        try:
+            reply = await client.eval(
+                _TAKE_TOKEN_LUA,
+                1,
+                f"tripl:ratelimit:{key}",
+                str(self.capacity),
+                repr(self._rate),
+                str(ttl),
+            )
+            wait = float(reply)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("redis rate limit failed, using the in-memory bucket: %s", exc)
+            self.acquire(key)
+            return
+        if wait > 0:
+            raise RateLimitExceeded(retry_after_seconds=wait)
 
     def reset(self) -> None:
         """Drop all bucket state. Intended for tests."""
@@ -162,7 +227,7 @@ def enforce(limiter: TokenBucketLimiter) -> Callable[[Request], Awaitable[None]]
             return
         key = _client_key(request, limiter.name)
         try:
-            limiter.acquire(key)
+            await limiter.acquire_shared(key)
         except RateLimitExceeded as exc:
             from fastapi import HTTPException
 

@@ -166,13 +166,13 @@ the backend, so these stay at their defaults.
 | `RATE_LIMIT_TRUST_FORWARDED_FOR` | `false` | No | Derive client IP from `X-Real-IP` / leftmost `X-Forwarded-For` instead of the socket peer. |
 
 :::danger Only trust forwarded headers behind a trusted proxy
-The limiter uses an in-memory token bucket **per worker**. Leave
+With `REDIS_URL` set the buckets live in Redis and every worker shares one
+quota per client; without Redis each worker keeps its own. Leave
 `RATE_LIMIT_TRUST_FORWARDED_FOR=false` (the default) whenever the API is the
 edge — including the consolidated single container. Enable it only when a
 trusted proxy/LB overwrites `X-Real-IP` on every request; a raw, attacker-
 controlled `X-Forwarded-For` on a directly exposed API lets a caller rotate it
-per request and bypass the limit. For multi-worker deployments, front the API
-with a shared limiter or LB.
+per request and bypass the limit.
 :::
 
 ---
