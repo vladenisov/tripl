@@ -19081,12 +19081,17 @@
           "metric_breakdown_anomalies": {
             "type": "integer",
             "title": "Metric Breakdown Anomalies"
+          },
+          "metric_baselines": {
+            "type": "integer",
+            "title": "Metric Baselines"
           }
         },
         "type": "object",
         "required": [
           "metric_anomalies",
-          "metric_breakdown_anomalies"
+          "metric_breakdown_anomalies",
+          "metric_baselines"
         ],
         "title": "AnomalyResetCounts"
       },
@@ -23386,6 +23391,28 @@
               }
             ],
             "title": "Z Score"
+          },
+          "baseline_expected": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Expected"
+          },
+          "baseline_stddev": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Stddev"
           }
         },
         "type": "object",

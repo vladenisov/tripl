@@ -14,6 +14,7 @@ export interface DetectionResetPeriod {
 export interface AnomalyResetCounts {
   metric_anomalies: number
   metric_breakdown_anomalies: number
+  metric_baselines: number
 }
 
 /** Outcome of asking an in-flight demo provision to abandon itself. Derived

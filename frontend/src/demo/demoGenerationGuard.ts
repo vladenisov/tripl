@@ -37,7 +37,7 @@ export function demoGenerationWarning(owned: number): DemoGenerationWarning | nu
       title: 'Demo limit reached',
       message:
         `You already have ${owned} demo workspaces, which is the limit. ` +
-        'Reset one from its demo banner to get a fresh copy, or delete one first.',
+        "Reset one from its demo banner's Manage demo menu to get a fresh copy, or delete one first.",
       confirmLabel: 'OK',
       canProceed: false,
     }
@@ -46,7 +46,7 @@ export function demoGenerationWarning(owned: number): DemoGenerationWarning | nu
   return {
     title: 'Generate another demo workspace?',
     message:
-      `You already have ${owned} ${plural}. Resetting an existing demo from its banner ` +
+      `You already have ${owned} ${plural}. Resetting an existing demo from its banner's Manage demo menu ` +
       'refreshes it in place; generating another adds a separate synthetic project that ' +
       `also counts towards this workspace's totals. You can have ${MAX_DEMOS_PER_CREATOR} at most.`,
     confirmLabel: 'Generate another',
@@ -62,5 +62,5 @@ export function demoGenerationWarning(owned: number): DemoGenerationWarning | nu
  */
 export function demoGenerationBlockedReason(owned: number): string | null {
   if (owned < MAX_DEMOS_PER_CREATOR) return null
-  return `${owned} of ${MAX_DEMOS_PER_CREATOR} demos — reset or delete one from its banner to make another.`
+  return `${owned} of ${MAX_DEMOS_PER_CREATOR} demos — reset or delete one from its banner's Manage demo menu to make another.`
 }

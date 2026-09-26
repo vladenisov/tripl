@@ -49,6 +49,7 @@ from tripl.models.domain_enums import (
 )
 from tripl.models.implementation_ticket import ImplementationTicket
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_baseline import MetricBaseline
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.release_regression import ReleaseRegression
 from tripl.services._alerting_destinations import clear_rule_states
@@ -62,6 +63,7 @@ DELETE_PATH_COLUMNS: frozenset[tuple[str, str]] = frozenset(
     {
         ("metric_anomalies", "event_id"),
         ("metric_anomalies", "scope_ref"),
+        ("metric_baselines", "scope_ref"),
         ("metric_breakdown_anomalies", "event_id"),
         ("metric_breakdown_anomalies", "scope_ref"),
         ("release_regressions", "event_id"),
@@ -124,6 +126,10 @@ async def _delete_orphan_detections(
     matcher is a bare ``all(filter_matches_anomaly(...))`` — so a NULL
     ``event_id`` satisfies every event filter, including one written to exclude
     exactly that event. Self-healing is not the same as harmless.
+
+    ``metric_baselines`` has no ``event_id`` column, so ``scope_ref`` is its only
+    key. An orphan there alerts nobody, but it is a band for a series that no
+    longer exists and would be kept forever — nothing else ever deletes it.
     """
     scope = MetricScopeType.event.value
     await session.execute(
@@ -145,6 +151,14 @@ async def _delete_orphan_detections(
                 MetricBreakdownAnomaly.event_id.in_(dead_ids),
                 MetricBreakdownAnomaly.scope_ref.in_(dead_refs),
             ),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    await session.execute(
+        delete(MetricBaseline)
+        .where(
+            MetricBaseline.scope_type == scope,
+            MetricBaseline.scope_ref.in_(dead_refs),
         )
         .execution_options(synchronize_session=False)
     )

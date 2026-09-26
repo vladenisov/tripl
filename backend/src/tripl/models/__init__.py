@@ -33,6 +33,7 @@ from tripl.models.implementation_ticket import ImplementationTicket
 from tripl.models.invitation import Invitation
 from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_baseline import MetricBaseline
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
@@ -99,6 +100,7 @@ __all__ = [
     "ImplementationTicket",
     "Invitation",
     "MetricAnomaly",
+    "MetricBaseline",
     "MetricBreakdownAnomaly",
     "MetricDefinition",
     "MetricValue",

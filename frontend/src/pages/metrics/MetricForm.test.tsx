@@ -239,6 +239,25 @@ async function pickOption(selectId: string, value: string) {
   fireEvent.change(document.getElementById(selectId)!, { target: { value } })
 }
 
+/** The option list an event combobox (EventRefPicker) controls, once it is open. */
+async function eventListbox(input: HTMLElement) {
+  return waitFor(() => {
+    const listbox = document.getElementById(input.getAttribute('aria-controls') ?? '')
+    expect(listbox).not.toBeNull()
+    return listbox!
+  })
+}
+
+/** Open an event combobox, wait until it offers `name`, then click that row. */
+async function pickEvent(inputId: string, name: string | RegExp) {
+  const input = document.getElementById(inputId)!
+  act(() => input.focus())
+  // Focus opens it the first time; after an earlier pick focus stays put, and a click reopens it.
+  fireEvent.click(input)
+  const listbox = await eventListbox(input)
+  fireEvent.click(await within(listbox).findByRole('option', { name }))
+}
+
 async function openAddFilterMenu() {
   fireEvent.keyDown(screen.getByRole('button', { name: 'Add filter' }), { key: 'Enter' })
   return screen.findByRole('menu')
@@ -612,7 +631,7 @@ describe('MetricForm validation', () => {
       target: { value: 'checkout_ratio' },
     })
     fireEvent.change(document.getElementById('metric-composition')!, { target: { value: 'ratio' } })
-    await pickOption('metric-numerator', 'ev-2')
+    await pickEvent('metric-numerator', 'checkout:done')
 
     submit()
 
@@ -622,7 +641,7 @@ describe('MetricForm validation', () => {
     expect(metricsCatalogApi.create).not.toHaveBeenCalled()
 
     // Provide the denominator and resubmit.
-    await pickOption('metric-denominator', 'ev-1')
+    await pickEvent('metric-denominator', 'checkout:start')
     submit()
 
     await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
@@ -1511,21 +1530,25 @@ describe('MetricForm event picker (MET-2, MET-14)', () => {
     renderForm({ ...EVENT_METRIC, numerator_event_id: 'ev-240' } as MetricDefinitionDetailResponse)
 
     // The stored event is resolved by id and selected, not painted as unset.
-    const select = document.getElementById('metric-numerator') as HTMLSelectElement
-    await waitFor(() =>
-      expect(select.selectedOptions[0]?.textContent).toBe('event_240'),
-    )
+    const input = document.getElementById('metric-numerator') as HTMLInputElement
+    await waitFor(() => expect(input.value).toBe('event_240'))
     expect(eventsApi.get).toHaveBeenCalledWith('demo', 'ev-240')
-    expect(screen.getByText(/150 more events not listed/)).toBeInTheDocument()
 
-    fireEvent.change(screen.getByLabelText('Search events'), { target: { value: 'event_24' } })
+    // The capped roster says so as the last row of the open list.
+    act(() => input.focus())
+    const listbox = await eventListbox(input)
+    expect(
+      await within(listbox).findByRole('option', { name: '150 more — keep typing' }),
+    ).toHaveAttribute('aria-disabled', 'true')
+
+    fireEvent.change(input, { target: { value: 'event_24' } })
     await waitFor(() =>
       expect(eventsApi.list).toHaveBeenCalledWith(
         'demo',
         expect.objectContaining({ search: 'event_24', limit: 100 }),
       ),
     )
-    await pickOption('metric-numerator', 'ev-245')
+    await pickEvent('metric-numerator', 'event_245')
     submit()
     fireEvent.click(await screen.findByRole('button', { name: 'Save and delete history' }))
     await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
@@ -1538,11 +1561,13 @@ describe('MetricForm event picker (MET-2, MET-14)', () => {
   it('shows an event-type reference and lets it be changed to an event', async () => {
     renderForm({ ...EVENT_METRIC, numerator_event_type_id: 'event-type-1' } as MetricDefinitionDetailResponse)
 
-    const select = document.getElementById('metric-numerator') as HTMLSelectElement
-    await waitFor(() => expect(select.selectedOptions[0]?.textContent).toBe('Every Signup event'))
+    const input = document.getElementById('metric-numerator') as HTMLInputElement
+    await waitFor(() => expect(input.value).toBe('Every Signup event'))
 
-    await pickOption('metric-numerator', 'ev-1')
-    await pickOption('metric-numerator', '')
+    await pickEvent('metric-numerator', 'checkout:start')
+    expect(input.value).toBe('checkout:start')
+    fireEvent.click(screen.getByRole('button', { name: 'Clear events' }))
+    expect(input.value).toBe('')
     submit()
     // Clearing the pick is now possible, so validation catches it.
     expect((await screen.findAllByText('An event is required.')).length).toBeGreaterThan(0)
@@ -1727,9 +1752,9 @@ describe('MetricForm validation accessibility (MET-15, MET-18)', () => {
     fireEvent.change(document.getElementById('metric-composition')!, { target: { value: 'ratio' } })
     submit()
     await screen.findAllByText('A denominator event is required for a ratio metric.')
-    await waitFor(() =>
-      expect(document.querySelector('#metric-numerator option[value="ev-1"]')).not.toBeNull(),
-    )
+    // Wait for both pickers' rosters, so the axe pass sees them settled.
+    await waitFor(() => expect(eventsApi.list).toHaveBeenCalled())
+    await act(async () => {})
     await expectNoAxeViolations(document.body)
   })
 
@@ -1898,7 +1923,7 @@ describe('MetricEditPage (MET-28, MET-29)', () => {
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
       target: { value: 'Checkouts' },
     })
-    await pickOption('metric-numerator', 'ev-1')
+    await pickEvent('metric-numerator', 'checkout:start')
     submit()
 
     expect(await screen.findByText('drilldown')).toBeInTheDocument()
@@ -1912,7 +1937,7 @@ describe('MetricEditPage (MET-28, MET-29)', () => {
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
       target: { value: 'Checkouts' },
     })
-    await pickOption('metric-numerator', 'ev-1')
+    await pickEvent('metric-numerator', 'checkout:start')
     submit()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Go back' }))
@@ -1958,7 +1983,7 @@ describe('MetricForm owner (MT-25)', () => {
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
       target: { value: 'Checkouts' },
     })
-    await pickOption('metric-numerator', 'ev-1')
+    await pickEvent('metric-numerator', 'checkout:start')
     await pickOption('metric-owner', 'user-1')
     submit()
 
@@ -1987,7 +2012,7 @@ describe('MetricForm create status (MT-1)', () => {
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
       target: { value: 'Checkouts' },
     })
-    await pickOption('metric-numerator', 'ev-1')
+    await pickEvent('metric-numerator', 'checkout:start')
   }
 
   it('creates an active metric from the primary button, with no Status select', async () => {
@@ -2220,7 +2245,7 @@ describe('MetricForm follow-ups (MT-2, MT-3, MT-9)', () => {
     expect(preview).toBeDisabled()
     expect(preview).toHaveAccessibleDescription('Pick an event to preview.')
 
-    await pickOption('metric-numerator', 'ev-1')
+    await pickEvent('metric-numerator', 'checkout:start')
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
 
     await waitFor(() =>
@@ -2241,7 +2266,7 @@ describe('MetricForm follow-ups (MT-2, MT-3, MT-9)', () => {
       error: 'No counts have been collected for this event yet.',
     })
     renderForm(null, DATA_SOURCES, { pickSql: false })
-    await pickOption('metric-numerator', 'ev-1')
+    await pickEvent('metric-numerator', 'checkout:start')
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
 
     expect(await screen.findByText(/No counts have been collected/)).toBeInTheDocument()

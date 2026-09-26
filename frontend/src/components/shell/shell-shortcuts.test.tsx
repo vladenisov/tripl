@@ -1,20 +1,42 @@
 import type { ReactNode } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAIN_CONTENT_ID } from '@/components/landmarks'
 import ShortcutsDialog from './shortcuts-dialog'
-import { findCreateAction, useShellShortcuts } from './shell-shortcuts'
+import { GO_TO_SHORTCUTS, GO_TO_TIMEOUT_MS, findCreateAction, useShellShortcuts } from './shell-shortcuts'
 
 function Harness({ onOpenHelp, children }: { onOpenHelp: () => void; children: ReactNode }) {
   useShellShortcuts({ onOpenHelp })
-  return <main id={MAIN_CONTENT_ID}>{children}</main>
+  const location = useLocation()
+  return (
+    <main id={MAIN_CONTENT_ID}>
+      <span data-testid="path">{location.pathname}</span>
+      {children}
+    </main>
+  )
 }
 
-function renderPage(children: ReactNode) {
+/** Mounted the way Layout is: a route element that sees `:slug`. */
+function renderPage(children: ReactNode, initialPath = '/p/shop/overview') {
   const onOpenHelp = vi.fn()
-  render(<Harness onOpenHelp={onOpenHelp}>{children}</Harness>)
+  const page = <Harness onOpenHelp={onOpenHelp}>{children}</Harness>
+  render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <Routes>
+        <Route path="/p/:slug/*" element={page} />
+        <Route path="*" element={page} />
+      </Routes>
+    </MemoryRouter>,
+  )
   return { onOpenHelp }
 }
+
+const path = () => screen.getByTestId('path').textContent
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('shell shortcuts (JR-21)', () => {
   it('presses the page\'s "New …" button on c', () => {
@@ -79,6 +101,75 @@ describe('shell shortcuts (JR-21)', () => {
   })
 })
 
+describe('go-to sequences (JR-21)', () => {
+  it('goes to a project page on g then its letter', () => {
+    renderPage(<p>Page</p>)
+    fireEvent.keyDown(document.body, { key: 'g' })
+    fireEvent.keyDown(document.body, { key: 'e' })
+    expect(path()).toBe('/p/shop/events')
+    fireEvent.keyDown(document.body, { key: 'g' })
+    fireEvent.keyDown(document.body, { key: 'a' })
+    expect(path()).toBe('/p/shop/alerting')
+  })
+
+  it('ends the sequence on a c after g and reads the c as the create shortcut', () => {
+    const create = vi.fn()
+    renderPage(<button type="button" onClick={create}>New event</button>)
+    fireEvent.keyDown(document.body, { key: 'g' })
+    // Not a go-to letter: the sequence ends and the key is read on its own.
+    fireEvent.keyDown(document.body, { key: 'c' })
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(path()).toBe('/p/shop/overview')
+    // The sequence is over, so a lone e goes nowhere.
+    fireEvent.keyDown(document.body, { key: 'e' })
+    expect(path()).toBe('/p/shop/overview')
+  })
+
+  it('times out when the second key comes late', () => {
+    vi.useFakeTimers()
+    renderPage(<p>Page</p>)
+    fireEvent.keyDown(document.body, { key: 'g' })
+    vi.advanceTimersByTime(GO_TO_TIMEOUT_MS + 1)
+    fireEvent.keyDown(document.body, { key: 'e' })
+    expect(path()).toBe('/p/shop/overview')
+  })
+
+  it('ignores the sequence while typing or under a dialog or menu', () => {
+    renderPage(<input aria-label="Name" />)
+    const input = screen.getByRole('textbox', { name: 'Name' })
+    fireEvent.keyDown(input, { key: 'g' })
+    fireEvent.keyDown(input, { key: 'e' })
+    expect(path()).toBe('/p/shop/overview')
+
+    // g typed on the page, then a menu opens: the letter belongs to the menu.
+    fireEvent.keyDown(document.body, { key: 'g' })
+    const menu = document.createElement('div')
+    menu.setAttribute('role', 'menu')
+    document.body.appendChild(menu)
+    fireEvent.keyDown(document.body, { key: 'e' })
+    menu.remove()
+    expect(path()).toBe('/p/shop/overview')
+    // And the interrupted sequence does not linger past it.
+    fireEvent.keyDown(document.body, { key: 'e' })
+    expect(path()).toBe('/p/shop/overview')
+  })
+
+  it('offers nothing outside a project', () => {
+    renderPage(<p>Workspace</p>, '/workspace')
+    fireEvent.keyDown(document.body, { key: 'g' })
+    fireEvent.keyDown(document.body, { key: 'e' })
+    expect(path()).toBe('/workspace')
+  })
+
+  it('points every letter at a distinct page', () => {
+    const keys = GO_TO_SHORTCUTS.map((shortcut) => shortcut.key)
+    expect(new Set(keys).size).toBe(keys.length)
+    // Never a key that already means something on its own.
+    expect(keys).not.toContain('c')
+    expect(keys).not.toContain('g')
+  })
+})
+
 describe('ShortcutsDialog', () => {
   it('lists every key the app answers to', () => {
     render(<ShortcutsDialog open onOpenChange={() => {}} />)
@@ -91,5 +182,9 @@ describe('ShortcutsDialog', () => {
     ]) {
       expect(dialog).toHaveTextContent(text)
     }
+    for (const { label } of GO_TO_SHORTCUTS) {
+      expect(dialog).toHaveTextContent(label)
+    }
+    expect(dialog).toHaveTextContent(/Events\s*G\s*then\s*E/)
   })
 })

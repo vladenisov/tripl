@@ -29,6 +29,7 @@ from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.event_tag import EventTag
 from tripl.models.event_type import EventType
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_baseline import MetricBaseline
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.plan_branch import BranchKind, PlanBranch
 from tripl.models.project import Project
@@ -488,6 +489,42 @@ async def _get_anomaly_rows(
     return list(result.scalars().all())
 
 
+# One scored bucket's band: (expected value, floored effective stddev).
+_BucketBaseline = tuple[float, float]
+
+
+async def _get_baseline_rows(
+    session: AsyncSession,
+    *,
+    scan_config_id: uuid.UUID,
+    scope: str,
+    scope_ref: str,
+    time_from: datetime | None,
+    time_to: datetime | None,
+) -> dict[datetime, _BucketBaseline]:
+    """The per-bucket baselines the detector stored for one scope (tripl-i9mt.25).
+
+    Keyed by bucket so ``_build_metric_points`` can attach one to every point.
+    Buckets scored before baselines were persisted simply have no entry.
+    """
+    query = select(
+        MetricBaseline.bucket,
+        MetricBaseline.expected_count,
+        MetricBaseline.effective_stddev,
+    ).where(
+        MetricBaseline.scan_config_id == scan_config_id,
+        MetricBaseline.scope_type == scope,
+        MetricBaseline.scope_ref == scope_ref,
+    )
+    if time_from is not None:
+        query = query.where(MetricBaseline.bucket >= time_from)
+    if time_to is not None:
+        query = query.where(MetricBaseline.bucket < time_to)
+
+    result = await session.execute(query)
+    return {bucket: (expected, stddev) for bucket, expected, stddev in result.all()}
+
+
 async def _get_scope_latest_metric_bucket(
     session: AsyncSession,
     *,
@@ -664,14 +701,26 @@ def _served_detector_kind(anomaly: MetricAnomaly | MetricBreakdownAnomaly) -> st
     return getattr(anomaly, "detector_kind", None)
 
 
+def _baseline_fields(baseline: _BucketBaseline | None) -> dict[str, float | None]:
+    """``EventMetricPoint`` baseline fields for one bucket, NULL when unscored."""
+    if baseline is None:
+        return {"baseline_expected": None, "baseline_stddev": None}
+    expected, stddev = baseline
+    return {"baseline_expected": expected, "baseline_stddev": stddev}
+
+
 def _build_metric_points(
     *,
     interval: str | None,
     metric_rows: list[tuple[datetime, int]],
     anomalies: list[MetricAnomaly] | list[MetricBreakdownAnomaly],
+    baselines: dict[datetime, _BucketBaseline] | None = None,
 ) -> list[EventMetricPoint]:
     counts_by_bucket = {bucket: count for bucket, count in metric_rows}
     anomalies_by_bucket = {anomaly.bucket: anomaly for anomaly in anomalies}
+    # Attached to the points the series already has; a baseline never adds a
+    # bucket of its own.
+    baselines_by_bucket = baselines or {}
 
     for anomaly in anomalies:
         # Event-scope actuals are whole counts stored in a float column; round
@@ -719,6 +768,7 @@ def _build_metric_points(
                     if point.bucket in anomalies_by_bucket
                     else None
                 ),
+                **_baseline_fields(baselines_by_bucket.get(point.bucket)),
             )
             for point in expanded
         ]
@@ -749,6 +799,7 @@ def _build_metric_points(
                 z_score=(
                     anomalies_by_bucket[bucket].z_score if bucket in anomalies_by_bucket else None
                 ),
+                **_baseline_fields(baselines_by_bucket.get(bucket)),
             )
             for bucket, count in sorted(counts_by_bucket.items())
         ]
@@ -946,6 +997,7 @@ async def _build_metrics_response(
     interval: str | None,
     metric_rows: list[tuple[datetime, int]],
     anomalies: list[MetricAnomaly],
+    baselines: dict[datetime, _BucketBaseline] | None = None,
     event_id: uuid.UUID | None = None,
     event_type_id: uuid.UUID | None = None,
     scan_config_name: str | None = None,
@@ -963,6 +1015,7 @@ async def _build_metrics_response(
         interval=interval,
         metric_rows=metric_rows,
         anomalies=anomalies,
+        baselines=baselines,
     )
     latest_signal = None
     latest_metric_bucket = data[-1].bucket if data else None
@@ -1062,6 +1115,14 @@ async def get_event_metrics(
         time_from=effective_time_from,
         time_to=time_to,
     )
+    baselines = await _get_baseline_rows(
+        session,
+        scan_config_id=scan_config_id,
+        scope=SCOPE_EVENT,
+        scope_ref=str(event.id),
+        time_from=effective_time_from,
+        time_to=time_to,
+    )
     collection_timing = await _get_collection_timing(
         session, scan_config_id, interval=interval, scan_latest_bucket=scan_latest_bucket
     )
@@ -1072,6 +1133,7 @@ async def get_event_metrics(
         interval=interval,
         metric_rows=metric_rows,
         anomalies=anomalies,
+        baselines=baselines,
         event_id=event.id,
         sigma_threshold=sigma_threshold,
         recent_window=recent_window,
@@ -2494,6 +2556,14 @@ async def get_event_type_metrics(
         time_from=effective_time_from,
         time_to=time_to,
     )
+    baselines = await _get_baseline_rows(
+        session,
+        scan_config_id=scan_config_id,
+        scope=SCOPE_EVENT_TYPE,
+        scope_ref=str(event_type.id),
+        time_from=effective_time_from,
+        time_to=time_to,
+    )
     collection_timing = await _get_collection_timing(
         session, scan_config_id, interval=interval, scan_latest_bucket=scan_latest_bucket
     )
@@ -2504,6 +2574,7 @@ async def get_event_type_metrics(
         interval=interval,
         metric_rows=metric_rows,
         anomalies=anomalies,
+        baselines=baselines,
         event_type_id=event_type.id,
         sigma_threshold=sigma_threshold,
         recent_window=recent_window,
@@ -2556,6 +2627,14 @@ async def get_project_total_metrics(
         time_from=effective_time_from,
         time_to=time_to,
     )
+    baselines = await _get_baseline_rows(
+        session,
+        scan_config_id=resolved_scan_config_id,
+        scope=SCOPE_PROJECT_TOTAL,
+        scope_ref=str(resolved_scan_config_id),
+        time_from=effective_time_from,
+        time_to=time_to,
+    )
     collection_timing = await _get_collection_timing(
         session,
         resolved_scan_config_id,
@@ -2570,6 +2649,7 @@ async def get_project_total_metrics(
         interval=config.interval,
         metric_rows=metric_rows,
         anomalies=anomalies,
+        baselines=baselines,
         sigma_threshold=await _apply_scope_sigma_override(
             session,
             project_id=project.id,

@@ -20,6 +20,7 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_METRIC,
     SCOPE_PROJECT_TOTAL,
     AnomalyDetectionSettings,
+    BaselinePoint,
     DetectedAnomaly,
     SeriesPoint,
     SuppressedRange,
@@ -38,6 +39,7 @@ from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_baseline import MetricBaseline
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.metric_definition import MetricDefinition
 from tripl.models.metric_value import MetricValue
@@ -297,7 +299,22 @@ def _replace_scope_anomalies(
     event_type_id: uuid.UUID | None,
     anomalies: list[DetectedAnomaly],
     suppressed_ranges: Sequence[SuppressedRange] = (),
+    baselines: Sequence[BaselinePoint] | None = None,
 ) -> int:
+    # The chart band of every scored bucket (tripl-i9mt.25). ``None`` leaves the
+    # stored baselines alone; a sequence, even an empty one, replaces the window.
+    # Scan scopes only — see ``MetricBaseline``.
+    if baselines is not None and scan_config_id is not None:
+        _replace_scope_baselines(
+            session,
+            scan_config_id=scan_config_id,
+            scope_type=scope_type,
+            scope_ref=scope_ref,
+            evaluation_start=evaluation_start,
+            evaluation_end=evaluation_end,
+            baselines=baselines,
+        )
+
     # ``metric``-scope rows carry a NULL scan_config_id and are keyed purely by
     # (scope_type, scope_ref); event scopes additionally partition by config.
     delete_filters = [
@@ -410,6 +427,64 @@ def _replace_scope_anomalies(
             session.execute(pg_stmt)
 
     return len(anomalies)
+
+
+def _replace_scope_baselines(
+    session: Session,
+    *,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    scope_ref: str,
+    evaluation_start: datetime,
+    evaluation_end: datetime,
+    baselines: Sequence[BaselinePoint],
+) -> None:
+    """Rewrite one scope's per-bucket baselines over the evaluation window.
+
+    Unlike the anomaly rows there is no suppressed range to spare: the detector
+    re-scores every bucket of the window it can, so what it did not return now
+    it has no band for. Upserted for the same reason the anomaly rows are — a
+    manual replay can overlap a scheduled collection over the same window.
+    """
+    session.execute(
+        delete(MetricBaseline).where(
+            MetricBaseline.scan_config_id == scan_config_id,
+            MetricBaseline.scope_type == scope_type,
+            MetricBaseline.scope_ref == scope_ref,
+            MetricBaseline.bucket >= evaluation_start,
+            MetricBaseline.bucket < evaluation_end,
+        )
+    )
+    rows = [
+        {
+            "id": uuid.uuid4(),
+            "scan_config_id": scan_config_id,
+            "scope_type": scope_type,
+            "scope_ref": scope_ref,
+            "bucket": baseline.bucket,
+            "expected_count": baseline.expected_count,
+            "effective_stddev": baseline.effective_stddev,
+        }
+        for baseline in baselines
+        if evaluation_start <= baseline.bucket < evaluation_end
+    ]
+    if not rows:
+        return
+    updatable = ["expected_count", "effective_stddev"]
+    if session.bind is not None and session.bind.dialect.name == "sqlite":
+        sqlite_stmt = sqlite_insert(MetricBaseline).values(rows)
+        sqlite_stmt = sqlite_stmt.on_conflict_do_update(
+            index_elements=["scan_config_id", "scope_type", "scope_ref", "bucket"],
+            set_={col: getattr(sqlite_stmt.excluded, col) for col in updatable},
+        )
+        session.execute(sqlite_stmt)
+    else:
+        pg_stmt = pg_insert(MetricBaseline).values(rows)
+        pg_stmt = pg_stmt.on_conflict_do_update(
+            constraint="uq_metric_baseline_scope_bucket",
+            set_={col: getattr(pg_stmt.excluded, col) for col in updatable},
+        )
+        session.execute(pg_stmt)
 
 
 def _load_breakdown_scope_points(
@@ -1353,7 +1428,7 @@ def _recalculate_project_metric_anomalies(
 
 def _age_out_config_anomalies(
     session: Session,
-    model: type[MetricAnomaly] | type[MetricBreakdownAnomaly],
+    model: type[MetricAnomaly] | type[MetricBreakdownAnomaly] | type[MetricBaseline],
     scan_config_id: uuid.UUID,
 ) -> None:
     """Trim config-scoped anomaly markers older than the retention horizon.
@@ -1459,6 +1534,7 @@ def _recalculate_metric_anomalies(
     project_settings = _get_project_anomaly_settings(session, config.project_id)
     if project_settings is None or not project_settings.anomaly_detection_enabled:
         session.execute(delete(MetricAnomaly).where(MetricAnomaly.scan_config_id == config.id))
+        session.execute(delete(MetricBaseline).where(MetricBaseline.scan_config_id == config.id))
         _purge_project_metric_anomalies(session, config)
         session.flush()
         return 0
@@ -1467,6 +1543,7 @@ def _recalculate_metric_anomalies(
         return 0
 
     _age_out_config_anomalies(session, MetricAnomaly, config.id)
+    _age_out_config_anomalies(session, MetricBaseline, config.id)
 
     interval_spec = get_interval(config.interval)
     settings = _build_anomaly_settings(project_settings)
@@ -1516,6 +1593,7 @@ def _recalculate_metric_anomalies(
             event_type_id=None,
             anomalies=total_result.anomalies,
             suppressed_ranges=total_result.suppressed_ranges,
+            baselines=total_result.baselines,
         )
     else:
         session.execute(
@@ -1524,6 +1602,14 @@ def _recalculate_metric_anomalies(
                 MetricAnomaly.scope_type == SCOPE_PROJECT_TOTAL,
                 MetricAnomaly.bucket >= evaluation_start,
                 MetricAnomaly.bucket < evaluation_end,
+            )
+        )
+        session.execute(
+            delete(MetricBaseline).where(
+                MetricBaseline.scan_config_id == config.id,
+                MetricBaseline.scope_type == SCOPE_PROJECT_TOTAL,
+                MetricBaseline.bucket >= evaluation_start,
+                MetricBaseline.bucket < evaluation_end,
             )
         )
 
@@ -1561,6 +1647,7 @@ def _recalculate_metric_anomalies(
                     event_id=None,
                     event_type_id=event_type_id,
                     anomalies=[],
+                    baselines=(),
                 )
                 continue
             points = _load_scope_points(
@@ -1591,6 +1678,7 @@ def _recalculate_metric_anomalies(
                 event_type_id=event_type_id,
                 anomalies=type_result.anomalies,
                 suppressed_ranges=type_result.suppressed_ranges,
+                baselines=type_result.baselines,
             )
     else:
         session.execute(
@@ -1599,6 +1687,14 @@ def _recalculate_metric_anomalies(
                 MetricAnomaly.scope_type == SCOPE_EVENT_TYPE,
                 MetricAnomaly.bucket >= evaluation_start,
                 MetricAnomaly.bucket < evaluation_end,
+            )
+        )
+        session.execute(
+            delete(MetricBaseline).where(
+                MetricBaseline.scan_config_id == config.id,
+                MetricBaseline.scope_type == SCOPE_EVENT_TYPE,
+                MetricBaseline.bucket >= evaluation_start,
+                MetricBaseline.bucket < evaluation_end,
             )
         )
 
@@ -1634,6 +1730,7 @@ def _recalculate_metric_anomalies(
                     event_id=event_id,
                     event_type_id=None,
                     anomalies=[],
+                    baselines=(),
                 )
                 continue
             points = _load_scope_points(
@@ -1664,6 +1761,7 @@ def _recalculate_metric_anomalies(
                 event_type_id=None,
                 anomalies=event_result.anomalies,
                 suppressed_ranges=event_result.suppressed_ranges,
+                baselines=event_result.baselines,
             )
     else:
         session.execute(
@@ -1672,6 +1770,14 @@ def _recalculate_metric_anomalies(
                 MetricAnomaly.scope_type == SCOPE_EVENT,
                 MetricAnomaly.bucket >= evaluation_start,
                 MetricAnomaly.bucket < evaluation_end,
+            )
+        )
+        session.execute(
+            delete(MetricBaseline).where(
+                MetricBaseline.scan_config_id == config.id,
+                MetricBaseline.scope_type == SCOPE_EVENT,
+                MetricBaseline.bucket >= evaluation_start,
+                MetricBaseline.bucket < evaluation_end,
             )
         )
 

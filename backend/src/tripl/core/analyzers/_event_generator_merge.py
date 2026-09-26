@@ -33,6 +33,7 @@ from tripl.models.event_photo import EventPhoto
 from tripl.models.event_photo_comment import EventPhotoComment
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.metric_anomaly import MetricAnomaly
+from tripl.models.metric_baseline import MetricBaseline
 from tripl.models.metric_breakdown_anomaly import MetricBreakdownAnomaly
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
@@ -971,5 +972,14 @@ def _delete_event_anomalies(session: Session, *, event_ids: list[uuid.UUID]) -> 
         delete(MetricBreakdownAnomaly).where(
             MetricBreakdownAnomaly.scope_type == "event",
             MetricBreakdownAnomaly.event_id.in_(event_ids),
+        )
+    )
+    # The bands were scored against the pre-merge series of each event, and the
+    # table has no ``event_id`` — ``scope_ref`` is the only key. The next metrics
+    # run rescores the merged series and writes fresh ones.
+    session.execute(
+        delete(MetricBaseline).where(
+            MetricBaseline.scope_type == "event",
+            MetricBaseline.scope_ref.in_(scope_refs),
         )
     )

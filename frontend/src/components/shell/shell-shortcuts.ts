@@ -1,11 +1,32 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import { MAIN_CONTENT_ID } from '@/components/landmarks'
 
 /**
- * Single-key shortcuts for the shell (JR-21): `?` opens the shortcut sheet and
- * `c` presses the current page's create button. Ctrl/⌘ K (the palette) and
- * `/` (a list's search box) live with their own components.
+ * Keyboard shortcuts for the shell (JR-21): `?` opens the shortcut sheet, `c`
+ * presses the current page's create button, and `g` then a letter goes to a
+ * project page. Ctrl/⌘ K (the palette) and `/` (a list's search box) live with
+ * their own components.
  */
+
+/** How long after `g` the second key still counts as part of the sequence. */
+export const GO_TO_TIMEOUT_MS = 1000
+
+/**
+ * `g` then a letter: the project pages a hand reaches for most, by the first
+ * letter of their sidebar name where it is free. Paths are relative to
+ * `/p/:slug`, and only offered inside a project.
+ */
+export const GO_TO_SHORTCUTS: readonly { key: string; path: string; label: string }[] = [
+  { key: 'o', path: 'overview', label: 'Overview' },
+  { key: 'e', path: 'events', label: 'Events' },
+  { key: 't', path: 'event-types', label: 'Event types' },
+  { key: 'm', path: 'metrics', label: 'Metrics' },
+  { key: 'n', path: 'anomalies', label: 'Anomalies' },
+  { key: 'a', path: 'alerting', label: 'Alerting' },
+  { key: 's', path: 'scans', label: 'Scans' },
+  { key: 'b', path: 'branches', label: 'Plan branches' },
+]
 
 /** Opt-in marker for a page's create control when its label is not "New …". */
 export const CREATE_ACTION_ATTR = 'data-create-action'
@@ -52,10 +73,35 @@ export function findCreateAction(root: ParentNode | null): HTMLElement | null {
 }
 
 export function useShellShortcuts({ onOpenHelp }: { onOpenHelp: () => void }): void {
+  const navigate = useNavigate()
+  const { slug } = useParams()
+  // When `g` was pressed, or null outside a sequence. A ref, not state: it
+  // only matters to the next keydown and must not re-render the shell.
+  const goPressedAtRef = useRef<number | null>(null)
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return
-      if (event.repeat || isTypingTarget(event.target) || layerOpen()) return
+      if (event.repeat || isTypingTarget(event.target) || layerOpen()) {
+        goPressedAtRef.current = null
+        return
+      }
+      // A sequence ends on the very next key, matched or not; a late second
+      // key is read on its own.
+      const goPressedAt = goPressedAtRef.current
+      goPressedAtRef.current = null
+      if (goPressedAt !== null && Date.now() - goPressedAt <= GO_TO_TIMEOUT_MS && slug) {
+        const target = GO_TO_SHORTCUTS.find((shortcut) => shortcut.key === event.key)
+        if (target) {
+          event.preventDefault()
+          void navigate(`/p/${slug}/${target.path}`)
+          return
+        }
+      }
+      if (event.key === 'g' && !event.shiftKey && slug) {
+        goPressedAtRef.current = Date.now()
+        return
+      }
       if (event.key === '?') {
         event.preventDefault()
         onOpenHelp()
@@ -70,5 +116,5 @@ export function useShellShortcuts({ onOpenHelp }: { onOpenHelp: () => void }): v
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [onOpenHelp])
+  }, [onOpenHelp, navigate, slug])
 }

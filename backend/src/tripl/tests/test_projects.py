@@ -1354,7 +1354,11 @@ async def test_reset_anomalies_clears_period_and_covers_metric_scope(client: Asy
         json={"before": _RESET_BEFORE},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"metric_anomalies": 2, "metric_breakdown_anomalies": 1}
+    assert resp.json() == {
+        "metric_anomalies": 2,
+        "metric_breakdown_anomalies": 1,
+        "metric_baselines": 0,
+    }
 
     async with TestSessionLocal() as session:
         remaining_anomalies = (await session.execute(select(MetricAnomaly))).scalars().all()
@@ -1375,7 +1379,11 @@ async def test_reset_anomalies_clears_period_and_covers_metric_scope(client: Asy
         json={"before": _RESET_BEFORE},
     )
     assert again.status_code == 200
-    assert again.json() == {"metric_anomalies": 0, "metric_breakdown_anomalies": 0}
+    assert again.json() == {
+        "metric_anomalies": 0,
+        "metric_breakdown_anomalies": 0,
+        "metric_baselines": 0,
+    }
 
 
 @pytest.mark.asyncio

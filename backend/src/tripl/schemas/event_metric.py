@@ -33,6 +33,19 @@ class EventMetricPoint(BaseModel):
     is_anomaly: bool = False
     anomaly_direction: AnomalyDirection | None = None
     z_score: float | None = None
+    # The per-bucket baseline the detector scored this bucket against, flagged
+    # or not (tripl-i9mt.25): the expected value and the floored effective
+    # stddev, so ``baseline_expected ± sigma_threshold * baseline_stddev`` is the
+    # band the chart draws on every scored bucket. NULL where the detector
+    # stored none — buckets scored before baselines were persisted, buckets it
+    # skipped (too little history, under the volume floor, still settling), and
+    # every route other than the event, event-type and project-total drilldowns.
+    # On a flagged bucket ``expected_count``/``stddev`` stay authoritative: a
+    # trend row's expectation is not the per-bucket one. Omitted from the JSON
+    # when NULL: most routes never carry one, and a sparkline or events-window
+    # payload has no use for two nulls on every point.
+    baseline_expected: float | None = Field(default=None, exclude_if=lambda value: value is None)
+    baseline_stddev: float | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class PlatformParityAnomaly(BaseModel):

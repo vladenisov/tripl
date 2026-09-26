@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /** The toaster, stubbed: a failed row write says why in one (ALR-6). */
@@ -12,6 +12,7 @@ vi.mock('sonner', () => ({
 
 import { alertingApi, MAX_ALERT_RULE_NAME_LENGTH } from '@/api/alerting'
 import { anomalySettingsApi } from '@/api/anomalySettings'
+import { metricsCatalogApi } from '@/api/metricsCatalog'
 import type { ProjectAnomalySettings } from '@/types'
 import { ApiError } from '@/api/client'
 import { INDEFINITE_MUTE, muteChoiceName } from '@/lib/mutePresets'
@@ -145,6 +146,12 @@ interface RenderOptions {
   entry?: string
 }
 
+/** The router's current query string, so a test can see params being stripped. */
+function LocationProbe() {
+  const location = useLocation()
+  return <div hidden data-testid="location-search">{location.search}</div>
+}
+
 function renderSection(options: RenderOptions = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -165,6 +172,7 @@ function renderSection(options: RenderOptions = {}) {
           onAutoOpenRuleConsumed={options.onAutoOpenRuleConsumed ?? (() => {})}
           onGoToDestinations={options.onGoToDestinations ?? (() => {})}
         />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   )
@@ -522,6 +530,41 @@ describe('MonitorsSection ?new=rule (AL-18, JR-16)', () => {
 
     await screen.findByRole('link', { name: 'Prod drops' })
     expect(screen.queryByText('New alert rule')).toBeNull()
+  })
+
+  it('scopes the new rule to the metric it came from, then drops both params', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    // The filter row names its metric from the catalog rather than printing the id.
+    vi.spyOn(metricsCatalogApi, 'get').mockResolvedValue({
+      id: 'met-1',
+      name: 'checkout_rate',
+      display_name: 'Checkout rate',
+    } as Awaited<ReturnType<typeof metricsCatalogApi.get>>)
+    renderSection({ entry: '/p/windy-ios/alerting?section=monitors&new=rule&metric=met-1' })
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('New alert rule')).toBeInTheDocument()
+    // Metrics on, the volume scopes off: the rule watches that one metric.
+    const scopeBox = (label: string) =>
+      within(within(dialog).getByText(label).closest('label')!).getByRole('checkbox')
+    expect(scopeBox('Metrics')).toBeChecked()
+    expect(scopeBox('Project total')).not.toBeChecked()
+    // One filter row: Metric · is one of · the metric from the URL.
+    expect(within(dialog).getByRole('combobox', { name: 'Filter field' })).toHaveTextContent('Metric')
+    expect(within(dialog).getByRole('combobox', { name: 'Filter operator' })).toHaveTextContent('is one of')
+    expect(await within(dialog).findByText('Checkout rate')).toBeInTheDocument()
+    expect(metricsCatalogApi.get).toHaveBeenCalledWith('windy-ios', 'met-1')
+
+    // Spent: Back or a refresh must not reopen the form, and nothing else in
+    // the query string is touched.
+    await waitFor(() => {
+      const search = new URLSearchParams(screen.getByTestId('location-search').textContent ?? '')
+      expect(search.has('new')).toBe(false)
+      expect(search.has('metric')).toBe(false)
+      expect(search.get('section')).toBe('monitors')
+    })
+    // Stripping the params does not close the form that they opened.
+    expect(within(screen.getByRole('dialog')).getByText('New alert rule')).toBeInTheDocument()
   })
 })
 

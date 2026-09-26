@@ -766,7 +766,7 @@ async def get_branch_conflicts(
 
 def validate_resolution(data: ResolutionCreate) -> None:
     """Refuse a resolution naming a field no conflict row can carry (422)."""
-    from tripl.services._plan_branch_three_way import CHANGE_KEYS, PRESENCE_FIELD
+    from tripl.services._plan_branch_three_way_model import CHANGE_KEYS, PRESENCE_FIELD
 
     allowed = {PRESENCE_FIELD, "name", *CHANGE_KEYS[data.entity_type]}
     if data.field_name not in allowed:

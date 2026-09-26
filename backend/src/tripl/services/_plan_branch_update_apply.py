@@ -29,7 +29,7 @@ from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.schemas.plan_branch import EntityChangeCount
-from tripl.services._plan_branch_three_way import ENTITY_TYPES, Op
+from tripl.services._plan_branch_three_way_model import ENTITY_TYPES, Op
 from tripl.services._plan_branch_update_contexts import copy_value_contexts
 from tripl.services.plan_branch_merge_service import rename_variables_with_parking
 from tripl.services.plan_branch_revert_service import (

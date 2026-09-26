@@ -3501,6 +3501,10 @@
             "title": "Metric Anomalies",
             "type": "integer"
           },
+          "metric_baselines": {
+            "title": "Metric Baselines",
+            "type": "integer"
+          },
           "metric_breakdown_anomalies": {
             "title": "Metric Breakdown Anomalies",
             "type": "integer"
@@ -3508,7 +3512,8 @@
         },
         "required": [
           "metric_anomalies",
-          "metric_breakdown_anomalies"
+          "metric_breakdown_anomalies",
+          "metric_baselines"
         ],
         "title": "AnomalyResetCounts",
         "type": "object"
@@ -7751,6 +7756,28 @@
                 "type": "null"
               }
             ]
+          },
+          "baseline_expected": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Expected"
+          },
+          "baseline_stddev": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Stddev"
           },
           "bucket": {
             "format": "date-time",

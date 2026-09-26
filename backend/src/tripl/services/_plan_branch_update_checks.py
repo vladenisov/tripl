@@ -23,7 +23,7 @@ from collections import Counter, defaultdict
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from typing import Any
 
-from tripl.services._plan_branch_three_way import (
+from tripl.services._plan_branch_three_way_model import (
     Op,
     Slot,
     conflict_label,
