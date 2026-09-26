@@ -32,6 +32,8 @@ vi.mock('@/api/planBranches', () => ({
     get: vi.fn(),
     diff: vi.fn(),
     getConflicts: vi.fn(),
+    getUpdatePreview: vi.fn(),
+    updateFromMain: vi.fn(),
     listComments: vi.fn(),
     create: vi.fn(),
     delete: vi.fn(),
@@ -445,8 +447,10 @@ describe('BranchesTab', () => {
     expect(await screen.findByText('+2')).toBeInTheDocument()
     expect(screen.getByText('~1')).toBeInTheDocument()
     expect(screen.getByText('−1')).toBeInTheDocument()
-    // A yes/no, said as what it means for the merge — not "↓ 1 behind" (PLAN-14).
-    expect(screen.getByText(/Main has moved on since this branch was created/)).toBeInTheDocument()
+    // A yes/no, not "↓ 1 behind" (PLAN-14). This conflicts answer carries no
+    // overlap count, so the note never calls the merge safe (PL-8).
+    expect(screen.getByText(/Main has newer changes since this branch was created/)).toBeInTheDocument()
+    expect(screen.queryByText(/safe to merge/)).not.toBeInTheDocument()
 
     expect(screen.getByText('checkout_address_autofilled')).toBeInTheDocument()
     expect(screen.getByText('payment_failed')).toBeInTheDocument()
@@ -1395,7 +1399,7 @@ describe('BranchesTab', () => {
     await confirmMerge()
 
     expect(
-      await screen.findByText(/plan entities on main changed.*recreate the branch/i),
+      await screen.findByText(/main changed the same entities.*Update the branch from main/i),
     ).toBeInTheDocument()
   })
 
@@ -1478,7 +1482,7 @@ describe('BranchesTab', () => {
     await confirmMerge()
 
     expect(
-      await screen.findByText(/plan entities on main changed.*recreate the branch/i),
+      await screen.findByText(/main changed the same entities.*Update the branch from main/i),
     ).toBeInTheDocument()
     expect(screen.queryByText('Raw backend prose.')).not.toBeInTheDocument()
   })
@@ -2087,7 +2091,14 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
         entity_type: 'event_type',
         name: 'checkout',
         fields: [
-          { field: 'description', base: 'old', ours: 'main edit', theirs: 'branch edit', choice: null },
+          {
+            field: 'description',
+            base: 'old',
+            ours: 'main edit',
+            theirs: 'branch edit',
+            choice: null,
+            dependents: 0,
+          },
         ],
       },
     ],
@@ -2224,8 +2235,8 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
     expect(screen.getByText('Main now:')).toBeInTheDocument()
     expect(screen.getByText('Was (when the branch opened):')).toBeInTheDocument()
     expect(screen.getByText("Resolved: this branch's value")).toBeInTheDocument()
-    const branchSide = screen.getByRole('button', { name: "Keep this branch's value" })
-    const mainSide = screen.getByRole('button', { name: "Keep main's value" })
+    const branchSide = screen.getByRole('button', { name: 'Keep this branch' })
+    const mainSide = screen.getByRole('button', { name: 'Take main' })
     expect(branchSide).toHaveAttribute('aria-pressed', 'true')
     expect(mainSide).toHaveAttribute('aria-pressed', 'false')
     expect(screen.queryByText(/\bours\b|\btheirs\b/)).not.toBeInTheDocument()
@@ -2762,5 +2773,90 @@ describe('BranchesTab — creating a branch and starting work on it (PL-4, PL-5,
 
     await waitFor(() => expect(screen.getByRole('status', { name: 'active branch' })).toHaveTextContent('feat-new'))
     expect(success).toHaveBeenCalledWith(expect.stringContaining('Switched to paywall-copy'))
+  })
+})
+
+describe('BranchesTab "Update from main" header (PL-8)', () => {
+  function behindDiff() {
+    vi.mocked(planBranchesApi.diff).mockResolvedValue({
+      behind_base: true,
+      summary: { added: 0, removed: 0, changed: 1 },
+      entries: [
+        {
+          entity_type: 'variable',
+          kind: 'changed',
+          name: 'plan',
+          parent: null,
+          changes: [],
+          field_changes: [],
+          before: null,
+          after: null,
+        },
+      ],
+    })
+  }
+
+  it('says safe to merge only on a confirmed answer, and offers the update', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({
+      entities: [],
+      unresolved_count: 0,
+      behind: true,
+      overlap_count: 0,
+      merge_blocked: false,
+      updatable: true,
+    })
+    behindDiff()
+
+    renderTab('feat-1')
+
+    expect(
+      await screen.findByText('Main has newer changes to other entities — safe to merge.'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Update from main' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Merge to main/ })).toBeInTheDocument()
+  })
+
+  it('leads the merge through the update when the merge would refuse', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({
+      entities: [],
+      unresolved_count: 0,
+      behind: true,
+      overlap_count: 0,
+      merge_blocked: true,
+      updatable: true,
+    })
+    behindDiff()
+
+    renderTab('feat-1')
+
+    expect(
+      await screen.findByText(/Main changed entities this branch also changes/),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Update from main first/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Merge to main/ })).not.toBeInTheDocument()
+  })
+
+  it('never offers the update on a base that cannot take it', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+    vi.mocked(planBranchesApi.listComments).mockResolvedValue([])
+    vi.mocked(planBranchesApi.getConflicts).mockResolvedValue({
+      entities: [],
+      unresolved_count: 0,
+      behind: true,
+      overlap_count: 0,
+      merge_blocked: true,
+      updatable: false,
+    })
+    behindDiff()
+
+    renderTab('feat-1')
+
+    expect(await screen.findByText(/Copy your changes to a new branch/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Update from main/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Merge to main/ })).toBeInTheDocument()
   })
 })

@@ -739,11 +739,23 @@ On a branch with no reviewer, **Submit for review** first asks **Who should
 review this?**: **Add and submit** adds the picked reviewers and submits,
 **Submit without a reviewer** submits as it is, and **Cancel** leaves the branch
 a draft.
-A viewer gets no **Edit** on change rows. Conflicts offer **Keep main's value**
-and **Keep this branch's value**, and list the values in the order **Was → Main
-now → This branch**. The note that main has moved on since the branch was cut
-turns amber only when main's changes overlap the branch's, and in the merge
-confirmation it appears only when main changed fields the branch also changed.
+A viewer gets no **Edit** on change rows. Conflicts cover every entity type
+(event types, fields, events, variables, meta fields, relations), grouped by
+type and parent, offer **Take main** and **Keep this branch**, and list the
+values in the order **Was → Main now → This branch**; a row where one side
+deleted what the other edited says so in words instead. The note that main has
+moved on since the branch was cut is neutral ("safe to merge") when main
+changed other entities only, and amber — linking to the conflicts — when an
+entity the branch changed also changed on main or the merge would refuse. It
+carries **Update from main**, which opens a dialog listing what main brings per
+entity type and each overlap to decide; **Update branch** stays disabled until
+every overlap has a choice, sends the choices with the update in one call, and
+refuses with "Main changed again" if main moved since the dialog loaded. When
+the merge would refuse over main's changes, **Merge to main** reads **Update
+from main first** and opens the same dialog. The branch list explains its dot
+in a legend: "Main has newer changes since the branch was created". In the merge
+confirmation the overlap note appears only when main changed fields the branch
+also changed.
 Once your own approval stands, **Approve** is no longer the primary button. A long text change is
 shown as one paragraph with the edits marked, not as two full copies.
 

@@ -355,8 +355,23 @@ branch instead — the same idea as a pull request for code.
    Non-conflicting edits on either side merge automatically, including child
    state such as values, tags, photos/comments, overrides, and breakdown
    settings. If both sides changed the same state differently, merge reports a
-   conflict. Older branches without a complete merge baseline must be recreated
-   from current main.
+   conflict.
+
+**Update from main.** When main has newer changes, the branch shows a note
+under its change counts: neutral ("safe to merge") when main changed other
+entities only, amber when main also changed something the branch changed.
+**Update from main** brings main's newer changes into the branch without
+touching your own. The dialog lists what main brings per entity type, then
+every overlap — a field, event, variable, meta field, relation or event type
+that both sides changed — with two choices each: **Keep this branch** or
+**Take main**. When one side deleted something the other side edited, the
+choice is between keeping it and deleting it (or restoring it); taking main's
+deletion of an event type also removes what the branch added or edited under it. The
+update runs once every overlap has a choice, and afterwards the branch counts
+from main as it is now: kept values stay in the diff as branch changes, taken
+values leave it. Approvals given before the update need renewing. A branch
+created before complete merge baselines existed cannot be updated; copy its
+changes to a new branch.
 
 Handing a branch to a developer works the same way: send the link. Catalog
 rows, diff rows and the command palette keep the branch in the URL

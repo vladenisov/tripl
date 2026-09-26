@@ -11,13 +11,16 @@ import { ApiError } from '@/api/client'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import type {
+  EntityChangeCount,
+  PlanBranchConflictEntity,
+  PlanBranchConflicts,
   PlanBranchDiffSummary,
   PlanDiffEntityType,
   PlanDiffEntry,
   PlanDiffKind,
   PlanDiffRename,
 } from '@/types'
-import { stateKeyLabel } from './branchMeta'
+import { ENTITY_LABEL, stateKeyLabel } from './branchMeta'
 
 /**
  * The two diff entries the merge will treat as one renamed row, as the backend
@@ -384,7 +387,7 @@ export function mergePrompt(
   }
   if (behindBase && unresolvedConflicts > 0) {
     lines.push(
-      `Main has moved on since this branch was created, and ${countOf(unresolvedConflicts, 'field you changed was', 'fields you changed were')} also changed there; the merge may be refused until you pick the values to keep.`,
+      `Main has moved on since this branch was created, and ${countOf(unresolvedConflicts, 'field you changed was', 'fields you changed were')} also changed there. Pick the value to keep for each in the Conflicts panel below, or update from main, before merging.`,
     )
   }
   lines.push(
@@ -418,6 +421,14 @@ export function isConflictRefusal(error: unknown): boolean {
   return Boolean(detail && (detail.unresolved_field_conflicts || detail.conflicts))
 }
 
+export const MERGE_BLOCKED_BY_MAIN =
+  'Merge blocked: main changed the same entities. Update the branch from main, then merge.'
+
+/** Update from main cannot help a branch whose base predates complete
+ * snapshots: there is no base to merge three ways against (PL-8). */
+export const INCOMPLETE_BASE_MESSAGE =
+  'This branch predates the complete merge baseline, so updating it from main cannot help. Copy your changes to a new branch.'
+
 /** Human-readable message for a failed transition/merge, decoding the merge
  * gate's structured 409 payloads where the generic message would only say
  * "409 Conflict". */
@@ -437,14 +448,16 @@ export function describeBranchActionError(error: unknown): string {
     if (detail.missing_owner_approvals) {
       return 'Merge blocked: owners of the touched event types have not approved.'
     }
-    if (detail.branch_behind_base) {
-      return 'Merge blocked: plan entities on main changed after this branch was created. Recreate the branch from current main.'
+    // "Recreate the branch" meant redoing the work; the branch can take
+    // main's changes in place now (PL-8).
+    if (detail.branch_behind_base || (detail.conflicts && !detail.unresolved_field_conflicts)) {
+      return MERGE_BLOCKED_BY_MAIN
     }
     if (detail.unresolved_field_conflicts) {
       return 'Merge blocked: resolve the field conflicts below first.'
     }
-    if (detail.conflicts) {
-      return 'Merge blocked by conflicts with main.'
+    if (detail.incomplete_base_snapshot) {
+      return INCOMPLETE_BASE_MESSAGE
     }
     // LAST, so the five hand-written wordings above still win for the shapes
     // that have them, and this only catches what none of them names. Every
@@ -528,4 +541,130 @@ export function changeSummary(entry: PlanDiffEntry): string {
   })
   const more = changes.length > 3 ? ` +${changes.length - 3} more` : ''
   return `${shown.join(', ')}${more}`
+}
+
+// ---------------------------------------------------------------------------
+// Update from main (PL-8)
+// ---------------------------------------------------------------------------
+
+/** The header note under the diff counts once main has moved on: neutral when
+ * nothing overlaps (or before the overlap check has answered), amber when it
+ * does, when the merge would refuse, or when the branch cannot be updated. */
+export type BehindNote =
+  | { kind: 'none' }
+  /** Main moved on; the overlap check has not answered (yet). Never "safe". */
+  | { kind: 'moved' }
+  | { kind: 'safe' }
+  | { kind: 'overlap'; count: number }
+  | { kind: 'blocked' }
+  /** The base predates complete merge baselines: Update from main cannot run. */
+  | { kind: 'legacy' }
+
+export function behindNote(
+  conflicts: PlanBranchConflicts | undefined,
+  /** The diff's `behind_base`, for a conflicts answer from an older instance
+   * that carries no `behind`. */
+  diffBehind: boolean,
+): BehindNote {
+  const behind = conflicts?.behind ?? diffBehind
+  if (!behind) return { kind: 'none' }
+  // Loading, failed, or an older instance that cannot say whether anything
+  // overlaps: "safe to merge" is only ever said on a confirmed answer.
+  if (!conflicts || conflicts.overlap_count === undefined || conflicts.merge_blocked === undefined) {
+    const overlap = conflicts?.entities.length ?? 0
+    return overlap > 0 ? { kind: 'overlap', count: overlap } : { kind: 'moved' }
+  }
+  if (conflicts.updatable === false) return { kind: 'legacy' }
+  if (conflicts.overlap_count > 0) return { kind: 'overlap', count: conflicts.overlap_count }
+  if (conflicts.merge_blocked) return { kind: 'blocked' }
+  return { kind: 'safe' }
+}
+
+/** "Events: 3 changed, 1 added" — one line per entity type main touched,
+ * zero kinds left out, types with nothing left out entirely. */
+export function entityChangeLines(counts: readonly EntityChangeCount[]): string[] {
+  return counts.flatMap((row) => {
+    const parts = [
+      row.changed > 0 ? `${row.changed} changed` : null,
+      row.added > 0 ? `${row.added} added` : null,
+      row.removed > 0 ? `${row.removed} removed` : null,
+      row.renamed > 0 ? `${row.renamed} renamed` : null,
+    ].filter((part): part is string => part !== null)
+    if (parts.length === 0) return []
+    return [`${ENTITY_PLURAL_LABEL[row.entity_type] ?? row.entity_type}: ${parts.join(', ')}`]
+  })
+}
+
+/** The total of an update's counts, for "N changes brought in". */
+export function entityChangeTotal(counts: readonly EntityChangeCount[]): number {
+  return counts.reduce((sum, row) => sum + row.added + row.changed + row.removed + row.renamed, 0)
+}
+
+const ENTITY_PLURAL_LABEL: Record<PlanDiffEntityType, string> = {
+  event_type: 'Event types',
+  field_definition: 'Fields',
+  event: 'Events',
+  variable: 'Variables',
+  meta_field: 'Meta fields',
+  relation: 'Relations',
+}
+
+/** The singular label with a capital, for a conflict group's heading. */
+export function entityTypeTitle(type: string): string {
+  const label = (ENTITY_LABEL as Record<string, string | undefined>)[type]
+  return label ? label.charAt(0).toUpperCase() + label.slice(1) : type
+}
+
+/** The 409 the update answers with while an overlap has no choice: the
+ * conflicts as the server saw them, to re-render from. */
+export function unresolvedUpdateConflicts(error: unknown): PlanBranchConflicts | null {
+  const detail = structuredDetail(error)
+  if (!detail || !detail.unresolved_conflicts) return null
+  const conflicts = detail.conflicts as PlanBranchConflicts | undefined
+  return conflicts && Array.isArray(conflicts.entities) ? conflicts : null
+}
+
+/** The update stopped on something no choice settles (the preview's
+ * `blockers`, as the refusal carries them). */
+export function updateBlockedMessage(error: unknown): string | null {
+  const detail = structuredDetail(error)
+  const blockers = detail?.update_blocked
+  if (!Array.isArray(blockers) || blockers.length === 0) return null
+  const messages = blockers
+    .map((blocker) =>
+      blocker && typeof blocker === 'object' && typeof (blocker as { message?: unknown }).message === 'string'
+        ? (blocker as { message: string }).message
+        : null,
+    )
+    .filter((message): message is string => message !== null)
+  return messages.length > 0 ? messages.join(' ') : null
+}
+
+/** Main changed between the preview and the click. */
+export function isMainMovedRefusal(error: unknown): boolean {
+  return Boolean(structuredDetail(error)?.main_moved)
+}
+
+/** Every other refusal of the update, in words. */
+export function describeUpdateFromMainError(error: unknown): string {
+  const detail = structuredDetail(error)
+  if (detail) {
+    if (detail.unresolved_conflicts) return 'Choose a side for every overlap first.'
+    if (detail.main_moved) return 'Main changed again — review the new changes.'
+    if (detail.incomplete_base_snapshot) return INCOMPLETE_BASE_MESSAGE
+    const blocked = updateBlockedMessage(error)
+    if (blocked) return blocked
+    if (detail.update_constraint_violation) {
+      return typeof detail.message === 'string' && detail.message.trim()
+        ? detail.message
+        : 'The update would break a uniqueness rule on this branch — most often two rows with the same name. Rename the clashing entity and try again.'
+    }
+    if (typeof detail.message === 'string' && detail.message.trim()) return detail.message
+  }
+  return getErrorMessage(error)
+}
+
+/** The key a choice is held under while the update dialog is open. */
+export function conflictChoiceKey(entity: PlanBranchConflictEntity, field: string): string {
+  return `${entity.entity_type}\u0000${entity.name}\u0000${field}`
 }

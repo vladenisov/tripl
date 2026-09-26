@@ -154,8 +154,10 @@ A couple of things tripl handles for you so merging is safe:
   description while a teammate added a tag, field value, photo comment, or
   another child on main, both land. If both sides changed the same state to
   different values, tripl reports a conflict rather than overwriting either
-  side. Branches created before complete merge baselines were introduced must
-  be recreated from current main before they can merge.
+  side. **Update from main** brings main's newer changes into the branch and
+  asks, for each overlap, whether to **keep this branch**'s version or **take
+  main**'s. Branches created before complete merge baselines were introduced
+  cannot be updated; copy their changes to a new branch.
 - **Owners can gate their event types.** An event type can have **owners**;
   merging a branch that adds, removes, or edits the type itself (its display
   name, description, color, or order) requires a sign-off from one of them.

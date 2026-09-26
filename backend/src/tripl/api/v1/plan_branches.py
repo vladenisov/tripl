@@ -18,6 +18,9 @@ from tripl.schemas.plan_branch import (
     PlanBranchResponse,
     ResolutionCreate,
     ResolutionResponse,
+    UpdateFromMainPreview,
+    UpdateFromMainRequest,
+    UpdateFromMainResult,
 )
 from tripl.services import (
     audit_service,
@@ -25,6 +28,7 @@ from tripl.services import (
     plan_branch_merge_service,
     plan_branch_revert_service,
     plan_branch_service,
+    plan_branch_update_service,
 )
 
 router = APIRouter(prefix="/projects/{slug}/branches", tags=["plan-branches"])
@@ -252,6 +256,68 @@ async def get_branch_conflicts(
     session: SessionDep, slug: str, branch_id: uuid.UUID
 ) -> BranchConflictsResponse:
     return await plan_branch_conflicts.get_branch_conflicts(session, slug, branch_id)
+
+
+@router.get("/{branch_id}/update-from-main", response_model=UpdateFromMainPreview)
+async def preview_update_from_main(
+    session: SessionDep, slug: str, branch_id: uuid.UUID
+) -> UpdateFromMainPreview:
+    """What "Update from main" would bring onto the branch, and what overlaps.
+
+    Read-only. ``main_hash`` is main as this preview read it; send it back as
+    ``expected_main_hash`` so the update refuses (409 ``main_moved``) rather
+    than apply changes nobody reviewed.
+    """
+    return await plan_branch_update_service.preview_update(session, slug, branch_id)
+
+
+@router.post("/{branch_id}/update-from-main", response_model=UpdateFromMainResult)
+async def update_from_main(
+    session: SessionDep,
+    current_user: EditorUserDep,
+    slug: str,
+    branch_id: uuid.UUID,
+    data: UpdateFromMainRequest,
+) -> UpdateFromMainResult:
+    """Three-way merge main INTO the branch; the branch's base becomes main.
+
+    Every field both sides changed needs a choice — ``ours`` takes main's
+    value, ``theirs`` keeps the branch's — given inline in ``resolutions`` or
+    saved earlier through ``/resolutions`` (stored choices count only when
+    ``expected_main_hash`` is sent). Refusals, all 409 and all writing
+    nothing: ``unresolved_conflicts`` (with the full ``conflicts`` list),
+    ``update_blocked`` (the preview's ``blockers``), ``main_moved``,
+    ``incomplete_base_snapshot``, ``update_constraint_violation``, and a merged
+    or closed branch. A branch already level with main answers 200
+    with ``updated: false``.
+    """
+    outcome = await plan_branch_update_service.update_from_main(
+        session, slug, branch_id, data, user_id=current_user.id
+    )
+    result = outcome.result
+    if result.updated:
+        await audit_service.record(
+            session,
+            user=current_user,
+            action="plan_branch.update_from_main",
+            target_type="plan_branch",
+            target_id=branch_id,
+            target_name=result.branch.name,
+            project_slug=slug,
+            payload={
+                "previous_base_revision_id": (
+                    str(result.previous_base_revision_id)
+                    if result.previous_base_revision_id is not None
+                    else None
+                ),
+                "base_revision_id": (
+                    str(result.base_revision_id) if result.base_revision_id is not None else None
+                ),
+                "applied": [count.model_dump() for count in result.applied],
+                "resolutions": outcome.resolution_counts,
+            },
+        )
+    return result
 
 
 @router.post("/{branch_id}/resolutions", response_model=ResolutionResponse, status_code=201)

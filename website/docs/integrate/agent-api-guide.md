@@ -134,6 +134,26 @@ Read the response's `renames` list before interpreting those entries. Entities a
 
 Pass the entry's `entity_id` as well: when two entries share a name it is the only thing that says which one you mean, and without it such a name is refused with `409` (`More than one change on this branch is called …`). Omit `field` to revert the whole entity: an addition is deleted, an edit is written back, a deletion is rebuilt with its child rows and, for an event, its `superseded_by` successor. A revert never touches main, needs an open branch and an editor role, and answers with a `409` — rather than a partial write — when the change cannot be undone unambiguously: two entities on the branch answer to the name and nothing records which one the entry is about (`Rename one of them, then revert.`), several rows of the branch's base snapshot answer to it with none of them named by the entry or a copy's origin (`Undo it by hand instead.`), two base events share the name of an event a restored variable override points at (`Set the overrides by hand instead.`), two events answer to the `superseded_by` successor being restored, on the branch or in the base, the parent event type is still deleted, or the branch's base snapshot predates a field the entity needs. A restored `superseded_by` whose successor no longer exists on the branch is cleared instead. A merged branch answers `409` `Branch is merged, so its plan is read-only`, and a closed one `Branch is closed — reopen it before reverting changes`.
 
+### Updating a branch from main
+
+When main changes after a branch is cut, the branch is *behind*: `GET /api/v1/projects/{slug}/branches/{branch_id}/conflicts` answers `behind: true`. Bring main's changes onto the branch with a three-way merge of main INTO the branch rather than recreating it:
+
+1. `GET /api/v1/projects/{slug}/branches/{branch_id}/update-from-main` (any member, read-only) returns `behind`, `updatable`, `blockers`, `main_hash`, `main_changes` (per entity type: `added`, `changed`, `removed`, `renamed`) and `conflicts`: every field both sides changed since the base, for all six entity types, grouped per entity with `name` (the key a choice is stored under), `parent`, `label`, and per field `base`, `ours` (main), `theirs` (the branch), `choice` and `dependents`. A field of `@presence` means one side deleted what the other changed; its values are `"present"` / `"absent"`, and `dependents` counts the branch's own work under an event type that taking main's deletion would also remove.
+2. `POST` the same path (editor) with `{"expected_main_hash": "<main_hash from the preview>", "resolutions": [{"entity_type", "entity_name", "field_name", "choice"}]}`. `choice` names the value to end with: `ours` takes main's, `theirs` keeps the branch's. Inline choices are stored in the same transaction. Choices saved earlier through `POST .../resolutions` count only when `expected_main_hash` is sent, because a stored choice records a side, not the values it was made against.
+
+On success the answer is `200` with `updated`, the branch, `applied` counts and the old and new `base_revision_id`: the branch's base is now main, so its diff shows only its own work and the next merge has nothing to refuse. A branch already level with main answers `200` with `updated: false` and writes nothing. Every refusal is a `409` that writes nothing:
+
+| `detail` | Meaning |
+|---|---|
+| `unresolved_conflicts` (with `conflicts`) | Some overlapping field has no choice yet. Resolve them and post again. |
+| `update_blocked` | One of the preview's `blockers`: `ambiguous` (main changed a row the branch holds twice under one name, on a branch cut before origin tracking; copy your changes to a new branch) or `identity_clash` (a row of main's and one of the branch's own would share a name or `source_name`; rename the branch's one). |
+| `main_moved` | Main changed after the preview that produced `expected_main_hash`. Preview again and review the new changes. |
+| `incomplete_base_snapshot` | The branch predates complete merge baselines and cannot be updated. `updatable` is already `false` in the preview and in `/conflicts`. Copy your changes to a new branch. |
+| `update_constraint_violation` | The database refused a uniqueness rule the preview could not foresee. |
+| plain string | The branch is merged or closed. |
+
+A successful update is audited as `plan_branch.update_from_main`.
+
 ## Search And Retrieval Flow
 
 Start with project search when the agent has a natural-language question or a partial event name:

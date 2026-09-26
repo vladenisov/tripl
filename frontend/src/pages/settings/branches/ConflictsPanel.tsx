@@ -5,30 +5,107 @@ import { Panel } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
+import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
-import type { PlanBranchConflictField, PlanBranchSummary, ResolutionChoice } from '@/types'
+import type {
+  PlanBranchConflictEntity,
+  PlanBranchConflictField,
+  PlanBranchSummary,
+  ResolutionChoice,
+} from '@/types'
 import { DiffValue } from '../DiffValue'
 import { planBranchConflictsKey } from '@/lib/queryKeys'
-import { ENTITY_LABEL } from './branchMeta'
+import { entityTypeTitle } from './branchDiffModel'
 
 /**
  * The backend's `ours` is main as it is now and `theirs` is this branch
  * (`plan_branch_conflicts.py`). Product users are not git users, so neither
- * word reaches the screen (PLAN-6).
+ * word reaches the screen (PLAN-6). A stored choice names the resulting value,
+ * so the same two words serve the merge and "Update from main" (PL-8).
  */
 const CHOICE_LABEL: Record<ResolutionChoice, string> = {
-  theirs: "Keep this branch's value",
-  ours: "Keep main's value",
-}
-
-/** "Event type" for `event_type`; the raw type only when it is not a known one. */
-function entityTypeLabel(type: string): string {
-  const label = (ENTITY_LABEL as Record<string, string | undefined>)[type]
-  return label ? label.charAt(0).toUpperCase() + label.slice(1) : type
+  theirs: 'Keep this branch',
+  ours: 'Take main',
 }
 const CHOSEN_TEXT: Record<ResolutionChoice, string> = {
   theirs: "Resolved: this branch's value",
   ours: "Resolved: main's value",
+}
+
+/** A presence row: one side deleted the entity (or its parent), the other
+ * edited or added to it. Its values are "present" / "absent". */
+const PRESENCE_FIELD = '@presence'
+
+interface ConflictListProps {
+  entities: PlanBranchConflictEntity[]
+  /** The choice to show for a field: a local pick, or the stored one. */
+  choiceOf: (entity: PlanBranchConflictEntity, field: PlanBranchConflictField) => ResolutionChoice | null
+  /** Omitted for a viewer, who sees the values but picks no side. */
+  onResolve?: (
+    entity: PlanBranchConflictEntity,
+    field: PlanBranchConflictField,
+    choice: ResolutionChoice,
+  ) => void
+  pending?: boolean
+}
+
+/**
+ * Every overlap, grouped by entity type and parent ("Fields in checkout"),
+ * each field with its three values and the two choices. Shared by the
+ * Conflicts panel and the "Update from main" dialog, so a choice reads the
+ * same in both (PL-8).
+ */
+export function ConflictList({ entities, choiceOf, onResolve, pending = false }: ConflictListProps) {
+  const groups = new Map<string, { title: string; entities: PlanBranchConflictEntity[] }>()
+  for (const entity of entities) {
+    const parent = entity.parent ?? null
+    const key = `${entity.entity_type}\u0000${parent ?? ''}`
+    const group = groups.get(key)
+    if (group) {
+      group.entities.push(entity)
+    } else {
+      groups.set(key, {
+        title: parent
+          ? `${entityTypeTitle(entity.entity_type)} in ${parent}`
+          : entityTypeTitle(entity.entity_type),
+        entities: [entity],
+      })
+    }
+  }
+  return (
+    <div className="space-y-3">
+      {[...groups.entries()].map(([groupKey, group]) => (
+        <section key={groupKey} className="space-y-2">
+          <h3 className="text-caption font-medium text-fg-tertiary">{group.title}</h3>
+          {group.entities.map((entity) => (
+            <div
+              // Two entity types may share a name; the type is part of the identity.
+              key={`${entity.entity_type}:${entity.name}`}
+              className="rounded-card border p-3 border-border-subtle"
+            >
+              {/* "Event type checkout", not the wire's `event_type: checkout` (PL-20). */}
+              <div className="mb-1 text-body-sm text-fg-tertiary">
+                {entityTypeTitle(entity.entity_type)}{' '}
+                <span className="mono font-medium text-fg">{entity.label || entity.name}</span>
+              </div>
+              <div className="space-y-2">
+                {entity.fields.map((field) => (
+                  <ConflictFieldRow
+                    key={field.field}
+                    entity={entity}
+                    field={field}
+                    choice={choiceOf(entity, field)}
+                    pending={pending}
+                    onResolve={onResolve ? (choice) => onResolve(entity, field, choice) : undefined}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </section>
+      ))}
+    </div>
+  )
 }
 
 interface ResolveVars {
@@ -73,44 +150,25 @@ export function ConflictsPanel({ slug, branch }: { slug: string; branch: PlanBra
     >
       <div className="space-y-3 p-4">
         <p className="text-caption text-fg-tertiary">
-          Main and this branch both changed these fields since the branch was opened. Pick which
-          value the merge keeps.
+          Main and this branch both changed these since the branch was opened. Pick the value to
+          keep for each; Update from main brings the rest of main in with your choices.
         </p>
-        {conflicts.entities.map((entity) => (
-          <div
-            // Two entity types may share a name; the type is part of the identity.
-            key={`${entity.entity_type}:${entity.name}`}
-            className="rounded-card border p-3 border-border-subtle"
-          >
-            {/* "Event type checkout", not the wire's `event_type: checkout` (PL-20). */}
-            <div className="mb-1 text-body-sm text-fg-tertiary">
-              {entityTypeLabel(entity.entity_type)}{' '}
-              <span className="mono font-medium text-fg">
-                {entity.name}
-              </span>
-            </div>
-            <div className="space-y-2">
-              {entity.fields.map((field) => (
-                <ConflictFieldRow
-                  key={field.field}
-                  field={field}
-                  pending={resolutionMut.isPending}
-                  onResolve={
-                    canWrite
-                      ? (choice) =>
-                          resolutionMut.mutate({
-                            entity_type: entity.entity_type,
-                            entity_name: entity.name,
-                            field: field.field,
-                            choice,
-                          })
-                      : undefined
-                  }
-                />
-              ))}
-            </div>
-          </div>
-        ))}
+        <ConflictList
+          entities={conflicts.entities}
+          choiceOf={(_entity, field) => field.choice}
+          pending={resolutionMut.isPending}
+          onResolve={
+            canWrite
+              ? (entity, field, choice) =>
+                  resolutionMut.mutate({
+                    entity_type: entity.entity_type,
+                    entity_name: entity.name,
+                    field: field.field,
+                    choice,
+                  })
+              : undefined
+          }
+        />
         {resolutionMut.isError ? (
           <p role="alert" className="text-caption text-danger">
             Could not save the choice: {getErrorMessage(resolutionMut.error)}
@@ -121,50 +179,89 @@ export function ConflictsPanel({ slug, branch }: { slug: string; branch: PlanBra
   )
 }
 
+/** What each side did to the entity, for a presence row. */
+function presenceText(entity: PlanBranchConflictEntity, field: PlanBranchConflictField) {
+  const mainDeleted = field.ours === 'absent'
+  const label = entityTypeTitle(entity.entity_type).toLowerCase()
+  if (mainDeleted) {
+    const dependents = field.dependents
+    const parentWarning =
+      dependents > 0
+        ? ` Taking main also removes ${countOf(dependents, 'entity', 'entities')} this branch added or edited under it.`
+        : ''
+    return {
+      summary: `Deleted on main · ${field.base === 'absent' ? 'added' : 'edited'} here`,
+      consequence: {
+        ours: `Take main deletes this ${label} on the branch.${parentWarning}`,
+        theirs: `Keep this branch keeps it; the next merge adds it back to main.`,
+      },
+    }
+  }
+  return {
+    summary: 'Edited on main · deleted here',
+    consequence: {
+      ours: `Take main restores this ${label} on the branch as main has it.`,
+      theirs: 'Keep this branch leaves it deleted; the next merge deletes it on main.',
+    },
+  }
+}
+
 function ConflictFieldRow({
+  entity,
   field,
+  choice,
   pending,
   onResolve,
 }: {
+  entity: PlanBranchConflictEntity
   field: PlanBranchConflictField
+  choice: ResolutionChoice | null
   pending: boolean
   /** Omitted for a viewer, who sees the three values but picks no side. */
   onResolve?: (choice: ResolutionChoice) => void
 }) {
+  const presence = field.field === PRESENCE_FIELD ? presenceText(entity, field) : null
   return (
-    <div className="text-body-sm">
+    <div className="text-body-sm" data-unresolved={choice ? undefined : 'true'}>
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="font-medium text-fg">
-          {field.field}
-        </span>
+        <span className="font-medium text-fg">{presence ? presence.summary : field.field}</span>
         <span
           className="text-caption"
-          style={{ color: field.choice ? 'var(--success)' : 'var(--danger)' }}
+          style={{ color: choice ? 'var(--success)' : 'var(--danger)' }}
         >
-          {field.choice ? CHOSEN_TEXT[field.choice] : 'Unresolved'}
+          {choice ? CHOSEN_TEXT[choice] : 'Unresolved'}
         </span>
       </div>
-      {/* Stacked below `sm`: three monospace columns squeezed to ~100px each
-          on a phone. In time order, the two sides being chosen between last:
-          main when the branch opened, main now, this branch (PL-20). */}
-      <div className="mono mt-1 grid grid-cols-1 gap-1 sm:grid-cols-3 sm:gap-2">
-        <ConflictValue label="Was (when the branch opened)" value={field.base} />
-        <ConflictValue label="Main now" value={field.ours} />
-        <ConflictValue label="This branch" value={field.theirs} />
-      </div>
+      {presence ? (
+        // A deletion has no value to print in three columns; what each
+        // choice does is the useful thing to say.
+        <ul className="mt-1 space-y-0.5 text-caption text-fg-tertiary">
+          <li>{presence.consequence.ours}</li>
+          <li>{presence.consequence.theirs}</li>
+        </ul>
+      ) : (
+        // Stacked below `sm`: three monospace columns squeezed to ~100px each
+        // on a phone. In time order, the two sides being chosen between last:
+        // main when the branch opened, main now, this branch (PL-20).
+        <div className="mono mt-1 grid grid-cols-1 gap-1 sm:grid-cols-3 sm:gap-2">
+          <ConflictValue label="Was (when the branch opened)" value={field.base} />
+          <ConflictValue label="Main now" value={field.ours} />
+          <ConflictValue label="This branch" value={field.theirs} />
+        </div>
+      )}
       {onResolve && (
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {(['ours', 'theirs'] as const).map((choice) => (
+          {(['ours', 'theirs'] as const).map((option) => (
             <Button
-              key={choice}
+              key={option}
               type="button"
               size="sm"
-              variant={field.choice === choice ? 'default' : 'outline'}
-              aria-pressed={field.choice === choice}
+              variant={choice === option ? 'default' : 'outline'}
+              aria-pressed={choice === option}
               disabled={pending}
-              onClick={() => onResolve(choice)}
+              onClick={() => onResolve(option)}
             >
-              {CHOICE_LABEL[choice]}
+              {CHOICE_LABEL[option]}
             </Button>
           ))}
         </div>
@@ -174,14 +271,9 @@ function ConflictFieldRow({
 }
 
 function ConflictValue({ label, value }: { label: string; value: unknown }) {
-  // `String(value ?? '∅')` was correct for everything that can arrive today —
-  // `_field_conflicts_event_type` reports four scalar keys — but wrong for two
-  // things anyway. An empty string rendered as a BLANK cell rather than ∅, and
-  // a description cleared on one side is exactly a conflict this endpoint
-  // reports. And `base`/`ours`/`theirs` are `Any | None` on the wire and
-  // `unknown` here, next to a docstring that says "v1 covers event_type
-  // metadata only" — so the day a non-scalar key joins that list, this cell
-  // would degrade silently on the surface where a reviewer picks a side.
+  // DiffValue, not `String(value ?? '∅')`: an empty string must read ∅ rather
+  // than a blank cell, and collection fields (tags, field values, overrides)
+  // arrive as structures now that every entity type reports its overlaps.
   //
   // No `table`: the three cells are peers in one grid row, and a table in one
   // of them would break the alignment.

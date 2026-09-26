@@ -1376,6 +1376,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{slug}/branches/{branch_id}/update-from-main": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview Update From Main
+         * @description What "Update from main" would bring onto the branch, and what overlaps.
+         *
+         *     Read-only. ``main_hash`` is main as this preview read it; send it back as
+         *     ``expected_main_hash`` so the update refuses (409 ``main_moved``) rather
+         *     than apply changes nobody reviewed.
+         */
+        get: operations["preview_update_from_main_api_v1_projects__slug__branches__branch_id__update_from_main_get"];
+        put?: never;
+        /**
+         * Update From Main
+         * @description Three-way merge main INTO the branch; the branch's base becomes main.
+         *
+         *     Every field both sides changed needs a choice — ``ours`` takes main's
+         *     value, ``theirs`` keeps the branch's — given inline in ``resolutions`` or
+         *     saved earlier through ``/resolutions`` (stored choices count only when
+         *     ``expected_main_hash`` is sent). Refusals, all 409 and all writing
+         *     nothing: ``unresolved_conflicts`` (with the full ``conflicts`` list),
+         *     ``update_blocked`` (the preview's ``blockers``), ``main_moved``,
+         *     ``incomplete_base_snapshot``, ``update_constraint_violation``, and a merged
+         *     or closed branch. A branch already level with main answers 200
+         *     with ``updated: false``.
+         */
+        post: operations["update_from_main_api_v1_projects__slug__branches__branch_id__update_from_main_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{slug}/danger/reset-anomalies": {
         parameters: {
             query?: never;
@@ -5391,10 +5429,30 @@ export interface components {
         };
         /** BranchConflictsResponse */
         BranchConflictsResponse: {
+            /**
+             * Behind
+             * @default false
+             */
+            behind: boolean;
             /** Entities */
             entities: components["schemas"]["ConflictEntity"][];
+            /**
+             * Merge Blocked
+             * @default false
+             */
+            merge_blocked: boolean;
+            /**
+             * Overlap Count
+             * @default 0
+             */
+            overlap_count: number;
             /** Unresolved Count */
             unresolved_count: number;
+            /**
+             * Updatable
+             * @default true
+             */
+            updatable: boolean;
         };
         /**
          * BranchKind
@@ -5585,26 +5643,48 @@ export interface components {
         };
         /** ConflictEntity */
         ConflictEntity: {
-            /** Entity Type */
-            entity_type: string;
+            /**
+             * Entity Type
+             * @enum {string}
+             */
+            entity_type: "event_type" | "field_definition" | "event" | "variable" | "meta_field" | "relation";
             /** Fields */
             fields: components["schemas"]["ConflictField"][];
+            /**
+             * Label
+             * @default
+             */
+            label: string;
             /** Name */
             name: string;
+            /** Parent */
+            parent?: string | null;
         };
         /**
          * ConflictField
-         * @description A single field that diverged on both sides of the merge.
+         * @description A single field that diverged on both sides.
          *
-         *     ``base`` is the value when the branch was created; ``ours`` is main's
-         *     current value; ``theirs`` is the branch's current value. The reviewer
-         *     picks ``choice`` to drive the merge for this field; ``None`` means
-         *     unresolved (merge stays blocked).
+         *     ``base`` is the value when the branch was created (or last updated from
+         *     main); ``ours`` is main's current value; ``theirs`` is the branch's current
+         *     value. ``choice`` names the value to END with — ``ours`` takes main's,
+         *     ``theirs`` keeps the branch's — for the merge and for "Update from main"
+         *     alike; ``None`` means unresolved.
+         *
+         *     ``field`` is ``@presence`` when one side deleted the entity and the other
+         *     changed it: ``base``/``ours``/``theirs`` are then ``"present"`` or
+         *     ``"absent"``. ``dependents`` counts, for an event type main deleted, the
+         *     fields, events and relations this branch added or edited under it — what
+         *     taking main's side removes with it (PL-8).
          */
         ConflictField: {
             /** Base */
             base: unknown | null;
             choice?: components["schemas"]["MergeResolutionChoice"] | null;
+            /**
+             * Dependents
+             * @default 0
+             */
+            dependents: number;
             /** Field */
             field: string;
             /** Ours */
@@ -6102,6 +6182,37 @@ export interface components {
             smtp_security?: ("none" | "starttls" | "implicit_tls") | null;
             /** Smtp Username */
             smtp_username?: string | null;
+        };
+        /**
+         * EntityChangeCount
+         * @description How many entities of one type a side added, changed, removed or renamed.
+         */
+        EntityChangeCount: {
+            /**
+             * Added
+             * @default 0
+             */
+            added: number;
+            /**
+             * Changed
+             * @default 0
+             */
+            changed: number;
+            /**
+             * Entity Type
+             * @enum {string}
+             */
+            entity_type: "event_type" | "field_definition" | "event" | "variable" | "meta_field" | "relation";
+            /**
+             * Removed
+             * @default 0
+             */
+            removed: number;
+            /**
+             * Renamed
+             * @default 0
+             */
+            renamed: number;
         };
         /** EventBulkDelete */
         EventBulkDelete: {
@@ -9948,8 +10059,11 @@ export interface components {
             choice: components["schemas"]["MergeResolutionChoice"];
             /** Entity Name */
             entity_name: string;
-            /** Entity Type */
-            entity_type: string;
+            /**
+             * Entity Type
+             * @enum {string}
+             */
+            entity_type: "event_type" | "field_definition" | "event" | "variable" | "meta_field" | "relation";
             /** Field Name */
             field_name: string;
         };
@@ -11587,6 +11701,67 @@ export interface components {
             stddev: number;
             /** Z Score */
             z_score: number;
+        };
+        /**
+         * UpdateBlocker
+         * @description Something that stops an update whatever is chosen, and what to do about it.
+         *
+         *     ``kind``: ``incomplete_base_snapshot`` (the base predates complete merge
+         *     baselines), ``ambiguous`` (main changed a row this branch holds more than
+         *     once under one name, on a branch opened before origin ids) or
+         *     ``identity_clash`` (a row of main's and one of the branch's own would share
+         *     a name or ``source_name``; rename the branch's one).
+         */
+        UpdateBlocker: {
+            /** Entity Type */
+            entity_type?: ("event_type" | "field_definition" | "event" | "variable" | "meta_field" | "relation") | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "incomplete_base_snapshot" | "ambiguous" | "identity_clash";
+            /** Message */
+            message: string;
+            /** Name */
+            name?: string | null;
+        };
+        /** UpdateFromMainPreview */
+        UpdateFromMainPreview: {
+            /** Base Revision Id */
+            base_revision_id: string | null;
+            /** Behind */
+            behind: boolean;
+            /** Blockers */
+            blockers?: components["schemas"]["UpdateBlocker"][];
+            conflicts: components["schemas"]["BranchConflictsResponse"];
+            /** Main Changes */
+            main_changes: components["schemas"]["EntityChangeCount"][];
+            /** Main Hash */
+            main_hash: string;
+            /**
+             * Updatable
+             * @default true
+             */
+            updatable: boolean;
+        };
+        /** UpdateFromMainRequest */
+        UpdateFromMainRequest: {
+            /** Expected Main Hash */
+            expected_main_hash?: string | null;
+            /** Resolutions */
+            resolutions?: components["schemas"]["ResolutionCreate"][];
+        };
+        /** UpdateFromMainResult */
+        UpdateFromMainResult: {
+            /** Applied */
+            applied: components["schemas"]["EntityChangeCount"][];
+            /** Base Revision Id */
+            base_revision_id: string | null;
+            branch: components["schemas"]["PlanBranchDetailResponse"];
+            /** Previous Base Revision Id */
+            previous_base_revision_id: string | null;
+            /** Updated */
+            updated: boolean;
         };
         /** UserListItem */
         UserListItem: {
@@ -14947,6 +15122,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlanBranchDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_update_from_main_api_v1_projects__slug__branches__branch_id__update_from_main_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                branch_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateFromMainPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_from_main_api_v1_projects__slug__branches__branch_id__update_from_main_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                branch_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateFromMainRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateFromMainResult"];
                 };
             };
             /** @description Validation Error */

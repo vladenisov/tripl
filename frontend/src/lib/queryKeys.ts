@@ -54,6 +54,9 @@ export const planBranchDetailKey = (slug: string, branchId: string) =>
   ['planBranchDetail', slug, branchId] as const
 export const planBranchConflictsKey = (slug: string, branchId: string) =>
   ['planBranchConflicts', slug, branchId] as const
+/** The "Update from main" dialog's preview (PL-8). */
+export const planBranchUpdatePreviewKey = (slug: string, branchId: string) =>
+  ['planBranchUpdatePreview', slug, branchId] as const
 export const planBranchCommentsKey = (slug: string, branchId: string) =>
   ['planBranchComments', slug, branchId] as const
 export const planBranchTicketsKey = (slug: string, branchId: string) =>

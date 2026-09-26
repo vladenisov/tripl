@@ -972,7 +972,7 @@ async def _recreate_entity(
     data: BranchRevertRequest,
     base_item: dict[str, Any],
     base_payload: dict[str, Any],
-) -> None:
+) -> Any:
     """Put back an entity the branch deleted, from its state in the base snapshot.
 
     Reached once ``_row_renamed_from`` has declined to call the removal a
@@ -1008,44 +1008,40 @@ async def _recreate_entity(
     assumes for an older base.
     """
     if data.entity_type == "event_type":
-        session.add(
-            EventType(
-                id=uuid.uuid4(),
-                project_id=project_id,
-                branch_id=branch_id,
-                name=_required(base_item, "name"),
-                display_name=_required(base_item, "display_name"),
-                description=base_item.get("description"),
-                color=base_item.get("color"),
-                order=base_item.get("order", 0),
-            )
+        event_type_row = EventType(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            branch_id=branch_id,
+            name=_required(base_item, "name"),
+            display_name=_required(base_item, "display_name"),
+            description=base_item.get("description"),
+            color=base_item.get("color"),
+            order=base_item.get("order", 0),
         )
-        return
+        session.add(event_type_row)
+        return event_type_row
 
     if data.entity_type == "field_definition":
         event_type = await _event_type_by_name(session, project_id, branch_id, str(data.parent))
-        session.add(
-            FieldDefinition(
-                id=uuid.uuid4(),
-                event_type_id=event_type.id,
-                name=_required(base_item, "name"),
-                display_name=_required(base_item, "display_name"),
-                field_type=_required(base_item, "field_type"),
-                is_required=base_item.get("is_required", False),
-                enum_options=list(base_item["enum_options"])
-                if base_item.get("enum_options")
-                else None,
-                description=base_item.get("description"),
-                order=base_item.get("order", 0),
-                sensitivity=_required(base_item, "sensitivity"),
-                contract_required_max_null_rate=base_item.get("contract_required_max_null_rate"),
-                contract_regex=base_item.get("contract_regex"),
-                contract_min_value=base_item.get("contract_min_value"),
-                contract_max_value=base_item.get("contract_max_value"),
-                contract_max_bad_rate=base_item.get("contract_max_bad_rate") or 0.0,
-            )
+        field_row = FieldDefinition(
+            id=uuid.uuid4(),
+            event_type_id=event_type.id,
+            name=_required(base_item, "name"),
+            display_name=_required(base_item, "display_name"),
+            field_type=_required(base_item, "field_type"),
+            is_required=base_item.get("is_required", False),
+            enum_options=list(base_item["enum_options"]) if base_item.get("enum_options") else None,
+            description=base_item.get("description"),
+            order=base_item.get("order", 0),
+            sensitivity=_required(base_item, "sensitivity"),
+            contract_required_max_null_rate=base_item.get("contract_required_max_null_rate"),
+            contract_regex=base_item.get("contract_regex"),
+            contract_min_value=base_item.get("contract_min_value"),
+            contract_max_value=base_item.get("contract_max_value"),
+            contract_max_bad_rate=base_item.get("contract_max_bad_rate") or 0.0,
         )
-        return
+        session.add(field_row)
+        return field_row
 
     if data.entity_type == "event":
         event_type = await _event_type_by_name(
@@ -1090,7 +1086,7 @@ async def _recreate_entity(
         )
         for field in ("field_values", "meta_values", "tags"):
             await _restore_event_children(session, project_id, branch_id, event, base_item, field)
-        return
+        return event
 
     if data.entity_type == "variable":
         variable = Variable(
@@ -1110,32 +1106,29 @@ async def _recreate_entity(
         await _restore_variable_overrides(
             session, project_id, branch_id, variable, base_item, base_payload
         )
-        return
+        return variable
 
     if data.entity_type == "meta_field":
-        session.add(
-            MetaFieldDefinition(
-                id=uuid.uuid4(),
-                project_id=project_id,
-                branch_id=branch_id,
-                name=_required(base_item, "name"),
-                display_name=_required(base_item, "display_name"),
-                field_type=_required(base_item, "field_type"),
-                is_required=base_item.get("is_required", False),
-                # An older snapshot predates the key. ``_base_payload`` fills it
-                # in through with_snapshot_defaults (tripl-0zpq.147); the
-                # fallback only restates the column default.
-                allow_multiple=base_item.get("allow_multiple", False),
-                enum_options=list(base_item["enum_options"])
-                if base_item.get("enum_options")
-                else None,
-                default_value=base_item.get("default_value"),
-                link_template=base_item.get("link_template"),
-                order=base_item.get("order", 0),
-                sensitivity=_required(base_item, "sensitivity"),
-            )
+        meta_row = MetaFieldDefinition(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            branch_id=branch_id,
+            name=_required(base_item, "name"),
+            display_name=_required(base_item, "display_name"),
+            field_type=_required(base_item, "field_type"),
+            is_required=base_item.get("is_required", False),
+            # An older snapshot predates the key. ``_base_payload`` fills it
+            # in through with_snapshot_defaults (tripl-0zpq.147); the
+            # fallback only restates the column default.
+            allow_multiple=base_item.get("allow_multiple", False),
+            enum_options=list(base_item["enum_options"]) if base_item.get("enum_options") else None,
+            default_value=base_item.get("default_value"),
+            link_template=base_item.get("link_template"),
+            order=base_item.get("order", 0),
+            sensitivity=_required(base_item, "sensitivity"),
         )
-        return
+        session.add(meta_row)
+        return meta_row
 
     source_et = await _event_type_by_name(
         session, project_id, branch_id, _required(base_item, "source_event_type_name")
@@ -1164,20 +1157,20 @@ async def _recreate_entity(
                 "The fields this relation joins no longer exist on this branch. Restore them first."
             ),
         )
-    session.add(
-        EventTypeRelation(
-            id=uuid.uuid4(),
-            project_id=project_id,
-            branch_id=branch_id,
-            source_event_type_id=source_et.id,
-            target_event_type_id=target_et.id,
-            source_field_id=source_field.id,
-            target_field_id=target_field.id,
-            relation_type=_required(base_item, "relation_type"),
-            description=base_item.get("description") or "",
-            origin_id=_origin_of(base_item),
-        )
+    relation = EventTypeRelation(
+        id=uuid.uuid4(),
+        project_id=project_id,
+        branch_id=branch_id,
+        source_event_type_id=source_et.id,
+        target_event_type_id=target_et.id,
+        source_field_id=source_field.id,
+        target_field_id=target_field.id,
+        relation_type=_required(base_item, "relation_type"),
+        description=base_item.get("description") or "",
+        origin_id=_origin_of(base_item),
     )
+    session.add(relation)
+    return relation
 
 
 async def _restore_field(
@@ -1560,3 +1553,90 @@ async def _event_id_by_dotted_key(
             ),
         )
     return matches[0] if matches else None
+
+
+# --- snapshot writers shared with "Update from main" (PL-8) -------------------
+#
+# The revert writes ONE snapshot item's state onto a branch row: the base's.
+# "Update from main" writes main's items onto branch rows, and every rule the
+# revert learned applies unchanged — values and overrides by name, a successor
+# by natural key, a rebuilt event or relation linked to the main row it stands
+# for. These wrappers expose that machinery without the diff-entry addressing
+# the revert endpoint needs; they change nothing about how the revert behaves.
+
+# Fields that are not a plain column copy: coerced, or child rows.
+_SNAPSHOT_WRITE_ARMS: dict[str, frozenset[str]] = {
+    "event": frozenset(
+        {"sunset_at", "owner_id", "superseded_by", "field_values", "meta_values", "tags"}
+    ),
+    "variable": frozenset({"event_value_overrides"}),
+}
+
+
+def _request_for(entity_type: str, item: dict[str, Any], parent: str | None) -> BranchRevertRequest:
+    return BranchRevertRequest(
+        entity_type=entity_type,
+        name=str(item.get("name") or ""),
+        parent=parent,
+    )
+
+
+async def write_snapshot_fields(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    entity_type: str,
+    entity: Any,
+    item: dict[str, Any],
+    payload: dict[str, Any],
+    fields: tuple[str, ...] | list[str],
+    parent: str | None = None,
+) -> None:
+    """Write ``fields`` of snapshot ``item`` onto the branch row ``entity``.
+
+    ``payload`` is the snapshot ``item`` comes from, read for the lookups the
+    revert reads its base for (a successor's key, an override's event). Photos
+    are not a snapshot write — their storage keys are redacted — so asking for
+    them is a programming error.
+    """
+    data = _request_for(entity_type, item, parent)
+    for field in fields:
+        if field in _SNAPSHOT_WRITE_ARMS.get(entity_type, frozenset()):
+            await _restore_field(session, project_id, branch_id, entity, item, payload, data, field)
+            continue
+        if field == "photos":
+            raise ValueError("photos are copied row by row, not written from a snapshot")
+        value = item.get(field)
+        # Copy JSON list columns so the entity never aliases the snapshot payload.
+        setattr(entity, field, list(value) if isinstance(value, list) else value)
+
+
+async def recreate_from_snapshot(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    branch_id: uuid.UUID,
+    entity_type: str,
+    item: dict[str, Any],
+    payload: dict[str, Any],
+    parent: str | None = None,
+) -> Any:
+    """Build snapshot ``item`` on the branch and return the new row."""
+    return await _recreate_entity(
+        session, project_id, branch_id, _request_for(entity_type, item, parent), item, payload
+    )
+
+
+async def delete_branch_entity(
+    session: AsyncSession, *, project_id: uuid.UUID, entity_type: str, entity: Any
+) -> None:
+    """Delete one branch row the way reverting its addition deletes it.
+
+    References to the events it takes are dropped and their discussion handed
+    to the main twin first (tripl-a64t, tripl-0zpq.289).
+    """
+    doomed_event_ids = await _doomed_event_ids(session, entity_type, entity)
+    await drop_dangling_event_references(session, project_id=project_id, event_ids=doomed_event_ids)
+    await rescue_branch_event_threads(session, project_id=project_id, event_ids=doomed_event_ids)
+    await session.delete(entity)

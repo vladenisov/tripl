@@ -21,6 +21,7 @@ import {
   planBranchDiffKey,
   planBranchesKey,
   planBranchTicketsKey,
+  planBranchUpdatePreviewKey,
   projectEventHistoryKey,
   projectEventKey,
   projectEventsKey,
@@ -101,4 +102,16 @@ export function invalidateBranchPlan(qc: QueryClient, slug: string, branchId: st
   ]) {
     void qc.invalidateQueries({ queryKey })
   }
+}
+
+/**
+ * After "Update from main": the branch has a new base and main's changes on
+ * it, so its diff, detail, conflicts, row counts, the preview and its own plan
+ * caches are all stale (PL-8). Main itself is untouched.
+ */
+export function invalidateBranchUpdated(qc: QueryClient, slug: string, branchId: string) {
+  invalidateBranchReview(qc, slug, branchId)
+  invalidateBranchCounts(qc, slug)
+  invalidateBranchPlan(qc, slug, branchId)
+  void qc.invalidateQueries({ queryKey: planBranchUpdatePreviewKey(slug, branchId) })
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Check, GitBranch, GitCompare } from 'lucide-react'
 
 import { Chip } from '@/components/primitives/chip'
@@ -47,6 +47,12 @@ export function BranchList({
   const selectedIsLanded = landedBranches.some((branch) => branch.id === selectedId)
   const tab: BranchListTab = pickedTab ?? (selectedIsLanded ? 'merged' : 'active')
   const shown = tab === 'merged' ? landedBranches : activeBranches
+  // The dot beside "↑n" explained itself only in a `title` (PL-8): a visible
+  // legend whenever a listed row wears one.
+  const legendId = useId()
+  const anyBehind = shown.some(
+    (branch) => branch.kind !== 'main' && countsByBranch.get(branch.id)?.behind === true,
+  )
 
   return (
     <Panel
@@ -90,6 +96,9 @@ export function BranchList({
               // The background alone told only sighted users which branch the
               // pane was showing (PLAN-20).
               aria-current={isActive ? 'true' : undefined}
+              // The legend describes the dot; a description is announced on
+              // the focusable row, never on a generic span inside it.
+              aria-describedby={!isMain && counts?.behind ? legendId : undefined}
               className="flex w-full items-center gap-2.5 border-t px-4 py-2.5 text-left transition-colors hover:bg-[var(--surface-hover)]"
               // The selection wears the sidebar's accent edge and fill, not the
               // hover colour it was indistinguishable from (PL-15).
@@ -146,13 +155,13 @@ export function BranchList({
                     {countOf(counts.ahead, 'change', 'changes')} ahead of main
                   </span>
                   {counts.behind ? (
-                    <>
+                    <span className="inline-flex items-center">
                       <span
                         aria-hidden="true"
                         className="inline-block size-1.5 rounded-full bg-info"
                       />
                       <span className="sr-only">, main has moved on since</span>
-                    </>
+                    </span>
                   ) : null}
                 </span>
               )}
@@ -160,6 +169,15 @@ export function BranchList({
             </ScenarioCoachMark>
           )
         })}
+        {anyBehind ? (
+          <p
+            id={legendId}
+            className="flex items-center gap-1.5 border-t px-4 py-2 text-micro text-fg-tertiary border-border-subtle"
+          >
+            <span aria-hidden="true" className="inline-block size-1.5 shrink-0 rounded-full bg-info" />
+            Main has newer changes since the branch was created
+          </p>
+        ) : null}
       </div>
     </Panel>
   )

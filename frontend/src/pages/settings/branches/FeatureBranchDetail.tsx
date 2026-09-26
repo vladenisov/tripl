@@ -10,6 +10,7 @@ import {
   History,
   Info,
   Plus,
+  RefreshCw,
   Trash2,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -56,6 +57,8 @@ import type {
 import {
   type ConfirmPrompt,
   type DiffLoad,
+  INCOMPLETE_BASE_MESSAGE,
+  behindNote,
   describeBranchActionError,
   diffView,
   entryKey,
@@ -87,6 +90,7 @@ import { BranchReviewSummary, type ReviewerPickerIntent } from './BranchReviewer
 import { CommentsPanel, ImplementationTicketsPanel } from './BranchSidePanels'
 import { ChangeRow, HousekeepingFold } from './ChangeRow'
 import { ConflictsPanel } from './ConflictsPanel'
+import { UpdateFromMainDialog } from './UpdateFromMainDialog'
 
 type Confirm = ReturnType<typeof useConfirm>['confirm']
 
@@ -185,6 +189,9 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
   // review" on a branch with nobody assigned opens it instead of sending the
   // branch to no one (JR-14).
   const [reviewerPicker, setReviewerPicker] = useState<ReviewerPickerIntent>(null)
+  // "Update from main" (PL-8): opened from the behind note and, when the merge
+  // would refuse, from the merge button.
+  const [updateOpen, setUpdateOpen] = useState(false)
   // The ticket a branch is named after, linked through the meta field that
   // links event values to the tracker (tripl-kjhi.14). Main's fields: the
   // template is project-wide and a branch copy carries the same one.
@@ -441,6 +448,20 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
       ? 'Approved against the branch as it stands now.'
       : null
   const landed = branch.status === 'merged' || branch.status === 'closed'
+  // What main's newer changes mean for this branch, from the conflicts answer
+  // (PL-8): nothing, safe, overlapping, or a merge that would refuse.
+  const note = landed ? ({ kind: 'none' } as const) : behindNote(conflicts, behind)
+  const neutralNote = note.kind === 'safe' || note.kind === 'moved'
+  // Not for a base older than complete merge baselines: the update always
+  // refuses those, so offering it would be a dead end (the note says why).
+  const canUpdateFromMain =
+    canWrite && !landed && conflicts?.behind === true && conflicts.updatable !== false
+  // The merge refuses non-field conflicts outright; updating from main is
+  // what clears them, so the merge button leads there instead (PL-8).
+  const mergeNeedsUpdate =
+    canUpdateFromMain &&
+    (conflicts?.merge_blocked === true ||
+      (conflicts?.entities ?? []).some((entity) => entity.entity_type !== 'event_type'))
   const onThisBranch = branchCtx.branchId === branch.id
   // Your own approval that the branch has since moved past: "Approve" again
   // refreshes it (PL-7).
@@ -635,42 +656,56 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
           )}
         </div>
         {/* `behind_base` is a yes/no, not a distance: it used to print "↓ 1
-            behind main" as if main were one change ahead. What it means for
-            the reviewer is that the merge may be refused, so it says that
-            before the Merge click rather than after (PLAN-14). */}
-        {/* Amber only when main's newer changes overlap this branch's: any
-            change on main used to turn every open branch amber and advise
-            recreating it, with nothing to act on (PL-8). */}
-        {diffLoad.status === 'success' && behind && !landed ? (
-          <p
+            behind main" as if main were one change ahead (PLAN-14). Amber only
+            when main's newer changes overlap this branch's or the merge would
+            refuse; otherwise neutral — and in every case with the action that
+            brings main in, rather than advice to recreate the branch (PL-8). */}
+        {(diffLoad.status === 'success' || conflicts?.behind !== undefined) && note.kind !== 'none' ? (
+          <div
             role="note"
-            className="flex items-start gap-1.5 border-t px-4 py-2.5 text-caption"
+            className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t px-4 py-2.5 text-caption"
             style={{
               borderColor: 'var(--border-subtle)',
-              color: unresolvedConflicts > 0 ? 'var(--warning)' : 'var(--fg-subtle)',
+              color: neutralNote ? 'var(--fg-subtle)' : 'var(--warning)',
             }}
           >
-            {unresolvedConflicts > 0 ? (
-              <AlertTriangle className="mt-[2px] size-3 shrink-0" aria-hidden="true" />
-            ) : (
-              <Info className="mt-[2px] size-3 shrink-0" aria-hidden="true" />
-            )}
-            {unresolvedConflicts > 0 ? (
-              <span>
-                Main has moved on since this branch was created, and{' '}
-                {countOf(unresolvedConflicts, 'field you changed was', 'fields you changed were')}{' '}
-                also changed there.{' '}
-                <a href="#branch-conflicts" className="font-medium underline underline-offset-2">
-                  Pick the values to keep
+            <span className="flex min-w-0 flex-1 items-start gap-1.5">
+              {neutralNote ? (
+                <Info className="mt-[2px] size-3 shrink-0" aria-hidden="true" />
+              ) : (
+                <AlertTriangle className="mt-[2px] size-3 shrink-0" aria-hidden="true" />
+              )}
+              {note.kind === 'overlap' ? (
+                <a href="#branch-conflicts" className="underline underline-offset-2">
+                  {countOf(note.count, 'entity you changed was', 'entities you changed were')}{' '}
+                  also changed on main — resolve below.
                 </a>
-              </span>
-            ) : (
-              <span>
-                Main has moved on since this branch was created. The merge still goes through
-                unless main changed the same entities; if it did, the refusal names them.
-              </span>
-            )}
-          </p>
+              ) : note.kind === 'blocked' ? (
+                <span>
+                  Main changed entities this branch also changes. Update from main to bring them in
+                  before merging.
+                </span>
+              ) : note.kind === 'legacy' ? (
+                <span>{INCOMPLETE_BASE_MESSAGE}</span>
+              ) : note.kind === 'moved' ? (
+                <span>Main has newer changes since this branch was created.</span>
+              ) : (
+                <span>Main has newer changes to other entities — safe to merge.</span>
+              )}
+            </span>
+            {canUpdateFromMain ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="max-sm:w-full"
+                onClick={() => setUpdateOpen(true)}
+              >
+                <RefreshCw className="size-3.5" aria-hidden="true" />
+                Update from main
+              </Button>
+            ) : null}
+          </div>
         ) : null}
         <BranchReviewSummary
           slug={slug}
@@ -692,15 +727,27 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
           >
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap">
               {branch.status === 'approved' ? (
-                <Button
-                  size="sm"
-                  className="max-sm:h-10 max-sm:w-full"
-                  disabled={actionMut.isPending || diffLoading}
-                  onClick={handleMerge}
-                >
-                  <GitMerge className="size-3.5" aria-hidden="true" />
-                  Merge to main
-                </Button>
+                mergeNeedsUpdate ? (
+                  <Button
+                    size="sm"
+                    className="max-sm:h-10 max-sm:w-full"
+                    disabled={actionMut.isPending}
+                    onClick={() => setUpdateOpen(true)}
+                  >
+                    <RefreshCw className="size-3.5" aria-hidden="true" />
+                    Update from main first
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    className="max-sm:h-10 max-sm:w-full"
+                    disabled={actionMut.isPending || diffLoading}
+                    onClick={handleMerge}
+                  >
+                    <GitMerge className="size-3.5" aria-hidden="true" />
+                    Merge to main
+                  </Button>
+                )
               ) : null}
               {transitions
                 .slice()
@@ -761,6 +808,18 @@ function FeatureBranchDetail({ slug, branch, diff, diffLoad, confirm }: FeatureB
           </p>
         ) : null}
       </Panel>
+
+      {/* Mounted for any open branch a writer sees, not only while it is
+          behind: the update's own success makes it not behind, and the dialog
+          must not vanish under the click that did it. */}
+      {canWrite && !landed ? (
+        <UpdateFromMainDialog
+          slug={slug}
+          branch={branch}
+          open={updateOpen}
+          onOpenChange={setUpdateOpen}
+        />
+      ) : null}
 
       <ImplementationTicketsPanel slug={slug} branch={branch} mergedAt={mergedAt} />
 

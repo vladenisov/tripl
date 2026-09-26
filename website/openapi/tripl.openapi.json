@@ -13916,6 +13916,120 @@
         }
       }
     },
+    "/api/v1/projects/{slug}/branches/{branch_id}/update-from-main": {
+      "get": {
+        "tags": [
+          "plan-branches"
+        ],
+        "summary": "Preview Update From Main",
+        "description": "What \"Update from main\" would bring onto the branch, and what overlaps.\n\nRead-only. ``main_hash`` is main as this preview read it; send it back as\n``expected_main_hash`` so the update refuses (409 ``main_moved``) rather\nthan apply changes nobody reviewed.",
+        "operationId": "preview_update_from_main_api_v1_projects__slug__branches__branch_id__update_from_main_get",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "branch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Branch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateFromMainPreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "plan-branches"
+        ],
+        "summary": "Update From Main",
+        "description": "Three-way merge main INTO the branch; the branch's base becomes main.\n\nEvery field both sides changed needs a choice \u2014 ``ours`` takes main's\nvalue, ``theirs`` keeps the branch's \u2014 given inline in ``resolutions`` or\nsaved earlier through ``/resolutions`` (stored choices count only when\n``expected_main_hash`` is sent). Refusals, all 409 and all writing\nnothing: ``unresolved_conflicts`` (with the full ``conflicts`` list),\n``update_blocked`` (the preview's ``blockers``), ``main_moved``,\n``incomplete_base_snapshot``, ``update_constraint_violation``, and a merged\nor closed branch. A branch already level with main answers 200\nwith ``updated: false``.",
+        "operationId": "update_from_main_api_v1_projects__slug__branches__branch_id__update_from_main_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "branch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Branch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateFromMainRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateFromMainResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{slug}/branches/{branch_id}/resolutions": {
       "post": {
         "tags": [
@@ -20128,6 +20242,26 @@
           "unresolved_count": {
             "type": "integer",
             "title": "Unresolved Count"
+          },
+          "behind": {
+            "type": "boolean",
+            "title": "Behind",
+            "default": false
+          },
+          "overlap_count": {
+            "type": "integer",
+            "title": "Overlap Count",
+            "default": 0
+          },
+          "merge_blocked": {
+            "type": "boolean",
+            "title": "Merge Blocked",
+            "default": false
+          },
+          "updatable": {
+            "type": "boolean",
+            "title": "Updatable",
+            "default": true
           }
         },
         "type": "object",
@@ -20545,11 +20679,35 @@
         "properties": {
           "entity_type": {
             "type": "string",
+            "enum": [
+              "event_type",
+              "field_definition",
+              "event",
+              "variable",
+              "meta_field",
+              "relation"
+            ],
             "title": "Entity Type"
           },
           "name": {
             "type": "string",
             "title": "Name"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "default": ""
           },
           "fields": {
             "items": {
@@ -20609,6 +20767,11 @@
                 "type": "null"
               }
             ]
+          },
+          "dependents": {
+            "type": "integer",
+            "title": "Dependents",
+            "default": 0
           }
         },
         "type": "object",
@@ -20619,7 +20782,7 @@
           "theirs"
         ],
         "title": "ConflictField",
-        "description": "A single field that diverged on both sides of the merge.\n\n``base`` is the value when the branch was created; ``ours`` is main's\ncurrent value; ``theirs`` is the branch's current value. The reviewer\npicks ``choice`` to drive the merge for this field; ``None`` means\nunresolved (merge stays blocked)."
+        "description": "A single field that diverged on both sides.\n\n``base`` is the value when the branch was created (or last updated from\nmain); ``ours`` is main's current value; ``theirs`` is the branch's current\nvalue. ``choice`` names the value to END with \u2014 ``ours`` takes main's,\n``theirs`` keeps the branch's \u2014 for the merge and for \"Update from main\"\nalike; ``None`` means unresolved.\n\n``field`` is ``@presence`` when one side deleted the entity and the other\nchanged it: ``base``/``ours``/``theirs`` are then ``\"present\"`` or\n``\"absent\"``. ``dependents`` counts, for an event type main deleted, the\nfields, events and relations this branch added or edited under it \u2014 what\ntaking main's side removes with it (PL-8)."
       },
       "ConnectionSettingsResponse": {
         "properties": {
@@ -21959,6 +22122,48 @@
         },
         "type": "object",
         "title": "EmailSettingsUpdate"
+      },
+      "EntityChangeCount": {
+        "properties": {
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "event_type",
+              "field_definition",
+              "event",
+              "variable",
+              "meta_field",
+              "relation"
+            ],
+            "title": "Entity Type"
+          },
+          "added": {
+            "type": "integer",
+            "title": "Added",
+            "default": 0
+          },
+          "changed": {
+            "type": "integer",
+            "title": "Changed",
+            "default": 0
+          },
+          "removed": {
+            "type": "integer",
+            "title": "Removed",
+            "default": 0
+          },
+          "renamed": {
+            "type": "integer",
+            "title": "Renamed",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "entity_type"
+        ],
+        "title": "EntityChangeCount",
+        "description": "How many entities of one type a side added, changed, removed or renamed."
       },
       "EventBulkDelete": {
         "properties": {
@@ -32034,14 +32239,26 @@
         "properties": {
           "entity_type": {
             "type": "string",
+            "enum": [
+              "event_type",
+              "field_definition",
+              "event",
+              "variable",
+              "meta_field",
+              "relation"
+            ],
             "title": "Entity Type"
           },
           "entity_name": {
             "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
             "title": "Entity Name"
           },
           "field_name": {
             "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
             "title": "Field Name"
           },
           "choice": {
@@ -36537,6 +36754,192 @@
         ],
         "title": "TopMoverItem",
         "description": "One row of \"what moved this anomaly\" \u2014 backed by MetricBreakdownAnomaly."
+      },
+      "UpdateBlocker": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "incomplete_base_snapshot",
+              "ambiguous",
+              "identity_clash"
+            ],
+            "title": "Kind"
+          },
+          "entity_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "event_type",
+                  "field_definition",
+                  "event",
+                  "variable",
+                  "meta_field",
+                  "relation"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Type"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "message"
+        ],
+        "title": "UpdateBlocker",
+        "description": "Something that stops an update whatever is chosen, and what to do about it.\n\n``kind``: ``incomplete_base_snapshot`` (the base predates complete merge\nbaselines), ``ambiguous`` (main changed a row this branch holds more than\nonce under one name, on a branch opened before origin ids) or\n``identity_clash`` (a row of main's and one of the branch's own would share\na name or ``source_name``; rename the branch's one)."
+      },
+      "UpdateFromMainPreview": {
+        "properties": {
+          "behind": {
+            "type": "boolean",
+            "title": "Behind"
+          },
+          "updatable": {
+            "type": "boolean",
+            "title": "Updatable",
+            "default": true
+          },
+          "blockers": {
+            "items": {
+              "$ref": "#/components/schemas/UpdateBlocker"
+            },
+            "type": "array",
+            "title": "Blockers"
+          },
+          "base_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Revision Id"
+          },
+          "main_hash": {
+            "type": "string",
+            "title": "Main Hash"
+          },
+          "main_changes": {
+            "items": {
+              "$ref": "#/components/schemas/EntityChangeCount"
+            },
+            "type": "array",
+            "title": "Main Changes"
+          },
+          "conflicts": {
+            "$ref": "#/components/schemas/BranchConflictsResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "behind",
+          "base_revision_id",
+          "main_hash",
+          "main_changes",
+          "conflicts"
+        ],
+        "title": "UpdateFromMainPreview"
+      },
+      "UpdateFromMainRequest": {
+        "properties": {
+          "expected_main_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Main Hash"
+          },
+          "resolutions": {
+            "items": {
+              "$ref": "#/components/schemas/ResolutionCreate"
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "title": "Resolutions"
+          }
+        },
+        "type": "object",
+        "title": "UpdateFromMainRequest"
+      },
+      "UpdateFromMainResult": {
+        "properties": {
+          "updated": {
+            "type": "boolean",
+            "title": "Updated"
+          },
+          "branch": {
+            "$ref": "#/components/schemas/PlanBranchDetailResponse"
+          },
+          "applied": {
+            "items": {
+              "$ref": "#/components/schemas/EntityChangeCount"
+            },
+            "type": "array",
+            "title": "Applied"
+          },
+          "previous_base_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Base Revision Id"
+          },
+          "base_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Revision Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "updated",
+          "branch",
+          "applied",
+          "previous_base_revision_id",
+          "base_revision_id"
+        ],
+        "title": "UpdateFromMainResult"
       },
       "UserListItem": {
         "properties": {

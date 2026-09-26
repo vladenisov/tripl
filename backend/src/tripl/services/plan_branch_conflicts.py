@@ -24,7 +24,13 @@ from tripl.services.plan_branch_service import (
     _resolve_project,
     ensure_main_branch_id,
 )
-from tripl.services.plan_revision_service import build_plan_snapshot, photos_without_comments
+from tripl.services.plan_revision_service import (
+    PLAN_SNAPSHOT_VERSION,
+    build_plan_snapshot,
+    compute_plan_diff_entries,
+    photos_without_comments,
+    with_snapshot_defaults,
+)
 
 # --- 3-way merge engine ---------------------------------------------------
 #
@@ -594,6 +600,120 @@ async def _load_resolutions(
     return {(r.entity_type, r.entity_name, r.field_name): r for r in rows}
 
 
+def detect_field_conflicts(
+    base: dict[str, Any],
+    main: dict[str, Any],
+    branch: dict[str, Any],
+    *,
+    origins_complete: bool,
+) -> list[dict[str, Any]]:
+    """Every field both main and the branch changed since the base, all six types.
+
+    One row per ``(entity, field)``: ``{entity_type, name, parent, label, field,
+    base, ours, theirs, dependents}``. ``field`` is ``@presence`` where one side
+    deleted what the other changed, and an entity both sides added under one
+    key reports its differing fields with ``base=None``. The identity each
+    entity is matched by is the merge's — see ``_plan_branch_three_way``, which
+    "Update from main" applies from, so what this lists is exactly what an
+    update asks the user to choose (PL-8).
+
+    ``_field_conflicts_event_type`` stays as the merge's own gate: its rows are
+    the event-type slice of these, without the presence rows the merge refuses
+    outright.
+    """
+    # Local import: the three-way module reads this module's change keys.
+    from tripl.services._plan_branch_three_way import plan_three_way
+
+    return plan_three_way(base, main, branch, origins_complete=origins_complete).rows
+
+
+def merge_blocked_by(
+    base: dict[str, Any],
+    main: dict[str, Any],
+    branch: dict[str, Any],
+    *,
+    origins_complete: bool,
+) -> bool:
+    """Whether ``merge_branch`` would refuse on a conflict no inline choice settles.
+
+    The merge's own test, in the merge's own words: every entity-level conflict
+    that is not an event-type field conflict the resolutions cover.
+    """
+    resolvable = {
+        (row["entity_type"], row["name"]) for row in _field_conflicts_event_type(base, main, branch)
+    }
+    return any(
+        (conflict["entity_type"], conflict["name"]) not in resolvable
+        for conflict in _detect_merge_conflicts(
+            base, main, branch, theirs_origins_complete=origins_complete
+        )
+    )
+
+
+def conflicts_response(
+    rows: list[dict[str, Any]],
+    resolutions: dict[tuple[str, str, str], str],
+    *,
+    behind: bool,
+    merge_blocked: bool,
+    updatable: bool = True,
+) -> BranchConflictsResponse:
+    """Conflict rows grouped per entity, each with the choice already made for it."""
+    by_entity: dict[tuple[str, str], ConflictEntity] = {}
+    unresolved = 0
+    for row in rows:
+        entity_key = (row["entity_type"], row["name"])
+        entity = by_entity.get(entity_key)
+        if entity is None:
+            entity = ConflictEntity(
+                entity_type=row["entity_type"],
+                name=row["name"],
+                parent=row.get("parent"),
+                label=row.get("label") or row["name"],
+                fields=[],
+            )
+            by_entity[entity_key] = entity
+        if any(existing.field == row["field"] for existing in entity.fields):
+            # Namesakes share one key, so one row stands for all of them.
+            continue
+        choice = resolutions.get((row["entity_type"], row["name"], row["field"]))
+        if choice is None:
+            unresolved += 1
+        entity.fields.append(
+            ConflictField(
+                field=row["field"],
+                base=row["base"],
+                ours=row["ours"],
+                theirs=row["theirs"],
+                choice=choice,
+                dependents=row.get("dependents", 0),
+            )
+        )
+    order = {
+        name: index
+        for index, name in enumerate(
+            ("event_type", "meta_field", "variable", "field_definition", "event", "relation")
+        )
+    }
+    entities = sorted(
+        by_entity.values(),
+        key=lambda entity: (order.get(entity.entity_type, 99), entity.parent or "", entity.name),
+    )
+    return BranchConflictsResponse(
+        entities=entities,
+        unresolved_count=unresolved,
+        behind=behind,
+        overlap_count=len(entities),
+        merge_blocked=merge_blocked,
+        updatable=updatable,
+    )
+
+
+def is_behind(base: dict[str, Any], main: dict[str, Any]) -> bool:
+    """Main changed since the base: the list's ``behind_base`` test, verbatim."""
+    return bool(compute_plan_diff_entries(base, main, origins_complete=True))
+
+
 async def get_branch_conflicts(
     session: AsyncSession, slug: str, branch_id: uuid.UUID
 ) -> BranchConflictsResponse:
@@ -606,37 +726,86 @@ async def get_branch_conflicts(
     if branch.base_revision_id is not None:
         base_rev = await session.get(PlanRevision, branch.base_revision_id)
         if base_rev is not None:
-            base_payload = base_rev.payload or {}
+            base_payload = with_snapshot_defaults(base_rev.payload or {})
     main_payload = await build_plan_snapshot(session, project.id, branch_id=main_branch_id)
     branch_payload = await build_plan_snapshot(session, project.id, branch_id=branch.id)
+    if not base_payload:
+        # A legacy branch with no base has no third side to compare against.
+        return BranchConflictsResponse(entities=[], unresolved_count=0, updatable=False)
 
-    raw = _field_conflicts_event_type(base_payload, main_payload, branch_payload)
+    # Local import: the three-way module reads this module's change keys.
+    from tripl.services._plan_branch_three_way import plan_three_way
+
+    plan = plan_three_way(
+        base_payload,
+        main_payload,
+        branch_payload,
+        origins_complete=branch.origin_ids_complete,
+    )
     resolutions = await _load_resolutions(session, branch.id)
+    return conflicts_response(
+        plan.rows,
+        {key: resolution.choice for key, resolution in resolutions.items()},
+        # Any change of main's the update would bring, cosmetic ones included
+        # (a display name, an order): the preview's and the POST's own test,
+        # so a merge blocked by such an overlap still offers the update.
+        behind=is_behind(base_payload, main_payload)
+        or any(any(counts.values()) for counts in plan.main_changes.values()),
+        merge_blocked=merge_blocked_by(
+            base_payload,
+            main_payload,
+            branch_payload,
+            origins_complete=branch.origin_ids_complete,
+        ),
+        # A base older than complete merge baselines can never be updated.
+        # Other blockers (``UpdateFromMainPreview.blockers``) are left to the
+        # update dialog, which names them and what to do about each.
+        updatable=base_payload.get("snapshot_version") == PLAN_SNAPSHOT_VERSION,
+    )
 
-    by_entity: dict[str, list[ConflictField]] = {}
-    unresolved = 0
-    for row in raw:
-        choice = None
-        key = (row["entity_type"], row["name"], row["field"])
-        if key in resolutions:
-            choice = resolutions[key].choice
-        else:
-            unresolved += 1
-        by_entity.setdefault(row["name"], []).append(
-            ConflictField(
-                field=row["field"],
-                base=row["base"],
-                ours=row["ours"],
-                theirs=row["theirs"],
-                choice=choice,
-            )
+
+def validate_resolution(data: ResolutionCreate) -> None:
+    """Refuse a resolution naming a field no conflict row can carry (422)."""
+    from tripl.services._plan_branch_three_way import CHANGE_KEYS, PRESENCE_FIELD
+
+    allowed = {PRESENCE_FIELD, "name", *CHANGE_KEYS[data.entity_type]}
+    if data.field_name not in allowed:
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{data.field_name}' is not a field of a {data.entity_type} conflict",
         )
 
-    entities = [
-        ConflictEntity(entity_type="event_type", name=name, fields=fields)
-        for name, fields in sorted(by_entity.items())
-    ]
-    return BranchConflictsResponse(entities=entities, unresolved_count=unresolved)
+
+async def upsert_resolution(
+    session: AsyncSession,
+    branch_id: uuid.UUID,
+    data: ResolutionCreate,
+    user_id: uuid.UUID | None,
+) -> PlanBranchMergeResolution:
+    """Insert or overwrite one stored choice, without committing."""
+    validate_resolution(data)
+    existing = await session.scalar(
+        select(PlanBranchMergeResolution).where(
+            PlanBranchMergeResolution.branch_id == branch_id,
+            PlanBranchMergeResolution.entity_type == data.entity_type,
+            PlanBranchMergeResolution.entity_name == data.entity_name,
+            PlanBranchMergeResolution.field_name == data.field_name,
+        )
+    )
+    if existing is not None:
+        existing.choice = data.choice
+        existing.resolved_by = user_id
+        return existing
+    resolution = PlanBranchMergeResolution(
+        branch_id=branch_id,
+        entity_type=data.entity_type,
+        entity_name=data.entity_name,
+        field_name=data.field_name,
+        choice=data.choice,
+        resolved_by=user_id,
+    )
+    session.add(resolution)
+    return resolution
 
 
 async def save_resolution(
@@ -649,29 +818,7 @@ async def save_resolution(
     project = await _resolve_project(session, slug)
     branch = await _get_branch(session, project.id, branch_id)
     _reject_main(branch)
-
-    existing = await session.scalar(
-        select(PlanBranchMergeResolution).where(
-            PlanBranchMergeResolution.branch_id == branch.id,
-            PlanBranchMergeResolution.entity_type == data.entity_type,
-            PlanBranchMergeResolution.entity_name == data.entity_name,
-            PlanBranchMergeResolution.field_name == data.field_name,
-        )
-    )
-    if existing is not None:
-        existing.choice = data.choice
-        existing.resolved_by = user_id
-        resolution = existing
-    else:
-        resolution = PlanBranchMergeResolution(
-            branch_id=branch.id,
-            entity_type=data.entity_type,
-            entity_name=data.entity_name,
-            field_name=data.field_name,
-            choice=data.choice,
-            resolved_by=user_id,
-        )
-        session.add(resolution)
+    resolution = await upsert_resolution(session, branch.id, data, user_id)
     await session.commit()
     await session.refresh(resolution)
     return ResolutionResponse.model_validate(resolution)
