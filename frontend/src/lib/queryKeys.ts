@@ -140,7 +140,8 @@ export const metricsCatalogListKey = (
   status: string,
   kind: string,
   search: string,
-) => [...metricsCatalogKey(slug), status, kind, search] as const
+  review = '',
+) => [...metricsCatalogKey(slug), status, kind, search, review] as const
 
 /** One catalog metric's definition — or, without `metricId`, all of them. */
 export const metricDefinitionKey = (slug: string | undefined, metricId?: string) =>
@@ -287,6 +288,10 @@ export const projectQueryOptions = (slug: string | undefined, branchId?: string 
  * layer invalidates all three when a delivery lands.
  */
 export const alertInboxKey = (slug: string | undefined) => ['alertInbox', slug] as const
+/** The top-bar bell's open-incident slice; under the inbox prefix, so every
+ * inbox invalidation refreshes it too. */
+export const topbarInboxKey = (slug: string | undefined) =>
+  [...alertInboxKey(slug), 'topbar'] as const
 export const alertInboxGroupKey = (slug: string | undefined) => ['alertInboxGroup', slug] as const
 export const alertDeliveriesAnyKey = (slug: string | undefined) =>
   ['alertDeliveriesAny', slug] as const
@@ -351,6 +356,10 @@ export const invitationPreviewKey = (token: string | undefined) =>
   ['invitationPreview', token] as const
 export const apiKeysKey = () => ['api-keys'] as const
 export const serviceSettingsKey = () => ['serviceSettings'] as const
+/** The built-in AI prompts: fixed per deploy, so outside the settings root. */
+export const aiPromptDefaultsKey = () => ['aiPromptDefaults'] as const
+/** The instance row caps, readable by any signed-in user (scan form hints). */
+export const rowLimitDefaultsKey = () => ['rowLimitDefaults'] as const
 
 /** AI availability. The root is what a settings write invalidates, so every
  * project's copy refreshes. */

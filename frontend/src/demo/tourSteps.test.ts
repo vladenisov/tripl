@@ -41,22 +41,55 @@ describe('buildTourSteps', () => {
     expect(byId.get('alerting')).toBe('/p/acme/settings/alerting')
   })
 
-  it('tags every step with a nav group the sidebar actually renders (tripl-3y7z)', () => {
+  it('tags every step with the group its sidebar item is in (tripl-3y7z, #251 JR-22)', () => {
     // ProductTour prints `step.area` as the step's chip. The scans step said
-    // 'Connect', a group buildNavGroups has never produced, so a reader who
-    // dismissed the tour and went looking for "Connect → Scans" had nowhere to
-    // go. Derived from navigation itself so a future rename cannot drift.
-    const groups = buildNavGroups('acme', undefined).map((group) => group.label)
-    for (const step of steps) {
-      expect(groups, `step "${step.id}" is tagged with area "${step.area}"`).toContain(step.area)
-    }
+    // 'Connect', a group buildNavGroups has never produced, and Branches and
+    // Alerting said Govern while the sidebar filed them under Plan and
+    // Observe. Derived from navigation itself so a future move cannot drift.
+    const groups = buildNavGroups('acme', undefined)
+    const groupOf = (navId: string) =>
+      groups.find((group) => group.items.some((item) => item.id === navId))?.label
+    const byId = new Map(steps.map((step) => [step.id, step]))
+    expect(byId.get('events')?.area).toBe(groupOf('events'))
+    expect(byId.get('scans')?.area).toBe('Govern')
+    expect(byId.get('branches')?.area).toBe(groupOf('branches'))
+    expect(byId.get('branches')?.area).toBe('Plan')
+    expect(byId.get('alerting')?.area).toBe('Observe')
+    expect(byId.get('monitors')?.area).toBe(groupOf('alerting'))
+    // Search is the command palette, not a sidebar item: no chip at all.
+    expect(byId.get('search')?.area).toBeNull()
   })
 
-  it('files the scans step under the group that owns Scans (tripl-3y7z)', () => {
-    const scans = steps.find((step) => step.id === 'scans')
-    const govern = buildNavGroups('acme', undefined).find((group) => group.label === 'Govern')
-    expect(govern?.items.map((item) => item.id)).toContain('scans')
-    expect(scans?.area).toBe('Govern')
+  it('titles each page step with its sidebar label (#251 JR-22, SH-7)', () => {
+    const labels = buildNavGroups('acme', undefined).flatMap((group) =>
+      group.items.map((item) => item.label),
+    )
+    const byId = new Map(steps.map((step) => [step.id, step.title]))
+    expect(byId.get('events')).toBe('Events')
+    expect(byId.get('branches')).toBe('Plan branches')
+    expect(byId.get('alerting')).toBe('Alerting')
+    const pageSteps = [
+      'events',
+      'scans',
+      'live-activity',
+      'metrics',
+      'anomalies',
+      'coverage',
+      'reconciliation',
+      'branches',
+      'alerting',
+    ]
+    for (const id of pageSteps) {
+      expect(labels).toContain(byId.get(id))
+    }
+    // A section of a page keeps its own name.
+    expect(byId.get('monitors')).toBe('Alert rules')
+  })
+
+  it('describes Coverage as plan implementation (#251 JR-22)', () => {
+    const coverage = steps.find((step) => step.id === 'coverage')
+    expect(coverage?.blurb).toMatch(/implemented/)
+    expect(coverage?.blurb).not.toMatch(/platforms/)
   })
 
   it('describes a scan by what every run produces, not by a baseline (tripl-3y7z)', () => {

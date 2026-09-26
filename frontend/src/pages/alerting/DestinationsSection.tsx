@@ -1,15 +1,21 @@
 import { useMemo } from 'react'
-import { Trash2, Webhook } from 'lucide-react'
+import { ChevronDown, Plus, Webhook } from 'lucide-react'
 
-import { CountBadge } from '@/components/primitives/count-badge'
+import { EmptyState } from '@/components/empty-state'
+import { Panel } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/states'
 import type { AlertDestination } from '@/types'
 
 import { CHANNEL_META } from './channelMeta'
 import { DestinationCard } from './DestinationCard'
-import { describeDeletionImpact } from './deletionImpact'
 import type { DestinationChannel } from './constants'
 
 interface DestinationsSectionProps {
@@ -59,14 +65,16 @@ export function DestinationsSection({
     () => destinations.filter((destination) => destination.type === 'demo_sink'),
     [destinations],
   )
-  const groupedDestinations = useMemo(() => ({
-    slack: destinations.filter(destination => destination.type === 'slack'),
-    telegram: destinations.filter(destination => destination.type === 'telegram'),
-    webhook: destinations.filter(destination => destination.type === 'webhook'),
-    email: destinations.filter(destination => destination.type === 'email'),
-    jira: destinations.filter(destination => destination.type === 'jira'),
-    linear: destinations.filter(destination => destination.type === 'linear'),
-  }), [destinations])
+  // One flat list in channel-catalogue order: each card carries its own
+  // channel icon and name now, so a "Slack ①" subheading over a single card
+  // was a heading for nothing (AL-26).
+  const channelDestinations = useMemo(
+    () =>
+      CHANNEL_META.flatMap(({ channel }) =>
+        destinations.filter(destination => destination.type === channel),
+      ),
+    [destinations],
+  )
 
   const hasDestinations = destinations.length > 0
   // Creating, editing and deleting a destination or a rule are all editor-only
@@ -78,7 +86,7 @@ export function DestinationsSection({
   // populated-state "add another" row stay in sync.
   const channelButtons = CHANNEL_META.map(({ channel, label, Icon }) => (
     <Button key={channel} variant="outline" size="sm" onClick={() => onCreateDestination(channel)}>
-      <Icon className="mr-2 h-4 w-4" />
+      <Icon aria-hidden="true" />
       {label}
     </Button>
   ))
@@ -89,6 +97,29 @@ export function DestinationsSection({
     </p>
   )
 
+  // The section's primary action, top-right like Monitors' "Add rule"
+  // (AL-26): adding a channel used to mean finding the dashed strip at the
+  // bottom of the list.
+  const addDestinationMenu = canWrite && !isDemo && (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button size="sm">
+          <Plus aria-hidden="true" />
+          Add destination
+          <ChevronDown aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {CHANNEL_META.map(({ channel, label, Icon }) => (
+          <DropdownMenuItem key={channel} onSelect={() => onCreateDestination(channel)}>
+            <Icon aria-hidden="true" />
+            {label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+
   return (
     <>
     {/* Once, above everything this section can no longer offer to change —
@@ -97,113 +128,65 @@ export function DestinationsSection({
     {!canWrite && (
       <ReadOnlyNotice>{VIEWER_READ_ONLY_NOTICE}</ReadOnlyNotice>
     )}
-    <div className="grid gap-6">
-      <div className="min-w-0 space-y-4">
-        <div className="space-y-1">
-          <h3 className="text-body font-semibold">Destinations</h3>
-          <p className="text-body-sm text-muted-foreground">
-            Signals route to destinations via rules.
-          </p>
-        </div>
-
+    <Panel
+      title="Destinations"
+      subtitle="Signals route to destinations via rules."
+      right={hasDestinations ? addDestinationMenu : undefined}
+    >
+      <div className="min-w-0 space-y-3 p-4">
         {!hasDestinations && (
-          // Inlined empty state with trimmed vertical padding (py-8 vs the shared
-          // EmptyState's py-16) so the heading, message, and channel buttons read as
-          // one connected block instead of floating below an awkward void.
-          <div className="flex flex-col items-center justify-center py-8 text-center">
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-              <Webhook className="size-5 text-muted-foreground" />
-            </div>
-            <h3 className="text-body font-semibold text-foreground">No alert destinations</h3>
-            <p className="mt-1 max-w-sm text-body text-muted-foreground">
-              Connect Slack, Telegram, email, a webhook, Jira or Linear, then attach rules to it.
-            </p>
-            {isDemo ? (
-              <div className="mt-4 max-w-sm">{demoChannelNotice}</div>
-            ) : !canWrite ? null : (
-              <div className="mt-4 flex flex-col items-center gap-2">
-                <span className="text-body-sm font-medium text-muted-foreground">Add a channel</span>
-                <div className="flex flex-wrap items-center justify-center gap-2">
-                  {channelButtons}
+          <EmptyState
+            size="sm"
+            headingLevel={3}
+            icon={Webhook}
+            title="No alert destinations"
+            description="Connect Slack, Telegram, email, a webhook, Jira or Linear, then attach rules to it."
+            action={
+              isDemo ? (
+                <div className="max-w-sm">{demoChannelNotice}</div>
+              ) : !canWrite ? undefined : (
+                <div className="flex flex-col items-center gap-2">
+                  <span className="text-body-sm font-medium text-muted-foreground">Add a channel</span>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    {channelButtons}
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )
+            }
+          />
         )}
 
-        {localSinks.length > 0 && (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <h4 className="text-body font-medium">Local sink</h4>
-              <CountBadge count={localSinks.length} />
-              <span className="sr-only">{`(${localSinks.length})`}</span>
-            </div>
-            {/* No delete affordance: the sink is part of the demo scenario and
-                owns its seeded rules and deliveries. Reset re-creates it. */}
-            {localSinks.map((destination) => (
-              <DestinationCard
-                key={destination.id}
-                slug={slug}
-                destination={destination}
-                canWrite={canWrite}
-                onEditDestination={onEditDestination}
-              />
-            ))}
-          </div>
-        )}
+        {/* No delete affordance on a local sink: it is part of the demo
+            scenario and owns its seeded rules and deliveries. Reset re-creates
+            it. */}
+        {localSinks.map(destination => (
+          <DestinationCard
+            key={destination.id}
+            slug={slug}
+            destination={destination}
+            canWrite={canWrite}
+            onEditDestination={onEditDestination}
+          />
+        ))}
 
-        {CHANNEL_META
-          .filter(({ channel }) => groupedDestinations[channel].length > 0)
-          .map(({ channel, label }) => (
-            <div key={channel} className="space-y-3">
-              <div className="flex items-center gap-2">
-                <h4 className="text-body font-medium">{label}</h4>
-                <CountBadge count={groupedDestinations[channel].length} />
-                <span className="sr-only">{`(${groupedDestinations[channel].length})`}</span>
-              </div>
-              {groupedDestinations[channel].map(destination => (
-                <div key={destination.id}>
-                  <DestinationCard
-                    slug={slug}
-                    destination={destination}
-                    canWrite={canWrite}
-                    onEditDestination={onEditDestination}
-                  />
-                  {/* The confirm itself lives on the page that owns the delete
-                      mutation, and states the same cascade in the dialog through
-                      the same helper (ProjectAlertingTab `handleDeleteDestination`
-                      — for a while it did not, and this `title` was the only
-                      place the numbers appeared at all). It is repeated here, on
-                      the control, because a `title` reaches a reader who is
-                      still deciding whether to press it (tripl-oxkt.13). */}
-                  {canWrite && (
-                    <div className="mt-2 flex justify-end">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-muted-foreground hover:text-destructive"
-                        title={`Deletes "${destination.name}", its rules, and their history. ${describeDeletionImpact(destination.delivery_count, destination.incident_count)}`}
-                        disabled={deletingDestinationId === destination.id}
-                        onClick={() => onDeleteDestination(destination)}
-                      >
-                        <Trash2 aria-hidden="true" className="mr-2 h-4 w-4" />
-                        {deletingDestinationId === destination.id ? 'Deleting…' : 'Delete destination'}
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          ))}
+        {channelDestinations.map(destination => (
+          <DestinationCard
+            key={destination.id}
+            slug={slug}
+            destination={destination}
+            canWrite={canWrite}
+            onEditDestination={onEditDestination}
+            onDeleteDestination={onDeleteDestination}
+            isDeleting={deletingDestinationId === destination.id}
+          />
+        ))}
 
-        {/* Once at least one destination exists, empty channels collapse into this
-            compact row instead of rendering bare headers — every type stays one click
-            away without taking vertical space for nothing. The zero-state CTA lives in
-            the EmptyState above, so this "add another" row is for the populated view. */}
-        {/* Gone entirely for a viewer: "Add another channel" over a row of
-            buttons that answer 403 is an invitation, not information. */}
+        {/* The per-channel buttons stay under a populated list too, so every
+            type is one click away without opening the menu above. Gone
+            entirely for a viewer: "Add another channel" over a row of buttons
+            that answer 403 is an invitation, not information. */}
         {hasDestinations && (canWrite || isDemo) && (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed p-3">
+          <div className="flex flex-wrap items-center gap-2 rounded-card border border-dashed p-3">
             {isDemo ? (
               demoChannelNotice
             ) : (
@@ -215,7 +198,7 @@ export function DestinationsSection({
           </div>
         )}
       </div>
-    </div>
+    </Panel>
     </>
   )
 }

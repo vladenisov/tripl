@@ -306,8 +306,8 @@ with the comparability verdict and the reason when a comparison is withheld.
 These rows are recomputed from scratch on every scan and keep no history, so the
 tab always describes the newest rollout — and it does so whatever window the run
 that recomputed them covered. The check is anchored on the **newest version
-bucket this scan has stored**, not on the window being collected, so **Run a
-one-off replay** of a past period refreshes the verdict for the release that is
+bucket this scan has stored**, not on the window being collected, so **Replay a
+period…** over a past period refreshes the verdict for the release that is
 current *now* rather than replacing the tab with whichever release was newest
 inside that period. A release-regression
 incident in the Alerting Inbox links to the monitoring page of whatever it was
@@ -355,7 +355,10 @@ least the last 30 buckets of the metric's **own** interval, not the running
 scan's. Anything older stays on the chart as history, the same promise the
 per-metric anomaly toggle makes. **Reset anomalies** (**Workspace settings →
 Project → General**) remains the only action that deletes recorded history,
-together with switching the project's master **Anomaly detection** off.
+together with switching the project's master **Anomaly detection** off. Its
+confirm counts what it will delete first — "Permanently delete 12 anomalies and
+3 breakdown anomalies" — from a dry run of the same window (`dry_run: true` on
+`POST /projects/{slug}/danger/reset-anomalies`, and likewise `reset-drifts`).
 
 Everything else — the seasonal baseline, the robust spread and its floor, the
 z-score, and false-positive self-tuning — works exactly as it does for events.

@@ -31,6 +31,14 @@ vi.mock('@/api/eventTypes', () => ({
 vi.mock('@/api/dataSources', () => ({
   dataSourcesApi: { list: vi.fn() },
 }))
+// The Owner picker lists the workspace roster (MT-25).
+vi.mock('@/api/users', () => ({
+  usersApi: {
+    list: vi.fn(async () => [
+      { id: 'user-1', email: 'ana@example.com', name: 'Ana', role: 'editor', created_at: '2026-01-01T00:00:00Z' },
+    ]),
+  },
+}))
 
 vi.mock('@/api/factTables', () => ({
   factTablesApi: {
@@ -187,9 +195,21 @@ function wrapper({ children }: { children: ReactNode }) {
   return createElement(QueryClientProvider, { client: queryClient }, children)
 }
 
+/** The bare form outside a page: it links out (e.g. "Add events" when the
+ * project tracks none), so it needs the router the app always gives it. */
+function formWrapper({ children }: { children: ReactNode }) {
+  return wrapper({ children: createElement(MemoryRouter, null, children) })
+}
+
+/**
+ * Render the form. A new metric starts on "From tracked events" (MT-3); most
+ * of these cases exercise the SQL kind, so a create form switches to Custom
+ * SQL first unless `pickSql` is false (which keeps the form pristine).
+ */
 function renderForm(
   metric: MetricDefinitionDetailResponse | null = null,
   dataSources: DataSource[] = DATA_SOURCES,
+  { pickSql = true }: { pickSql?: boolean } = {},
 ) {
   const onClose = vi.fn()
   render(
@@ -199,8 +219,9 @@ function renderForm(
       dataSources,
       onClose,
     }),
-    { wrapper },
+    { wrapper: formWrapper },
   )
+  if (!metric && pickSql) fireEvent.click(screen.getByRole('radio', { name: /Custom SQL/ }))
   return { onClose }
 }
 
@@ -217,8 +238,20 @@ async function openAddFilterMenu() {
   return screen.findByRole('menu')
 }
 
+/** Open the collapsed "Breakdowns and dimensions" section (MT-5). */
+function showDimensions() {
+  const trigger = screen.getByRole('button', { name: /Breakdowns and dimensions/ })
+  if (trigger.getAttribute('aria-expanded') !== 'true') fireEvent.click(trigger)
+}
+
 function submit() {
-  fireEvent.click(screen.getByRole('button', { name: /Create metric|Save metric/ }))
+  fireEvent.click(screen.getByRole('button', { name: /Create and start collecting|Save metric/ }))
+}
+
+/** Confirm the "hasn't previewed" ask a new SQL metric gets on create (MT-15). */
+async function createAnyway() {
+  const dialog = await screen.findByRole('alertdialog')
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Create anyway' }))
 }
 
 beforeEach(() => {
@@ -268,7 +301,7 @@ describe('MetricForm validation', () => {
   it('rejects a SQL metric that is missing required identity/config', async () => {
     renderForm()
 
-    // Fresh form: kind defaults to SQL, with no display name, data source, or query.
+    // SQL form with no display name, data source, or query.
     submit()
 
     // Each message renders both inline (under its field) and in the summary list.
@@ -316,6 +349,8 @@ describe('MetricForm validation', () => {
     fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
 
     submit()
+    // Never previewed, so the create asks first (MT-15).
+    await createAnyway()
 
     await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
     expect(metricsCatalogApi.create).toHaveBeenCalledWith(
@@ -353,7 +388,7 @@ describe('MetricForm validation', () => {
   it('keeps the internal name read-only and renders editable kind/config in edit mode', () => {
     renderForm(EDIT_METRIC)
 
-    expect(screen.getByRole('heading', { name: 'Edit metric' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Edit · Order count' })).toBeInTheDocument()
     // Internal name is shown as text, not an editable input. Queried by role
     // because the row itself is now named "Internal name" — it holds no control,
     // so it is a labelled group rather than a <label> pointing at nothing.
@@ -511,7 +546,7 @@ describe('MetricForm validation', () => {
     renderForm(EDIT_METRIC)
 
     // Switching kind applies at once; the history-loss confirm comes at save.
-    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From a fact table/ }))
     await waitFor(() =>
       expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
     )
@@ -562,7 +597,7 @@ describe('MetricForm validation', () => {
     renderForm()
 
     // Switch to event composition.
-    fireEvent.click(screen.getByRole('radio', { name: /Event composition/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From tracked events/ }))
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
       target: { value: 'Checkout ratio' },
     })
@@ -596,7 +631,7 @@ describe('MetricForm validation', () => {
   })
 
   function fillFactIdentity(displayName: string, name: string) {
-    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From a fact table/ }))
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
       target: { value: displayName },
     })
@@ -739,7 +774,7 @@ describe('MetricForm validation', () => {
     fireEvent.change(document.getElementById('metric-fact-table')!, { target: { value: 'ft-1' } })
 
     expect(await screen.findByRole('button', { name: /Check filters/i })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Create metric' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Create and start collecting' })).toBeDisabled()
 
     await act(async () => {
       resolveDetail(
@@ -749,7 +784,7 @@ describe('MetricForm validation', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /Check filters/i })).toBeEnabled()
-      expect(screen.getByRole('button', { name: 'Create metric' })).toBeEnabled()
+      expect(screen.getByRole('button', { name: 'Create and start collecting' })).toBeEnabled()
     })
   })
 
@@ -765,7 +800,7 @@ describe('MetricForm validation', () => {
 
     expect(await screen.findByText('Could not load fact table details')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Check filters/i })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Create metric' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Create and start collecting' })).toBeDisabled()
     expect(metricsCatalogApi.create).not.toHaveBeenCalled()
   })
 
@@ -797,7 +832,9 @@ describe('MetricForm validation', () => {
     fireEvent.change(document.getElementById('metric-fact-num-table')!, { target: { value: 'ft-1' } })
     fireEvent.change(document.getElementById('metric-fact-den-table')!, { target: { value: 'ft-2' } })
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Create metric' })).toBeEnabled())
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Create and start collecting' })).toBeEnabled(),
+    )
     submit()
 
     await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
@@ -827,7 +864,7 @@ describe('MetricForm validation', () => {
   it('labels the event select "Event" and hides the denominator for single composition', () => {
     renderForm()
 
-    fireEvent.click(screen.getByRole('radio', { name: /Event composition/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From tracked events/ }))
 
     // Default composition is single: the event select is labelled "Event".
     expect(screen.getByLabelText('Event').id).toBe('metric-numerator')
@@ -839,7 +876,7 @@ describe('MetricForm validation', () => {
   it('hides warehouse monitoring fields for an event-composition metric', () => {
     renderForm()
 
-    fireEvent.click(screen.getByRole('radio', { name: /Event composition/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From tracked events/ }))
 
     expect(document.getElementById('metric-breakdowns')).toBeNull()
     expect(document.getElementById('metric-app-version')).toBeNull()
@@ -928,10 +965,10 @@ describe('MetricForm validation', () => {
   it('switches kind on edit without a confirm; the history warning moves to save', async () => {
     renderForm(EDIT_METRIC)
 
-    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From a fact table/ }))
 
     expect(screen.queryByRole('alertdialog')).toBeNull()
-    expect(screen.getByRole('radio', { name: /Fact/ })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: /From a fact table/ })).toHaveAttribute('aria-checked', 'true')
     // The consequence is on screen before Save, not only in the confirm.
     expect(screen.getByText(/Saving deletes its collected values/)).toBeInTheDocument()
   })
@@ -967,12 +1004,15 @@ describe('MetricForm validation', () => {
     fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
 
     // The picker offers the data-source schema columns as checkboxes; tick two.
+    showDimensions()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Break down by platform' }))
     fireEvent.click(screen.getByRole('checkbox', { name: 'Break down by country' }))
     expect(screen.getByRole('checkbox', { name: 'Break down by platform' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: 'Break down by country' })).toBeChecked()
 
     submit()
+    // Never previewed, so the create asks first (MT-15).
+    await createAnyway()
 
     await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
     expect(metricsCatalogApi.create).toHaveBeenCalledWith(
@@ -995,6 +1035,7 @@ describe('MetricForm validation', () => {
 
     // Checkbox-only picker: the embedded add-column combobox that duplicated
     // the checkbox list was removed (tripl-z5rq).
+    showDimensions()
     const group = document.getElementById('metric-breakdowns')!
     expect(within(group).queryByRole('combobox')).toBeNull()
 
@@ -1005,6 +1046,8 @@ describe('MetricForm validation', () => {
     expect(platform).not.toBeChecked()
 
     submit()
+    // Never previewed, so the create asks first (MT-15).
+    await createAnyway()
 
     await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
     expect(metricsCatalogApi.create).toHaveBeenCalledWith(
@@ -1083,7 +1126,7 @@ describe('MetricForm templates', () => {
     fireEvent.click(screen.getByRole('button', { name: /Conversion A→B/ }))
 
     // The event-composition kind radio is now checked...
-    expect(screen.getByRole('radio', { name: /Event composition/ })).toHaveAttribute(
+    expect(screen.getByRole('radio', { name: /From tracked events/ })).toHaveAttribute(
       'aria-checked',
       'true',
     )
@@ -1094,17 +1137,48 @@ describe('MetricForm templates', () => {
   })
 
   it('dismisses the gallery and leaves an empty form on "Start from scratch"', () => {
-    renderForm()
+    renderForm(null, DATA_SOURCES, { pickSql: false })
 
     fireEvent.click(screen.getByRole('button', { name: 'Start from scratch' }))
 
     expect(screen.queryByText('Start from a template')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Start from scratch' })).toBeNull()
-    // The form is present and pristine: default SQL kind, empty display name.
+    // The form is present and pristine: the no-SQL kind, empty display name (MT-3).
     expect(
       (screen.getByLabelText('Display name', { exact: false }) as HTMLInputElement).value,
     ).toBe('')
-    expect(screen.getByRole('radio', { name: /SQL/ })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: /From tracked events/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(screen.getByRole('radio', { name: /Custom SQL/ })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('brings the gallery back after "Start from scratch" (MT-32)', () => {
+    renderForm(null, DATA_SOURCES, { pickSql: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Start from scratch' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Browse templates' }))
+
+    expect(screen.getByText('Start from a template')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Conversion A→B/ })).toBeInTheDocument()
+  })
+
+  it('lists the kinds most approachable first and says which the project cannot use yet (MT-3)', async () => {
+    vi.mocked(factTablesApi.list).mockResolvedValue(
+      { total: 0, items: [] } as unknown as Awaited<ReturnType<typeof factTablesApi.list>>,
+    )
+    EVENT_CATALOG = []
+    renderForm(null, DATA_SOURCES, { pickSql: false })
+
+    const kinds = within(screen.getByRole('radiogroup', { name: 'Metric kind' })).getAllByRole('radio')
+    expect(kinds.map(kind => kind.textContent)).toEqual([
+      expect.stringContaining('From tracked events'),
+      expect.stringContaining('From a fact table'),
+      expect.stringContaining('Custom SQL'),
+    ])
+    expect(await screen.findByText(/No events are tracked in this project yet/)).toBeInTheDocument()
+    expect(await screen.findByText(/This project has no fact tables yet/)).toBeInTheDocument()
   })
 
   it('never shows the gallery in edit mode', () => {
@@ -1113,7 +1187,7 @@ describe('MetricForm templates', () => {
     expect(screen.queryByText('Start from a template')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Start from scratch' })).toBeNull()
     // The form renders directly.
-    expect(screen.getByRole('heading', { name: 'Edit metric' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Edit · Order count' })).toBeInTheDocument()
   })
 })
 
@@ -1223,6 +1297,7 @@ describe('MetricForm field labels', () => {
 
   it('gives every field on the SQL create form a label that resolves', () => {
     renderForm()
+    showDimensions()
 
     expect(danglingLabels()).toEqual([])
     for (const field of [
@@ -1231,7 +1306,6 @@ describe('MetricForm field labels', () => {
       'Description',
       'Unit',
       'Color',
-      'Status',
       'Data source',
       'Collection interval',
       'Time column',
@@ -1256,13 +1330,14 @@ describe('MetricForm field labels', () => {
   // row's first control would otherwise claim was on nothing at all.
   it('names the filter and breakdown rows as groups on a fact metric', async () => {
     renderForm()
-    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From a fact table/ }))
     await waitFor(() =>
       expect(document.querySelector('#metric-fact-table option[value="ft-1"]')).not.toBeNull(),
     )
 
     expect(danglingLabels()).toEqual([])
     expect(screen.getByRole('group', { name: 'Filters' })).toBeInTheDocument()
+    showDimensions()
     expect(screen.getByRole('group', { name: 'Breakdown columns' })).toBeInTheDocument()
   })
 })
@@ -1276,7 +1351,7 @@ function reloadIsGuarded(): boolean {
 
 describe('MetricForm unsaved-changes guard (MET-5)', () => {
   it('arms the reload prompt only once something was typed', () => {
-    renderForm()
+    renderForm(null, DATA_SOURCES, { pickSql: false })
     expect(reloadIsGuarded()).toBe(false)
 
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
@@ -1301,7 +1376,7 @@ describe('MetricForm for a viewer', () => {
           onClose: vi.fn(),
         }),
       ),
-      { wrapper },
+      { wrapper: formWrapper },
     )
 
     expect(screen.getByLabelText('Metric SQL')).toHaveAttribute('readonly')
@@ -1450,7 +1525,7 @@ describe('MetricForm event picker (MET-2, MET-14)', () => {
     renderForm({ ...EVENT_METRIC, numerator_event_type_id: 'event-type-1' } as MetricDefinitionDetailResponse)
 
     const select = document.getElementById('metric-numerator') as HTMLSelectElement
-    await waitFor(() => expect(select.selectedOptions[0]?.textContent).toBe('type · Signup'))
+    await waitFor(() => expect(select.selectedOptions[0]?.textContent).toBe('Every Signup event'))
 
     await pickOption('metric-numerator', 'ev-1')
     await pickOption('metric-numerator', '')
@@ -1463,12 +1538,14 @@ describe('MetricForm event picker (MET-2, MET-14)', () => {
 describe('MetricForm filter validation (MET-3)', () => {
   it('blocks save on an incomplete filter instead of dropping it', async () => {
     renderForm()
-    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From a fact table/ }))
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
       target: { value: 'Orders' },
     })
     await pickOption('metric-fact-table', 'ft-1')
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Create metric' })).toBeEnabled())
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Create and start collecting' })).toBeEnabled(),
+    )
 
     fireEvent.click(within(await openAddFilterMenu()).getByRole('menuitem', { name: 'Condition' }))
     fireEvent.change(screen.getByLabelText('Filter 1 condition column'), {
@@ -1488,7 +1565,7 @@ describe('MetricForm filter validation (MET-3)', () => {
 
   it('keeps Check filters disabled until the operand is complete (MET-33)', async () => {
     renderForm()
-    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From a fact table/ }))
     await pickOption('metric-fact-table', 'ft-1')
     fireEvent.change(document.getElementById('metric-fact-aggregation')!, { target: { value: 'sum' } })
 
@@ -1554,6 +1631,7 @@ describe('MetricForm SQL preview (MET-4, MET-44)', () => {
     fireEvent.change(screen.getByLabelText('Metric SQL'), { target: { value: 'SELECT 1 FROM events' } })
     fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
     // Before a preview: only the named table's columns.
+    showDimensions()
     expect(screen.getByRole('checkbox', { name: 'Break down by country' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
@@ -1619,8 +1697,9 @@ describe('MetricForm validation accessibility (MET-15, MET-18)', () => {
     const display = screen.getByLabelText('Display name', { exact: false })
     await waitFor(() => expect(display).toHaveAttribute('aria-invalid', 'true'))
     expect(display).toHaveAccessibleDescription('Display name is required.')
-    // Focus lands on the first invalid field.
-    expect(display).toHaveFocus()
+    // Focus lands on the first invalid field: the definition comes before the
+    // name card now (MT-2), so that is the data source.
+    expect(document.getElementById('metric-sql-data-source')).toHaveFocus()
 
     const summary = screen.getByRole('alert')
     fireEvent.click(within(summary).getByRole('button', { name: 'The metric SQL query is required.' }))
@@ -1630,7 +1709,7 @@ describe('MetricForm validation accessibility (MET-15, MET-18)', () => {
 
   it('has no axe violations with errors on screen, event pickers included', async () => {
     renderForm()
-    fireEvent.click(screen.getByRole('radio', { name: /Event composition/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From tracked events/ }))
     fireEvent.change(document.getElementById('metric-composition')!, { target: { value: 'ratio' } })
     submit()
     await screen.findAllByText('A denominator event is required for a ratio metric.')
@@ -1642,7 +1721,7 @@ describe('MetricForm validation accessibility (MET-15, MET-18)', () => {
 
   it('drops an error once its field is fixed or no longer rendered', async () => {
     renderForm()
-    fireEvent.click(screen.getByRole('radio', { name: /Event composition/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From tracked events/ }))
     fireEvent.change(document.getElementById('metric-composition')!, { target: { value: 'ratio' } })
     submit()
     expect((await screen.findAllByText('A denominator event is required for a ratio metric.')).length)
@@ -1661,7 +1740,7 @@ describe('MetricForm kind switch (MET-19)', () => {
       platform_column: 'platform',
     } as unknown as MetricDefinitionDetailResponse)
 
-    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From a fact table/ }))
     await pickOption('metric-fact-table', 'ft-1')
     await waitFor(() =>
       expect(screen.getByRole('checkbox', { name: 'Break down by amount' })).toBeInTheDocument(),
@@ -1670,21 +1749,22 @@ describe('MetricForm kind switch (MET-19)', () => {
     expect(document.getElementById('metric-platform')).toHaveValue('')
 
     // Back to the saved kind restores what was saved for it.
-    fireEvent.click(screen.getByRole('radio', { name: /SQL/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /Custom SQL/ }))
     expect(screen.getByRole('checkbox', { name: 'Break down by platform' })).toBeChecked()
   })
 
   it('gives a kind back the dimensions it had earlier in the session', async () => {
     renderForm(EDIT_METRIC)
+    showDimensions()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Break down by country' }))
 
-    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From a fact table/ }))
     await pickOption('metric-fact-table', 'ft-1')
     fireEvent.click(await screen.findByRole('checkbox', { name: 'Break down by amount' }))
 
-    fireEvent.click(screen.getByRole('radio', { name: /SQL/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /Custom SQL/ }))
     expect(screen.getByRole('checkbox', { name: 'Break down by country' })).toBeChecked()
-    fireEvent.click(screen.getByRole('radio', { name: /Fact/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From a fact table/ }))
     expect(await screen.findByRole('checkbox', { name: 'Break down by amount' })).toBeChecked()
   })
 })
@@ -1789,9 +1869,10 @@ describe('MetricEditPage (MET-28, MET-29)', () => {
     vi.mocked(dataSourcesApi.list).mockRejectedValue(new Error('warehouse list down'))
     renderPage('/p/demo/metrics/new')
 
+    fireEvent.click(await screen.findByRole('radio', { name: /Custom SQL/ }))
     expect(await screen.findByText('Could not load data sources')).toBeInTheDocument()
     // A fact or event metric can still be written.
-    fireEvent.click(screen.getByRole('radio', { name: /Event composition/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /From tracked events/ }))
     expect(screen.queryByText('Could not load data sources')).toBeNull()
   })
 
@@ -1799,7 +1880,7 @@ describe('MetricEditPage (MET-28, MET-29)', () => {
     vi.mocked(dataSourcesApi.list).mockResolvedValue(DATA_SOURCES)
     renderPage('/p/demo/metrics/new')
 
-    fireEvent.click(await screen.findByRole('radio', { name: /Event composition/ }))
+    fireEvent.click(await screen.findByRole('radio', { name: /From tracked events/ }))
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
       target: { value: 'Checkouts' },
     })
@@ -1813,7 +1894,7 @@ describe('MetricEditPage (MET-28, MET-29)', () => {
     vi.mocked(dataSourcesApi.list).mockResolvedValue(DATA_SOURCES)
     renderPage('/p/demo/metrics/new', ['/p/demo/metrics'])
 
-    fireEvent.click(await screen.findByRole('radio', { name: /Event composition/ }))
+    fireEvent.click(await screen.findByRole('radio', { name: /From tracked events/ }))
     fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
       target: { value: 'Checkouts' },
     })
@@ -1822,5 +1903,226 @@ describe('MetricEditPage (MET-28, MET-29)', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Go back' }))
     expect(await screen.findByText('catalog')).toBeInTheDocument()
+  })
+})
+
+describe('MetricEditPage header link (MT-31)', () => {
+  it('names the catalog it leads to, even when opened from the drilldown', async () => {
+    vi.mocked(dataSourcesApi.list).mockResolvedValue(DATA_SOURCES)
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(EDIT_METRIC)
+    render(
+      createElement(
+        AuthContext.Provider,
+        { value: authAs('editor') },
+        createElement(
+          MemoryRouter,
+          { initialEntries: ['/p/demo/monitoring/metric/metric-1', '/p/demo/metrics/metric-1/edit'], initialIndex: 1 },
+          createElement(
+            Routes,
+            null,
+            createElement(Route, { path: '/p/:slug/metrics', element: createElement('p', null, 'catalog') }),
+            createElement(Route, { path: '/p/:slug/metrics/:metricId/edit', element: createElement(MetricEditPage) }),
+            createElement(Route, {
+              path: '/p/:slug/monitoring/metric/:id',
+              element: createElement('p', null, 'drilldown'),
+            }),
+          ),
+        ),
+      ),
+      { wrapper },
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Metrics' }))
+    expect(await screen.findByText('catalog')).toBeInTheDocument()
+    vi.mocked(metricsCatalogApi.get).mockReset()
+  })
+})
+
+describe('MetricForm owner (MT-25)', () => {
+  it('sends the picked owner with a new metric', async () => {
+    renderForm(null, DATA_SOURCES, { pickSql: false })
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Checkouts' },
+    })
+    await pickOption('metric-numerator', 'ev-1')
+    await pickOption('metric-owner', 'user-1')
+    submit()
+
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
+    expect(at(vi.mocked(metricsCatalogApi.create).mock.calls, 0)[1]).toMatchObject({
+      owner_id: 'user-1',
+    })
+  })
+
+  it('keeps a stored owner on save, and clears it only when asked', async () => {
+    renderForm({ ...EDIT_METRIC, owner_id: 'user-1' } as MetricDefinitionDetailResponse)
+    await waitFor(() =>
+      expect((document.getElementById('metric-owner') as HTMLSelectElement).value).toBe('user-1'),
+    )
+    fireEvent.change(document.getElementById('metric-owner')!, { target: { value: '' } })
+    submit()
+
+    await waitFor(() => expect(metricsCatalogApi.update).toHaveBeenCalledTimes(1))
+    expect(at(vi.mocked(metricsCatalogApi.update).mock.calls, 0)[2]).toMatchObject({ owner_id: null })
+  })
+})
+
+describe('MetricForm create status (MT-1)', () => {
+  async function fillEventMetric() {
+    fireEvent.click(screen.getByRole('radio', { name: /From tracked events/ }))
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Checkouts' },
+    })
+    await pickOption('metric-numerator', 'ev-1')
+  }
+
+  it('creates an active metric from the primary button, with no Status select', async () => {
+    renderForm()
+    expect(document.getElementById('metric-status')).toBeNull()
+
+    await fillEventMetric()
+    fireEvent.click(screen.getByRole('button', { name: 'Create and start collecting' }))
+
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
+    expect(metricsCatalogApi.create).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({ status: 'active' }),
+    )
+  })
+
+  it('parks the metric as a draft from "Save as draft"', async () => {
+    renderForm()
+    await fillEventMetric()
+    fireEvent.click(screen.getByRole('button', { name: 'Save as draft' }))
+
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
+    expect(metricsCatalogApi.create).toHaveBeenCalledWith(
+      'demo',
+      expect.objectContaining({ status: 'draft' }),
+    )
+  })
+
+  it('keeps Status on edit and says only active metrics are collected', () => {
+    renderForm(EDIT_METRIC)
+
+    expect(screen.getByLabelText('Status')).toBeInTheDocument()
+    expect(
+      screen.getByText(/Only active metrics are collected on schedule and monitored/),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save as draft' })).toBeNull()
+  })
+})
+
+describe('MetricForm unit, colour and template (MT-17, MT-35, MT-32)', () => {
+  it('fills in % when an event metric becomes a ratio with no unit', () => {
+    renderForm()
+    fireEvent.click(screen.getByRole('radio', { name: /From tracked events/ }))
+    fireEvent.change(document.getElementById('metric-composition')!, { target: { value: 'ratio' } })
+
+    expect(document.getElementById('metric-unit')).toHaveValue('%')
+    expect(screen.getByText(/Set to % for a ratio/)).toBeInTheDocument()
+  })
+
+  it('keeps a unit the author already set when the metric becomes a ratio', () => {
+    renderForm()
+    fireEvent.click(screen.getByRole('radio', { name: /From tracked events/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Use unit users' }))
+    fireEvent.change(document.getElementById('metric-composition')!, { target: { value: 'ratio' } })
+
+    expect(document.getElementById('metric-unit')).toHaveValue('users')
+  })
+
+  it('picks a colour from the swatches', () => {
+    renderForm()
+    const sky = screen.getByRole('button', { name: 'Sky' })
+    expect(sky).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(sky)
+    expect(sky).toHaveAttribute('aria-pressed', 'true')
+    expect(document.getElementById('metric-color')).toHaveValue('#0ea5e9')
+  })
+
+  it('names the template that seeded the form and can reopen the gallery', () => {
+    renderForm()
+    fireEvent.click(screen.getByRole('button', { name: /Conversion A→B/ }))
+
+    expect(screen.getByText(/Started from/)).toHaveTextContent('Started from Conversion A→B')
+    fireEvent.click(screen.getByRole('button', { name: 'Change template' }))
+    expect(screen.getByText('Start from a template')).toBeInTheDocument()
+  })
+})
+
+describe('MetricForm SQL preview guard (MT-15)', () => {
+  it('says what Preview still needs', () => {
+    renderForm()
+    const preview = screen.getByRole('button', { name: 'Preview' })
+    expect(preview).toBeDisabled()
+    expect(preview).toHaveAccessibleDescription('Pick a data source to preview.')
+  })
+
+  it('asks before creating a metric whose last preview failed', async () => {
+    vi.mocked(metricsCatalogApi.preview).mockResolvedValue({
+      columns: [],
+      points: [],
+      point_count: 0,
+      truncated: false,
+      error: 'Unknown column bucket',
+    })
+    renderForm()
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Order count' },
+    })
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByLabelText('Metric SQL'), {
+      target: { value: 'SELECT bucket, count(*) AS value FROM events GROUP BY 1' },
+    })
+    fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    expect(await screen.findByText('Unknown column bucket')).toBeInTheDocument()
+
+    submit()
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent(/hasn't previewed successfully/)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create anyway' }))
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
+  })
+
+  it('asks before creating a metric that was never previewed, and Cancel keeps the form', async () => {
+    renderForm()
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Order count' },
+    })
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByLabelText('Metric SQL'), { target: { value: 'SELECT 1 FROM events' } })
+    fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
+
+    submit()
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent('Create a metric that hasn’t previewed?')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(metricsCatalogApi.create).not.toHaveBeenCalled()
+  })
+
+  it('creates without asking once the current query has previewed cleanly', async () => {
+    vi.mocked(metricsCatalogApi.preview).mockResolvedValue({
+      columns: ['bucket', 'value'],
+      points: [{ bucket: '2026-07-01T00:00:00Z', value: 5 }],
+      point_count: 1,
+      truncated: false,
+      error: null,
+    })
+    renderForm()
+    fireEvent.change(screen.getByLabelText('Display name', { exact: false }), {
+      target: { value: 'Order count' },
+    })
+    fireEvent.change(document.getElementById('metric-sql-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByLabelText('Metric SQL'), { target: { value: 'SELECT 1 FROM events' } })
+    fireEvent.change(document.getElementById('metric-sql-time')!, { target: { value: 'bucket' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    expect(await screen.findByText(/Only one bucket came back/)).toBeInTheDocument()
+
+    submit()
+    await waitFor(() => expect(metricsCatalogApi.create).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 })

@@ -62,6 +62,21 @@ function sameDay(a: Date, b: Date): boolean {
   return toDateKey(a) === toDateKey(b)
 }
 
+/** Outside the `[min, max]` day keys; either end may be absent. */
+function outOfRange(day: Date, min: string | undefined, max: string | undefined): boolean {
+  const key = toDateKey(day)
+  return (!!min && key < min) || (!!max && key > max)
+}
+
+/** `day` moved inside `[min, max]`, so the keyboard never lands on a disabled day. */
+function clampDay(day: Date, min: string | undefined, max: string | undefined): Date {
+  const low = min ? parseDateKey(min) : null
+  const high = max ? parseDateKey(max) : null
+  if (low && toDateKey(day) < toDateKey(low)) return low
+  if (high && toDateKey(day) > toDateKey(high)) return high
+  return day
+}
+
 /** The month's days in week rows; `null` pads the first and last week. */
 function monthWeeks(month: Date): (Date | null)[][] {
   const first = new Date(month.getFullYear(), month.getMonth(), 1)
@@ -83,6 +98,8 @@ function CalendarGrid({
   onFocusedChange,
   onSelect,
   focusRef,
+  min,
+  max,
 }: {
   selected: Date | null
   focused: Date
@@ -90,6 +107,9 @@ function CalendarGrid({
   onSelect: (date: Date) => void
   /** Receives the button of the focused day, so the popover can focus it on open. */
   focusRef: React.RefObject<HTMLButtonElement | null>
+  /** `YYYY-MM-DD` bounds; days outside them are disabled. */
+  min?: string
+  max?: string
 }) {
   const today = new Date()
   const monthLabel = focused.toLocaleDateString(undefined, { month: "long", year: "numeric" })
@@ -121,7 +141,7 @@ function CalendarGrid({
     if (!next) return
     event.preventDefault()
     moveFocus.current = true
-    onFocusedChange(next)
+    onFocusedChange(clampDay(next, min, max))
   }
 
   return (
@@ -173,6 +193,7 @@ function CalendarGrid({
                 if (!day) return <td key={dayIndex} />
                 const isSelected = !!selected && sameDay(day, selected)
                 const isFocused = sameDay(day, focused)
+                const isDisabled = outOfRange(day, min, max)
                 return (
                   <td key={dayIndex} aria-selected={isSelected} className="p-0 text-center">
                     <button
@@ -186,10 +207,12 @@ function CalendarGrid({
                         year: "numeric",
                       })}
                       aria-current={sameDay(day, today) ? "date" : undefined}
+                      disabled={isDisabled}
                       onClick={() => onSelect(day)}
                       className={cn(
                         "inline-flex size-8 items-center justify-center rounded-md text-body outline-none transition-colors",
                         "hover:bg-surface-hover focus-visible:ring-ring/50 focus-visible:ring-[3px]",
+                        "disabled:pointer-events-none disabled:text-fg-faint disabled:opacity-50",
                         sameDay(day, today) && !isSelected && "font-semibold text-primary",
                         isSelected && "bg-accent-solid text-accent-solid-fg hover:bg-accent-solid/90",
                       )}
@@ -301,5 +324,94 @@ export function DateTimePicker({
         className="h-8 w-[104px] text-body md:text-body"
       />
     </div>
+  )
+}
+
+
+export interface DatePickerProps {
+  /** `YYYY-MM-DD`, or '' for no value. */
+  value: string
+  onChange: (value: string) => void
+  /** Id of the date button, so a `<Label htmlFor>` can point at the control. */
+  id?: string
+  /** Names the control; the button's name adds the picked day. */
+  label: string
+  /** `YYYY-MM-DD` bounds; days outside them cannot be picked. */
+  min?: string
+  max?: string
+  "aria-describedby"?: string
+  disabled?: boolean
+  className?: string
+}
+
+/**
+ * The date half of {@link DateTimePicker} on its own, for a day filter: the
+ * value is the native `type="date"` wire format, `YYYY-MM-DD`, so a caller
+ * that read a date input keeps parsing it the same way (F27/AL-15).
+ */
+export function DatePicker({
+  value,
+  onChange,
+  id,
+  label,
+  min,
+  max,
+  "aria-describedby": describedBy,
+  disabled,
+  className,
+}: DatePickerProps) {
+  const date = DATE_PART.test(value) ? value : ""
+  const selected = parseDateKey(date)
+  const [open, setOpen] = React.useState(false)
+  const [focused, setFocused] = React.useState<Date>(() => clampDay(selected ?? new Date(), min, max))
+  const focusRef = React.useRef<HTMLButtonElement | null>(null)
+
+  const onOpenChange = (next: boolean) => {
+    if (next) setFocused(clampDay(selected ?? new Date(), min, max))
+    setOpen(next)
+  }
+
+  const selectDate = (day: Date) => {
+    if (outOfRange(day, min, max)) return
+    onChange(toDateKey(day))
+    setOpen(false)
+  }
+
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          disabled={disabled}
+          aria-describedby={describedBy}
+          aria-label={`${label}: ${date ? formatDate(date) : "none picked"}`}
+          className={cn("h-8 justify-start gap-1.5 px-2.5 text-body font-normal", className)}
+        >
+          <CalendarDays aria-hidden="true" className="size-3.5 text-muted-foreground" />
+          {date ? formatDate(date) : <span className="text-muted-foreground">Pick a date</span>}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-auto p-3"
+        aria-label={`${label}: choose a date`}
+        onOpenAutoFocus={event => {
+          event.preventDefault()
+          focusRef.current?.focus()
+        }}
+      >
+        <CalendarGrid
+          selected={selected}
+          focused={focused}
+          onFocusedChange={setFocused}
+          onSelect={selectDate}
+          focusRef={focusRef}
+          min={min}
+          max={max}
+        />
+      </PopoverContent>
+    </Popover>
   )
 }

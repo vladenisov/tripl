@@ -6,6 +6,15 @@ import type { IntervalCode, ScanConfig } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { FieldError } from '@/components/forms/FieldError'
 import { REQUIRED_MESSAGE, invalidAria } from '@/components/forms/validation'
 import { getBucketStart, type MetricsGranularity } from '@/lib/metrics'
@@ -82,7 +91,7 @@ function defaultReplayWindow(interval: IntervalCode | null): { from: string; to:
   return { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(to) }
 }
 
-// Replays metrics for a past time window. Shared by the Configuration danger zone.
+// Replays metrics for a past time window. Opened from the scan page's header.
 export function ReplayDialog({
   slug,
   scanConfig,
@@ -131,45 +140,55 @@ export function ReplayDialog({
   })
 
   if (!open) return null
+  // A real dialog now: it used to render inline in the Danger zone, beside a
+  // trigger that turned solid while open, though replay deletes nothing
+  // (#247 DA-8).
   return (
-    <section
-      className="overflow-hidden rounded-card border"
-      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
-    >
-      <form
-        noValidate
-        className="space-y-4 p-4"
-        onSubmit={e => {
-          e.preventDefault()
-          setSubmitted(true)
-          if (!from || !to) return
-          replayMut.mutate()
-        }}
-      >
-        <div className="text-body-sm font-semibold">Replay metrics period</div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="grid gap-2">
-              <Label htmlFor="replay-from">From</Label>
-              <Input id="replay-from" type="datetime-local" value={from} onChange={e => setFrom(e.target.value)} aria-required {...invalidAria('replay-from', fromError)} />
-              <FieldError inputId="replay-from" message={fromError} />
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <form
+          noValidate
+          className="flex min-h-0 flex-col gap-4"
+          onSubmit={e => {
+            e.preventDefault()
+            setSubmitted(true)
+            if (!from || !to) return
+            replayMut.mutate()
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Replay a past period</DialogTitle>
+            <DialogDescription>
+              Re-reads this period from the warehouse and rewrites its metric points. Nothing is deleted
+              from your tracking plan.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-2">
+                <Label htmlFor="replay-from">From</Label>
+                <Input id="replay-from" type="datetime-local" value={from} onChange={e => setFrom(e.target.value)} aria-required {...invalidAria('replay-from', fromError)} />
+                <FieldError inputId="replay-from" message={fromError} />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="replay-to">To</Label>
+                <Input id="replay-to" type="datetime-local" value={to} onChange={e => setTo(e.target.value)} aria-required {...invalidAria('replay-to', toError)} />
+                <FieldError inputId="replay-to" message={toError} />
+              </div>
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="replay-to">To</Label>
-              <Input id="replay-to" type="datetime-local" value={to} onChange={e => setTo(e.target.value)} aria-required {...invalidAria('replay-to', toError)} />
-              <FieldError inputId="replay-to" message={toError} />
-            </div>
-          </div>
-          {replayMut.isError && (
-            <p role="alert" className="text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(replayMut.error)}</p>
-          )}
-          <div className="flex justify-end gap-2">
+            {replayMut.isError && (
+              <p role="alert" className="text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(replayMut.error)}</p>
+            )}
+          </DialogBody>
+          <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
             <Button type="submit" disabled={replayMut.isPending}>
-              <RotateCcw className="size-3" />
+              <RotateCcw className="size-3.5" aria-hidden="true" />
               {replayMut.isPending ? 'Starting…' : 'Replay period'}
             </Button>
-          </div>
+          </DialogFooter>
         </form>
-      </section>
+      </DialogContent>
+    </Dialog>
   )
 }

@@ -193,6 +193,64 @@ export function connectionCoreMissing(
   return missing
 }
 
+// The API's field name for each core control. `password` carries the BigQuery
+// service-account key too.
+const API_FIELD_TO_CORE: Readonly<Record<string, keyof CoreMissing>> = {
+  host: 'host',
+  port: 'port',
+  database_name: 'databaseName',
+  password: 'secret',
+}
+
+// Pydantic's "empty string" family, reworded as the inline required message.
+const EMPTY_VALUE_TYPES: ReadonlySet<string> = new Set(['string_too_short', 'missing'])
+
+/** A server refusal split into the parts that name a core field and the rest. */
+export interface ServerCoreErrors {
+  fields: CoreMissing
+  /** Anything no core control can show, in the server's words; null when none. */
+  rest: string | null
+}
+
+/**
+ * Map a 422 from create or test onto the core controls (DA-38). The client
+ * catches empty required fields itself (`connectionCoreMissing`); this covers
+ * whatever it misses, so a refusal lands under the control it is about
+ * ("Required" under Database) instead of as "database_name: String should have
+ * at least 1 character" at the foot of the dialog.
+ *
+ * Accepts any thrown value. Only an error carrying FastAPI's structured
+ * `fields` is split; anything else is returned whole as `rest`.
+ */
+export function serverCoreErrors(
+  error: unknown,
+  dbType: DbType,
+  requiredMessage: string,
+): ServerCoreErrors {
+  if (error == null) return { fields: {}, rest: null }
+  const message = error instanceof Error ? error.message : String(error)
+  const items = (error as { fields?: { loc: (string | number)[]; msg: string; type: string }[] })
+    .fields
+  if (!Array.isArray(items) || items.length === 0) return { fields: {}, rest: message || null }
+  const fields: CoreMissing = {}
+  const rest: string[] = []
+  for (const item of items) {
+    const last = item.loc[item.loc.length - 1]
+    const mapped = typeof last === 'string' ? API_FIELD_TO_CORE[last] : undefined
+    // Only controls the type actually shows: BigQuery has no port, and only
+    // its key field (not the password box) renders an inline error.
+    const shown = dbType === 'bigquery' ? mapped !== 'port' : mapped !== 'secret'
+    const key = shown ? mapped : undefined
+    if (key && !fields[key]) {
+      fields[key] = EMPTY_VALUE_TYPES.has(item.type) ? requiredMessage : item.msg
+    } else if (!key) {
+      const path = item.loc.filter((seg) => seg !== 'body' && seg !== 'query').join('.')
+      rest.push(path ? `${path}: ${item.msg}` : item.msg)
+    }
+  }
+  return { fields, rest: rest.length > 0 ? rest.join('; ') : null }
+}
+
 /** Inline error for the core secret field, or null. Only BigQuery's is checked. */
 export function connectionCoreSecretError(dbType: DbType, form: ConnectionCoreForm): string | null {
   return dbType === 'bigquery' ? serviceAccountKeyError(form.secret) : null

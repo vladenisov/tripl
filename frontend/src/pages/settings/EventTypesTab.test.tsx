@@ -180,7 +180,7 @@ describe('EventTypesTab list', () => {
     expect(screen.queryByRole('button', { name: /New type/i })).not.toBeInTheDocument()
   })
 
-  it('shows an understandable merge status (ungated) instead of "open merge"', async () => {
+  it('shows an understandable merge approval ("Open") instead of "open merge"', async () => {
     renderWithRoutes('/p/demo/settings/event-types', async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([CHECKOUT])
@@ -191,13 +191,15 @@ describe('EventTypesTab list', () => {
 
     const row = (await screen.findByText('Checkout')).closest('tr') as HTMLElement
     // Only once the owners have answered: an unanswered request is "—", not a
-    // guess of "ungated".
-    expect(await within(row).findByText('ungated')).toBeInTheDocument()
+    // guess of "Open to merge".
+    expect(await within(row).findByText('Open to merge')).toBeInTheDocument()
+    // The column says what it is about (AU-12).
+    expect(screen.getByRole('columnheader', { name: 'Merge approval' })).toBeInTheDocument()
     // the cryptic raw words are gone
     expect(screen.queryByText('open merge')).not.toBeInTheDocument()
   })
 
-  it('marks an owner-gated type as "gated"', async () => {
+  it('marks an owner-gated type as needing owner approval', async () => {
     const owner = {
       id: 'o-1',
       event_type_id: 'type-1',
@@ -216,7 +218,7 @@ describe('EventTypesTab list', () => {
     })
 
     const row = (await screen.findByText('Checkout')).closest('tr') as HTMLElement
-    await waitFor(() => expect(within(row).getByText('gated')).toBeInTheDocument())
+    await waitFor(() => expect(within(row).getByText('Owner approval')).toBeInTheDocument())
   })
 
   it('renders the list as an accessible table with a full-word Required header', async () => {
@@ -391,9 +393,13 @@ describe('EventTypeDetail tabbed page', () => {
     // data contract section is present in the subpage
     expect(screen.getByText('Data contract')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    // The other cards step aside while the field page is open (AU-15).
+    expect(screen.getByText('Danger zone')).not.toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
     // back to fields list
     fireEvent.click(screen.getByRole('button', { name: /Fields/i }))
     await waitFor(() => expect(screen.queryByText('Edit field · order_id')).not.toBeInTheDocument())
+    expect(screen.getByText('Danger zone')).toBeVisible()
   })
 
   it('shows a viewer the settings with no way to change them', async () => {
@@ -472,10 +478,10 @@ describe('EventTypesTab in branch context (tripl-kjhi.11)', () => {
     expect(asked.some((url) => url.includes('/owners'))).toBe(false)
     // Nor does the list pretend to know: the Owner column stays hidden.
     expect(screen.queryByText('Owner')).not.toBeInTheDocument()
-    // …and so does Status, which used to call every type "ungated" here —
+    // …and so does Merge approval, which used to call every type "ungated" here —
     // wrong for exactly the types whose owners will gate this branch (PLAN-40).
-    expect(screen.queryByRole('columnheader', { name: 'Status' })).not.toBeInTheDocument()
-    expect(screen.queryByText('ungated')).not.toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Merge approval' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Open to merge')).not.toBeInTheDocument()
   })
 
   it('leaves the merge-gate chip off the branch detail instead of claiming "no owners"', async () => {
@@ -555,13 +561,33 @@ describe('FieldsEditor field form (PLAN-36 / PLAN-38)', () => {
   it('names every input by its label and describes it by its hint', () => {
     openNewField()
 
-    for (const label of ['Name', 'Display name', 'Type', 'Sensitivity', 'Required', 'Description', 'Bad share', 'Null share', 'Regex', 'Min', 'Max']) {
+    for (const label of ['Name', 'Display name', 'Type', 'Sensitivity', 'Required', 'Description', 'Max invalid share', 'Null share', 'Regex']) {
       expect(screen.getByLabelText(label)).toBeInTheDocument()
     }
-    expect(screen.getByLabelText('Bad share')).toHaveAccessibleDescription(
-      /Max fraction of values allowed to fail/,
+    expect(screen.getByLabelText('Max invalid share')).toHaveAccessibleDescription(
+      /Share of values \(0–1\) allowed to break the rules below/,
     )
-    expect(screen.getByLabelText('Bad share')).toHaveAttribute('inputmode', 'decimal')
+    expect(screen.getByLabelText('Max invalid share')).toHaveAttribute('inputmode', 'decimal')
+  })
+
+  it('offers only the contract rules the field type can use (AU-16)', () => {
+    openNewField()
+    // A string field: a pattern, no bounds.
+    expect(screen.getByLabelText('Regex')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Min')).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'number' } })
+    expect(screen.getByLabelText('Min')).toBeInTheDocument()
+    expect(screen.getByLabelText('Max')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Regex')).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'enum' } })
+    expect(screen.queryByLabelText('Regex')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Min')).not.toBeInTheDocument()
+    expect(screen.getByText('Values outside the enum options count as invalid.')).toBeInTheDocument()
+    // The shares apply to every type.
+    expect(screen.getByLabelText('Max invalid share')).toBeInTheDocument()
+    expect(screen.getByLabelText('Null share')).toBeInTheDocument()
   })
 
   it('refuses a contract number that does not parse instead of dropping the rule', () => {
@@ -578,6 +604,7 @@ describe('FieldsEditor field form (PLAN-36 / PLAN-38)', () => {
   it('says Min above Max, and refuses to save it', () => {
     const { fetchSpy } = openNewField()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'order_id' } })
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'number' } })
     fireEvent.change(screen.getByLabelText('Min'), { target: { value: '10' } })
     fireEvent.change(screen.getByLabelText('Max'), { target: { value: '2' } })
 
@@ -626,13 +653,13 @@ describe('FieldsEditor field form (PLAN-36 / PLAN-38)', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
   })
 
-  it('never turns a blank Bad share into the strictest setting', () => {
+  it('never turns a blank Max invalid share into the strictest setting', () => {
     const { fetchSpy } = openNewField()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'order_id' } })
-    fireEvent.change(screen.getByLabelText('Bad share'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('Max invalid share'), { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add field' }))
 
-    expect(screen.getByLabelText('Bad share')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByLabelText('Max invalid share')).toHaveAttribute('aria-invalid', 'true')
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
@@ -917,7 +944,7 @@ describe('review 204 follow-ups', () => {
 })
 
 describe('EventTypesTab owners in one request (PLAN-42)', () => {
-  it('asks once for the project, and reads a type without rows as ungated', async () => {
+  it('asks once for the project, and reads a type without rows as open', async () => {
     const SIGNUP = eventType({ id: 'type-2', name: 'signup', display_name: 'Signup', order: 1 })
     const owner = {
       id: 'o-1',
@@ -939,8 +966,8 @@ describe('EventTypesTab owners in one request (PLAN-42)', () => {
 
     const checkout = (await screen.findByText('Checkout')).closest('tr') as HTMLElement
     const signup = screen.getByText('Signup').closest('tr') as HTMLElement
-    expect(await within(checkout).findByText('gated')).toBeInTheDocument()
-    expect(within(signup).getByText('ungated')).toBeInTheDocument()
+    expect(await within(checkout).findByText('Owner approval')).toBeInTheDocument()
+    expect(within(signup).getByText('Open to merge')).toBeInTheDocument()
     expect(asked.filter((url) => url.includes('owners'))).toEqual([
       expect.stringMatching(/\/event-type-owners$/),
     ])

@@ -1,6 +1,6 @@
 import type { ServiceSettings } from '@/types'
 import { Field, SCard, NativeSelect, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
-import { NumberSettingInput, SourceBadge } from './ServiceSettingsPrimitives'
+import { InactiveGroup, NumberSettingInput, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -60,6 +60,7 @@ export function SecuritySection({
             value={form.security.registration_mode}
             onChange={value => setField('security', 'registration_mode', value)}
             options={REGISTRATION_OPTIONS}
+            width="fill"
           />
         </Field>
       </SCard>
@@ -128,19 +129,22 @@ export function SecuritySection({
           value={form.security.hsts_enabled}
           onChange={value => setField('security', 'hsts_enabled', value)}
         />
-        <Field
-          label="HSTS max age"
-          labelRight={<SourceBadge source={sourceFor(settings, 'security', 'hsts_max_age_seconds')} />}
-        >
-          <NumberSettingInput
-            section="security"
-            field="hsts_max_age_seconds"
-            value={form.security.hsts_max_age_seconds}
-            saved={settings.security.hsts_max_age_seconds}
-            setField={setField}
-            suffix="seconds"
-          />
-        </Field>
+        {/* Editable, but visibly idle while its switch is off (ST-26). */}
+        <InactiveGroup inactive={!form.security.hsts_enabled} reason="Not used while HSTS is off.">
+          <Field
+            label="HSTS max age"
+            labelRight={<SourceBadge source={sourceFor(settings, 'security', 'hsts_max_age_seconds')} />}
+          >
+            <NumberSettingInput
+              section="security"
+              field="hsts_max_age_seconds"
+              value={form.security.hsts_max_age_seconds}
+              saved={settings.security.hsts_max_age_seconds}
+              setField={setField}
+              suffix="seconds"
+            />
+          </Field>
+        </InactiveGroup>
         <Field
           label="Content Security Policy"
           labelRight={
@@ -164,6 +168,10 @@ export function SecuritySection({
           value={form.security.rate_limit_enabled}
           onChange={value => setField('security', 'rate_limit_enabled', value)}
         />
+        <InactiveGroup
+          inactive={!form.security.rate_limit_enabled}
+          reason="Not used while Rate limiting is off."
+        >
         <Field
           label="Login limit"
           labelRight={
@@ -205,6 +213,7 @@ export function SecuritySection({
           onChange={value => setField('security', 'rate_limit_trust_forwarded_for', value)}
           last
         />
+        </InactiveGroup>
       </SCard>
     </>
   )

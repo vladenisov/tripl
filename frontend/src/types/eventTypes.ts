@@ -79,6 +79,14 @@ export interface EventTypeRelation {
   description: string
 }
 
+/** GET /meta-fields/{id}/usage: what deleting the field would clear (AU-37). */
+export interface MetaFieldUsage {
+  // Non-empty stored values; a multi-value field holds several per event.
+  value_count: number
+  // Events holding at least one of them.
+  event_count: number
+}
+
 export interface MetaFieldDefinition {
   id: string
   project_id: string

@@ -4,7 +4,7 @@ from fastapi import APIRouter
 
 from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.models.event_type_relation import EventTypeRelation
-from tripl.schemas.relation import RelationCreate, RelationResponse
+from tripl.schemas.relation import RelationCreate, RelationResponse, RelationUpdate
 from tripl.services import audit_service, relation_service
 
 router = APIRouter(prefix="/projects/{slug}/relations", tags=["relations"])
@@ -35,6 +35,28 @@ async def create_relation(
         # Relations don't have a standalone name — fk ids land in the payload.
         project_slug=slug,
         payload=data.model_dump(),
+    )
+    return rel
+
+
+@router.patch("/{relation_id}", response_model=RelationResponse)
+async def update_relation(
+    session: SessionDep,
+    slug: str,
+    relation_id: uuid.UUID,
+    data: RelationUpdate,
+    current_user: EditorUserDep,
+    branch_id: BranchIdDep,
+) -> EventTypeRelation:
+    rel = await relation_service.update_relation(session, slug, relation_id, data, branch_id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="relation.update",
+        target_type="relation",
+        target_id=rel.id,
+        project_slug=slug,
+        payload=data.model_dump(mode="json", exclude_unset=True),
     )
     return rel
 

@@ -48,7 +48,13 @@ class ScanActivityItem(BaseModel):
     failing_streak: int
     # Rows read by jobs that finished (or, still running, started) inside the
     # window: ``query_rows_scanned``, else ``scan_rows_processed``, per job.
+    # Mixes two units; prefer the split pair below, which sums to it.
     rows_read_24h: int
+    # Warehouse rows metrics runs read (``query_rows_scanned``), and the GROUP BY
+    # ALL combinations catalog runs returned (``scan_rows_processed`` of jobs
+    # with no warehouse count), over the same window (B15).
+    warehouse_rows_24h: int = 0
+    catalog_combinations_24h: int = 0
 
 
 class ScanActivityResponse(BaseModel):

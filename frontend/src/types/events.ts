@@ -244,6 +244,9 @@ export interface Variable {
   /** Distinct event names this variable was observed in, alphabetical and
    * capped server-side; `event_count` carries the untruncated total. */
   event_names?: string[]
+  /** The same events as id + name, so each can link to its event (AU-29).
+   * Ordered by name, capped like `event_names`; two events may share a name. */
+  event_refs?: { id: string; name: string }[]
 }
 
 /** Envelope returned by `GET /projects/{slug}/variables` (offset/limit paged). */

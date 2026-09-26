@@ -29,11 +29,13 @@ describe('buildRunReport — "Rows read" covers two populations', () => {
     const catalogRows = lineById(buildRunReport(job({ scan_rows_processed: 900 }), 'catalog'), 'rows-read')!
     const metricsRows = lineById(buildRunReport(job({ query_rows_scanned: 900 }), 'monitoring'), 'rows-read')!
 
-    expect(catalogRows.text).toBe('Read 900 warehouse rows.')
+    // The catalog analyzer groups in the warehouse, so its figure is distinct
+    // column combinations, not warehouse rows (#247 DA-4).
+    expect(catalogRows.text).toBe('Read 900 distinct column combinations (grouped in the warehouse).')
     expect(metricsRows.text).toBe('Read 900 warehouse rows.')
 
-    // The sentence cannot vary, so the title has to. If these ever collapse to
-    // one string — or to two undefineds — the user is back to one number that
+    // The titles say which cap bounded each. If these ever collapse to one
+    // string — or to two undefineds — the user is back to one number that
     // silently means two things.
     expect(catalogRows.title).not.toEqual(metricsRows.title)
     expect(catalogRows.title).toContain('catalog analyzer')
@@ -143,7 +145,7 @@ describe('buildRunReport — the counters that read as bad news', () => {
       'catalog',
     )
     expect(lines.map(line => line.text)).toEqual([
-      'Read 1 warehouse row.',
+      'Read 1 distinct column combination (grouped in the warehouse).',
       'Added 1 event to your tracking plan.',
       '1 event was already in your plan and was left as it is.',
       'Added 1 variable.',

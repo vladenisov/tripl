@@ -1,4 +1,7 @@
+import { useState } from 'react'
+import { ChevronRight } from 'lucide-react'
 import { ColumnCheckboxPicker } from '@/components/column-checkbox-picker'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { ColumnSuggestInput } from '@/components/column-suggest'
 import { SCard, ToggleRow, Field } from '@/components/settings/kit'
 import type { MetricDraft } from './metricDraft'
@@ -17,6 +20,10 @@ interface MonitoringFieldsProps {
  * Anomaly detection plus the dimension columns (breakdowns, app version,
  * platform). Event-composition metrics have no warehouse source, so only the
  * toggle renders for them.
+ *
+ * The dimensions are optional and most metrics need none, so they sit behind
+ * a collapsed "Breakdowns and dimensions" row that says what is set (MT-5).
+ * A metric that already has some opens with them shown.
  */
 export function MonitoringFields({ draft, patch, columnChoices, columnSource }: MonitoringFieldsProps) {
   const warehouseBacked = draft.kind !== 'event_composition'
@@ -33,6 +40,17 @@ export function MonitoringFields({ draft, patch, columnChoices, columnSource }: 
       : columnSource === 'preview'
         ? 'Columns the last preview returned. Tick the columns to break this metric down by.'
         : 'Columns to roll up by. Tick the columns to break this metric down by.'
+  const [open, setOpen] = useState(
+    draft.breakdownColumns.length > 0 || !!draft.appVersionColumn || !!draft.platformColumn,
+  )
+  const setCount =
+    draft.breakdownColumns.length + (draft.appVersionColumn ? 1 : 0) + (draft.platformColumn ? 1 : 0)
+  const summary = [
+    setCount === 0 ? 'None set' : setCount === 1 ? '1 set' : `${setCount} set`,
+    unknown.length > 0 ? `${unknown.length} not returned by the source` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   return (
     <SCard title="Monitoring" description="Anomaly detection and dimensional breakdowns.">
@@ -41,52 +59,81 @@ export function MonitoringFields({ draft, patch, columnChoices, columnSource }: 
         hint="Learn a baseline and flag spikes/drops on this metric."
         value={draft.anomalyDetection}
         onChange={value => patch({ anomalyDetection: value })}
-        last={!warehouseBacked}
+        // The dimensions row below draws its own top border.
+        last
       />
       {warehouseBacked && (
-        <>
-          {/* A grid of individually-labelled checkboxes: nothing a <label> can
-              point at, so the row names the group. */}
-          <Field label="Breakdown columns" htmlFor={false} hint={breakdownHint}>
-            <div className="max-w-[420px]">
-              <ColumnCheckboxPicker
-                id="metric-breakdowns"
-                columns={columnChoices}
-                value={draft.breakdownColumns}
-                onChange={value => patch({ breakdownColumns: value })}
-                reserved={[draft.appVersionColumn, draft.platformColumn].filter(Boolean)}
+        <Collapsible open={open} onOpenChange={setOpen}>
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-4 py-[13px] text-left transition-colors hover:bg-[var(--surface-hover)]"
+              style={{ borderTop: '1px solid var(--border-subtle)' }}
+            >
+              <ChevronRight
+                size={14}
+                aria-hidden="true"
+                className="shrink-0 transition-transform"
+                style={{ color: 'var(--fg-subtle)', transform: open ? 'rotate(90deg)' : undefined }}
               />
-            </div>
-            {unknown.length > 0 && (
-              <p className="mt-[6px] text-body-sm leading-[1.45]" style={{ color: 'var(--warning, var(--fg-muted))' }}>
-                Not returned by this metric's source: {unknown.join(', ')}. Untick them, or
-                collection will fail for them.
-              </p>
-            )}
-          </Field>
-          <Field label="App version column" htmlFor="metric-app-version" hint="Optional column used for by-version series.">
-            <div className="max-w-[280px]">
-              <ColumnSuggestInput
-                id="metric-app-version"
-                value={draft.appVersionColumn}
-                onChange={value => patch({ appVersionColumn: value })}
-                suggestions={columnChoices}
-                placeholder={examplePlaceholder('app_version')}
-              />
-            </div>
-          </Field>
-          <Field label="Platform column" htmlFor="metric-platform" last hint="Optional platform dimension column.">
-            <div className="max-w-[280px]">
-              <ColumnSuggestInput
-                id="metric-platform"
-                value={draft.platformColumn}
-                onChange={value => patch({ platformColumn: value })}
-                suggestions={columnChoices}
-                placeholder={examplePlaceholder('platform')}
-              />
-            </div>
-          </Field>
-        </>
+              <span className="text-body font-medium" style={{ color: 'var(--fg)' }}>
+                Breakdowns and dimensions
+              </span>
+              <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                (optional)
+              </span>
+              <span
+                className="ml-auto text-caption"
+                style={{ color: unknown.length > 0 ? 'var(--warning)' : 'var(--fg-subtle)' }}
+              >
+                {summary}
+              </span>
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent style={{ borderTop: '1px solid var(--border-subtle)' }}>
+            {/* A grid of individually-labelled checkboxes: nothing a <label> can
+                point at, so the row names the group. */}
+            <Field label="Breakdown columns" htmlFor={false} hint={breakdownHint}>
+              <div className="max-w-[560px]">
+                <ColumnCheckboxPicker
+                  id="metric-breakdowns"
+                  columns={columnChoices}
+                  value={draft.breakdownColumns}
+                  onChange={value => patch({ breakdownColumns: value })}
+                  reserved={[draft.appVersionColumn, draft.platformColumn].filter(Boolean)}
+                />
+              </div>
+              {unknown.length > 0 && (
+                <p className="mt-[6px] text-body-sm leading-[1.45]" style={{ color: 'var(--warning, var(--fg-muted))' }}>
+                  Not returned by this metric's source: {unknown.join(', ')}. Untick them, or
+                  collection will fail for them.
+                </p>
+              )}
+            </Field>
+            <Field label="App version column" htmlFor="metric-app-version" hint="Optional column used for by-version series.">
+              <div className="max-w-[280px]">
+                <ColumnSuggestInput
+                  id="metric-app-version"
+                  value={draft.appVersionColumn}
+                  onChange={value => patch({ appVersionColumn: value })}
+                  suggestions={columnChoices}
+                  placeholder={examplePlaceholder('app_version')}
+                />
+              </div>
+            </Field>
+            <Field label="Platform column" htmlFor="metric-platform" last hint="Optional platform dimension column.">
+              <div className="max-w-[280px]">
+                <ColumnSuggestInput
+                  id="metric-platform"
+                  value={draft.platformColumn}
+                  onChange={value => patch({ platformColumn: value })}
+                  suggestions={columnChoices}
+                  placeholder={examplePlaceholder('platform')}
+                />
+              </div>
+            </Field>
+          </CollapsibleContent>
+        </Collapsible>
       )}
     </SCard>
   )

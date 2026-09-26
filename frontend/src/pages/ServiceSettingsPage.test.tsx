@@ -318,31 +318,30 @@ describe('Instance settings reset card', () => {
     expect(await screen.findByText(/Clears the 1 Email override on this instance/)).toBeInTheDocument()
   })
 
-  it('offers no reset at all when nothing in the section is overridden', async () => {
+  it('offers no reset card at all when nothing in the section is overridden (ST-29)', async () => {
     renderSection('email', {})
 
-    expect(await screen.findByText(/Nothing to clear/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Reset to defaults/ })).toBeDisabled()
+    await screen.findByRole('button', { name: 'Discard' })
+    expect(screen.queryByRole('button', { name: /Reset to defaults/ })).toBeNull()
+    expect(screen.queryByText(/Nothing to clear/)).toBeNull()
     // The "applies immediately" warning belongs to an action that can happen.
     expect(screen.queryByText(/does not wait for Save changes/)).toBeNull()
   })
 
   /**
-   * The badges below this card now have three states, and the card's copy had
-   * claimed every non-overridden field "comes from an environment variable".
-   * Beside a row badged "Default" that is the same copy-disagrees-with-badges
-   * bug tripl-5qp9 was, in a second vocabulary — so it moves in the same change
-   * as the third state (tripl-wkwv.2).
+   * The card's copy had claimed every non-overridden field "comes from an
+   * environment variable" — the copy-disagrees-with-badges bug tripl-5qp9 was,
+   * in a second vocabulary (tripl-wkwv.2). Unbadged rows are now explained once,
+   * by the page legend, and it makes the same weaker claim.
    */
-  it('does not claim the environment delivered fields the badges call Default', async () => {
+  it('does not claim the environment delivered fields it cannot vouch for', async () => {
     renderSection('email', {})
 
-    const copy = await screen.findByText(/Nothing to clear/)
-    expect(copy).toHaveTextContent(/built-in default/i)
+    const legend = await screen.findByText(/Fields marked Override are stored here/)
+    expect(legend).toHaveTextContent(/built-in default where none is set/i)
     expect(screen.queryByText('Env')).toBeNull()
-    // Every Email field carries a badge, SMTP password included (tripl-wkwv.2):
-    // RESET_FIELDS.email.length, so a row losing or gaining one fails here.
-    expect(screen.getAllByText('Default')).toHaveLength(6)
+    // A value at its default carries no badge at all (ST-25).
+    expect(screen.queryByText('Default')).toBeNull()
   })
 })
 
@@ -358,17 +357,8 @@ describe('Instance settings source badges', () => {
     expect(await screen.findByText('Env')).toBeInTheDocument()
     // Only the one field the server said was delivered.
     expect(screen.getAllByText('Env')).toHaveLength(1)
-    // The rest of RESET_FIELDS.email — one fewer than above, since that one
-    // field is the delivered one (tripl-wkwv.2).
-    expect(screen.getAllByText('Default')).toHaveLength(5)
-  })
-
-  it('states what Default does and does not prove, rather than letting the label overclaim', async () => {
-    renderSection('email', {})
-
-    const badge = (await screen.findAllByText('Default'))[0]!
-    // The one thing value-versus-default comparison genuinely cannot tell apart.
-    expect(badge).toHaveAttribute('title', expect.stringMatching(/indistinguishable/i))
+    // The rest stay unbadged rather than wearing a grey "Default" each (ST-25).
+    expect(screen.queryByText('Default')).toBeNull()
   })
 })
 
@@ -393,8 +383,16 @@ describe('Instance settings save row', () => {
   it('does not promise an environment fallback for fields that have no variable', async () => {
     renderSection('ai')
 
+    const legend = await screen.findByText(/Fields marked Override are stored here/)
+    expect(legend).toHaveTextContent(/built-in default where none is set/i)
+  })
+
+  it('keeps the sticky note to one line about when saving takes effect (ST-28)', async () => {
+    renderSection('ai')
+
     const note = await screen.findByText(/no restart needed/i)
-    expect(note).toHaveTextContent(/built-in default where none is set/i)
+    expect(note).toHaveTextContent('Applies to the next AI call — no restart needed.')
+    expect(note).not.toHaveTextContent(/fall back/i)
   })
 
   it('offers Discard beside Save and keeps both reachable while the pane scrolls', async () => {

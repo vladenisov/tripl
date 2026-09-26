@@ -224,6 +224,30 @@
         "title": "AiFieldSuggestion",
         "type": "object"
       },
+      "AiPromptDefaultsResponse": {
+        "description": "The built-in system prompts, whatever is stored over them (ST-30).\n\nA \"Restore default\" link fills the editor from these; saving ``null`` for\nthe field clears the override and has the same effect server-side.",
+        "properties": {
+          "alert_explanation_system_prompt": {
+            "title": "Alert Explanation System Prompt",
+            "type": "string"
+          },
+          "ask_system_prompt": {
+            "title": "Ask System Prompt",
+            "type": "string"
+          },
+          "describe_system_prompt": {
+            "title": "Describe System Prompt",
+            "type": "string"
+          }
+        },
+        "required": [
+          "describe_system_prompt",
+          "ask_system_prompt",
+          "alert_explanation_system_prompt"
+        ],
+        "title": "AiPromptDefaultsResponse",
+        "type": "object"
+      },
       "AiSettings": {
         "properties": {
           "ai_api_key_configured": {
@@ -1559,6 +1583,39 @@
             ],
             "title": "Error"
           },
+          "error_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "config",
+                  "policy",
+                  "dns",
+                  "timeout",
+                  "tls",
+                  "network",
+                  "http_status",
+                  "smtp",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Kind"
+          },
+          "http_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Http Status"
+          },
           "ok": {
             "title": "Ok",
             "type": "boolean"
@@ -2262,6 +2319,9 @@
             ],
             "title": "Next Cursor"
           },
+          "status_counts": {
+            "$ref": "#/components/schemas/AlertInboxStatusCounts"
+          },
           "total": {
             "title": "Total",
             "type": "integer"
@@ -2318,6 +2378,38 @@
         ],
         "title": "AlertInboxStatus",
         "type": "string"
+      },
+      "AlertInboxStatusCounts": {
+        "description": "Incidents per effective status over the whole window (AL-14).\n\nCounted after the non-status filters and before the status one, so a chip\nreads what choosing it would list, without loading every page.",
+        "properties": {
+          "acknowledged": {
+            "default": 0,
+            "title": "Acknowledged",
+            "type": "integer"
+          },
+          "false_positive": {
+            "default": 0,
+            "title": "False Positive",
+            "type": "integer"
+          },
+          "muted": {
+            "default": 0,
+            "title": "Muted",
+            "type": "integer"
+          },
+          "open": {
+            "default": 0,
+            "title": "Open",
+            "type": "integer"
+          },
+          "resolved": {
+            "default": 0,
+            "title": "Resolved",
+            "type": "integer"
+          }
+        },
+        "title": "AlertInboxStatusCounts",
+        "type": "object"
       },
       "AlertMessageFormat": {
         "enum": [
@@ -4079,6 +4171,11 @@
       },
       "AuthStatusResponse": {
         "properties": {
+          "email_configured": {
+            "default": false,
+            "title": "Email Configured",
+            "type": "boolean"
+          },
           "has_users": {
             "title": "Has Users",
             "type": "boolean"
@@ -5331,6 +5428,16 @@
             ],
             "title": "Project Id"
           },
+          "scan_count": {
+            "default": 0,
+            "title": "Scan Count",
+            "type": "integer"
+          },
+          "scan_run_count": {
+            "default": 0,
+            "title": "Scan Run Count",
+            "type": "integer"
+          },
           "timeout_seconds": {
             "anyOf": [
               {
@@ -5765,7 +5872,7 @@
         "type": "object"
       },
       "DetectionResetPeriod": {
-        "description": "Optional half-open window (``after <= t < before``) for a danger-zone reset.\n\nBoth bounds are optional; omitting both clears the whole project.",
+        "description": "Optional half-open window (``after <= t < before``) for a danger-zone reset.\n\nBoth bounds are optional; omitting both clears the whole project.\n\n``dry_run`` returns the counts the reset WOULD delete and deletes nothing, so\nthe confirm dialog can name them (ST-39). It defaults to false, unlike\n``VariableRetirementRequest``: this body predates it, and a client that\nomits it has always meant \"delete\".",
         "properties": {
           "after": {
             "anyOf": [
@@ -5790,6 +5897,11 @@
               }
             ],
             "title": "Before"
+          },
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
           }
         },
         "title": "DetectionResetPeriod",
@@ -9496,6 +9608,11 @@
             "title": "Color",
             "type": "string"
           },
+          "column_count": {
+            "default": 0,
+            "title": "Column Count",
+            "type": "integer"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -9525,6 +9642,16 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "identifier_count": {
+            "default": 0,
+            "title": "Identifier Count",
+            "type": "integer"
+          },
+          "metric_count": {
+            "default": 0,
+            "title": "Metric Count",
+            "type": "integer"
           },
           "name": {
             "title": "Name",
@@ -10951,6 +11078,25 @@
           }
         },
         "title": "MetaFieldUpdate",
+        "type": "object"
+      },
+      "MetaFieldUsageResponse": {
+        "description": "What deleting a meta field would take with it (AU-37).\n\n``value_count`` is every non-empty stored value (a multi-value field holds\nseveral per event); ``event_count`` is the events holding at least one.",
+        "properties": {
+          "event_count": {
+            "title": "Event Count",
+            "type": "integer"
+          },
+          "value_count": {
+            "title": "Value Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "value_count",
+          "event_count"
+        ],
+        "title": "MetaFieldUsageResponse",
         "type": "object"
       },
       "MetricAggregation": {
@@ -15358,6 +15504,11 @@
               }
             ]
           },
+          "metric_count": {
+            "default": 0,
+            "title": "Metric Count",
+            "type": "integer"
+          },
           "monitoring_signal_count": {
             "default": 0,
             "title": "Monitoring Signal Count",
@@ -15743,6 +15894,84 @@
         "title": "RelationResponse",
         "type": "object"
       },
+      "RelationUpdate": {
+        "description": "Editing a relation in place (AU-13); every field optional, none nullable.\n\nAn end is re-checked against the project branch whenever either of its ids\nchanges, with the stored id standing in for the one not sent.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "relation_type": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relation Type"
+          },
+          "source_event_type_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Event Type Id"
+          },
+          "source_field_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Field Id"
+          },
+          "target_event_type_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Event Type Id"
+          },
+          "target_field_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Field Id"
+          }
+        },
+        "title": "RelationUpdate",
+        "type": "object"
+      },
       "ReleaseComparabilityItem": {
         "description": "Whether one detection pass could judge the latest release at all.\n\nServed alongside ``items`` because an empty list means two different things.\nA caller that only reads ``items`` cannot tell a healthy release from one\nwhose findings were withheld, and both were served as an empty list until\nthis was carried through.",
         "properties": {
@@ -16056,6 +16285,25 @@
         "title": "ResolutionResponse",
         "type": "object"
       },
+      "RowLimitDefaultsResponse": {
+        "description": "The instance's effective row caps for a scan with no limit of its own.\n\nReadable by every signed-in user, unlike the rest of ``/settings``: the scan\nform's Limits hints quote them to whoever is filling it in (B15).",
+        "properties": {
+          "metrics_row_limit_default": {
+            "title": "Metrics Row Limit Default",
+            "type": "integer"
+          },
+          "scan_row_limit_default": {
+            "title": "Scan Row Limit Default",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "scan_row_limit_default",
+          "metrics_row_limit_default"
+        ],
+        "title": "RowLimitDefaultsResponse",
+        "type": "object"
+      },
       "RuntimeSettings": {
         "properties": {
           "app_base_url": {
@@ -16123,6 +16371,11 @@
       "ScanActivityItem": {
         "description": "One scan config's run activity, as the Scans list shows it.",
         "properties": {
+          "catalog_combinations_24h": {
+            "default": 0,
+            "title": "Catalog Combinations 24H",
+            "type": "integer"
+          },
           "failing_streak": {
             "title": "Failing Streak",
             "type": "integer"
@@ -16145,6 +16398,11 @@
             "format": "uuid",
             "title": "Scan Config Id",
             "type": "string"
+          },
+          "warehouse_rows_24h": {
+            "default": 0,
+            "title": "Warehouse Rows 24H",
+            "type": "integer"
           }
         },
         "required": [
@@ -20034,6 +20292,26 @@
         "title": "VariableEventOverrideUpsert",
         "type": "object"
       },
+      "VariableEventRef": {
+        "description": "One event a variable was observed in, with the id a link needs (AU-29).",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "VariableEventRef",
+        "type": "object"
+      },
       "VariableListResponse": {
         "properties": {
           "items": {
@@ -20095,6 +20373,16 @@
             },
             "maxItems": 20,
             "title": "Event Names",
+            "type": "array"
+          },
+          "event_refs": {
+            "default": [],
+            "description": "The events this variable was observed in, as id + name so each can link to its event. Ordered by name (then id) and capped at 20, like 'event_names'; 'event_count' carries the untruncated total.",
+            "items": {
+              "$ref": "#/components/schemas/VariableEventRef"
+            },
+            "maxItems": 20,
+            "title": "Event Refs",
             "type": "array"
           },
           "excluded_from_scans": {
@@ -25201,7 +25489,7 @@
     },
     "/api/v1/projects/{slug}/danger/reset-anomalies": {
       "post": {
-        "description": "Owner-only: clear every anomaly (+ breakdown) in the project's period.\n\nDestructive and irreversible. Derived monitoring signals disappear with the\nanomalies they are computed from.",
+        "description": "Owner-only: clear every anomaly (+ breakdown) in the project's period.\n\nDestructive and irreversible. Derived monitoring signals disappear with the\nanomalies they are computed from. ``dry_run`` only counts (ST-39).",
         "operationId": "reset_anomalies_api_v1_projects__slug__danger_reset_anomalies_post",
         "parameters": [
           {
@@ -25254,7 +25542,7 @@
     },
     "/api/v1/projects/{slug}/danger/reset-drifts": {
       "post": {
-        "description": "Owner-only: clear every schema + distribution drift in the project's period.\n\nDestructive and irreversible.",
+        "description": "Owner-only: clear every schema + distribution drift in the project's period.\n\nDestructive and irreversible. ``dry_run`` only counts (ST-39).",
         "operationId": "reset_drifts_api_v1_projects__slug__danger_reset_drifts_post",
         "parameters": [
           {
@@ -29728,6 +30016,77 @@
         ]
       }
     },
+    "/api/v1/projects/{slug}/meta-fields/{meta_field_id}/usage": {
+      "get": {
+        "description": "Values and events a delete of this field would clear (AU-37).",
+        "operationId": "get_meta_field_usage_api_v1_projects__slug__meta_fields__meta_field_id__usage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "meta_field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Meta Field Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+            "in": "query",
+            "name": "branch",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetaFieldUsageResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Meta Field Usage",
+        "tags": [
+          "meta-fields"
+        ]
+      }
+    },
     "/api/v1/projects/{slug}/metrics": {
       "get": {
         "operationId": "list_metric_definitions_api_v1_projects__slug__metrics_get",
@@ -29790,6 +30149,39 @@
                 }
               ],
               "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reviewed",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reviewed"
+            }
+          },
+          {
+            "in": "query",
+            "name": "owner_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner Id"
             }
           },
           {
@@ -31811,6 +32203,84 @@
           }
         },
         "summary": "Delete Relation",
+        "tags": [
+          "relations"
+        ]
+      },
+      "patch": {
+        "operationId": "update_relation_api_v1_projects__slug__relations__relation_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "relation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Relation Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+            "in": "query",
+            "name": "branch",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelationUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Relation",
         "tags": [
           "relations"
         ]
@@ -34932,6 +35402,28 @@
         ]
       }
     },
+    "/api/v1/settings/ai/defaults": {
+      "get": {
+        "description": "The built-in AI system prompts, for each prompt's \"Restore default\" (ST-30).",
+        "operationId": "get_ai_prompt_defaults_api_v1_settings_ai_defaults_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiPromptDefaultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Ai Prompt Defaults",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
     "/api/v1/settings/ai/test": {
       "post": {
         "operationId": "test_ai_settings_api_v1_settings_ai_test_post",
@@ -35032,6 +35524,28 @@
           }
         },
         "summary": "Get Photo Limits",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/v1/settings/row-limits": {
+      "get": {
+        "description": "The instance row caps a scan falls back to, readable by every signed-in user.\n\nOwner-only like the rest of this router would hide the real numbers from the\neditors who fill in a scan's Limits, so the form hard-coded the shipped\ndefaults instead (B15). Two integers, nothing about the connection.",
+        "operationId": "get_row_limit_defaults_api_v1_settings_row_limits_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RowLimitDefaultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Row Limit Defaults",
         "tags": [
           "settings"
         ]

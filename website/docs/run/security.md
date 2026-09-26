@@ -255,7 +255,9 @@ reachable instance.
 - `GET /api/v1/auth/status` reports `registration_enabled` (instance-wide, no
   per-account information), so the sign-in screen hides the sign-up form
   entirely on a closed instance instead of letting a visitor discover the policy
-  from a `403`.
+  from a `403`. It also reports `email_configured` (SMTP host and From: address
+  both set), so the forgot-password form says up front that no reset link can
+  arrive; the unauthenticated reset request already returned the same flag.
 
 Rate limiting (`RATE_LIMIT_REGISTER_PER_HOUR`) still applies on top and is *not*
 a substitute: it slows signups, it never closes them.

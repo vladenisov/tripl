@@ -564,8 +564,16 @@ _METRIC_POINT_KEYS = (
     "breakdown_event_metrics",
     "breakdown_type_metrics",
 )
-# Fields the backend may populate for rows read, in preference order.
-_ROWS_SCANNED_KEYS = ("query_rows_scanned", "scan_rows_processed")
+# What a run read, in preference order, with the noun each counter needs. A
+# metrics collection reports warehouse rows (``query_rows_scanned``); the
+# catalog analyzer reports the rows of its ``GROUP BY ALL`` breakdown
+# (``scan_rows_processed``), which are distinct column combinations, not
+# warehouse rows. Calling both "rows scanned" put one catalog run on screen as
+# "153 combos" on its scan page and "153 rows scanned" here (#247 DA-4).
+_SCANNED_KEYS = (
+    ("query_rows_scanned", "row scanned", "rows scanned"),
+    ("scan_rows_processed", "column combination", "column combinations"),
+)
 
 
 def _as_positive_count(value: object) -> int:
@@ -589,12 +597,12 @@ def _metric_points_written(summary: dict[str, object]) -> int:
     return sum(_as_positive_count(summary.get(key)) for key in _METRIC_POINT_KEYS)
 
 
-def _rows_scanned(summary: dict[str, object]) -> int:
-    for key in _ROWS_SCANNED_KEYS:
-        rows = _as_positive_count(summary.get(key))
-        if rows:
-            return rows
-    return 0
+def _scanned_label(summary: dict[str, object]) -> str | None:
+    for key, singular, plural in _SCANNED_KEYS:
+        count = _as_positive_count(summary.get(key))
+        if count:
+            return _count_label(count, singular, plural)
+    return None
 
 
 def _scan_job_detail(
@@ -634,9 +642,9 @@ def _scan_job_detail(
     if not parts and status == "completed" and "events_created" in summary:
         parts.append("no new events discovered")
 
-    rows_scanned = _rows_scanned(summary)
-    if rows_scanned:
-        parts.append(_count_label(rows_scanned, "row scanned", "rows scanned"))
+    scanned = _scanned_label(summary)
+    if scanned:
+        parts.append(scanned)
 
     if parts:
         return " · ".join(parts)

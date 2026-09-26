@@ -54,6 +54,14 @@ are an **additional** filter on top of that detection.
 A destination is where alerts go. Each has its own connection settings and the
 message formats it supports.
 
+The **Destinations** panel is a flat list, one card per destination with its
+channel's icon, and an **Add destination** menu that picks the channel. The
+destination dialog has no channel select of its own: on create the channel is
+the one the menu item named, and on edit it is shown read-only. A stored
+secret shows as **Configured** rather than its value, and **Delete** is an icon
+button inside each card (named *Delete destination &lt;name&gt;* for screen
+readers).
+
 | Channel | Key settings | Formats |
 |---------|--------------|---------|
 | **Slack** | Incoming webhook URL (must be a `hooks.slack.com` HTTPS hook) | plain, Slack `mrkdwn` |
@@ -239,6 +247,11 @@ The reply is `{ "ok": …, "error": …, "sent_at": … }`, and:
   zero-egress. The exception is the local demo sink, which answers `ok: true`,
   because rendering and recording locally is exactly what a real delivery through
   it does. Test sends use the same demo egress guard as queued deliveries.
+- **A failure says what kind it is.** Beside the channel's own `error` text the
+  response carries `error_kind` — `http_status` (with `http_status`, the code),
+  `dns`, `timeout`, `tls`, `network`, `smtp`, `config` (a stored value our own
+  validators refused), `policy` (the demo refusal) or `other` — so the card
+  names the cause in plain language and keeps the raw text under **Details**.
 - **The result stays on the card until the channel's settings change.** Changing
   a stored setting or opening the destination's editor clears it, because the
   editor can replace a secret. Writes that leave the channel as it was keep it:
@@ -1043,6 +1056,21 @@ the *current* latest release, with the comparability verdict; see
 
 ### The Inbox — one row per incident {#the-inbox}
 
+Each incident card leads with its scope and a signed delta badge (`+203%`,
+`−48%`), then when it last fired as a relative time, with **Acknowledge** among
+its actions. A project with no alert rules shows **No alert rules yet** in place
+of the list, and its **Create a rule** button opens the rule form on the Rules
+tab (`?section=monitors&new=rule`).
+
+The top bar's bell, titled **Alerts**, previews the same queue. Its badge counts
+open incidents — the same number as the sidebar's Alerting badge. The popover
+lists **Open incidents** first, each linking to its Inbox card; then **Active
+signals** (the four largest, then **+N more** to Anomalies); then **Recent alert
+deliveries**, each reading like *Failed · Slack · 3 matched · 2h ago* and
+opening that delivery. Retrying a Jira or Linear delivery from the popover asks
+first, since a retry can open a second ticket. Its footer links **All anomalies
+→** and **Alert inbox →**.
+
 The **Inbox** is one row per **incident** — a rule firing in one direction on one
 scope of a scan, or on a project-wide catalog metric — over the last 30 days,
 give or take the two exceptions under
@@ -1328,15 +1356,21 @@ silent empty page — and not by scrolling. A mute that has run out counts as
 `open` again and rejoins the top run on its own; an indefinite mute never runs
 out, so it stays under `?status=muted` until you reopen it.
 
+**The Inbox opens on Open.** With no `?status=` in the address the page lists
+open incidents only — the triage queue, not every incident in the window — and
+that default is not counted as a filter, so **Clear filters** does not show on
+first load. **All** is an explicit `?status=all`.
+
 **The filter is in the page URL as well.** Picking a status writes
-`?status=<open|acknowledged|muted|resolved|false_positive>` onto
-`/p/<slug>/settings/alerting`, beside `?section=` and `?scan=`. So a filtered
-queue can be bookmarked or pasted to a colleague, and opening an incident to
-check the scope that fired — a page off this route entirely — and pressing Back
-returns the queue you were working rather than all of them again. Clearing the
-filter removes the parameter; unlike the API, a value the page does not
-recognise degrades quietly to **All**, the same rule `?section=` and `?scan=`
-already follow.
+`?status=<acknowledged|muted|resolved|false_positive|all>` onto
+`/p/<slug>/settings/alerting`, beside `?section=` and `?scan=` (Open, the
+default, drops the parameter). So a filtered queue can be bookmarked or pasted
+to a colleague, and opening an incident to check the scope that fired — a page
+off this route entirely — and pressing Back returns the queue you were working
+rather than all of them again. **Clear filters** returns to the default Open
+queue; an empty result's **Show all** asks for every status. Unlike the API, a
+value the page does not recognise degrades quietly to **All**, the same rule
+`?section=` and `?scan=` already follow.
 
 **Status is not the only filter.** A bar above the list narrows it four more
 ways, each of them a field the cards already show, and each of them in the URL
@@ -1344,7 +1378,7 @@ beside `?status=`:
 
 | Control | Parameter | What it matches |
 | --- | --- | --- |
-| Last fired from / to | `?fired_from=`, `?fired_to=` (`YYYY-MM-DD`) | When the incident **last** spoke, not when it started. Both ends are inclusive whole days, read in your own timezone, so "to the 8th" includes that evening. |
+| Last fired (one chip; its From / To open in a popover) | `?fired_from=`, `?fired_to=` (`YYYY-MM-DD`) | When the incident **last** spoke, not when it started. Both ends are inclusive whole days, read in your own timezone, so "to the 8th" includes that evening. |
 | Kind | `?scope_type=` | Any scope the incident fired on — an incident holding one release regression among ten volume firings is found by either. |
 | Direction | `?direction=drop` / `spike` | The direction of its **newest** firing, which is the one the card shows. |
 | Scope | `?scope=` | Case-insensitive substring of any scope name or reference in the incident, including the ones past the eight the card lists. |
@@ -1354,7 +1388,9 @@ an incident older than that, and the bar says so under the inputs. Combined with
 a status, the filters read as "and": `?status=open&direction=drop&scope=checkout`
 is the open drops on checkout. The count under the list and the "of N" beside it
 both describe the filtered set, so the number above the cards always counts the
-cards. An unrecognised `scope_type` or `direction` is a 422 from the API, while
+cards. Each option of the **Status** filter carries its own count ("Open · 3"):
+the response's `status_counts` counts every status after the other filters and
+before the status one, so an option says what picking it would list. An unrecognised `scope_type` or `direction` is a 422 from the API, while
 the page — like `?status=` — drops it quietly rather than turning a stale link
 into a failed request.
 
@@ -1377,7 +1413,8 @@ reached this page and everything else linked to the event's monitoring page,
 which shows neither the deliveries nor the actions.
 
 The **Delivery log** panel below stays the whole-project delivery list, filterable by
-status, channel, destination, rule and scan — the view for "did anything fail to
+status, channel, destination, rule, scan and a **Sent** date chip (the table
+itself has no Channel column; each row's destination names it) — the view for "did anything fail to
 go out", rather than for acting on one incident. Deliveries too old to belong to
 an incident (written before incidents existed) appear only there.
 

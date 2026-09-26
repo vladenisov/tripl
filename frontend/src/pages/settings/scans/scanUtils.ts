@@ -55,6 +55,52 @@ export function jobRowsScanned(job: ScanJob | null): number | null {
 }
 
 /**
+ * What a run's scanned figure counts. Metrics collection reports warehouse rows
+ * (`query_rows_scanned`); the catalog analyzer reports the rows of its
+ * `GROUP BY ALL` breakdown (`scan_rows_processed`), which are distinct column
+ * combinations grouped in the warehouse, not warehouse rows. Printing both as
+ * "rows" put a catalog run 180× below its dry run's row count (#247 DA-4).
+ */
+export type JobScannedUnit = 'rows' | 'combinations'
+
+export interface JobScanned {
+  value: number
+  unit: JobScannedUnit
+}
+
+/**
+ * Same precedence as `jobRowsScanned`, with the population named. Takes any job
+ * shape with a result summary, so the Projects page's latest-run card reads it
+ * through the same rule as the scan pages.
+ */
+export function jobScanned(job: Pick<ScanJob, 'result_summary'> | null): JobScanned | null {
+  const summary = job?.result_summary
+  if (!summary) return null
+  if (summary.query_rows_scanned != null) return { value: summary.query_rows_scanned, unit: 'rows' }
+  if (summary.scan_rows_processed != null) {
+    return { value: summary.scan_rows_processed, unit: 'combinations' }
+  }
+  return null
+}
+
+/**
+ * "4,428 rows" / "153 combos". `format` prints the figure (full digits by
+ * default, the list's compact form where space is short); the noun agrees with
+ * the raw value, not the printed one.
+ */
+export function formatJobScanned(
+  scanned: JobScanned | null,
+  format: (value: number) => string = value => value.toLocaleString(),
+): string {
+  if (!scanned) return '—'
+  const { value, unit } = scanned
+  const noun = unit === 'rows'
+    ? (value === 1 ? 'row' : 'rows')
+    : (value === 1 ? 'combo' : 'combos')
+  return `${format(value)} ${noun}`
+}
+
+/**
  * Metric time-series points a run upserted. The four counters are disjoint
  * populations; summing them is the only number that means "points written".
  *
@@ -78,6 +124,67 @@ export function jobMetricPoints(job: ScanJob | null): number | null {
   ]
   if (counters.every((value) => value == null)) return null
   return counters.reduce((total: number, value) => total + (value ?? 0), 0)
+}
+
+const INTERVAL_MS: Record<IntervalCode, number> = {
+  '15m': 15 * 60_000,
+  '1h': 60 * 60_000,
+  '6h': 6 * 60 * 60_000,
+  '1d': 24 * 60 * 60_000,
+  '1w': 7 * 24 * 60 * 60_000,
+}
+
+/**
+ * A run that advanced the metric schedule: a scheduled collection, or (for a
+ * run that names no mode) one that reported points. A replay does not count —
+ * it backfills an explicit past window, so a replay run today must not make a
+ * stalled schedule look current (the worker applies the same rule).
+ */
+function isMetricsRun(job: ScanJob): boolean {
+  if (job.status !== 'completed') return false
+  const mode = job.result_summary?.mode
+  if (mode) return mode === 'metrics_collection'
+  return (jobMetricPoints(job) ?? 0) > 0
+}
+
+export interface MetricsFreshness {
+  /** The newest completed metrics run, or null when none has finished. */
+  job: ScanJob | null
+  /** When the newest metrics run finished, or null when none has. */
+  lastAt: string | null
+  /** When the schedule is next due (last point + interval), or null. */
+  nextAt: number | null
+  /** No point for more than two intervals: the schedule is not keeping up. */
+  overdue: boolean
+}
+
+/**
+ * How current a monitoring scan's metric series is, from its own job list.
+ * The detail page's "Metric points" card read the newest run, which is usually
+ * a catalog Run now with no points, so every monitoring scan showed "—" and
+ * nothing said whether the series was up to date (#247 DA-5).
+ */
+export function metricsFreshness(
+  jobs: ScanJob[],
+  interval: string | null,
+  now: number = Date.now(),
+): MetricsFreshness {
+  const last = jobs.find(isMetricsRun) ?? null
+  const lastAt = last ? (last.completed_at ?? last.started_at ?? last.created_at) : null
+  const intervalMs = interval ? INTERVAL_MS[interval as IntervalCode] : undefined
+  if (!lastAt || !intervalMs) return { job: last, lastAt, nextAt: null, overdue: false }
+  const lastMs = Date.parse(lastAt)
+  if (Number.isNaN(lastMs)) return { job: last, lastAt, nextAt: null, overdue: false }
+  return { job: last, lastAt, nextAt: lastMs + intervalMs, overdue: now - lastMs > 2 * intervalMs }
+}
+
+/** "in 48m" / "in 3h" / "due now" — the future twin of `formatRelativeTime`. */
+export function formatDueIn(at: number, now: number = Date.now()): string {
+  const diffMin = Math.round((at - now) / 60_000)
+  if (diffMin <= 0) return 'due now'
+  if (diffMin < 60) return `in ${diffMin}m`
+  if (diffMin < 24 * 60) return `in ${Math.floor(diffMin / 60)}h`
+  return `in ${Math.floor(diffMin / (24 * 60))}d`
 }
 
 export function jobDurationSeconds(job: ScanJob): number | null {

@@ -1,3 +1,4 @@
+import { formatIsoDate } from '@/lib/datetime'
 import type { ApiKey } from '@/types'
 
 /**
@@ -28,4 +29,19 @@ export function isKeyInactive(key: Pick<ApiKey, 'revoked_at' | 'expires_at'>, no
 export function describeKeyCounts(active: number, inactive: number): string {
   const activeLabel = `${active} active`
   return inactive > 0 ? `${activeLabel} · ${inactive} revoked or expired` : activeLabel
+}
+
+/**
+ * The line under the reveal-once dialog's title that says which key the token
+ * belongs to, e.g. "claude-agent · read-only · All projects · no expiry". The
+ * row it came from is hidden behind the overlay (ST-21).
+ */
+export function describeRevealedKey(
+  key: Pick<ApiKey, 'name' | 'scope' | 'project_id' | 'expires_at'>,
+  projectName?: string,
+): string {
+  const scope = key.scope === 'write' ? 'read & write' : 'read-only'
+  const project = key.project_id ? (projectName ?? 'one project') : 'All projects'
+  const expiry = key.expires_at ? `expires ${formatIsoDate(key.expires_at)}` : 'no expiry'
+  return `${key.name} · ${scope} · ${project} · ${expiry}`
 }

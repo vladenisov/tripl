@@ -144,6 +144,21 @@ function actionSentence(action: string): string {
   return past ? `${past} ${noun}` : noun
 }
 
+/**
+ * The Action filter's option labels: the same sentence the row chip shows, not
+ * the code (ST-34). Two codes can read alike (`event.delete` and
+ * `event.bulk_delete` are both "Deleted event"), and a menu with two identical
+ * entries cannot be chosen from, so only those carry their code in brackets.
+ */
+function actionOptionLabels(actions: readonly string[]): Map<string, string> {
+  const sentences = actions.map((a) => [a, actionSentence(a)] as const)
+  const seen = new Map<string, number>()
+  for (const [, sentence] of sentences) seen.set(sentence, (seen.get(sentence) ?? 0) + 1)
+  return new Map(
+    sentences.map(([a, sentence]) => [a, (seen.get(sentence) ?? 0) > 1 ? `${sentence} (${a})` : sentence]),
+  )
+}
+
 /** Where a row's target lives, for the targets that have a page. None for a
  * deletion: the thing is gone. */
 function targetPath(entry: AuditEntry): string | null {
@@ -340,6 +355,7 @@ function AuditLog({ slug }: { slug?: string }) {
       ? [...catalog.project, ...catalog.workspace]
       : catalog.project
     : []
+  const optionLabels = actionOptionLabels(offeredGroups.flatMap((group) => group.actions))
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [action, setAction] = useState('')
   const [emailInput, setEmailInput] = useState('')
@@ -462,9 +478,7 @@ function AuditLog({ slug }: { slug?: string }) {
 
   // One line in the header; the rest of what a compliance reader needs to know
   // folds under "About this log" (PL-24).
-  const summaryLine = workspace
-    ? 'Every change across the instance, including the actions that belong to no project.'
-    : "Every change to this project's plan, scans, metrics and alerting."
+  const summaryLine = "Every change to this project's plan, scans, metrics and alerting."
   const description = workspace ? (
     <>
       Compliance trail for the whole instance: every project's plan
@@ -494,12 +508,11 @@ function AuditLog({ slug }: { slug?: string }) {
       {/* The workspace scope is mounted inside a takeover section that already
           renders the title and a one-line description through SHeader, so a
           second "Audit log" heading would be the page saying its own name
-          twice. The paragraph is kept in both: it carries what the one-liner
-          cannot. The project scope gets the shared page header (DS-1 / PL-25):
-          a real h1, no inline icon. */}
-      {workspace ? (
-        <p className="text-body-sm text-muted-foreground">{summaryLine}</p>
-      ) : (
+          twice — and so would a second one-liner under that description, which
+          is why the workspace scope opens straight on "About this log" (ST-34).
+          The project scope gets the shared page header (DS-1 / PL-25): a real
+          h1, no inline icon. */}
+      {!workspace && (
         <PageHeader eyebrow="Govern" title="Audit log" description={summaryLine} />
       )}
       <details className="text-body-sm">
@@ -531,9 +544,10 @@ function AuditLog({ slug }: { slug?: string }) {
             onValueChange={setEmailInput}
             onKeyDown={(e) => { if (e.key === 'Enter') applyEmail() }}
           />
-          {/* A native select: the action vocabulary is grouped, and the
-              filter chip's Radix select has no groups. Styled as the bar's
-              chip: dashed while unset, accent once set. */}
+          {/* A native select: the action vocabulary is grouped, and neither
+              the filter chip's Radix select nor the kit NativeSelect has
+              groups. Styled as the bar's chip: dashed while unset, accent once
+              set. Options read as the row chips do; the code is the value. */}
           <select
             id="audit-action"
             aria-label="Action"
@@ -550,7 +564,7 @@ function AuditLog({ slug }: { slug?: string }) {
             {offeredGroups.map((group) => (
               <optgroup key={group.label} label={group.label}>
                 {group.actions.map((a) => (
-                  <option key={a} value={a}>{a}</option>
+                  <option key={a} value={a}>{optionLabels.get(a) ?? a}</option>
                 ))}
               </optgroup>
             ))}
@@ -666,13 +680,16 @@ function AuditLog({ slug }: { slug?: string }) {
                         one non-wrapping line a phone truncated the target, the
                         field a reader came for, to nothing (PLAN-48). The
                         zero-height break and the `order` classes do the
-                        stacking; from `sm` up it is the single line it was. */}
+                        stacking. From `sm` up it is one line on a fixed grid —
+                        time, action, branch/project, target, person — so every
+                        row's target starts at the same x whatever the chips
+                        before it are (ST-34). */}
                     <button
                       type="button"
                       onClick={() => toggle(entry.id)}
                       aria-expanded={isOpen}
                       aria-controls={isOpen ? payloadId : undefined}
-                      className="flex w-full flex-wrap items-start gap-x-2 gap-y-1 text-left sm:flex-nowrap"
+                      className="flex w-full flex-wrap items-start gap-x-2 gap-y-1 text-left sm:grid sm:grid-cols-[auto_4rem_11rem_9rem_minmax(0,1fr)_10rem] sm:items-center"
                     >
                       {isOpen ? (
                         <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -687,7 +704,7 @@ function AuditLog({ slug }: { slug?: string }) {
                       </span>
                       {/* The person, with the address in the title (PL-23). */}
                       <span
-                        className="order-1 ml-auto min-w-0 truncate text-muted-foreground text-caption sm:order-last"
+                        className="order-1 ml-auto min-w-0 truncate text-muted-foreground text-caption sm:order-last sm:ml-0"
                         title={entry.user_email}
                       >
                         {actor}
@@ -698,48 +715,53 @@ function AuditLog({ slug }: { slug?: string }) {
                       <Chip
                         tone={actionTone(entry.action)}
                         size="xs"
-                        className="order-3 sm:order-none"
+                        className="order-3 min-w-0 max-w-full shrink sm:order-none sm:justify-self-start"
                         title={entry.action}
                       >
-                        {actionSentence(entry.action)}
+                        <span className="truncate">{actionSentence(entry.action)}</span>
                       </Chip>
-                      {/* The chip means "this was NOT written on main". An empty
-                          branch_name covers both a write to main and an action
-                          with no plan-branch dimension (alerting, scans, data
-                          sources), so rendering "main" here would mislabel
-                          alert_rule.create — hence a chip or nothing
-                          (tripl-wkwv.6). An explicit ?branch=<main id> binds no
-                          branch context (api/deps.py), so the chip can never
-                          read "main". Capped and truncated so it never squeezes
-                          the target. */}
-                      {entry.branch_name && (
-                        <Chip
-                          variant="outline"
-                          size="xs"
-                          className="order-3 max-w-[9rem] sm:order-none"
-                          title={entry.branch_name}
-                          icon={<GitBranch className="size-3" aria-hidden="true" />}
-                        >
-                          <span className="truncate">{entry.branch_name}</span>
-                        </Chip>
-                      )}
-                      {/* Only in the workspace feed, where rows from every
-                          project sit together and a row without this chip is
-                          unattributable. In the project tab every row belongs to
-                          the project whose page you are on, so the chip would
-                          repeat the heading on every line. An empty slug means
-                          the entry was not made inside a project at all. */}
-                      {workspace && entry.project_slug && (
-                        <Chip
-                          variant="outline"
-                          size="xs"
-                          className="order-3 max-w-[9rem] sm:order-none"
-                          title={entry.project_slug}
-                          icon={<FolderOpen className="size-3" aria-hidden="true" />}
-                        >
-                          <span className="truncate">{entry.project_slug}</span>
-                        </Chip>
-                      )}
+                      {/* One cell for the context chips, rendered even when
+                          empty so the grid keeps its columns; below `sm` an
+                          empty one is dropped from the wrap. */}
+                      <span className="order-3 flex min-w-0 gap-1 max-sm:empty:hidden sm:order-none">
+                        {/* The chip means "this was NOT written on main". An empty
+                            branch_name covers both a write to main and an action
+                            with no plan-branch dimension (alerting, scans, data
+                            sources), so rendering "main" here would mislabel
+                            alert_rule.create — hence a chip or nothing
+                            (tripl-wkwv.6). An explicit ?branch=<main id> binds no
+                            branch context (api/deps.py), so the chip can never
+                            read "main". Capped and truncated so it never squeezes
+                            the target. */}
+                        {!!entry.branch_name && (
+                          <Chip
+                            variant="outline"
+                            size="xs"
+                            className="min-w-0 max-w-[9rem] shrink"
+                            title={entry.branch_name}
+                            icon={<GitBranch className="size-3" aria-hidden="true" />}
+                          >
+                            <span className="truncate">{entry.branch_name}</span>
+                          </Chip>
+                        )}
+                        {/* Only in the workspace feed, where rows from every
+                            project sit together and a row without this chip is
+                            unattributable. In the project tab every row belongs to
+                            the project whose page you are on, so the chip would
+                            repeat the heading on every line. An empty slug means
+                            the entry was not made inside a project at all. */}
+                        {workspace && !!entry.project_slug && (
+                          <Chip
+                            variant="outline"
+                            size="xs"
+                            className="min-w-0 max-w-[9rem] shrink"
+                            title={entry.project_slug}
+                            icon={<FolderOpen className="size-3" aria-hidden="true" />}
+                          >
+                            <span className="truncate">{entry.project_slug}</span>
+                          </Chip>
+                        )}
+                      </span>
                       <span
                         className="order-3 min-w-0 flex-1 font-mono text-caption truncate sm:order-none sm:flex-initial"
                         title={entry.target_name ?? undefined}

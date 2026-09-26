@@ -36,6 +36,17 @@ export function useSuppressActivityRail(): void {
 }
 
 /**
+ * What an editor names itself with: "Edit · Active Sessions". The browser tab
+ * reads it whole; on the editor routes that know the prefix, the top bar splits
+ * it into "Metrics › Active Sessions › Edit" (#246 MT-31).
+ */
+export const EDIT_PAGE_TITLE_PREFIX = 'Edit · '
+
+export function editPageTitle(name: string): string {
+  return `${EDIT_PAGE_TITLE_PREFIX}${name}`
+}
+
+/**
  * Put the entity a detail page shows in the top bar instead of the route's
  * generic "Detail" (LIVE-34). The breadcrumb is hidden below `sm`, so on a
  * phone that word was all the bar said about where the user was. Pass nothing

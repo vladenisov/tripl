@@ -72,6 +72,16 @@ const shadowNew: ShadowEventsResponse = {
 
 const emptyShadow: ShadowEventsResponse = { total: 0, new_count: 0, items: [] }
 
+// GET /projects/demo, trimmed to what the page reads: whether a scan has run.
+function projectWith(latestScanStatus: string | null) {
+  return {
+    slug: 'demo',
+    summary: {
+      latest_scan_job: latestScanStatus ? { id: 'job-1', status: latestScanStatus } : null,
+    },
+  }
+}
+
 const dead: DeadEventsResponse = {
   days: 30,
   total: 2,
@@ -110,6 +120,7 @@ function mockFetch(): void {
       return jsonResponse(statusFromUrl(url) === 'new' ? shadowNew : emptyShadow)
     }
     if (url.includes('/event-types')) return jsonResponse([])
+    if (url.endsWith('/projects/demo')) return jsonResponse(projectWith('completed'))
     throw new Error(`Unhandled fetch: ${url}`)
   })
 }
@@ -311,10 +322,13 @@ describe('ReconciliationPage', () => {
 
     expect(await screen.findByText('legacy_banner_shown')).toBeInTheDocument()
     expect(screen.getByText('promo_code_invalid')).toBeInTheDocument()
-    // A one-line explanation reassures that dead events are often expected.
+    // The explanation says when archiving is right (DA-34).
     expect(
-      screen.getByText('Planned events not seen in your data recently — often expected.'),
+      screen.getByText(
+        'Seasonal or rarely fired events can show up here; archive only what you have retired.',
+      ),
     ).toBeInTheDocument()
+    expect(screen.queryByText(/often expected/)).not.toBeInTheDocument()
     // The panel names its window and population, so arriving here from
     // Coverage's own gap panel does not read as two contradictory answers to
     // the same question (tripl-jfm3.23) — and the window it names is the one
@@ -791,7 +805,8 @@ describe('ReconciliationPage', () => {
 
     const chart = await screen.findByRole('img', { name: /Data match per day/ })
     expect(chart).toHaveAccessibleName(
-      'Data match per day over 4 days; lowest 50%; highest 95%; latest 50% on 2026-06-03; 1 day without data',
+      // The window comes from `days`, not the bucket count (DA-3).
+      'Data match per day over the last 14 days; lowest 50%; highest 95%; latest 50% on 2026-06-03; 1 day without data',
     )
     expect(screen.getByTitle('2026-06-04: no data')).toBeInTheDocument()
     // The per-day values are reachable without hovering.
@@ -972,5 +987,121 @@ describe('ReconciliationPage', () => {
     })
     expect(await screen.findByText('2 events dismissed.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Accepted' })).toBeEnabled()
+  })
+})
+
+describe('ReconciliationPage design review (#248)', () => {
+  function mockWith(
+    cov: CoverageResponse,
+    deadResponse: DeadEventsResponse,
+    shadow: ShadowEventsResponse,
+    latestScanStatus: string | null = null,
+    history: ShadowEventsResponse = emptyShadow,
+  ) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/reconciliation/coverage')) return jsonResponse(cov)
+      if (url.includes('/reconciliation/dead-events')) return jsonResponse(deadResponse)
+      if (url.includes('/reconciliation/shadow-events')) {
+        return jsonResponse(statusFromUrl(url) === 'new' ? shadow : history)
+      }
+      if (url.includes('/event-types')) return jsonResponse([])
+      if (url.endsWith('/projects/demo')) return jsonResponse(projectWith(latestScanStatus))
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  // DA-29 / JR-4: an empty project read as an all-clear under a big "0%".
+  it('shows one empty state with a path to Scans when there is nothing to reconcile', async () => {
+    mockWith(
+      { days: 14, summary: { total_count: 0, matched_count: 0, coverage_pct: 0 }, items: [] },
+      { days: 30, total: 0, items: [] },
+      emptyShadow,
+    )
+    renderPage()
+
+    expect(
+      await screen.findByRole('heading', { name: 'Nothing to reconcile yet' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Go to Scans' })).toHaveAttribute(
+      'href',
+      '/p/demo/scans',
+    )
+    expect(screen.queryByText('No new events')).not.toBeInTheDocument()
+    expect(screen.queryByText('0%')).not.toBeInTheDocument()
+  })
+
+  // JR-4: a project whose scans ran but read nothing lately keeps its panels,
+  // so the Accepted / Dismissed history stays one click away.
+  it('keeps the panels and the status switch once a scan has run, even with nothing read lately', async () => {
+    const accepted: ShadowEventsResponse = {
+      total: 1,
+      new_count: 0,
+      items: [{ ...at(shadowNew.items, 0), id: 'sh-acc', status: 'accepted' }],
+    }
+    mockWith(
+      { days: 14, summary: { total_count: 0, matched_count: 0, coverage_pct: 0 }, items: [] },
+      { days: 30, total: 0, items: [] },
+      emptyShadow,
+      'completed',
+      accepted,
+    )
+    renderPage()
+
+    expect(await screen.findByText('No new events')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Nothing to reconcile yet' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Accepted' }))
+    expect(await screen.findByText('variant_color_selected')).toBeInTheDocument()
+  })
+
+  it('shows "—" rather than 0% when no occurrence was read but other panels have rows', async () => {
+    mockWith(
+      { days: 14, summary: { total_count: 0, matched_count: 0, coverage_pct: 0 }, items: [] },
+      dead,
+      emptyShadow,
+    )
+    renderPage()
+
+    expect(await screen.findByText('legacy_banner_shown')).toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
+    expect(screen.queryByText('0%')).not.toBeInTheDocument()
+  })
+
+  // DA-3: 335 hourly buckets read as "the last 335 days" in a 14-day panel.
+  it('names the window in days and the bucket as an hour for hourly data', async () => {
+    const hourly: CoverageResponse = {
+      days: 14,
+      summary: { total_count: 300, matched_count: 282, coverage_pct: 94 },
+      items: [0, 1, 2].map((h) => ({
+        bucket: `2026-06-01T0${h}:00:00Z`,
+        total_count: 100,
+        matched_count: 94,
+      })),
+    }
+    mockWith(hourly, dead, emptyShadow)
+    renderPage()
+
+    expect(
+      await screen.findByText('Stable at 94% in every hour with data over the last 14 days'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/on each of the last/)).not.toBeInTheDocument()
+  })
+
+  // DA-32 / DA-33: labelled type chip, the scan linked, and the New count
+  // carries the warning instead of the whole panel header.
+  it('labels the type chip, links the scan and keeps the inbox header neutral', async () => {
+    mockWith(coverage, dead, {
+      ...shadowNew,
+      items: [{ ...at(shadowNew.items, 0), event_type_id: 'et-1', event_type_name: 'screen' }],
+    })
+    renderPage()
+
+    expect(await screen.findByText('type: screen')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'iOS Prod' })).toHaveAttribute(
+      'href',
+      '/p/demo/scans/scan-1',
+    )
+    const newTab = screen.getByRole('button', { name: 'New 1' })
+    expect(within(newTab).getByText('1')).toHaveAttribute('data-tone', 'warning')
   })
 })

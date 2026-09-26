@@ -22,6 +22,9 @@ import {
 import { chapterState, liveLoopState } from './scenarioTestState'
 import { setWelcomeDismissed } from './welcomeDismissal'
 import { at } from '@/test/at'
+import { authAs } from '@/test/auth'
+import { ActiveProjectContext } from '@/components/active-project-context'
+import { AuthContext } from '@/components/auth-context'
 
 const SLUG = 'acme'
 const POLL_MS = 10_000
@@ -243,7 +246,7 @@ describe('DemoScenarioStrip — dismissal and completion', () => {
 describe('DemoScenarioStrip — when the coached control is nowhere on screen', () => {
   const SCANS_ROUTE = `/p/${SLUG}/scans`
   const MISSING_COPY =
-    "The highlighted control isn't visible — it may be filtered out, below the fold, or already handled. Resetting the demo project restores every guided example."
+    "The highlighted control isn't visible — it may be filtered out, below the fold, or already handled."
   const missingLine = () => screen.queryByText(MISSING_COPY)
 
   beforeEach(() => {
@@ -287,7 +290,48 @@ describe('DemoScenarioStrip — when the coached control is nowhere on screen', 
       vi.advanceTimersByTime(1)
     })
     expect(missingLine()).not.toBeNull()
-    expect(cta(/Open Scans/).className).toContain('pulse-dot')
+    // Already on Scans: no "Open Scans" that goes nowhere (#251 SH-6).
+    expect(screen.queryByRole('link', { name: /Open Scans/ })).toBeNull()
+  })
+
+  /** The strip on the step's surface for a signed-in `role` on this demo. */
+  function renderStripAs(role: 'owner' | 'editor' | 'viewer') {
+    writeScenarioState(SLUG, liveLoopState('live-loop/run-scan'))
+    const project = demoProject({ created_by_user_id: 'someone-else' })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={client}>
+        <AuthContext.Provider value={authAs(role)}>
+          <ActiveProjectContext.Provider value={project}>
+            <MemoryRouter initialEntries={[SCANS_ROUTE]}>
+              <DemoScenarioProvider project={project} pollIntervalMs={POLL_MS}>
+                <DemoScenarioStrip />
+              </DemoScenarioProvider>
+            </MemoryRouter>
+          </ActiveProjectContext.Provider>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('offers the reset only to whoever can reset the demo (#251 JR-17)', () => {
+    renderStripAs('owner')
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(
+      screen.getByText(`${MISSING_COPY} Resetting the demo project restores every guided example.`),
+    ).toBeInTheDocument()
+  })
+
+  it('tells a viewer the step needs edit access instead of pointing at a hidden control (#251 JR-17)', () => {
+    renderStripAs('viewer')
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+    expect(missingLine()).toBeNull()
+    expect(screen.getByText(/This step needs edit access/)).toBeInTheDocument()
+    expect(screen.queryByText(/Resetting the demo project/)).toBeNull()
   })
 
   it('stays quiet away from the step surface, where a mark is not expected', () => {
@@ -298,7 +342,8 @@ describe('DemoScenarioStrip — when the coached control is nowhere on screen', 
     })
 
     expect(missingLine()).toBeNull()
-    expect(cta(/Open Scans/).className).not.toContain('pulse-dot')
+    // Off the step's page the link still goes somewhere.
+    expect(cta(/Open Scans/)).toHaveAttribute('href', `/p/${SLUG}/scans`)
   })
 
   it('expects no mark on a deep-link step with no on-surface anchor', () => {

@@ -1,12 +1,20 @@
+import type { ReactNode } from 'react'
 import { KeyRound } from 'lucide-react'
-import { useMutation } from '@tanstack/react-query'
-import { serviceSettingsApi } from '@/api/serviceSettings'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { serviceSettingsApi, type AiPromptDefaults } from '@/api/serviceSettings'
+import { aiPromptDefaultsKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getErrorMessage } from '@/lib/utils'
 import type { ServiceSettings } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Field, SCard, TextArea, TextInput, ToggleRow } from '@/components/settings/kit'
-import { NumberSettingInput, SourceBadge, StatusBadge } from './ServiceSettingsPrimitives'
+import { DisabledReason, disabledReasonAria } from '@/components/states'
+import {
+  InactiveGroup,
+  NumberSettingInput,
+  SourceBadge,
+  StatusBadge,
+} from './ServiceSettingsPrimitives'
 import type {
   EditableSettings,
   SecretDrafts,
@@ -32,11 +40,39 @@ export function AiSection({
   saving: boolean
   onClearSecret: (section: 'ai' | 'email', field: SecretField) => void
 }) {
+  // The built-in prompts behind each "Restore default" (ST-30). Silent: without
+  // them the links simply do not appear.
+  const defaultsQuery = useQuery({
+    queryKey: aiPromptDefaultsKey(),
+    queryFn: serviceSettingsApi.aiPromptDefaults,
+    staleTime: Infinity,
+    meta: SILENT_ERROR_META,
+  })
+  const promptLabelRight = (field: keyof AiPromptDefaults, label: string) => (
+    <>
+      <SourceBadge source={sourceFor(settings, 'ai', field)} />
+      <RestoreDefault
+        label={label}
+        value={form.ai[field]}
+        defaultValue={defaultsQuery.data?.[field]}
+        onRestore={value => setField('ai', field, value)}
+      />
+    </>
+  )
   const aiTestMut = useMutation({
     mutationFn: () => serviceSettingsApi.testAi(),
     // A failed request is rendered in the status slot beside the button.
     meta: SILENT_ERROR_META,
   })
+  // The test reads the SAVED settings, so it is the saved switch that decides
+  // whether it can pass: pressed with AI off it could only answer "AI is
+  // disabled or no API key is configured" (ST-26). The key flag already
+  // counts the OPENAI_API_KEY fallback, so it is the key the test would use.
+  const testBlocker = !settings.ai.ai_enabled
+    ? 'AI is off in the saved settings. Turn it on and save first.'
+    : !settings.ai.ai_api_key_configured
+      ? 'No API key is saved. Add one and save first.'
+      : null
 
   return (
     <>
@@ -47,6 +83,9 @@ export function AiSection({
           value={form.ai.ai_enabled}
           onChange={value => setField('ai', 'ai_enabled', value)}
         />
+        {/* Still editable — preparing a config before switching it on is
+            valid — but visibly idle while the switch is off (ST-26). */}
+        <InactiveGroup inactive={!form.ai.ai_enabled} reason="Not used while AI is off.">
         <Field
           label="Base URL"
           labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ai_base_url')} />}
@@ -113,15 +152,16 @@ export function AiSection({
           label="Connection"
           last
           htmlFor={false}
-          hint="Tests the SAVED settings — save first, or you will be testing what is still stored."
+          hint="Uses the saved settings, so save your changes first."
         >
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
               variant="outline"
               size="sm"
               onClick={() => aiTestMut.mutate()}
-              disabled={aiTestMut.isPending}
+              disabled={aiTestMut.isPending || testBlocker !== null}
+              {...disabledReasonAria('ai-test', testBlocker)}
             >
               <KeyRound className="h-3.5 w-3.5" />
               {aiTestMut.isPending ? 'Testing...' : 'Test AI'}
@@ -136,7 +176,9 @@ export function AiSection({
               )}
             </span>
           </div>
+          <DisabledReason id="ai-test" reason={testBlocker} tone="muted" className="mt-1.5" />
         </Field>
+        </InactiveGroup>
       </SCard>
 
       <SCard title="Generation">
@@ -167,38 +209,41 @@ export function AiSection({
         </Field>
         <Field
           label="Describe prompt"
-          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'describe_system_prompt')} />}
+          labelRight={promptLabelRight('describe_system_prompt', 'Describe prompt')}
           stacked
         >
+          {/* Prose, so the body font, and a box that grows with it: four
+              fixed lines cut a prompt mid-line (ST-30). */}
           <TextArea
             value={form.ai.describe_system_prompt}
             onChange={value => setField('ai', 'describe_system_prompt', value)}
-            mono
+            rows={6}
+            autoGrow
           />
         </Field>
         <Field
           label="Ask prompt"
-          labelRight={<SourceBadge source={sourceFor(settings, 'ai', 'ask_system_prompt')} />}
+          labelRight={promptLabelRight('ask_system_prompt', 'Ask prompt')}
           stacked
         >
           <TextArea
             value={form.ai.ask_system_prompt}
             onChange={value => setField('ai', 'ask_system_prompt', value)}
-            mono
+            rows={6}
+            autoGrow
           />
         </Field>
         <Field
           label="Alert explanation prompt"
-          labelRight={
-            <SourceBadge source={sourceFor(settings, 'ai', 'alert_explanation_system_prompt')} />
-          }
+          labelRight={promptLabelRight('alert_explanation_system_prompt', 'Alert explanation prompt')}
           stacked
           last
         >
           <TextArea
             value={form.ai.alert_explanation_system_prompt}
             onChange={value => setField('ai', 'alert_explanation_system_prompt', value)}
-            mono
+            rows={6}
+            autoGrow
           />
         </Field>
       </SCard>
@@ -212,6 +257,10 @@ export function AiSection({
           value={form.ai.search_embeddings_enabled}
           onChange={value => setField('ai', 'search_embeddings_enabled', value)}
         />
+        <InactiveGroup
+          inactive={!form.ai.search_embeddings_enabled}
+          reason="Not used while Search embeddings is off."
+        >
         {/* Where indexed plan text is actually POSTed. It was configurable but
             unreportable: nothing in the running system said which endpoint the
             vectors came from, so a compose allowlist slip that dropped
@@ -224,9 +273,19 @@ export function AiSection({
           labelRight={
             <SourceBadge source={sourceFor(settings, 'ai', 'search_embedding_base_url')} />
           }
-          hint="Env-only (SEARCH_EMBEDDING_BASE_URL). Every indexed event name, description and field value is POSTed here. The vectors already in the index came from whatever endpoint produced them, and similarity across two embedding spaces is meaningless — changing this is a re-embed and a deploy, not a setting."
+          // One line and a "Why?", not an eight-line essay beside one value
+          // (ST-30); the value is text, not a dashed input that cannot move.
+          hint={
+            <EnvOnlyHint variable="SEARCH_EMBEDDING_BASE_URL">
+              Every indexed event name, description and field value is POSTed here. The vectors
+              already in the index came from whatever endpoint produced them, and similarity across
+              two embedding spaces is meaningless — changing this is a re-embed and a deploy, not a
+              setting.
+            </EnvOnlyHint>
+          }
+          htmlFor={false}
         >
-          <TextInput value={form.ai.search_embedding_base_url} disabled mono />
+          <EnvOnlyValue value={form.ai.search_embedding_base_url} />
         </Field>
         {/* The other inert control on this page. It carried `disabled` and
             nothing else — no badge, no hint — so it read as an editable number
@@ -236,13 +295,15 @@ export function AiSection({
           labelRight={
             <SourceBadge source={sourceFor(settings, 'ai', 'search_embedding_dimensions')} />
           }
-          hint="Env-only (SEARCH_EMBEDDING_DIMENSIONS). The vectors already in the index were written at this width, and similarity across two widths is meaningless — changing it is a re-embed and a deploy, not a setting."
+          hint={
+            <EnvOnlyHint variable="SEARCH_EMBEDDING_DIMENSIONS">
+              The vectors already in the index were written at this width, and similarity across two
+              widths is meaningless — changing it is a re-embed and a deploy, not a setting.
+            </EnvOnlyHint>
+          }
+          htmlFor={false}
         >
-          <TextInput
-            value={String(form.ai.search_embedding_dimensions)}
-            disabled
-            mono
-          />
+          <EnvOnlyValue value={String(form.ai.search_embedding_dimensions)} />
         </Field>
         <Field
           label="Embedding provider"
@@ -300,7 +361,58 @@ export function AiSection({
             </Button>
           </div>
         </Field>
+        </InactiveGroup>
       </SCard>
     </>
+  )
+}
+
+/** "Env-only: VAR. Changing it needs a re-embed." with the reasoning folded away (ST-30). */
+function EnvOnlyHint({ variable, children }: { variable: string; children: ReactNode }) {
+  return (
+    <>
+      Env-only: <code className="mono">{variable}</code>. Changing it needs a re-embed.{' '}
+      <details className="mt-1">
+        <summary className="cursor-pointer text-accent">Why?</summary>
+        <p className="m-0 mt-1">{children}</p>
+      </details>
+    </>
+  )
+}
+
+/** A value the environment sets and this page only reports: text, not an input. */
+function EnvOnlyValue({ value }: { value: string }) {
+  return (
+    <span className="mono block truncate pt-1.5 text-body-sm" title={value}>
+      {value || '—'}
+    </span>
+  )
+}
+
+/**
+ * "Restore default" beside a prompt that differs from the built-in one (ST-30).
+ * It fills the editor; Save stores it like any other edit.
+ */
+function RestoreDefault({
+  label,
+  value,
+  defaultValue,
+  onRestore,
+}: {
+  label: string
+  value: string
+  defaultValue: string | undefined
+  onRestore: (value: string) => void
+}) {
+  if (defaultValue === undefined || value === defaultValue) return null
+  return (
+    <button
+      type="button"
+      className="text-caption text-accent hover:underline"
+      aria-label={`Restore the default ${label.toLowerCase()}`}
+      onClick={() => onRestore(defaultValue)}
+    >
+      Restore default
+    </button>
   )
 }

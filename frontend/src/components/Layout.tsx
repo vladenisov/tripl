@@ -22,9 +22,14 @@ import { MAIN_CONTENT_ID } from '@/components/landmarks'
 import { BranchStrip, TopBar } from '@/components/top-bar'
 import { TweaksPanelProvider } from '@/components/tweaks-panel'
 import { LazyDemoScenarioProvider } from '@/demo/LazyDemoScenarioProvider'
+import { DemoBannerPlaceholder } from '@/demo/DemoBannerPlaceholder'
 import { ShellSkeleton } from '@/components/states/skeletons'
 import { ProjectNotFound } from '@/components/states/project-not-found'
-import { DocumentEntityTitleContext, ShellChromeContext } from '@/components/shell-chrome-context'
+import {
+  DocumentEntityTitleContext,
+  EDIT_PAGE_TITLE_PREFIX,
+  ShellChromeContext,
+} from '@/components/shell-chrome-context'
 import { ProjectEventStreamProvider } from '@/realtime/ProjectEventStreamProvider'
 import { resolveNavLocation } from '@/lib/navigation'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -39,6 +44,11 @@ const DemoBanner = lazyWithReload(() =>
 )
 const DemoScenarioStrip = lazyWithReload(() =>
   import('@/demo/DemoScenarioStrip').then((m) => ({ default: m.DemoScenarioStrip })),
+)
+// The way back to the Get-started checklist (#250 JR-3). It only renders on a
+// URL tagged `?onboarding=…`, so its chunk is fetched for those alone.
+const OnboardingReturnBar = lazyWithReload(() =>
+  import('@/components/onboarding-return-bar').then((m) => ({ default: m.OnboardingReturnBar })),
 )
 // The activity feed is a side rail, not the page: loading it after the shell
 // keeps its feed rendering out of the entry chunk. Nothing renders while it
@@ -124,7 +134,16 @@ function firstFocusable(root: HTMLElement | null): HTMLElement | null {
   ) ?? null
 }
 
-type Crumbs = { crumbs: string[]; title: string }
+type Crumbs = {
+  crumbs: string[]
+  title: string
+  /**
+   * An editor route: once the page names itself `editPageTitle(name)`, the
+   * entity becomes a crumb and this word the title ("Metrics › Active
+   * Sessions › Edit", #246 MT-31).
+   */
+  entityAction?: string
+}
 
 /** A detail route's own crumb before its entity has loaded (JR-33). */
 const DETAIL_PENDING_TITLE = ''
@@ -194,6 +213,26 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   // the rule lives on, instead of "Observe › <rule>" (#241 MO-13, #238 JR-28).
   if (/^\/p\/[^/]+\/monitors\/[^/]+/.test(pathname)) {
     return { crumbs: withProject('Observe', 'Alerting', 'Rules'), title: DETAIL_PENDING_TITLE }
+  }
+  // Metric and fact-table editors name themselves under the Metrics surface
+  // instead of passing for the list: "Metrics › New metric", "Metrics › Edit
+  // metric", "Metrics › Fact tables › Edit fact table" (#246 MT-31).
+  const metricsSub = /^\/p\/[^/]+\/metrics\/(.+)$/.exec(pathname)?.[1]
+  if (metricsSub === 'new') {
+    return { crumbs: withProject('Observe', 'Metrics'), title: 'New metric' }
+  }
+  if (metricsSub === 'fact-tables/new') {
+    return { crumbs: withProject('Observe', 'Metrics', 'Fact tables'), title: 'New fact table' }
+  }
+  if (metricsSub && /^fact-tables\/[^/]+\/edit$/.test(metricsSub)) {
+    return {
+      crumbs: withProject('Observe', 'Metrics', 'Fact tables'),
+      title: 'Edit fact table',
+      entityAction: 'Edit',
+    }
+  }
+  if (metricsSub && /^[^/]+\/edit$/.test(metricsSub)) {
+    return { crumbs: withProject('Observe', 'Metrics'), title: 'Edit metric', entityAction: 'Edit' }
   }
 
   // Map the route to its grouped-nav area (Plan / Observe / Govern / Connect)
@@ -412,7 +451,7 @@ export default function Layout() {
     !!slug && !projectKnown && listSettled && confirmProject.isError && !confirmSaysMissing
   const projectResolving = !!slug && !projectKnown && !projectMissing && !projectLookupFailed
 
-  const { crumbs, title } = useMemo(
+  const { crumbs, title, entityAction } = useMemo(
     () => resolveCrumbs(location.pathname, slug, project?.name ?? slug),
     [location.pathname, project?.name, slug],
   )
@@ -421,8 +460,17 @@ export default function Layout() {
   // rather than "Plan › Events ›" with nothing after the chevron, and a page
   // name on phones, where the crumbs are hidden.
   const entityTitle = pageTitle ?? title
-  const headerCrumbs = entityTitle ? crumbs : crumbs.slice(0, -1)
-  const headerTitle = entityTitle || (crumbs[crumbs.length - 1] ?? '')
+  // An editor that has named its entity reads "… › <entity> › Edit".
+  const editedEntity =
+    entityAction && pageTitle?.startsWith(EDIT_PAGE_TITLE_PREFIX)
+      ? pageTitle.slice(EDIT_PAGE_TITLE_PREFIX.length)
+      : null
+  const headerCrumbs = editedEntity
+    ? [...crumbs, editedEntity]
+    : entityTitle ? crumbs : crumbs.slice(0, -1)
+  const headerTitle = editedEntity && entityAction
+    ? entityAction
+    : entityTitle || (crumbs[crumbs.length - 1] ?? '')
 
   // Hold the shell until the slug is resolved. Everything below fans out
   // project-scoped requests the moment it mounts, so rendering optimistically is
@@ -533,13 +581,22 @@ export default function Layout() {
                     // error) here used to reach main.tsx's and blank the whole
                     // app. The demo chrome simply goes missing instead.
                     <ErrorBoundary fallback={() => null}>
-                      <Suspense fallback={null}>
+                      <Suspense fallback={<DemoBannerPlaceholder />}>
+                        {/* The placeholder holds the banner's box while its
+                            chunk loads, so the page does not jump down when it
+                            lands (#251 SH-2). */}
                         {/* One row, not two stacked cards (LIVE-9): the coached
                             scenario sits INSIDE the banner's row. Gated with
                             the banner, but it decides for itself whether there
                             is anything left to coach. Passed as an element so
-                            each keeps its own lazy chunk. */}
-                        <DemoBanner project={project} scenario={<DemoScenarioStrip />} />
+                            each keeps its own lazy chunk. On the in-project 404
+                            (railSuppressed) there is nothing to coach, so the
+                            strip is left out (#251 SH-36). */}
+                        {railSuppressed ? (
+                          <DemoBanner project={project} />
+                        ) : (
+                          <DemoBanner project={project} scenario={<DemoScenarioStrip />} />
+                        )}
                       </Suspense>
                     </ErrorBoundary>
                   )}
@@ -587,6 +644,15 @@ export default function Layout() {
                           }}
                         />
                       </div>
+                    )}
+                    {/* Tagged by a Get-started step link; the bar leads back
+                        to the checklist. */}
+                    {location.search.includes('onboarding=') && (
+                      <ErrorBoundary fallback={() => null}>
+                        <Suspense fallback={null}>
+                          <OnboardingReturnBar className="mb-4" />
+                        </Suspense>
+                      </ErrorBoundary>
                     )}
                     {/* A page that throws is replaced by an error card here;
                         the sidebar, top bar and toasts stay alive. */}

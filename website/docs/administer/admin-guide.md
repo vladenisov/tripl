@@ -130,7 +130,10 @@ the instance to the world:
    invite before the link was copied asks first, since the uncopied link would
    be lost.
 3. They open the link, set a password, and land in the workspace at the role you
-   chose.
+   chose. Only a link the server rejects (used, expired or revoked) shows
+   **This invite link no longer works**; if the page could not reach the server
+   or it failed, it shows **Could not check this invitation** with **Try again**,
+   so a network blip does not read as a dead link.
 
 Owner only, and only from a signed-in browser session — an API key cannot mint
 an account whatever its scope. The link works a single time, expires after 72
@@ -174,8 +177,10 @@ under Alerting, not to a person.
 
 **Settings → Password & sessions** has one working control: **Email me a reset link**. It
 runs the same password-reset flow as the sign-in screen's **Forgot your
-password?** link (`/auth/password-reset/request`) for your signed-in address,
-and says so when the instance has no email configured and so cannot send one.
+password?** link (`/auth/password-reset/request`) for your signed-in address.
+When the instance cannot send email, the button is disabled from the start,
+for everyone: an owner gets a **Set up email** link beside it, and everyone else
+reads "Ask an owner to set it up."
 Your current password keeps working until you choose a new one from the link.
 
 Changing the password in place, two-factor authentication and a list of
@@ -276,30 +281,36 @@ stored in the database.
 Each editable field resolves as **database override → environment value**. The
 defaults come from the environment / `Settings` object; saving a value in the UI
 writes an override row, and a per-section **Reset** removes the override so the
-field falls back to its env value. Most fields carry a small **source badge**
-with three states:
+field falls back to its env value. The **Reset** card appears only while the
+section has overrides to clear. A field whose value came from somewhere other
+than the built-in default carries a small **source badge**; a legend above the
+fields explains that an unmarked row is at its built-in default:
 
 - **Override** — a row exists in this instance's settings table. A section
   **Reset** clears it. An override whose value happens to equal the default
   still reads *Override*, because there is a row to clear.
 - **Env** — no override, and the value differs from the built-in default, so
   something delivered it: an environment variable or a `.env` line.
-- **Default** — the value equals the built-in default. That means *either*
+- **No badge** — the value equals the built-in default. That means *either*
   nothing was delivered for this setting, *or* what was delivered happens to
   match the default. From inside the process the two are indistinguishable, and
   a normalising validator can fold a delivered value onto the default the same
-  way (`LOG_LEVEL=info` becomes `INFO`). The badge's tooltip says so.
+  way (`LOG_LEVEL=info` becomes `INFO`). The legend says so.
 
 The asymmetry is the point when you are verifying a deployment: a field badged
-**Env** *is* evidence that a variable reached the container. A field badged
-**Default** is *not* evidence that it did not.
+**Env** *is* evidence that a variable reached the container. An unmarked field
+is *not* evidence that it did not.
+
+Fields that depend on a master switch — AI, Search embeddings, HSTS, Rate
+limiting, and the inactive storage backend — fade while that switch is off.
+They stay editable, but they have no effect until the switch is on.
 
 :::note Secrets are write-only
 Secret fields — the AI API key, the search-embedding API key, and the SMTP
 password — are **encrypted at rest** (Fernet) and never returned to the browser.
 The UI never shows a stored secret's value: at most a `Configured` /
-`Not configured` placeholder and the same **Override** / **Env** / **Default**
-badge the other rows carry, which says where the secret came from and never what
+`Not configured` placeholder and the same **Override** / **Env** badge (or none,
+at the default) the other rows carry, which says where the secret came from and never what
 it is. Leave the field blank to keep the existing value, type a new value to
 replace it, or use **Clear** to remove the override. Encryption requires `ENCRYPTION_KEY` to be set
 (see [Configuration](../run/configuration.md)).
@@ -388,9 +399,11 @@ password-reset links. Leaving **SMTP host** blank disables all of them.
   when you **save** rather than hours later by a failed alert. The
   per-destination From: override accepts exactly the same values, so anything
   this field takes can also be set on a single destination.
-- A **Send test email** button that sends one message to your own address using
-  the SAVED settings and shows what the relay answered. Save before testing, or
-  you are testing what is still stored rather than what is on screen.
+- A **Send test email** card that sends one message to your own address and
+  shows what the relay answered. Its button stays disabled until an SMTP host
+  and a default From address are saved, and the card reads "Uses the saved settings, so save your changes
+  first." — otherwise you are testing what is still stored rather than what is
+  on screen.
 
 ### AI
 
@@ -402,11 +415,15 @@ enabled.
   `https://api.openai.com/v1`; http and localhost endpoints such as a local LLM
   are allowed), Model (`ai_model`, default `gpt-4o-mini`), **AI API key**
   (`ai_api_key`, secret), and a **Test AI** button that runs a live connection
-  check against the provider.
+  check against the provider. It is disabled while AI is off in the saved
+  settings, and while no API key is stored (the `OPENAI_API_KEY` environment
+  fallback counts as one).
 - **Generation:** Timeout seconds (`ai_timeout_seconds`, default 30), Max output
   tokens (`ai_max_output_tokens`, default 700), and three editable system
   prompts — **Describe prompt**, **Ask prompt**, **Alert explanation prompt** —
-  which fall back to built-in defaults.
+  which fall back to built-in defaults. A prompt that differs from its default
+  shows **Restore default**, which puts the built-in text back in the editor
+  (read from `GET /api/v1/settings/ai/defaults`); save to keep it.
 - **Search embeddings:** toggle (`search_embeddings_enabled`), read-only
   **Embeddings base URL** (`search_embedding_base_url`, default
   `https://api.openai.com/v1`, env only), read-only

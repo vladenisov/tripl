@@ -118,3 +118,14 @@ class MetaFieldResponse(BaseModel):
     sensitivity: Sensitivity
 
     model_config = {"from_attributes": True}
+
+
+class MetaFieldUsageResponse(BaseModel):
+    """What deleting a meta field would take with it (AU-37).
+
+    ``value_count`` is every non-empty stored value (a multi-value field holds
+    several per event); ``event_count`` is the events holding at least one.
+    """
+
+    value_count: int
+    event_count: int

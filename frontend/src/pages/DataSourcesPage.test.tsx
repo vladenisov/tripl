@@ -361,6 +361,47 @@ describe('DataSourcesPage', () => {
     expect(toastError).not.toHaveBeenCalled()
   })
 
+  it('shows what reads a source, and asks for its name before deleting one in use (DA-40)', async () => {
+    const usedSource: DataSource = { ...DATA_SOURCE, scan_count: 2, scan_run_count: 5 }
+    const deleted = vi.fn()
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+
+      if (url.endsWith('/api/v1/data-sources') && !init?.method) {
+        return Promise.resolve(jsonResponse([usedSource]))
+      }
+      if (url.endsWith('/api/v1/data-sources/ds-1') && init?.method === 'DELETE') {
+        deleted()
+        return Promise.resolve(new Response(null, { status: 204 }))
+      }
+
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    expect(await screen.findByText('Used by 2 scans')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete data source Warehouse' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Delete data source' })
+    expect(confirm).toHaveTextContent('2 scans and 5 runs will be removed with it.')
+    const deleteButton = within(confirm).getByRole('button', { name: 'Delete' })
+    expect(deleteButton).toBeDisabled()
+
+    fireEvent.change(within(confirm).getByLabelText(/type warehouse to confirm/i), {
+      target: { value: 'Warehouse' },
+    })
+    expect(deleteButton).toBeEnabled()
+    fireEvent.click(deleteButton)
+
+    await waitFor(() => expect(deleted).toHaveBeenCalledTimes(1))
+  })
+
   it('flags an old successful health check as stale instead of confident "healthy"', async () => {
     const staleSource: DataSource = {
       ...DATA_SOURCE,
@@ -691,7 +732,7 @@ describe('DataSourcesPage', () => {
     expect(screen.getByLabelText('Location')).toHaveValue('EU')
     expect(screen.getByLabelText('Max billed bytes')).toHaveValue(5_000_000)
     expect(screen.getByLabelText('Dataset allowlist')).toHaveValue('analytics, marts')
-    expect(screen.getByLabelText('Timeout, s')).toBeInTheDocument()
+    expect(screen.getByLabelText('Timeout (seconds)')).toBeInTheDocument()
   })
 
   it('never pre-fills the BigQuery key and keeps the stored one when the form is untouched', async () => {
@@ -779,7 +820,7 @@ describe('DataSourcesPage', () => {
     expect(screen.getByLabelText('Host')).toHaveValue('pg.example.com')
     expect(screen.getByLabelText('Port')).toHaveValue(5432)
     expect(screen.getByLabelText('Username')).toHaveValue('reader')
-    expect(screen.getByLabelText('Timeout, s')).toHaveValue(90)
+    expect(screen.getByLabelText('Timeout (seconds)')).toHaveValue(90)
     expect(screen.queryByLabelText('JSON path discovery')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Project ID')).not.toBeInTheDocument()
 
@@ -1320,5 +1361,90 @@ describe('DataSourcesPage', () => {
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
       expect(screen.queryByRole('dialog', { name: 'Edit data source' })).not.toBeInTheDocument()
     })
+  })
+})
+
+describe('DataSourcesPage design review (#248)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // DA-39: BigQuery has no port, so Postgres → BigQuery → ClickHouse used to
+  // keep 5432 and the connection failed like a network problem.
+  it('resets an untouched port to the new type default across BigQuery', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([DATA_SOURCE]))
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add connection' }))
+    const type = await screen.findByLabelText('Type')
+    fireEvent.change(type, { target: { value: 'postgres' } })
+    expect(screen.getByLabelText('Port')).toHaveValue(5432)
+    fireEvent.change(type, { target: { value: 'bigquery' } })
+    fireEvent.change(type, { target: { value: 'clickhouse' } })
+    expect(screen.getByLabelText('Port')).toHaveValue(8123)
+
+    // A port the user typed is theirs to keep.
+    fireEvent.change(screen.getByLabelText('Port'), { target: { value: '9440' } })
+    fireEvent.change(type, { target: { value: 'postgres' } })
+    expect(screen.getByLabelText('Port')).toHaveValue(9440)
+  })
+
+  // DA-38: a 422 used to land as "host: String should …" at the foot of the
+  // dialog with nothing marked; it now sits under the control it names.
+  it('pins a server field refusal under its control', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources') && init?.method === 'POST') {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              detail: [
+                { loc: ['body', 'host'], msg: 'Host must not include a scheme', type: 'value_error' },
+              ],
+            },
+            422,
+          ),
+        )
+      }
+      if (url.endsWith('/api/v1/data-sources')) return Promise.resolve(jsonResponse([DATA_SOURCE]))
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add connection' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Prod CH' } })
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'https://ch.example.com' } })
+    fireEvent.change(screen.getByLabelText('Database'), { target: { value: 'analytics' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    expect(await screen.findByText('Host must not include a scheme')).toBeInTheDocument()
+    expect(screen.getByLabelText('Host')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.queryByText(/host: Host must not/)).not.toBeInTheDocument()
+
+    // The refusal is for the value it was sent with.
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'ch.example.com' } })
+    expect(screen.queryByText('Host must not include a scheme')).not.toBeInTheDocument()
+  })
+
+  // DA-41: the card's two relative times are labelled, and the demo warehouse
+  // shows no fake "synthetic:0/synthetic" address.
+  it('labels the card times and hides the synthetic address', async () => {
+    const tested: DataSource = {
+      ...DATA_SOURCE,
+      last_test_status: 'success',
+      last_test_message: 'Connection successful',
+      last_test_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    }
+    const synthetic: DataSource = {
+      ...SYNTHETIC_SOURCE,
+      host: 'synthetic',
+      database_name: 'synthetic',
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(listFetchMock([tested, synthetic]))
+    renderDataSourcesPage('/settings/data-sources', 'owner')
+
+    expect(await screen.findByText('Tested 1h ago')).toBeInTheDocument()
+    expect(screen.getAllByText(/^Edited /)).toHaveLength(2)
+    expect(screen.queryByText(/^synthetic:/)).not.toBeInTheDocument()
   })
 })

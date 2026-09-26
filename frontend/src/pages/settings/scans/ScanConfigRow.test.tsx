@@ -122,6 +122,16 @@ describe('ScanListRow run action (tripl-q7i1.5)', () => {
     renderRow({ onRun: vi.fn(), runPending: true })
     expect(screen.getByRole('button', { name: 'Run Orders scan now' })).toBeDisabled()
   })
+
+  it('turns Run now off and says Running… while the latest run is active (#247 DA-6)', () => {
+    renderRow({
+      onRun: vi.fn(),
+      runInfo: { status: 'running', lastRunLabel: 'running', lastJob: null } as unknown as ScanRunInfo,
+    })
+    const run = screen.getByRole('button', { name: 'Run Orders scan now' })
+    expect(run).toBeDisabled()
+    expect(run).toHaveTextContent('Running…')
+  })
 })
 
 // Every value below survives a switch to Catalog only on purpose (useScanForm

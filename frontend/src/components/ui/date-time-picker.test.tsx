@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { expectNoAxeViolations } from '@/test/axe'
-import { DateTimePicker } from './date-time-picker'
+import { DatePicker, DateTimePicker } from './date-time-picker'
 
 function renderPicker(initial = '2026-01-14T09:30') {
   const onChange = vi.fn()
@@ -120,5 +120,57 @@ describe('DateTimePicker', () => {
 
     await openCalendar()
     await expectNoAxeViolations(document.body)
+  })
+})
+
+describe('DatePicker (date only)', () => {
+  function renderDatePicker(initial = '2026-01-14', bounds: { min?: string; max?: string } = {}) {
+    const onChange = vi.fn()
+    function Harness() {
+      const [value, setValue] = useState(initial)
+      return (
+        <DatePicker
+          label="From"
+          value={value}
+          {...bounds}
+          onChange={next => {
+            onChange(next)
+            setValue(next)
+          }}
+        />
+      )
+    }
+    render(<Harness />)
+    return { onChange }
+  }
+
+  it('has no time field and writes YYYY-MM-DD', async () => {
+    const { onChange } = renderDatePicker()
+
+    expect(screen.queryByLabelText(/time/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'From: Jan 14, 2026' }))
+    const grid = await screen.findByRole('grid', { name: 'January 2026' })
+    fireEvent.click(within(grid).getByRole('button', { name: 'Tuesday, January 20, 2026' }))
+
+    expect(onChange).toHaveBeenLastCalledWith('2026-01-20')
+    await waitFor(() => expect(screen.queryByRole('grid')).toBeNull())
+    expect(screen.getByRole('button', { name: 'From: Jan 20, 2026' })).toBeInTheDocument()
+  })
+
+  it('disables days outside min and max, and keeps the keyboard inside them', async () => {
+    const { onChange } = renderDatePicker('2026-01-14', { min: '2026-01-10', max: '2026-01-15' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'From: Jan 14, 2026' }))
+    const grid = await screen.findByRole('grid', { name: 'January 2026' })
+    expect(within(grid).getByRole('button', { name: 'Friday, January 9, 2026' })).toBeDisabled()
+    expect(within(grid).getByRole('button', { name: 'Friday, January 16, 2026' })).toBeDisabled()
+    expect(within(grid).getByRole('button', { name: 'Saturday, January 10, 2026' })).toBeEnabled()
+
+    // A week forward would pass max: focus stops on the last allowed day.
+    fireEvent.keyDown(grid, { key: 'ArrowDown' })
+    await waitFor(() =>
+      expect(within(grid).getByRole('button', { name: 'Thursday, January 15, 2026' })).toHaveFocus(),
+    )
+    expect(onChange).not.toHaveBeenCalled()
   })
 })

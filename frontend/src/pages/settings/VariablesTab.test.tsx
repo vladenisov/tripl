@@ -161,7 +161,7 @@ describe('VariablesTab', () => {
 
     // Exactly one body row (the single variable), not one per event.
     const varCode = await screen.findByText('${spot_id}')
-    expect(screen.getByRole('columnheader', { name: 'Events' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Observed in' })).toBeInTheDocument()
     const bodyRow = varCode.closest('tr') as HTMLElement
     expect(within(bodyRow).getByText('Profile View')).toBeInTheDocument()
     expect(within(bodyRow).getByText('Checkout Started')).toBeInTheDocument()
@@ -205,7 +205,7 @@ describe('VariablesTab', () => {
     renderVariablesTab()
 
     expect(await screen.findByLabelText('Loading variables')).toBeInTheDocument()
-    expect(screen.queryByText('No variables')).not.toBeInTheDocument()
+    expect(screen.queryByText('No variables yet')).not.toBeInTheDocument()
     expect(screen.getByText('Loading…')).toBeInTheDocument()
   })
 
@@ -214,8 +214,13 @@ describe('VariablesTab', () => {
 
     renderVariablesTab()
 
-    expect(await screen.findByText('No variables')).toBeInTheDocument()
+    expect(await screen.findByText('No variables yet')).toBeInTheDocument()
     expect(screen.queryByLabelText('Loading variables')).not.toBeInTheDocument()
+    // Nothing to filter yet: no search or usage scope over zero rows, and the
+    // empty state carries the next step (AU-34).
+    expect(screen.queryByLabelText('Filter variables')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Unused' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create your first variable' })).toBeInTheDocument()
   })
 
   it('renders one page of rows for a large project instead of all of them', async () => {
@@ -1630,7 +1635,7 @@ describe('VariablesTab — review batch 15 (PLAN-23 … PLAN-33)', () => {
 
     expect(await screen.findByText("Couldn't load variables")).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
-    expect(screen.queryByText('No variables')).not.toBeInTheDocument()
+    expect(screen.queryByText('No variables yet')).not.toBeInTheDocument()
   })
 
   it('refuses a documented value the chosen type cannot hold (PLAN-24)', async () => {

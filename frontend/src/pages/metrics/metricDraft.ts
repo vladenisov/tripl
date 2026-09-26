@@ -20,6 +20,38 @@ import { filterRowErrors, filtersFromConfig, type FactFilter } from './factFilte
 
 export const DEFAULT_METRIC_COLOR = DEFAULT_ENTITY_COLOR
 
+/**
+ * The swatches the editor offers, in the order a new metric takes them. Stored
+ * as hex (the column and the custom picker both speak hex), led by the old
+ * single default so a first metric looks as it always did.
+ */
+export const METRIC_COLOR_SWATCHES: readonly { value: string; label: string }[] = [
+  { value: DEFAULT_METRIC_COLOR, label: 'Indigo' },
+  { value: '#0ea5e9', label: 'Sky' },
+  { value: '#10b981', label: 'Emerald' },
+  { value: '#8b5cf6', label: 'Violet' },
+  { value: '#ec4899', label: 'Pink' },
+  { value: '#14b8a6', label: 'Teal' },
+  { value: '#84cc16', label: 'Lime' },
+  { value: '#f97316', label: 'Orange' },
+]
+
+/**
+ * The first swatch no existing metric uses, so metrics made from scratch are
+ * told apart in the catalog and in overlays instead of all being indigo
+ * (MT-35). Once every swatch is taken it cycles by count.
+ */
+export function nextMetricColor(usedColors: Iterable<string>): string {
+  const used = new Set<string>()
+  let count = 0
+  for (const color of usedColors) {
+    used.add(color.toLowerCase())
+    count += 1
+  }
+  const free = METRIC_COLOR_SWATCHES.find(swatch => !used.has(swatch.value.toLowerCase()))
+  return (free ?? METRIC_COLOR_SWATCHES[count % METRIC_COLOR_SWATCHES.length]!).value
+}
+
 export const FACT_COMPOSITIONS = ['single', 'ratio'] as const
 export type FactComposition = (typeof FACT_COMPOSITIONS)[number]
 
@@ -54,6 +86,8 @@ export interface MetricDraft {
   unit: string
   color: string
   anomalyDetection: boolean
+  /** Who answers for the metric; '' for nobody (MT-25). */
+  ownerId: string
   breakdownColumns: string[]
   appVersionColumn: string
   platformColumn: string
@@ -122,7 +156,21 @@ export function savedDimensions(
   }
 }
 
-export function draftFromMetric(metric: MetricDefinitionDetailResponse | null): MetricDraft {
+/**
+ * The kind a new metric starts on: the one that needs no SQL and no fact
+ * table. SQL used to be first and preselected, the most technical choice
+ * made for everyone (MT-3).
+ */
+export const NEW_METRIC_KIND: MetricKind = 'event_composition'
+
+/**
+ * The draft for `metric`, or a blank one. `newColor` seeds a blank draft's
+ * colour (see {@link nextMetricColor}); a stored metric keeps its own.
+ */
+export function draftFromMetric(
+  metric: MetricDefinitionDetailResponse | null,
+  newColor: string = DEFAULT_METRIC_COLOR,
+): MetricDraft {
   const config = (metric?.config ?? {}) as Record<string, unknown>
   const configString = (key: string): string => {
     const value = config[key]
@@ -140,15 +188,16 @@ export function draftFromMetric(metric: MetricDefinitionDetailResponse | null): 
   )
   const ratioNumerator = operandFromConfig(readFactOperandConfig(config['numerator']))
   return {
-    kind: metric?.kind ?? 'sql',
+    kind: metric?.kind ?? NEW_METRIC_KIND,
     displayName: metric?.display_name ?? '',
     name: metric?.name ?? '',
     description: metric?.description ?? '',
     status: metric?.status ?? 'draft',
     unit: metric?.unit ?? '',
-    color: metric?.color ?? DEFAULT_METRIC_COLOR,
+    color: metric?.color ?? newColor,
     anomalyDetection: metric?.anomaly_detection_enabled ?? true,
-    ...savedDimensions(metric, metric?.kind ?? 'sql'),
+    ownerId: metric?.owner_id ?? '',
+    ...savedDimensions(metric, metric?.kind ?? NEW_METRIC_KIND),
     dataSourceId: metric?.data_source_id ?? '',
     interval: metric?.interval ?? '1h',
     replayChunkInterval: metric?.replay_chunk_interval ?? null,
@@ -209,15 +258,12 @@ export function operandErrors(
 
 /**
  * Field-keyed validation: each entry maps an input DOM id to its message.
- * Insertion order is top-to-bottom, so the first key is the first offending
+ * Insertion order is top-to-bottom (definition first, then the name card), so the first key is the first offending
  * field to move focus to. Only fields the current kind renders are checked, so
  * re-running this after an edit never leaves an error for a field that is gone.
  */
 export function validateDraft(draft: MetricDraft, isNew: boolean): Record<string, string> {
   const errs: Record<string, string> = {}
-  if (!draft.displayName.trim()) errs['metric-display-name'] = 'Display name is required.'
-  if (isNew && !draft.name.trim()) errs['metric-name'] = 'Internal name is required.'
-
   if (draft.kind === 'sql') {
     if (!draft.dataSourceId) {
       errs['metric-sql-data-source'] = 'A data source is required for a SQL metric.'
@@ -246,6 +292,9 @@ export function validateDraft(draft: MetricDraft, isNew: boolean): Record<string
       errs['metric-denominator'] = 'A denominator event is required for a ratio metric.'
     }
   }
+  // The name card sits below the definition (MT-2), so its errors come last.
+  if (!draft.displayName.trim()) errs['metric-display-name'] = 'Display name is required.'
+  if (isNew && !draft.name.trim()) errs['metric-name'] = 'Internal name is required.'
   return errs
 }
 

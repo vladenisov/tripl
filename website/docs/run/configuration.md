@@ -308,10 +308,12 @@ When `SMTP_SECURITY` is unset it is derived from the deprecated `SMTP_USE_TLS`
 (`true` → `starttls`, `false` → `none`), so an existing deployment keeps the
 behaviour it already had. Set `SMTP_SECURITY` instead; it wins.
 
-Settings → Email has a **Send test email** button that sends one message with
-the saved settings and shows what the relay answered. Use it after changing any
-of these — a failed password-reset send is deliberately invisible to the person
-who asked for the link, so this is the only place the failure surfaces.
+Settings → Email has a **Send test email** card that sends one message with
+the saved settings and shows what the relay answered. It stays disabled until an
+SMTP host and a default From address are saved, and it uses the saved settings, so save your changes first.
+Use it after changing any of these — a failed password-reset send is
+deliberately invisible to the person who asked for the link, so this is the
+only place the failure surfaces.
 
 ### Event photo storage
 

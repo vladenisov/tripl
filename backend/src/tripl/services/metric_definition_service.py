@@ -697,6 +697,8 @@ async def list_metric_definitions(
     status: list[MetricStatus] | None = None,
     kind: MetricKind | None = None,
     search: str | None = None,
+    reviewed: bool | None = None,
+    owner_id: uuid.UUID | None = None,
     offset: int = 0,
     limit: int = 200,
 ) -> tuple[list[MetricDefinition], int]:
@@ -716,6 +718,15 @@ async def list_metric_definitions(
     if search_clause is not None:
         query = query.where(search_clause)
         count_query = count_query.where(search_clause)
+    # Review status and owner narrow the list the same way status/kind do, so a
+    # "Needs review" chip pages server-side instead of filtering a loaded slice
+    # (MT-25). ``None`` means "any", never "unowned"/"unreviewed".
+    if reviewed is not None:
+        query = query.where(MetricDefinition.reviewed.is_(reviewed))
+        count_query = count_query.where(MetricDefinition.reviewed.is_(reviewed))
+    if owner_id is not None:
+        query = query.where(MetricDefinition.owner_id == owner_id)
+        count_query = count_query.where(MetricDefinition.owner_id == owner_id)
 
     total = (await session.execute(count_query)).scalar() or 0
     result = await session.execute(
@@ -895,6 +906,8 @@ async def list_metric_definitions_enriched(
     status: list[MetricStatus] | None = None,
     kind: MetricKind | None = None,
     search: str | None = None,
+    reviewed: bool | None = None,
+    owner_id: uuid.UUID | None = None,
     offset: int = 0,
     limit: int = 200,
 ) -> tuple[list[MetricDefinitionListItem], int]:
@@ -909,6 +922,8 @@ async def list_metric_definitions_enriched(
         status=status,
         kind=kind,
         search=search,
+        reviewed=reviewed,
+        owner_id=owner_id,
         offset=offset,
         limit=limit,
     )

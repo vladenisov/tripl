@@ -1,6 +1,6 @@
 import { Panel, Field } from '@/components/settings/kit'
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
@@ -11,6 +11,7 @@ import {
   Pencil,
   Plus,
   Save,
+  Shapes,
   Trash2,
   X,
 } from 'lucide-react'
@@ -30,6 +31,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
+import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import {
   useFieldControlId,
@@ -49,8 +51,10 @@ import {
   eventTypesKey,
   projectEventTypeOwnersKey,
   projectEventTypesKey,
+  projectKey,
   usersKey,
 } from '@/lib/queryKeys'
+import { TEXT_INPUT_CLASS } from '@/pages/events/eventFormLayout'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/states'
@@ -67,14 +71,42 @@ import { UserAvatar } from '@/components/ui/user-avatar'
 const FIELD_TYPES = ['string', 'number', 'boolean', 'json', 'enum', 'url']
 
 
-function fieldContractRuleCount(field: FieldDefinition): number {
-  return [
-    field.is_required,
-    field.field_type === 'enum' && (field.enum_options?.length ?? 0) > 0,
-    !!field.contract_regex,
-    field.contract_min_value != null || field.contract_max_value != null,
-  ].filter(Boolean).length
+/**
+ * The field's contract rules in words, one per rule: the Contract cell shows
+ * their count and lists them on hover, where a bare "1" said nothing (AU-12).
+ */
+function fieldContractRules(field: FieldDefinition): string[] {
+  const rules: string[] = []
+  if (field.is_required) rules.push('Required')
+  const enumCount = field.field_type === 'enum' ? (field.enum_options?.length ?? 0) : 0
+  if (enumCount > 0) rules.push(`One of ${countOf(enumCount, 'option', 'options')}`)
+  if (field.contract_regex) rules.push(`Regex ${field.contract_regex}`)
+  if (field.contract_min_value != null || field.contract_max_value != null) {
+    rules.push(
+      [
+        field.contract_min_value != null ? `Min ${field.contract_min_value}` : null,
+        field.contract_max_value != null ? `Max ${field.contract_max_value}` : null,
+      ].filter(Boolean).join(' · '),
+    )
+  }
+  return rules
 }
+
+/** "screen_view" -> "Screen View": the display name a type gets by default. */
+function displayNameFrom(name: string): string {
+  return name
+    .trim()
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+}
+
+// Which contract inputs a field type can use (AU-16): bounds only mean
+// something for numbers, a pattern only for text. An input with a saved value
+// stays on screen whatever the type, so no rule is ever kept out of sight.
+const RANGE_FIELD_TYPES = new Set(['number'])
+const PATTERN_FIELD_TYPES = new Set(['string', 'url'])
 
 function sensitiveFieldCount(eventType: EventType): number {
   return eventType.field_definitions.filter((f) => f.sensitivity !== 'none').length
@@ -193,9 +225,21 @@ export function EventTypesTab({ slug }: { slug: string }) {
             />
           </div>
         ) : sorted.length === 0 ? (
-          <p className="px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-            No event types yet. Create one to categorize your events.
-          </p>
+          // The first thing a new project creates, so the empty state teaches
+          // what a type is for and offers the step (AU-34).
+          <div className="px-4 py-8">
+            <EmptyState
+              icon={Shapes}
+              title="No event types yet"
+              description="A type holds the fields its events share, e.g. Screen View carries screen_name. Create one to categorize your events."
+              action={canWrite ? (
+                <Button type="button" size="sm" onClick={() => setCreating(true)}>
+                  <Plus className="size-3.5" />
+                  Create your first event type
+                </Button>
+              ) : undefined}
+            />
+          </div>
         ) : (
           // The shared table. `scroll={false}`: the panel body is already the
           // sideways-scrolling region, and a second one inside it would be a
@@ -209,8 +253,10 @@ export function EventTypesTab({ slug }: { slug: string }) {
                 <Th align="right" wideOnly>Required</Th>
                 {showSensitive && <Th wideOnly>Sensitive</Th>}
                 {showOwner && <Th wideOnly>Owner</Th>}
-                {showStatus && <Th>Status</Th>}
-                <Th style={{ width: 40 }}><span className="sr-only">Open</span></Th>
+                {/* About who must approve a merge, not the type's state: the
+                    column read "Status: gated" (AU-12). */}
+                {showStatus && <Th>Merge approval</Th>}
+                <Th style={{ width: 40 }}><span className="sr-only">Details</span></Th>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -294,7 +340,7 @@ export function EventTypesTab({ slug }: { slug: string }) {
                             size="xs"
                             title="Has owners — a branch that edits this type needs an owner's approval to merge"
                           >
-                            gated
+                            Owner approval
                           </Chip>
                         ) : (
                           <Chip
@@ -302,7 +348,8 @@ export function EventTypesTab({ slug }: { slug: string }) {
                             size="xs"
                             title="No owners — anyone can merge changes to this type"
                           >
-                            ungated
+                            {/* The detail header's words for the same state (AU-12). */}
+                            Open to merge
                           </Chip>
                         )
                       })()}
@@ -335,6 +382,7 @@ interface CreateEventTypeViewProps {
 
 function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProps) {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
@@ -349,12 +397,17 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
     mutationFn: () =>
       eventTypesApi.create(
         slug,
-        { name: name.trim(), display_name: displayName.trim() || name.trim(), description, color },
+        { name: name.trim(), display_name: displayName.trim() || displayNameFrom(name), description, color },
         branchId,
       ),
-    onSuccess: () => {
+    onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) })
-      onDone()
+      // The sidebar's event-type count reads the project summary (AU-32).
+      qc.invalidateQueries({ queryKey: projectKey(slug) })
+      // A type is useful once it has fields, so it opens where they are
+      // added rather than back on the list (AU-36).
+      if (created?.id) navigate(`/p/${slug}/settings/event-types/${created.id}?tab=settings`)
+      else onDone()
     },
   })
 
@@ -386,9 +439,14 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
             <SaveFooter onCancel={onDone} pending={createMut.isPending} submitLabel="Create type" />
           }
         >
-          <SField label="Name" hint="Used in queries and ingestion — can't be changed later.">
+          <SField
+            label="Name"
+            required
+            hint="Lowercase letters, digits and _, used in queries and ingestion. Can't be changed later."
+          >
             <SInput
               id={nameId}
+              required
               value={name}
               onChange={(v) => {
                 setName(v)
@@ -401,8 +459,14 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
             />
             <FieldError inputId={nameId} message={nameError} />
           </SField>
+          {/* Left empty, the type is shown under a name made from Name, and the
+              placeholder says which (AU-36). */}
           <SField label="Display name">
-            <SInput value={displayName} onChange={setDisplayName} placeholder="e.g. Checkout" />
+            <SInput
+              value={displayName}
+              onChange={setDisplayName}
+              placeholder={name.trim() ? displayNameFrom(name) : 'e.g. Checkout'}
+            />
           </SField>
           <SField label="Description">
             <STextarea value={description} onChange={setDescription} />
@@ -411,6 +475,10 @@ function CreateEventTypeView({ slug, branchId, onDone }: CreateEventTypeViewProp
             <ColorPicker value={color} onChange={setColor} />
           </SField>
         </Panel>
+        <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          Next: add the fields every event of this type carries. The type opens on its settings once
+          created.
+        </p>
         {createMut.isError && (
           <p className="mt-2 text-body" style={{ color: 'var(--danger)' }}>
             {getErrorMessage(createMut.error)}
@@ -500,15 +568,25 @@ export function FieldsEditor({
   slug,
   eventType,
   branchId,
+  onEditingChange,
 }: {
   slug: string
   eventType: EventType
   branchId: string | null
+  /**
+   * Told when the field page opens and closes, so the page around it can put
+   * its other cards away: one title and one Save in view (AU-15).
+   */
+  onEditingChange?: (editing: boolean) => void
 }) {
   const qc = useQueryClient()
   const canWrite = useCanWriteProject()
   // editing view-state: null = list, 'new' = add subpage, field = edit subpage.
   const [editing, setEditing] = useState<FieldDefinition | 'new' | null>(null)
+  const isEditing = editing !== null
+  useEffect(() => {
+    onEditingChange?.(isEditing)
+  }, [isEditing, onEditingChange])
   const { confirm, dialog } = useConfirm()
 
   const sortedFields = [...eventType.field_definitions].sort((a, b) => a.order - b.order)
@@ -702,7 +780,7 @@ export function FieldsEditor({
           No fields defined yet.
         </p>
       ) : (
-        // Display, PII and Contract are hidden below `md`: on a phone the
+        // Display, Sensitivity and Contract are hidden below `md`: on a phone the
         // name, type and required flag are what identify a field, and the
         // row's actions must stay reachable.
         <Table scroll={false} aria-label={`${eventType.display_name} fields`}>
@@ -712,7 +790,7 @@ export function FieldsEditor({
               <Th>Name</Th>
               <Th wideOnly>Display</Th>
               <Th>Type</Th>
-              <Th wideOnly>PII</Th>
+              <Th wideOnly>Sensitivity</Th>
               <Th>Required</Th>
               <Th wideOnly>Contract</Th>
               <Th style={{ width: 66 }}><span className="sr-only">Actions</span></Th>
@@ -768,7 +846,7 @@ function FieldRow({
   onEdit,
   onDelete,
 }: FieldRowProps) {
-  const contractCount = fieldContractRuleCount(field)
+  const contractRules = fieldContractRules(field)
   const upRef = useRef<HTMLButtonElement>(null)
   const downRef = useRef<HTMLButtonElement>(null)
   // The move just put this row at an edge, so the button that was pressed is
@@ -834,9 +912,9 @@ function FieldRow({
         )}
       </Td>
       <Td wideOnly>
-        {contractCount > 0 ? (
-          <Chip variant="outline" size="xs">
-            {contractCount}
+        {contractRules.length > 0 ? (
+          <Chip variant="outline" size="xs" title={contractRules.join('\n')}>
+            {countOf(contractRules.length, 'rule', 'rules')}
           </Chip>
         ) : (
           <span style={{ color: 'var(--fg-faint)' }}>—</span>
@@ -903,6 +981,14 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
   const enumInputId = useId()
   const errorIdBase = useId()
   const errorId = (key: keyof ContractErrors) => `${errorIdBase}-${key}`
+
+  // Only the contract inputs this type can use, plus any holding a value
+  // (AU-16); see RANGE_FIELD_TYPES.
+  const showRegex = PATTERN_FIELD_TYPES.has(draft.field_type) || draft.contract_regex.trim() !== ''
+  const showRange =
+    RANGE_FIELD_TYPES.has(draft.field_type)
+    || draft.contract_min_value.trim() !== ''
+    || draft.contract_max_value.trim() !== ''
 
   const formRef = useRef<HTMLFormElement>(null)
   const submit = () => {
@@ -1084,26 +1170,44 @@ function FieldEditPage({ field, pending, error, onCancel, onSubmit }: FieldEditP
         subtitle="Quality rules tripl checks on every scan of this field."
         headingLevel={3}
       >
-        <SField label="Bad share" hint="Max fraction of values allowed to fail the contract (0–1).">
+        <SField
+          label="Max invalid share"
+          hint="Share of values (0–1) allowed to break the rules below before the field is flagged."
+        >
           {contractInput('contract_max_bad_rate', { decimal: true })}
         </SField>
-        <SField label="Null share" hint="Max fraction allowed to be null (0–1). Leave empty for no rule.">
+        <SField
+          label="Null share"
+          hint="Max fraction allowed to be null (0–1). Leave empty for no rule."
+          last={!showRegex && !showRange && draft.field_type !== 'enum'}
+        >
           {contractInput('contract_required_max_null_rate', { decimal: true, placeholder: '—' })}
         </SField>
-        <SField label="Regex" hint="Values must match this pattern.">
-          {contractInput('contract_regex', { placeholder: 'e.g. ^[a-z0-9_]+$' })}
-          {draft.contract_regex !== initialDraft.contract_regex && regexNotice(draft.contract_regex) && (
-            <p className="mt-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-              {regexNotice(draft.contract_regex)}
-            </p>
-          )}
-        </SField>
-        <SField label="Min">
-          {contractInput('contract_min_value', { decimal: true, placeholder: '—' })}
-        </SField>
-        <SField label="Max" last>
-          {contractInput('contract_max_value', { decimal: true, placeholder: '—' })}
-        </SField>
+        {showRegex && (
+          <SField label="Regex" hint="Values must match this pattern." last={!showRange}>
+            {contractInput('contract_regex', { placeholder: 'e.g. ^[a-z0-9_]+$' })}
+            {draft.contract_regex !== initialDraft.contract_regex && regexNotice(draft.contract_regex) && (
+              <p className="mt-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                {regexNotice(draft.contract_regex)}
+              </p>
+            )}
+          </SField>
+        )}
+        {showRange && (
+          <>
+            <SField label="Min">
+              {contractInput('contract_min_value', { decimal: true, placeholder: '—' })}
+            </SField>
+            <SField label="Max" last>
+              {contractInput('contract_max_value', { decimal: true, placeholder: '—' })}
+            </SField>
+          </>
+        )}
+        {draft.field_type === 'enum' && !showRegex && !showRange && (
+          <p className="px-4 py-3 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+            Values outside the enum options count as invalid.
+          </p>
+        )}
       </Panel>
 
       {/* Sticky, so Save and what blocks it stay in reach from the top of
@@ -1336,12 +1440,15 @@ export function SField({
   hint,
   last,
   htmlFor,
+  required,
   children,
 }: {
   label: string
   hint?: string
   last?: boolean
   htmlFor?: string | false
+  /** The kit's required mark beside the label; the control sets its own `aria-required`. */
+  required?: boolean
   children: ReactNode
 }) {
   const hintId = useId()
@@ -1355,6 +1462,7 @@ export function SField({
       hint={hint ? <span id={hintId}>{hint}</span> : undefined}
       last={last}
       htmlFor={htmlFor}
+      required={required}
       labelWidth={180}
     >
       <SFieldHintContext.Provider value={hint ? hintId : undefined}>{children}</SFieldHintContext.Provider>
@@ -1373,6 +1481,7 @@ export function SInput({
   describedBy,
   inputMode,
   id,
+  required,
 }: {
   value: string
   onChange: (v: string) => void
@@ -1384,17 +1493,22 @@ export function SInput({
   describedBy?: string
   inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode']
   id?: string
+  required?: boolean
 }) {
   const controlId = useFieldControlId(id)
   const hintId = useSFieldHintId()
   return (
-    <Input
+    // The event form's control (AU-35): its edge, focus accent, faint
+    // placeholder and 16px-on-phones text, so a type's settings and an
+    // event's fields read as one form.
+    <input
       id={controlId}
-      className={mono ? 'mono max-w-[420px]' : 'max-w-[420px]'}
+      className={cn(TEXT_INPUT_CLASS, 'max-w-[420px]', mono && 'mono')}
       value={value}
       placeholder={placeholder}
       disabled={disabled}
       inputMode={inputMode}
+      aria-required={required || undefined}
       aria-label={ariaLabel}
       aria-invalid={invalid || undefined}
       aria-describedby={describedByIds(describedBy, hintId)}

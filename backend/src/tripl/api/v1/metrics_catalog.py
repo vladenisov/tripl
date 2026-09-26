@@ -80,6 +80,8 @@ async def list_metric_definitions(
     # FreeTextFilter: binds into an ILIKE, so a NUL aborts inside asyncpg
     # before SQL runs (tripl-8wez).
     search: FreeTextFilter | None = None,
+    reviewed: bool | None = None,
+    owner_id: uuid.UUID | None = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=1000),
 ) -> MetricDefinitionListResponse:
@@ -89,6 +91,8 @@ async def list_metric_definitions(
         status=status,
         kind=kind,
         search=search,
+        reviewed=reviewed,
+        owner_id=owner_id,
         offset=offset,
         limit=limit,
     )

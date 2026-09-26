@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { SettingsLayout } from './SettingsLayout'
 import { WORKSPACE_GROUPS } from './nav'
 import { useUnsavedChanges } from './unsaved-changes'
+import type { Project } from '@/types'
 
 // Mock the auth context so the layout renders as an owner (Instance group is
 // owner-only) without pulling in the real provider/network.
@@ -46,10 +47,55 @@ function renderSettings(activePath: string) {
 }
 
 describe('SettingsLayout signposting', () => {
-  it('states the takeover area job in one line', () => {
+  it('drops the subtitle that named only two of the four groups (ST-10)', () => {
     renderSettings('members')
 
-    expect(screen.getByText('Workspace & account configuration')).toBeInTheDocument()
+    expect(screen.queryByText('Workspace & account configuration')).toBeNull()
+  })
+
+  it('names where the way back goes: the bound project, or the workspace (ST-4)', () => {
+    const { unmount } = render(
+      <RouterProvider
+        router={dataRouter(
+          <SettingsLayout activePath="members" backHref="/p/demo/events" projectName="Demo project">
+            <div>content</div>
+          </SettingsLayout>,
+        )}
+      />,
+    )
+    expect(screen.getByRole('link', { name: 'Back to Demo project' })).toHaveAttribute(
+      'href',
+      '/p/demo/events',
+    )
+    unmount()
+
+    render(
+      <RouterProvider
+        router={dataRouter(
+          <SettingsLayout activePath="members" backHref="/workspace">
+            <div>content</div>
+          </SettingsLayout>,
+        )}
+      />,
+    )
+    expect(screen.getByRole('link', { name: 'Back to workspace' })).toHaveAttribute('href', '/workspace')
+    expect(screen.queryByRole('link', { name: /Back to project/i })).toBeNull()
+  })
+
+  it('names the current section in the phone header, with a way out (ST-11)', () => {
+    renderSettings('instance/storage')
+
+    const main = screen.getByRole('main')
+    expect(within(main).getByText('Storage')).toBeInTheDocument()
+    expect(within(main).getByRole('link', { name: 'Close settings' })).toHaveAttribute('href', '/')
+  })
+
+  it('does not repeat a group name as its sub-label (ST-7)', () => {
+    renderSettings('members')
+
+    // "Project Project" / "Workspace Workspace" while nothing names them.
+    expect(screen.getAllByText('Project')).toHaveLength(1)
+    expect(screen.getAllByText('Workspace')).toHaveLength(1)
   })
 
   it('offers a labelled "Back to project" cross-link to the in-app surface', () => {
@@ -102,7 +148,74 @@ describe('SettingsLayout signposting', () => {
 
     expect(screen.getByText('Shared across everyone in the workspace')).toBeInTheDocument()
     expect(screen.getByText('Settings just for you')).toBeInTheDocument()
-    expect(screen.getByText('Server-wide settings (owner only)')).toBeInTheDocument()
+    // "(owner only)" once, in the sub-label, not again in the description (ST-7).
+    expect(screen.getByText('Server-wide settings')).toBeInTheDocument()
+    expect(screen.getByText('Owner only')).toBeInTheDocument()
+  })
+})
+
+describe('SettingsLayout project switcher (ST-6)', () => {
+  const PROJECTS = [
+    { slug: 'demo', name: 'Demo' },
+    { slug: 'other', name: 'Other' },
+  ] as unknown as Project[]
+
+  it('rebinds the Project sections to another project without leaving settings', async () => {
+    const router = createMemoryRouter(
+      [
+        {
+          path: '*',
+          element: (
+            <SettingsLayout
+              activePath="project/plan-rules"
+              backHref="/p/demo/events"
+              projectName="Demo"
+              projectSlug="demo"
+              projects={PROJECTS}
+            >
+              <div>content</div>
+            </SettingsLayout>
+          ),
+        },
+      ],
+      { initialEntries: ['/settings/project/plan-rules?project=demo'] },
+    )
+    render(<RouterProvider router={router} />)
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Switch project (current: Demo)' }), {
+      key: 'Enter',
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Other' }))
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/settings/project/plan-rules')
+    })
+    expect(router.state.location.search).toBe('?project=other')
+  })
+
+  it('opens General for the picked project from a workspace section', async () => {
+    const router = createMemoryRouter(
+      [
+        {
+          path: '*',
+          element: (
+            <SettingsLayout activePath="members" backHref="/workspace" projects={PROJECTS}>
+              <div>content</div>
+            </SettingsLayout>
+          ),
+        },
+      ],
+      { initialEntries: ['/settings/members'] },
+    )
+    render(<RouterProvider router={router} />)
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Pick a project' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Demo' }))
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/settings/project/general')
+    })
+    expect(router.state.location.search).toBe('?project=demo')
   })
 })
 

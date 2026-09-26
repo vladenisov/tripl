@@ -21,6 +21,10 @@ export interface PasswordResetConfirmResponse {
 export interface AuthStatusResponse {
   has_users: boolean
   registration_enabled: boolean
+  /** Whether the instance can send mail, so the forgot-password form can say
+   *  up front that no link will come (ST-24). Always sent; optional so probes
+   *  mocked before it still type, and only a definite `false` changes the UI. */
+  email_configured?: boolean
 }
 
 export const authApi = {

@@ -6,6 +6,8 @@ import type { components } from '../types/api.gen'
 export interface DetectionResetPeriod {
   before?: string | null
   after?: string | null
+  /** Count what the reset would delete, and delete nothing (ST-39). */
+  dry_run?: boolean
 }
 
 /** Per-table rows removed by a project-wide anomaly reset. */

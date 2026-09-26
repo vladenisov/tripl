@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ScanDryRunEvent, ScanDryRunResponse } from '@/types'
@@ -336,5 +336,51 @@ describe('ScanDryRunSummary — the panel names events, not rows (tripl-3y7z.6)'
     expect(
       screen.getByText(/No time window — the whole base query was read · 4,812 rows in the/),
     ).toBeInTheDocument()
+  })
+
+  it('shows the event type beside a field when the fields span several (#247 DA-2)', () => {
+    render(
+      <ScanDryRunSummary
+        dryRun={dryRun({
+          fields: [
+            { name: 'event_name', type: 'string', status: 'new', event_type: 'screen_view' },
+            { name: 'event_name', type: 'string', status: 'new', event_type: 'click' },
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Would add 2 fields across 2 event types')).toBeInTheDocument()
+    expect(screen.getByText('screen_view')).toBeInTheDocument()
+    expect(screen.getByText('click')).toBeInTheDocument()
+  })
+})
+
+describe('ScanDryRunSummary — a draft that would swamp the plan (#247 DA-1)', () => {
+  const combinatorial = Array.from({ length: 30 }, (_, index) =>
+    event(`event_name=screen_${index} | button_id= | product_id= | amount=`, 10),
+  )
+
+  it('warns, naming the count and the columns joined into each name', () => {
+    render(<ScanDryRunSummary dryRun={dryRun({ events: combinatorial })} />)
+
+    const warning = screen.getByTestId('dry-run-explosion')
+    expect(warning).toHaveTextContent('This draft would add 30 new events, one per combination of 4 columns.')
+    expect(warning).toHaveTextContent('Event name format')
+    expect(warning).toHaveTextContent('Event groups')
+  })
+
+  it('opens the control each bold term names', () => {
+    const onFixNaming = vi.fn()
+    render(<ScanDryRunSummary dryRun={dryRun({ events: combinatorial })} onFixNaming={onFixNaming} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Event name format' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Event groups' }))
+    expect(onFixNaming.mock.calls).toEqual([['format'], ['groups']])
+  })
+
+  it('stays quiet on an ordinary answer', () => {
+    render(<ScanDryRunSummary dryRun={dryRun({ events: THREE_EVENTS })} />)
+    expect(screen.queryByTestId('dry-run-explosion')).toBeNull()
   })
 })

@@ -13,7 +13,7 @@ from tripl.models.event import Event
 from tripl.models.field_definition import FieldDefinition
 from tripl.models.variable import Variable
 from tripl.models.variable_value import VariableValue, VariableValueKind
-from tripl.schemas.variable import SUMMARY_EVENT_LIMIT, SUMMARY_VALUE_LIMIT
+from tripl.schemas.variable import SUMMARY_EVENT_LIMIT, SUMMARY_VALUE_LIMIT, VariableEventRef
 from tripl.services.plan_branch_service import resolve_branch_id
 from tripl.services.project_service import get_project_id_by_slug
 from tripl.services.variable_value_drift_service import get_open_drift_counts
@@ -60,6 +60,7 @@ async def attach_variable_summaries(
     contexts = rows.all()
     event_ids_by_variable: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
     event_names_by_variable: dict[uuid.UUID, set[str]] = defaultdict(set)
+    event_refs_by_variable: dict[uuid.UUID, set[tuple[str, uuid.UUID]]] = defaultdict(set)
     context_counts: dict[uuid.UUID, int] = defaultdict(int)
     low_counts: dict[uuid.UUID, int] = defaultdict(int)
     high_counts: dict[uuid.UUID, int] = defaultdict(int)
@@ -68,6 +69,7 @@ async def attach_variable_summaries(
     for context, event_name in contexts:
         event_ids_by_variable[context.variable_id].add(context.event_id)
         event_names_by_variable[context.variable_id].add(event_name)
+        event_refs_by_variable[context.variable_id].add((event_name, context.event_id))
         context_counts[context.variable_id] += 1
         if context.value_kind == VariableValueKind.low.value:
             low_counts[context.variable_id] += 1
@@ -108,6 +110,15 @@ async def attach_variable_summaries(
         )
         event_names = sorted(event_names_by_variable.get(variable.id, set()))
         variable.event_names = event_names[:SUMMARY_EVENT_LIMIT]  # type: ignore[attr-defined]
+        # Two events can share a name (one per event type), so the refs are
+        # keyed by id; sorted on (name, id) so the order is stable (AU-29).
+        variable.event_refs = [  # type: ignore[attr-defined]
+            VariableEventRef(id=event_id, name=name)
+            for name, event_id in sorted(
+                event_refs_by_variable.get(variable.id, set()),
+                key=lambda ref: (ref[0], str(ref[1])),
+            )[:SUMMARY_EVENT_LIMIT]
+        ]
 
 
 async def list_variable_values(

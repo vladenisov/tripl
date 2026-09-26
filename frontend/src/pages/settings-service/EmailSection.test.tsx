@@ -198,6 +198,22 @@ describe('Email settings — test send', () => {
     // conclude the NEW port works. It tested the stored one.
     renderSection(settingsFixture())
 
-    expect(screen.getByText(/SAVED settings/)).toBeInTheDocument()
+    expect(screen.getByText(/Uses the saved settings, so save your changes first/)).toBeInTheDocument()
+    expect(screen.queryByText(/SAVED/)).toBeNull()
+  })
+
+  it('holds the test send until an SMTP host is saved (ST-32)', () => {
+    renderSection(settingsFixture({ smtp_host: '' }))
+
+    expect(screen.getByRole('heading', { name: 'Send a test email' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /send test email/i })).toBeDisabled()
+    expect(screen.getByText('Set an SMTP host and save first.')).toBeInTheDocument()
+  })
+
+  it('holds the test send until a From address is saved too (ST-24)', () => {
+    renderSection(settingsFixture({ smtp_from_address: '' }))
+
+    expect(screen.getByRole('button', { name: /send test email/i })).toBeDisabled()
+    expect(screen.getByText('Set a default From address and save first.')).toBeInTheDocument()
   })
 })

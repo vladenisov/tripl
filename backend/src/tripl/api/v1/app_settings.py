@@ -8,9 +8,11 @@ from fastapi import APIRouter
 
 from tripl.api.deps import OwnerUserDep, SessionDep
 from tripl.schemas.app_settings import (
+    AiPromptDefaultsResponse,
     AiSettingsResponse,
     AiSettingsTestRequest,
     EmailSettingsTestRequest,
+    RowLimitDefaultsResponse,
     ServiceSettingsResponse,
     ServiceSettingsUpdate,
     SettingsTestResponse,
@@ -102,6 +104,27 @@ async def get_photo_limits() -> PhotoLimitsResponse:
     requires a session.
     """
     return PhotoLimitsResponse(photo_max_size_mb=event_photo_service.max_size_mb())
+
+
+@router.get("/row-limits", response_model=RowLimitDefaultsResponse)
+async def get_row_limit_defaults(session: SessionDep) -> RowLimitDefaultsResponse:
+    """The instance row caps a scan falls back to, readable by every signed-in user.
+
+    Owner-only like the rest of this router would hide the real numbers from the
+    editors who fill in a scan's Limits, so the form hard-coded the shipped
+    defaults instead (B15). Two integers, nothing about the connection.
+    """
+    config = await app_settings_service.get_row_limit_defaults(session)
+    return RowLimitDefaultsResponse(
+        scan_row_limit_default=config.scan_row_limit_default,
+        metrics_row_limit_default=config.metrics_row_limit_default,
+    )
+
+
+@router.get("/ai/defaults", response_model=AiPromptDefaultsResponse)
+async def get_ai_prompt_defaults(_current_user: OwnerUserDep) -> AiPromptDefaultsResponse:
+    """The built-in AI system prompts, for each prompt's "Restore default" (ST-30)."""
+    return AiPromptDefaultsResponse(**app_settings_service.ai_prompt_defaults())
 
 
 @router.get("/ai", response_model=AiSettingsResponse)

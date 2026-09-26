@@ -3,7 +3,7 @@ import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ChevronDown, Loader2, RotateCcw, Sparkles } from "lucide-react"
 import { toast } from "sonner"
-import type { AlertDelivery, AlertDeliveryDetail, AlertDeliveryItem } from "@/types"
+import type { AlertDelivery, AlertDeliveryDetail, AlertDeliveryItem, AlertDestinationType } from "@/types"
 import { alertingApi } from "@/api/alerting"
 import { getScopeMonitoringPath } from "@/lib/monitoring"
 import { useCanWriteProject } from "@/lib/permissions"
@@ -15,12 +15,12 @@ import { countOf } from "@/lib/plural"
 import { useConfirm } from "@/hooks/useConfirm"
 import { formatPercentDelta } from "@/lib/percentDelta"
 import { Chip } from "@/components/primitives/chip"
-import { LocalDeliveryBadge } from "@/demo/capabilityBadges"
 import { Button } from "@/components/ui/button"
 import { IconButton } from "@/components/ui/icon-button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { invalidateAlertingConfig } from "./alertingCache"
-import { CHANNEL_META } from "./channelMeta"
+import { TICKET_CHANNELS } from "@/lib/alertChannels"
+import { ChannelGlyph, channelLabel as channelMetaLabel } from "./channelMeta"
 import { alertDeliveryKey } from "@/lib/queryKeys"
 import { watchRetriedDelivery, type RetryWatchOptions } from "./retryWatch"
 
@@ -36,21 +36,25 @@ import { watchRetriedDelivery, type RetryWatchOptions } from "./retryWatch"
  * `table-fixed` plus explicit widths: without it the multi-kilobyte summary
  * cell's max-width never bound, every short column collapsed to min-content and
  * a single timestamp wrapped over four lines, inflating rows to ~100px
- * (tripl-oxkt.18). The min-width is what the nine columns actually need; the
- * Table's own container scrolls, so the page body never does.
+ * (tripl-oxkt.18). The min-width is what the eight columns actually need; the
+ * Table's own container scrolls, so the page body never does. Below `md` that
+ * container scrolls sideways; a card rendering for phones is deferred (AL-20).
  */
 export function DeliveryTable({ children }: { children: ReactNode }) {
   return (
-    <Table className="min-w-[960px] table-fixed">
+    <Table className="min-w-[1000px] table-fixed">
       <TableHeader>
         <TableRow>
           <TableHead className="w-[96px]">Time</TableHead>
-          <TableHead className="w-[92px]">Status</TableHead>
-          <TableHead className="w-[104px]">Destination</TableHead>
-          <TableHead className="w-[88px]">Rule</TableHead>
-          <TableHead className="w-[112px]">Scan</TableHead>
-          <TableHead className="w-[52px]">Count</TableHead>
-          <TableHead className="w-[76px]">Channel</TableHead>
+          <TableHead className="w-[84px]">Status</TableHead>
+          {/* Destination and rule are the two columns a reader scans for,
+              and they were cut to nine characters while "What fired" took
+              ~40% of the row (AL-20). The Channel column is gone: the icon
+              in front of the destination says the same thing. */}
+          <TableHead className="w-[176px]">Destination</TableHead>
+          <TableHead className="w-[168px]">Rule</TableHead>
+          <TableHead className="w-[128px]">Scan</TableHead>
+          <TableHead className="w-[56px] text-right">Count</TableHead>
           {/* Not "Error / Preview": the preview was the first 87 characters
               of a message whose first four lines are a fixed template
               header repeating the five cells to its left. */}
@@ -69,15 +73,8 @@ export function DeliveryTable({ children }: { children: ReactNode }) {
  * channels a user can add, so it gets its own words.
  */
 function channelLabel(channel: string): string {
-  if (channel === "demo_sink") return "Local sink"
-  return CHANNEL_META.find(meta => meta.channel === channel)?.label ?? channel
+  return channelMetaLabel(channel as AlertDestinationType)
 }
-
-/**
- * Channels where a retry does more than repeat a message: each send opens a
- * new issue in somebody's tracker, so a retry is a second ticket (ALR-35).
- */
-const TICKET_CHANNELS: ReadonlySet<string> = new Set(["jira", "linear"])
 
 /**
  * Does this stored path point back at the alerting page itself?
@@ -413,17 +410,33 @@ export function AlertDeliveryRow({
           ) : '—'}
         </TableCell>
         <TableCell>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {/* Status pill (DS-6): "sent" was a solid brand block, the one
-                loud shape in a column of quiet ones, for the normal outcome. */}
-            <Chip tone={status === 'failed' ? 'danger' : status === 'sent' ? 'success' : 'neutral'}>{status}</Chip>
-            {(delivery.is_local || delivery.is_simulated) && (
-              <LocalDeliveryBadge simulated={delivery.is_simulated} />
-            )}
-          </div>
+          {/* Status pill (DS-6): "sent" was a solid brand block, the one
+              loud shape in a column of quiet ones, for the normal outcome.
+              Alone in its cell: the local/simulated flag stacked under it
+              pushed this row's baseline off its neighbours' (AL-20). */}
+          <Chip tone={status === 'failed' ? 'danger' : status === 'sent' ? 'success' : 'neutral'}>{status}</Chip>
         </TableCell>
         <TableCell className="text-body-sm">
-          <span className="block truncate" title={delivery.destination_name}>{delivery.destination_name}</span>
+          <div className="flex min-w-0 items-center gap-1.5" title={delivery.destination_name}>
+            <ChannelGlyph
+              type={delivery.channel as AlertDestinationType}
+              aria-hidden="true"
+              className="size-3.5 shrink-0 text-muted-foreground"
+            />
+            <span className="sr-only">{channelLabel(delivery.channel)}</span>{' '}
+            <span className="truncate">{delivery.destination_name}</span>
+          </div>
+          {/* Still marked, since a simulated send must never read as a real
+              one (tripl-2su6.9), but as a quiet suffix under the name rather
+              than a second pill in the status cell. */}
+          {(delivery.is_local || delivery.is_simulated) && (
+            <span
+              className="block truncate text-caption text-warning"
+              title="Recorded locally by the demo sink — nothing was sent to an external channel"
+            >
+              {delivery.is_simulated ? 'Local · simulated' : 'Local'}
+            </span>
+          )}
         </TableCell>
         <TableCell className="text-body-sm">
           <span className="block truncate" title={delivery.rule_name}>{delivery.rule_name}</span>
@@ -431,12 +444,7 @@ export function AlertDeliveryRow({
         <TableCell className="text-body-sm">
           <span className="block truncate" title={delivery.scan_name}>{delivery.scan_name}</span>
         </TableCell>
-        <TableCell className="text-body-sm">{delivery.matched_count}</TableCell>
-        <TableCell className="text-body-sm">
-          <span className="block truncate" title={channelLabel(delivery.channel)}>
-            {channelLabel(delivery.channel)}
-          </span>
-        </TableCell>
+        <TableCell className="tnum text-right text-body-sm">{delivery.matched_count}</TableCell>
         <TableCell className="text-body-sm text-muted-foreground">
           {/* Truncated here; the whole message is the first thing in the
               expanded row, where touch and screen-reader users can reach it
@@ -497,7 +505,7 @@ export function AlertDeliveryRow({
       </TableRow>
       {retryMut.isError && (
         <TableRow>
-          <TableCell colSpan={9} className="py-1">
+          <TableCell colSpan={8} className="py-1">
             <p role="alert" className="text-body-sm text-destructive">
               Retry failed: {getErrorMessage(retryMut.error)}
             </p>
@@ -506,7 +514,7 @@ export function AlertDeliveryRow({
       )}
       {open && (
         <TableRow>
-          <TableCell colSpan={9} className="bg-muted/20">
+          <TableCell colSpan={8} className="bg-muted/20">
             <div className="space-y-3 p-3">
               {/* The full failure, first: it is why the reader opened a failed
                   row, and the cell above can only show its first line

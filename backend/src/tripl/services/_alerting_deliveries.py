@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -44,6 +45,7 @@ from tripl.schemas.alerting import (
     AlertInboxGroupResponse,
     AlertInboxListResponse,
     AlertInboxRuleRef,
+    AlertInboxStatusCounts,
 )
 from tripl.services._alerting_cursors import (
     decode_delivery_cursor,
@@ -453,7 +455,6 @@ def _silenced_orphan_group_ids(
     *,
     windowed_group_ids: set[uuid.UUID],
     now: datetime,
-    status: str | None,
 ) -> list[uuid.UUID]:
     """Incidents still under a human decision that the window can no longer see.
 
@@ -472,7 +473,10 @@ def _silenced_orphan_group_ids(
 
     Ranked by ``acted_at`` newest-first and truncated per status to
     {@link INBOX_MAX_SILENCED_RESCUES}; see that constant for why the budget is
-    per status rather than shared. ``correlation_group_id`` is the last sort term
+    per status rather than shared. There is no status parameter: the per-status
+    budget already makes each status's slice of this selection exactly what a
+    status-filtered request would pick, so ``list_alert_inbox`` rescues every
+    status and filters afterwards. ``correlation_group_id`` is the last sort term
     for the reason ``_INBOX_SOURCE_ORDER`` has one: several incidents acted on in
     a single bulk click share an ``acted_at`` to the microsecond (that is what
     tripl-gpfr's batch DOES), so without it the cap could admit a different set
@@ -487,12 +491,6 @@ def _silenced_orphan_group_ids(
             continue
         effective = _effective_inbox_status(state, now)
         if effective == "open":
-            continue
-        # When the caller asked for one status, the whole budget goes to it. The
-        # request is "show me the muted ones"; spending half the cap on resolved
-        # orphans that the filter at the end will discard anyway is how the
-        # answer comes back empty.
-        if status is not None and effective != status:
             continue
         by_status.setdefault(effective, []).append(state)
 
@@ -1031,11 +1029,19 @@ async def list_alert_inbox(
     # through exactly the same response build, the same sort and the same paging
     # as every other one. Nothing downstream is allowed to know a card came from
     # the rescue; a second code path for them is how the two readings would drift.
+    #
+    # Rescued for EVERY status even when one is asked for: the per-status budget
+    # makes each status's slice of the selection exactly what a filtered request
+    # would pick, and the status chips need the other statuses' counts too
+    # (AL-14). Their delivery rows are loaded as well, not just counted off the
+    # states: a chip counts what the OTHER filters leave, and `filters.matches`
+    # reads a card's rows. That costs one extra query's worth of rows, bounded by
+    # INBOX_MAX_SILENCED_RESCUES per status and INBOX_MAX_SOURCE_ITEMS per group.
+    # The status filter below drops the rest.
     orphan_ids = _silenced_orphan_group_ids(
         states.values(),
         windowed_group_ids=set(groups),
         now=now,
-        status=status,
     )
     if orphan_ids:
         rescued = await _load_orphan_group_rows(
@@ -1069,14 +1075,19 @@ async def list_alert_inbox(
         )
         for group_id, group_rows in groups.items()
     ]
-    if status is not None:
-        responses = [group for group in responses if group.status == status]
     if filters is not None and filters.is_active:
         responses = [
             group
             for group in responses
             if filters.matches(group, rows=groups[group.correlation_group_id])
         ]
+    # Counted after every other filter and before the status one, so each chip
+    # says what picking it would list (AL-14).
+    status_counts = AlertInboxStatusCounts.model_validate(
+        Counter(str(group.status) for group in responses)
+    )
+    if status is not None:
+        responses = [group for group in responses if group.status == status]
     responses.sort(key=_inbox_sort_key, reverse=True)
     total = len(responses)
     # Keyset continuation (ALR-27). The list is sorted DESCENDING on the key, so
@@ -1093,6 +1104,7 @@ async def list_alert_inbox(
     return AlertInboxListResponse(
         items=page,
         total=total,
+        status_counts=status_counts,
         next_cursor=(
             encode_inbox_cursor(_inbox_sort_key(page[-1]))
             if page and len(remaining) > limit

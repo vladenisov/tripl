@@ -61,11 +61,13 @@ function DialogContent({
   )
 }
 
+// pr-8 keeps a long title from running under the close button (top-right,
+// size-8), which every dialog had to remember at the call site before.
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="dialog-header"
-      className={cn("flex shrink-0 flex-col gap-2 text-center sm:text-left", className)}
+      className={cn("flex shrink-0 flex-col gap-2 pr-8 text-center sm:text-left", className)}
       {...props}
     />
   )

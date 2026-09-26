@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
+import { ApiError } from '@/api/client'
 import { projectsApi } from '@/api/projects'
 import { ErrorState } from '@/components/error-state'
 import { FieldError } from '@/components/forms/FieldError'
@@ -21,6 +22,12 @@ import { Textarea } from '@/components/ui/textarea'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { projectsKey } from '@/lib/queryKeys'
 import { SLUG_ERROR, SLUG_HINT, isValidSlug, slugify } from '@/lib/slug'
+
+const SLUG_TAKEN_MESSAGE = 'Another project already uses this URL. Choose a different one.'
+
+function isSlugConflict(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.status === 409
+}
 
 /**
  * The workspace page's "New project" dialog, titled like the button that
@@ -45,7 +52,14 @@ export function CreateProjectDialog({
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [slugTouched, setSlugTouched] = useState(false)
+  // The URL field stays folded until asked for, or until it has a problem the
+  // reader has to fix by hand (SH-29).
+  const [customizing, setCustomizing] = useState(false)
   const [description, setDescription] = useState('')
+  // The server's word on the slug (a 409: taken). `existingSlugs` cannot rule it
+  // out: the list hides seeding and failed demos, whose slugs are still held.
+  // Cleared as soon as the slug changes.
+  const [slugServerError, setSlugServerError] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
 
@@ -60,6 +74,16 @@ export function CreateProjectDialog({
       void navigate(`/p/${created.slug}/overview`)
       onClose()
     },
+    onError: (error) => {
+      if (!isSlugConflict(error)) return
+      // The only conflict on create is the slug. Open the field that fixes it
+      // and put the message under it, instead of a generic box above a URL
+      // the reader cannot edit without first finding "Customize URL" (SH-29).
+      // The API says "slug"; this form calls the field Project URL.
+      setSlugServerError(SLUG_TAKEN_MESSAGE)
+      setCustomizing(true)
+      requestAnimationFrame(() => document.getElementById('project-slug')?.focus())
+    },
   })
 
   const slugValid = isValidSlug(slug)
@@ -67,6 +91,10 @@ export function CreateProjectDialog({
   // first keystroke of the name is still deriving one.
   const showSlugError = !slugValid && (submitted || (slugTouched && slug.length > 0))
   const nameError = submitted && !name.trim() ? 'Give the project a name.' : null
+  // An empty name is the name's problem, not the URL's: the field opens only
+  // for a slug the name could not derive a valid one for.
+  const slugOpen = customizing || (showSlugError && name.trim() !== '')
+  const slugMessage = showSlugError ? SLUG_ERROR : slugServerError
 
   return (
     <Dialog
@@ -88,6 +116,7 @@ export function CreateProjectDialog({
             event.preventDefault()
             setSubmitted(true)
             if (!name.trim() || !slugValid) {
+              if (name.trim() && !slugValid) setCustomizing(true)
               requestAnimationFrame(() => {
                 if (formRef.current) focusFirstInvalid(formRef.current)
               })
@@ -108,49 +137,90 @@ export function CreateProjectDialog({
                 value={name}
                 onChange={(event) => {
                   setName(event.target.value)
-                  if (!slugTouched) setSlug(slugify(event.target.value, existingSlugs))
+                  if (!slugTouched) {
+                    setSlug(slugify(event.target.value, existingSlugs))
+                    setSlugServerError(null)
+                  }
                 }}
                 // An example, not a value-looking default (MT-7).
-                placeholder={examplePlaceholder('Mobile app')}
+                placeholder={examplePlaceholder('iOS app')}
                 aria-required
                 {...invalidAria('project-name', nameError)}
               />
               <FieldError inputId="project-name" message={nameError} className="mt-0" />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="project-slug">Slug (url-friendly)</Label>
-              <Input
-                id="project-slug"
-                value={slug}
-                onChange={(event) => {
-                  setSlugTouched(true)
-                  setSlug(event.target.value)
-                }}
-                className="font-mono"
-                aria-required
-                aria-invalid={showSlugError || undefined}
-                aria-describedby="project-slug-hint"
-              />
-              {showSlugError ? (
-                <FieldError id="project-slug-hint" message={SLUG_ERROR} className="mt-0" />
-              ) : (
-                <p id="project-slug-hint" className="m-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-                  {SLUG_HINT}
-                </p>
-              )}
-            </div>
+            {/* The address, not "Slug (url-friendly)": derived from the name
+                and shown as the URL it becomes, with the field itself one
+                click away for anyone who wants a different one (SH-29). */}
+            {slugOpen ? (
+              <div className="grid gap-2">
+                <Label htmlFor="project-slug">Project URL</Label>
+                <div className="flex items-center gap-1.5">
+                  <span aria-hidden="true" className="mono text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                    /p/
+                  </span>
+                  <Input
+                    id="project-slug"
+                    value={slug}
+                    onChange={(event) => {
+                      setSlugTouched(true)
+                      setSlug(event.target.value)
+                      setSlugServerError(null)
+                    }}
+                    className="font-mono"
+                    aria-required
+                    aria-invalid={slugMessage ? true : undefined}
+                    aria-describedby="project-slug-hint"
+                  />
+                </div>
+                {slugMessage ? (
+                  <FieldError id="project-slug-hint" message={slugMessage} className="mt-0" />
+                ) : (
+                  <p id="project-slug-hint" className="m-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                    {SLUG_HINT}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                <span>
+                  Project URL:{' '}
+                  <span className="mono" style={{ color: 'var(--fg)' }}>
+                    /p/{slug || 'your-project'}
+                  </span>
+                </span>
+                <Button
+                  type="button"
+                  variant="link"
+                  size="xs"
+                  className="h-auto px-0"
+                  onClick={() => {
+                    setCustomizing(true)
+                    // The field replaces this button, so focus follows to it.
+                    requestAnimationFrame(() => document.getElementById('project-slug')?.focus())
+                  }}
+                >
+                  Customize URL
+                </Button>
+              </p>
+            )}
             <div className="grid gap-2">
               <Label htmlFor="project-desc" optional>
                 Description
               </Label>
+              {/* One line to start: it is optional, so it should not look as
+                  weighty as the name (SH-29). */}
               <Textarea
                 id="project-desc"
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
-                rows={2}
+                rows={1}
+                className="min-h-8"
               />
             </div>
-            {createMut.isError && (
+            {/* A slug conflict is told under the URL field, not here — also
+                once the reader has edited the slug and cleared it there. */}
+            {createMut.isError && !isSlugConflict(createMut.error) && (
               <ErrorState compact title="Could not create project" error={createMut.error} />
             )}
           </DialogBody>

@@ -9,15 +9,13 @@ import { Check, Play, RotateCcw } from 'lucide-react'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import type { ChapterListEntry, ChapterStatus } from './scenarioModel'
 
-const STATUS_LABEL: Record<ChapterStatus, string> = {
-  not_started: 'Not started',
+const STATUS_LABEL: Record<Exclude<ChapterStatus, 'not_started'>, string> = {
   active: 'Active',
   completed: 'Completed',
   dismissed: 'Paused',
 }
 
-const STATUS_TONE: Record<ChapterStatus, ChipTone> = {
-  not_started: 'neutral',
+const STATUS_TONE: Record<Exclude<ChapterStatus, 'not_started'>, ChipTone> = {
   active: 'accent',
   completed: 'success',
   dismissed: 'neutral',
@@ -69,17 +67,24 @@ export function ChapterPicker({ chapters, onPick, compact = false }: ChapterPick
             <span className="min-w-0 flex-1">
               <span className="block truncate text-body-sm font-medium">{chapter.title}</span>
               {!compact && (
+                // Whole, not cut to ~25 characters on a phone (#251 SH-7):
+                // it wraps from `sm` up, and a phone shows the titles alone.
                 <span
-                  className="block truncate text-micro"
+                  className="hidden text-micro sm:block"
                   style={{ color: 'var(--fg-subtle)' }}
                 >
                   {chapter.blurb}
                 </span>
               )}
             </span>
-            <Chip tone={STATUS_TONE[chapter.status]} size="xs">
-              {STATUS_LABEL[chapter.status]}
-            </Chip>
+            {/* A row that has not been started is the default and says
+                nothing: seven "Not started" pills drowned the one that
+                matters (#251 SH-3). */}
+            {chapter.status !== 'not_started' && (
+              <Chip tone={STATUS_TONE[chapter.status]} size="xs">
+                {STATUS_LABEL[chapter.status]}
+              </Chip>
+            )}
           </button>
         </li>
       ))}

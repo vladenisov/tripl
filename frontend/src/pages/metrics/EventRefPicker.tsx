@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react'
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { ChevronDown } from 'lucide-react'
 import { eventsApi } from '@/api/events'
 import { INPUT_BASE, INPUT_CLASS, INPUT_DISABLED } from '@/components/settings/input-style'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
@@ -7,14 +9,19 @@ import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { eventNameLabel } from '@/lib/eventName'
 import { cn } from '@/lib/utils'
 import type { EventType } from '@/types'
-import { eventKey, eventsPickerKey } from '@/lib/queryKeys'
-
-// Events offered at once. Small on purpose, for the reason the variables tab
-// spells out (tripl-46am): the search is server-side, so anything outside the
-// page is one keystroke away, and the count of what is missing is printed.
-const EVENT_PICKER_PAGE_SIZE = 100
+import { eventKey } from '@/lib/queryKeys'
+import { eventRosterQuery } from './eventRoster'
 
 const TYPE_PREFIX = 'type:'
+
+/**
+ * An event's option text: its name plus its event type, so two events with
+ * the same name in different types can be told apart (MT-10).
+ */
+function eventOptionLabel(event: { name: string; event_type?: { display_name: string } | null }): string {
+  const type = event.event_type?.display_name
+  return type ? `${eventNameLabel(event.name)} · ${type}` : eventNameLabel(event.name)
+}
 
 /** What one side of an event-composition metric points at. */
 export interface EventRef {
@@ -64,18 +71,7 @@ export function EventRefPicker({
   const [search, setSearch] = useState('')
   const debouncedSearch = useDebouncedValue(search.trim())
 
-  const rosterQuery = useQuery({
-    queryKey: eventsPickerKey(slug, null, 'metric-picker', debouncedSearch),
-    queryFn: () =>
-      eventsApi.list(slug, {
-        search: debouncedSearch || undefined,
-        limit: EVENT_PICKER_PAGE_SIZE,
-        offset: 0,
-      }),
-    placeholderData: keepPreviousData,
-    // Rendered inline under the picker, with a retry.
-    meta: SILENT_ERROR_META,
-  })
+  const rosterQuery = useQuery(eventRosterQuery(slug, debouncedSearch))
   const roster = useMemo(() => rosterQuery.data?.items ?? [], [rosterQuery.data])
   const selectedInRoster = !!value.eventId && roster.some(event => event.id === value.eventId)
   // Same key shape as the event detail page, so an opened event is read from cache.
@@ -87,10 +83,10 @@ export function EventRefPicker({
   })
 
   const eventOptions = useMemo(() => {
-    const options = roster.map(event => ({ value: event.id, label: eventNameLabel(event.name) }))
+    const options = roster.map(event => ({ value: event.id, label: eventOptionLabel(event) }))
     if (!value.eventId || selectedInRoster) return options
     const selectedLabel = selectedEventQuery.data
-      ? eventNameLabel(selectedEventQuery.data.name)
+      ? eventOptionLabel(selectedEventQuery.data)
       : selectedEventQuery.isError
         ? `Unknown event (${value.eventId.slice(0, 8)})`
         : 'Loading selected event…'
@@ -107,11 +103,15 @@ export function EventRefPicker({
           || type.display_name.toLowerCase().includes(needle)
           || type.name.toLowerCase().includes(needle),
       )
-      .map(type => ({ value: `${TYPE_PREFIX}${type.id}`, label: `type · ${type.display_name}` }))
+      .map(type => ({ value: `${TYPE_PREFIX}${type.id}`, label: `Every ${type.display_name} event` }))
   }, [eventTypes, debouncedSearch, value.eventTypeId])
   const selectedTypeKnown = eventTypes.some(type => type.id === value.eventTypeId)
 
   const hiddenCount = Math.max(0, (rosterQuery.data?.total ?? 0) - roster.length)
+  // A project with no events at all: an empty select is a dead end, so the
+  // picker says so and links to where events come from (MT-11).
+  const noEvents =
+    rosterQuery.isSuccess && !debouncedSearch && roster.length === 0 && !value.eventId
   const selectValue = value.eventId
     ? value.eventId
     : value.eventTypeId
@@ -124,7 +124,8 @@ export function EventRefPicker({
   }
 
   return (
-    <div className="flex flex-col gap-1.5" style={{ maxWidth: 360 }}>
+    // 280px like every other select on the form (MT-10).
+    <div className="flex flex-col gap-1.5" style={{ maxWidth: 280 }}>
       <input
         type="search"
         aria-label={`Search ${label}`}
@@ -140,40 +141,58 @@ export function EventRefPicker({
         className={INPUT_CLASS}
         style={{ ...INPUT_BASE, ...(disabled ? INPUT_DISABLED : {}) }}
       />
-      <select
-        id={id}
-        value={selectValue}
-        disabled={disabled}
-        aria-required
-        aria-invalid={ariaInvalid || undefined}
-        aria-describedby={ariaDescribedBy}
-        onChange={e => onSelect(e.target.value)}
-        className={cn(INPUT_CLASS, 'w-full appearance-none')}
-        style={{ ...INPUT_BASE, ...(disabled ? INPUT_DISABLED : {}) }}
-      >
-        <option value="">Select event…</option>
-        <optgroup label="Events">
-          {eventOptions.map(option => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </optgroup>
-        {(typeOptions.length > 0 || (value.eventTypeId && !selectedTypeKnown)) && (
-          <optgroup label="Event types (every event of the type)">
-            {value.eventTypeId && !selectedTypeKnown && (
-              <option value={`${TYPE_PREFIX}${value.eventTypeId}`}>
-                type · {value.eventTypeId.slice(0, 8)}
-              </option>
-            )}
-            {typeOptions.map(option => (
+      {/* The chevron the kit NativeSelect draws: without it "Select event…"
+          read as a second text field under the search (MT-10). */}
+      <div className="relative">
+        <select
+          id={id}
+          value={selectValue}
+          disabled={disabled}
+          aria-required
+          aria-invalid={ariaInvalid || undefined}
+          aria-describedby={ariaDescribedBy}
+          onChange={e => onSelect(e.target.value)}
+          className={cn(INPUT_CLASS, 'w-full appearance-none')}
+          style={{ ...INPUT_BASE, paddingRight: 30, ...(disabled ? INPUT_DISABLED : {}) }}
+        >
+          <option value="">Select event…</option>
+          <optgroup label="Events">
+            {eventOptions.map(option => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
             ))}
           </optgroup>
-        )}
-      </select>
+          {(typeOptions.length > 0 || (value.eventTypeId && !selectedTypeKnown)) && (
+            <optgroup label="All events of a type">
+              {value.eventTypeId && !selectedTypeKnown && (
+                <option value={`${TYPE_PREFIX}${value.eventTypeId}`}>
+                  Every event of type {value.eventTypeId.slice(0, 8)}
+                </option>
+              )}
+              {typeOptions.map(option => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </optgroup>
+          )}
+        </select>
+        <ChevronDown
+          size={14}
+          aria-hidden="true"
+          className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2"
+          style={{ color: 'var(--fg-subtle)' }}
+        />
+      </div>
+      {noEvents && (
+        <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          No events in this project yet.{' '}
+          <Link to={`/p/${slug}/events`} className="underline underline-offset-2" style={{ color: 'var(--fg)' }}>
+            Add events
+          </Link>
+        </p>
+      )}
       {hiddenCount > 0 && (
         <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
           {hiddenCount} more events not listed — search to narrow.

@@ -9,7 +9,9 @@
  *
  * It also owns the one way back into the guided onboarding (tripl-imco): being
  * mounted on every demo surface, its "Tour & chapters" opens the tour, and the
- * tour offers the dismissed welcome panel back (DEMO-26).
+ * tour offers the dismissed welcome panel back (DEMO-26). For the same reason
+ * it hosts the tour's docked card, which follows the reader from surface to
+ * surface (#251 JR-22).
  *
  * One row, not a stack (LIVE-9): the banner and the scenario strip used to be
  * two blocks above every page title, ~170 px on a desktop and ~250 px on a
@@ -44,7 +46,7 @@ import { canManageProject } from '@/lib/permissions'
 import { projectKey, projectsKey } from '@/lib/queryKeys'
 import { cn, getErrorMessage } from '@/lib/utils'
 import type { Project } from '@/types'
-import { ProductTour } from './ProductTour'
+import { ProductTour, TourDock } from './ProductTour'
 import { ProvisioningPhaseList } from './ProvisioningPhaseList'
 import { DemoDataBadge } from './capabilityBadges'
 import { useDemoScenarioActions } from './demoScenarioContext'
@@ -358,7 +360,9 @@ export function DemoBanner({
     // `group/demo` lets the row ask whether the scenario slot rendered anything:
     // the strip decides that for itself, and the actions only need to give up
     // their labels when it did.
-    <div className="group/demo mb-4">
+    // `data-demo-banner`: a docked coach card measures this to sit below the
+    // banner rather than on its controls (#251 SH-5).
+    <div className="group/demo mb-4" data-demo-banner="">
       {dialog}
       {resetMut.isPending && <DemoResetProgressDialog />}
       {resetStalled && <DemoResetStalledDialog onClose={() => resetMut.reset()} />}
@@ -399,7 +403,10 @@ export function DemoBanner({
         style={{ background: 'var(--warning-soft)', borderColor: 'var(--warning)' }}
       >
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-1.5 lg:min-h-11 lg:flex-nowrap">
-          <div className="flex shrink-0 items-center gap-x-3">
+          {/* Both groups wrap below `lg` (#251 SH-1): held to one line, the
+              phone panel's content came to 462px in a 364px panel — the
+              freshness cut, Reset half-shown, the owner's Delete off-screen. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 lg:shrink-0 lg:flex-nowrap">
             <DemoDataBadge />
             <span className={cn('shrink-0 text-body-sm font-medium', LABEL_WHEN_ROOMY)}>Demo workspace</span>
             {/* Details, not controls: the first thing to go when the row is
@@ -421,7 +428,7 @@ export function DemoBanner({
 
           {scenario}
 
-          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <div className="ml-auto flex flex-wrap items-center gap-1.5 lg:shrink-0 lg:flex-nowrap">
             <button
               type="button"
               onClick={() => {
@@ -465,7 +472,11 @@ export function DemoBanner({
             {/* Reset and Delete stay in the row, ahead of the page in DOM order
                 (#238 JR-21, won't do): the layout's "Skip to main content" link
                 already jumps past the banner, both open a confirm first, and
-                hiding them in a menu costs the demo's owner a click each. */}
+                hiding them in a menu costs the demo's owner a click each.
+                The same goes for the "Manage demo" overflow menu #251 SH-6
+                asked for (won't do): only the demo's creator or a workspace
+                owner sees these two, and from `lg` to `2xl` the icon-only
+                buttons keep their names and a `title` each. */}
             {canManage && (
               <>
                 <Button
@@ -524,6 +535,17 @@ export function DemoBanner({
           the Overview hosts a second ProductTour, and a permanently-mounted one
           here would keep whatever index it captured at first render. */}
       {tourOpen && <ProductTour slug={project.slug} open onOpenChange={setTourOpen} />}
+
+      {/* The tour, docked on the surface its "Open X" led to (#251 JR-22):
+          mounted here because the banner is on every demo surface. Portalled,
+          so it takes no room in the row. */}
+      <TourDock
+        slug={project.slug}
+        onOpenTour={() => {
+          clearMutationError()
+          setTourOpen(true)
+        }}
+      />
     </div>
   )
 }

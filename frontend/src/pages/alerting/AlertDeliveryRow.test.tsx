@@ -1010,3 +1010,15 @@ describe('AlertDeliveryRow — words, not enums', () => {
     expect(screen.queryByText('variable_value_drift')).toBeNull()
   })
 })
+
+// The status cell stacked "sent" over a "Local · simulated" pill, which put
+// the row's baseline off its neighbours' (AL-20).
+describe('AlertDeliveryRow — the status cell holds only the status', () => {
+  it('marks a simulated send under the destination, not beside the status', () => {
+    renderRow(mockDelivery({ status: 'sent', error_message: null, is_local: true, is_simulated: true }))
+
+    const suffix = screen.getByText('Local · simulated')
+    expect(suffix.closest('td')).not.toBe(screen.getByText('sent').closest('td'))
+    expect(suffix.closest('td')).toHaveTextContent(/Ops/)
+  })
+})

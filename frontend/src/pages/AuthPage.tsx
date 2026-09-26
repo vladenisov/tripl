@@ -9,6 +9,8 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { TrifoldMark } from '@/components/states/brand-mark'
+import { PasswordInput } from '@/components/ui/password-input'
 import { cn } from '@/lib/utils'
 import { postLoginDestination } from '@/lib/authRedirect'
 import { PASSWORD_MIN_LENGTH, PASSWORD_POLICY_HINT } from '@/lib/passwordPolicy'
@@ -105,6 +107,9 @@ export default function AuthPage() {
   // gate and still answers 403; guessing "closed" here would hide the form on
   // an open instance every time the page loads.
   const registrationClosed = statusQuery.data?.registration_enabled === false
+  // Same rule: only a definite `false` says so before the request (ST-24). The
+  // form stays usable — the server's answer is the same neutral one either way.
+  const emailOff = statusQuery.data?.email_configured === false
   // A live reset token always forces reset mode: a reset link must show the reset
   // form even when /auth was ALREADY mounted (same route, new ?reset_token=, no
   // remount). Deriving `mode` — rather than syncing it in an effect — means the
@@ -190,7 +195,22 @@ export default function AuthPage() {
           'radial-gradient(circle at top left, var(--accent-soft), transparent 32%), var(--bg)',
       }}
     >
-      <div className="mx-auto grid min-h-screen max-w-6xl items-center gap-8 px-6 py-10 lg:grid-cols-[1.15fr_0.85fr]">
+      {/* Top-aligned, not centred: centring re-placed the card every time a
+          mode changed its height, so the tabs just clicked moved out from
+          under the pointer (SH-30). */}
+      <div className="mx-auto grid min-h-screen max-w-6xl content-start items-start gap-8 px-6 py-10 lg:grid-cols-[1.15fr_0.85fr] lg:pt-[12vh]">
+        {/* The product's mark, as the sidebar draws it: above the card on a
+            phone, top-left of the page from lg (SH-31). */}
+        <div className="order-first flex items-center gap-2 lg:col-span-2 lg:order-none">
+          <TrifoldMark size={24} />
+          {/* A logo, not UI text: drawn at the sidebar wordmark's fixed 18px. */}
+          <span
+            className="font-bold leading-none tracking-[-0.045em]"
+            style={{ color: 'var(--fg)', fontSize: 18 }}
+          >
+            tripl
+          </span>
+        </div>
         {/* Below lg the form comes first: the pitch stacked above it put the
             sign-in card about a screen and a half down on a phone (SHELL-43). */}
         <section className="order-last space-y-8 lg:order-none">
@@ -302,8 +322,9 @@ export default function AuthPage() {
                       id="auth-name"
                       value={name}
                       onChange={event => setName(event.target.value)}
-                      placeholder="Analytics owner"
-                      />
+                      placeholder="Your name"
+                      autoComplete="name"
+                    />
                   </div>
                 )}
 
@@ -328,9 +349,8 @@ export default function AuthPage() {
                   <Label htmlFor="auth-password">
                     Password
                   </Label>
-                  <Input
+                  <PasswordInput
                     id="auth-password"
-                    type="password"
                     autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                     value={password}
                     onChange={event => setPassword(event.target.value)}
@@ -430,6 +450,13 @@ export default function AuthPage() {
                     <FieldError inputId="forgot-email" message={forgotEmailError} className="mt-0" />
                   </div>
 
+                  {emailOff && (
+                    <p className="rounded-lg border border-warning/25 bg-warning-soft px-3 py-2 text-body leading-6 text-fg">
+                      This instance can't send email, so no reset link will arrive. Ask your
+                      instance owner to reset your password.
+                    </p>
+                  )}
+
                   {forgotMutation.isError && (
                     <div
                       role="alert"
@@ -496,9 +523,8 @@ export default function AuthPage() {
                     <Label htmlFor="reset-password">
                       New password
                     </Label>
-                    <Input
+                    <PasswordInput
                       id="reset-password"
-                      type="password"
                       autoComplete="new-password"
                       value={newPassword}
                       onChange={event => setNewPassword(event.target.value)}

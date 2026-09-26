@@ -1,6 +1,6 @@
 import type { ServiceSettings } from '@/types'
 import { Field, RadioCards, SCard, TextInput, ToggleRow } from '@/components/settings/kit'
-import { NumberSettingInput, SourceBadge } from './ServiceSettingsPrimitives'
+import { InactiveGroup, NumberSettingInput, SourceBadge } from './ServiceSettingsPrimitives'
 import type { EditableSettings, SectionKey } from './serviceSettingsHelpers'
 import { sourceFor } from './serviceSettingsHelpers'
 
@@ -72,6 +72,9 @@ export function StorageSection({
         title="Local filesystem"
         description={backend === 'local' ? undefined : inactiveNote('Google Cloud Storage')}
       >
+        {/* Faded as well as described: the note alone left every field looking
+            live (ST-26, after WS-30). */}
+        <InactiveGroup inactive={backend !== 'local'}>
         <Field
           label="Local photo directory"
           labelRight={<SourceBadge source={sourceFor(settings, 'storage', 'photo_local_dir')} />}
@@ -83,12 +86,14 @@ export function StorageSection({
             mono
           />
         </Field>
+        </InactiveGroup>
       </SCard>
 
       <SCard
         title="Google Cloud Storage"
         description={backend === 'gcs' ? undefined : inactiveNote('Local filesystem')}
       >
+        <InactiveGroup inactive={backend !== 'gcs'}>
         <Field
           label="GCS bucket"
           labelRight={<SourceBadge source={sourceFor(settings, 'storage', 'gcs_photo_bucket')} />}
@@ -135,6 +140,7 @@ export function StorageSection({
             suffix="seconds"
           />
         </Field>
+        </InactiveGroup>
       </SCard>
     </>
   )

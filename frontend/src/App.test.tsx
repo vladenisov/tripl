@@ -264,6 +264,44 @@ describe('App', () => {
     })
   })
 
+  it('redirects the legacy /p/:slug/variables/:id link to the Variables surface', async () => {
+    // #245 JR-10: the event Spec card linked here before variables moved under
+    // settings; the old address must keep landing on the variable.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/auth/me')) return Promise.resolve(jsonResponse(OWNER))
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([makeProject('demo', 'Demo')]))
+      }
+      return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
+    })
+
+    renderApp('/p/demo/variables/var-how')
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/p/demo/settings/variables/var-how')
+    })
+  })
+
+  it('sends the bare /p/:slug to the project home', async () => {
+    // #250 JR-1: the bare project URL used to render Events, not the Overview
+    // every in-app project entry opens.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = urlOf(input)
+      if (url.endsWith('/api/v1/auth/me')) return Promise.resolve(jsonResponse(OWNER))
+      if (url.endsWith('/api/v1/projects')) {
+        return Promise.resolve(jsonResponse([makeProject('demo', 'Demo')]))
+      }
+      return Promise.resolve(jsonResponse({ detail: 'Not found' }, 404))
+    })
+
+    renderApp('/p/demo')
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/p/demo/overview')
+    })
+  })
+
   it('redirects "/" into the single project when exactly one exists', async () => {
     // UX-11 / UX-25: one project ⇒ "/" is a redundant hop, so land directly in
     // that project's overview. Post-redirect page data is irrelevant to the

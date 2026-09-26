@@ -9,7 +9,6 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useDirtySinceOpen, useUnsavedDialogGuard } from '@/hooks/useUnsavedChangesGuard'
 import { FieldError } from '@/components/forms/FieldError'
 import { examplePlaceholder } from '@/components/forms/placeholders'
@@ -18,7 +17,7 @@ import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { AlertDestination } from '@/types'
 
 import { invalidateAlertingConfig } from './alertingCache'
-import { CHANNEL_META } from './channelMeta'
+import { ChannelGlyph, channelLabel } from './channelMeta'
 import { defaultDestinationForm, type DestinationChannel, type DestinationFormState } from './constants'
 import { DeliveryScheduleField } from './DeliveryScheduleField'
 import { resolveScheduleTimezone } from './deliverySchedule'
@@ -29,6 +28,7 @@ import {
   destinationFormToPayload,
   destinationToForm,
 } from './destinationForm'
+import { attachDestinationServerErrors } from './destinationServerErrors'
 import { fieldErrorProps, splitApiFieldErrors } from './fieldErrors'
 
 /** What the dialog was opened for. */
@@ -164,10 +164,12 @@ export function DestinationDialog({
   const requestClose = () => guard.requestClose(onClose)
 
   const problems = destinationFormProblems(form, existing, { removeWebhookHeader })
-  const server = splitApiFieldErrors(
-    mutation.error,
-    ['name', 'delivery_schedule_cron', ...CHANNEL_FIELDS[form.type]],
-    DESTINATION_FIELD_LABELS,
+  const serverKnownFields = ['name', 'delivery_schedule_cron', ...CHANNEL_FIELDS[form.type]] as const
+  // In the form's words and under the input they are about, including the
+  // plain-string refusals (the SSRF guard) that name a field (AL-29).
+  const server = attachDestinationServerErrors(
+    splitApiFieldErrors(mutation.error, serverKnownFields, DESTINATION_FIELD_LABELS),
+    serverKnownFields,
   )
   // Secrets are required where nothing is stored yet — except on a demo
   // workspace, whose disabled Slack example has no webhook and must stay
@@ -222,11 +224,6 @@ export function DestinationDialog({
   }
   const set = <K extends keyof DestinationFormState>(field: K, value: DestinationFormState[K]) =>
     setForm(current => ({ ...current, [field]: value }))
-
-  const channelLabel = (type: DestinationFormState['type']) =>
-    type === 'demo_sink'
-      ? 'Local sink'
-      : CHANNEL_META.find(meta => meta.channel === type)?.label ?? type
 
   /** One text input with its label, limits and error, by payload field. */
   const textField = (
@@ -306,51 +303,53 @@ export function DestinationDialog({
             onSubmit={event => { event.preventDefault(); submit() }}
           >
             <DialogHeader>
-              <DialogTitle>
+              {/* The channel's icon beside the title, so the choice made on the
+                  button that opened this reads as made (AL-32). */}
+              <DialogTitle className="flex items-center gap-2">
+                <ChannelGlyph type={form.type} aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
                 {existing ? 'Edit destination' : `New ${channelLabel(form.type)} destination`}
               </DialogTitle>
             </DialogHeader>
             <DialogBody className="grid gap-4 py-1">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {textField('name', 'dest-name', 'Name')}
-                <div className="grid gap-2">
-                  <Label htmlFor="dest-channel">Channel</Label>
-                  <Select
-                    value={form.type}
-                    onValueChange={value => {
-                      // The last attempt's errors belong to the channel it was
-                      // for: kept, a Slack 422 on `webhook_url` resurfaced as
-                      // "Webhook URL: …" on a Telegram form (ALR-7).
-                      createMut.reset()
-                      setSubmitAttempted(false)
-                      setForm(current => ({
-                        ...defaultDestinationForm(value as DestinationChannel),
-                        name: current.name,
-                        enabled: current.enabled,
-                        delivery_schedule_cron: current.delivery_schedule_cron,
-                      }))
-                    }}
-                    disabled={!!existing}
-                  >
-                    <SelectTrigger id="dest-channel"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {CHANNEL_META.map(meta => (
-                        <SelectItem key={meta.channel} value={meta.channel}>{meta.label}</SelectItem>
-                      ))}
-                      {/* Never offered for creation — the seeder makes it — but
-                          an edit of one must still name it rather than render
-                          a blank trigger (ALR-2). */}
-                      {form.type === 'demo_sink' && (
-                        <SelectItem value="demo_sink">{channelLabel('demo_sink')}</SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
+              {/* No channel select (AL-32). On create the button that opened
+                  this already chose the channel and the title says so; a
+                  select here only offered to wipe the form. A channel is fixed
+                  once saved, so edit shows it as a read-only line. */}
+              {existing ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {textField('name', 'dest-name', 'Name')}
+                  <div className="grid gap-2">
+                    <span className="text-body leading-none font-medium">Channel</span>
+                    <p className="flex h-9 items-center gap-2 text-body text-muted-foreground" data-testid="dest-channel">
+                      <ChannelGlyph type={form.type} aria-hidden="true" className="size-4 shrink-0" />
+                      {channelLabel(form.type)}
+                    </p>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                textField('name', 'dest-name', 'Name')
+              )}
 
-              {form.type === 'slack' && secretField('webhook_url', 'dest-webhook-url', 'Webhook URL', {
-                placeholder: existing?.webhook_set ? 'Leave empty to keep current webhook' : examplePlaceholder('https://hooks.slack.com/...'),
-              })}
+              {form.type === 'slack' && (
+                <div className="grid gap-2">
+                  {secretField('webhook_url', 'dest-webhook-url', 'Webhook URL', {
+                    placeholder: existing?.webhook_set ? 'Leave empty to keep current webhook' : examplePlaceholder('https://hooks.slack.com/...'),
+                  })}
+                  {/* Where the URL comes from, which the form never said (AL-31). */}
+                  <p className="text-body-sm text-muted-foreground">
+                    Create an Incoming Webhook in Slack (Apps → Incoming Webhooks),
+                    pick the channel, and paste its URL here.{' '}
+                    <a
+                      href="https://api.slack.com/messaging/webhooks"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline underline-offset-2 hover:text-foreground"
+                    >
+                      Slack's guide
+                    </a>
+                  </p>
+                </div>
+              )}
 
               {form.type === 'telegram' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -446,8 +445,10 @@ export function DestinationDialog({
                     })}
                     {textField('jira_issue_type', 'dest-jira-issue-type', 'Issue type', { placeholder: examplePlaceholder('Task') })}
                   </div>
+                  {/* What happens, not how the API is called (AL-31). */}
                   <p className="text-body-sm text-muted-foreground">
-                    Each delivery opens a new issue in the project via Jira REST API v3 with Basic auth (email + API token). Body is rendered as ADF.
+                    Each alert opens a new issue in this Jira project. Sign in with your Atlassian
+                    email and an API token from id.atlassian.com → Security → API tokens.
                   </p>
                 </div>
               )}
@@ -459,10 +460,10 @@ export function DestinationDialog({
                   })}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {textField('linear_team_id', 'dest-linear-team-id', 'Team ID', {
-                      placeholder: 'Team UUID or short ID',
+                      placeholder: 'Team UUID',
                     })}
                     {textField('linear_state_id', 'dest-linear-state-id', 'State ID', {
-                      placeholder: 'State UUID',
+                      placeholder: 'Leave empty for the team default',
                       optional: true,
                     })}
                   </div>
@@ -470,8 +471,13 @@ export function DestinationDialog({
                     placeholder: `Comma-separated, ${examplePlaceholder('label-1, label-2')}`,
                     optional: true,
                   })}
+                  {/* Where each value lives, not which GraphQL mutation runs
+                      (AL-31). Pickers that fetch teams, states and labels once
+                      the key is in are the longer-term fix. */}
                   <p className="text-body-sm text-muted-foreground">
-                    Each delivery opens a new issue in the team via Linear's GraphQL <code>issueCreate</code>. Use API key from Linear settings → API.
+                    Each alert opens a new issue in this Linear team. Create the API key in Linear
+                    under Settings → API; the team ID is the team's UUID, shown in that team's
+                    settings. Leave State ID empty to use the team's default state.
                   </p>
                 </div>
               )}

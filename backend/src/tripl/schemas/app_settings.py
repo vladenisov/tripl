@@ -295,6 +295,29 @@ class AiSettingsResponse(BaseModel):
     sources: dict[str, SettingSource]
 
 
+class AiPromptDefaultsResponse(BaseModel):
+    """The built-in system prompts, whatever is stored over them (ST-30).
+
+    A "Restore default" link fills the editor from these; saving ``null`` for
+    the field clears the override and has the same effect server-side.
+    """
+
+    describe_system_prompt: str
+    ask_system_prompt: str
+    alert_explanation_system_prompt: str
+
+
+class RowLimitDefaultsResponse(BaseModel):
+    """The instance's effective row caps for a scan with no limit of its own.
+
+    Readable by every signed-in user, unlike the rest of ``/settings``: the scan
+    form's Limits hints quote them to whoever is filling it in (B15).
+    """
+
+    scan_row_limit_default: int
+    metrics_row_limit_default: int
+
+
 class AiSettingsTestRequest(BaseModel):
     prompt: str = Field(
         default="Reply with the word ok if the LLM connection works.",

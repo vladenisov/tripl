@@ -1,4 +1,5 @@
-import { memo } from 'react'
+import { memo, type ReactNode } from 'react'
+import { Link, useInRouterContext } from 'react-router-dom'
 import { Ban, Pencil, Trash2 } from 'lucide-react'
 import { IconButton } from '@/components/ui/icon-button'
 import { Chip } from '@/components/primitives/chip'
@@ -28,6 +29,9 @@ export interface VariablesTableRowProps {
   onEdit: (variable: Variable) => void
   onExclude: (variable: Variable) => void
   onDelete: (variable: Variable) => void
+  /** Where an "Observed in" event name links (AU-29). Without it — or outside
+   * a router — the names are plain text. */
+  eventHref?: (eventId: string) => string
 }
 
 function VariablesTableRowImpl({
@@ -41,11 +45,25 @@ function VariablesTableRowImpl({
   onEdit,
   onExclude,
   onDelete,
+  eventHref,
 }: VariablesTableRowProps) {
   // Everything the row shows ships with the list response — event names and
   // observed values included — so a row costs zero extra requests.
-  const eventNames = variable.event_names ?? []
+  const inRouter = useInRouterContext()
+  // Ids when the server sent them, so each name can open its event (AU-29);
+  // names alone otherwise. Same order and cap either way.
+  const eventRefs: { id: string | null; name: string }[] =
+    variable.event_refs ?? (variable.event_names ?? []).map(name => ({ id: null, name }))
+  const eventNames = eventRefs.map(ref => ref.name)
   const eventCount = variable.event_count ?? eventNames.length
+  const eventLabel = (ref: { id: string | null; name: string }): ReactNode =>
+    ref.id && eventHref && inRouter ? (
+      <Link to={eventHref(ref.id)} className="text-accent no-underline hover:underline">
+        {ref.name}
+      </Link>
+    ) : (
+      ref.name
+    )
   const hiddenEvents = Math.max(0, eventCount - eventNames.length)
   const observedValues = variable.sample_values ?? []
   const contextCount = variable.context_count ?? 0
@@ -82,7 +100,7 @@ function VariablesTableRowImpl({
           </code>
           {/* The badge taxonomy (DS-6): the type is a kind tag, the drift
               count a warning status. Both pills, in sans. */}
-          <Chip variant="outline" size="xs" className="font-sans">
+          <Chip variant="outline" size="xs" className="font-mono">
             {typeLabel}
           </Chip>
           {driftCount > 0 && (
@@ -108,16 +126,16 @@ function VariablesTableRowImpl({
           // Keyed by position: two event types can each hold an event of the
           // same name, and a duplicate key made React drop one of them (PLAN-33).
           <ul className="space-y-0.5">
-            {eventNames.map((eventName, index) => (
-              <li key={index}>{eventName}</li>
+            {eventRefs.map((ref, index) => (
+              <li key={index}>{eventLabel(ref)}</li>
             ))}
           </ul>
         ) : (
           <details>
-            <summary className="cursor-pointer text-muted-foreground">{eventCount} events</summary>
+            <summary className="cursor-pointer text-muted-foreground">Seen in {eventCount} events</summary>
             <ul className="mt-1 space-y-0.5">
-              {eventNames.map((eventName, index) => (
-                <li key={index}>{eventName}</li>
+              {eventRefs.map((ref, index) => (
+                <li key={index}>{eventLabel(ref)}</li>
               ))}
               {hiddenEvents > 0 && (
                 <li className="text-muted-foreground">+{hiddenEvents} more</li>
@@ -168,7 +186,9 @@ function VariablesTableRowImpl({
           <span className="text-body-sm text-muted-foreground">—</span>
         )}
       </TableCell>
-      <TableCell>
+      {/* Pinned to the right edge like its header, so a phone reader can act
+          on a row without first finding the sideways scroll (AU-27). */}
+      <TableCell className="sticky right-0 bg-surface">
         <div className="flex gap-1 justify-end">
           {/* Exactly one row carries the inspect mark: the seeded drifting
               variable, so the coaching reads as an example. */}
@@ -176,16 +196,16 @@ function VariablesTableRowImpl({
             step="variables/inspect-values"
             when={variable.name === SCENARIO_SEEDED.driftVariableName}
           >
-            <IconButton variant="ghost" className="h-7 w-7" label={`Edit variable ${variable.name}`} onClick={() => onEdit(variable)}>
+            <IconButton variant="ghost" className="h-7 w-7" label={`Edit variable ${variable.name}`} tooltip="Edit" onClick={() => onEdit(variable)}>
               <Pencil className="h-3 w-3" aria-hidden="true" />
             </IconButton>
           </ScenarioCoachMark>
           {canWrite && (
             <>
-              <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-warning" label={`Exclude variable ${variable.name} from scans`} onClick={() => onExclude(variable)}>
+              <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-warning" label={`Exclude variable ${variable.name} from scans`} tooltip="Exclude from scans" onClick={() => onExclude(variable)}>
                 <Ban className="h-3 w-3" aria-hidden="true" />
               </IconButton>
-              <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" label={`Delete variable ${variable.name}`} onClick={() => onDelete(variable)}>
+              <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" label={`Delete variable ${variable.name}`} tooltip="Delete" onClick={() => onDelete(variable)}>
                 <Trash2 className="h-3 w-3" aria-hidden="true" />
               </IconButton>
             </>

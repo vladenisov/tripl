@@ -1,7 +1,10 @@
 import { useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
+import { Plus } from 'lucide-react'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
+import { Button } from '@/components/ui/button'
 import { SCard, NativeSelect, type SelectOption, Field } from '@/components/settings/kit'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { FactOperandPayload } from '@/lib/factOperandConfig'
@@ -205,7 +208,7 @@ function FactOperandEditor({
         htmlFor={false}
         last
         stacked
-        hint="Optional. Add named filters, structured conditions, or SQL fragments; all are combined with AND. After saving they reload grouped by type: named filters, then conditions, then SQL."
+        hint="Optional. Only rows matching all filters are counted."
       >
         <FactFilterEditor
           filters={operand.filters}
@@ -257,14 +260,36 @@ export function FactDefinitionFields({
   onFactCompositionChange,
   clearedReplayChunk,
 }: FactDefinitionFieldsProps) {
+  // With no fact table to point at, Calculate and Interval are dead ends:
+  // the card says what to do instead, with the way there (MT-11).
+  if (facts.noFactTables) {
+    return (
+      <SCard title="Fact table">
+        <div
+          className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-[15px] text-body-sm"
+          style={{ color: 'var(--fg-subtle)' }}
+        >
+          <span>No fact tables yet. A fact metric aggregates one, so create it first.</span>
+          <Button asChild size="sm" variant="outline">
+            <Link to={`/p/${slug}/metrics/fact-tables/new`} className="no-underline">
+              <Plus aria-hidden="true" />
+              New fact table
+            </Link>
+          </Button>
+        </div>
+      </SCard>
+    )
+  }
+
   return (
     <>
       <SCard title="Fact" description="Aggregate a reusable fact table into one value per bucket.">
+        {/* "Calculate", not "Composition": the kind already says where the
+            value comes from, this says how (MT-18). */}
         <Field
-          label="Composition"
+          label="Calculate"
           htmlFor="metric-fact-composition"
           required
-          hint="A single aggregation, or a ratio of two."
         >
           <NativeSelect
             id="metric-fact-composition"
@@ -272,7 +297,7 @@ export function FactDefinitionFields({
             onChange={value => onFactCompositionChange(value as FactComposition)}
             options={FACT_COMPOSITIONS.map(c => ({
               value: c,
-              label: c === 'single' ? 'Single' : 'Ratio',
+              label: c === 'single' ? 'One aggregation' : 'Ratio of two aggregations (A ÷ B)',
             }))}
           />
         </Field>
@@ -287,13 +312,7 @@ export function FactDefinitionFields({
 
       {/* Stacked, not side by side: every row inside is a kit Field, and a
           half-width card leaves its controls ~125px wide (tripl-vv2f). */}
-      {facts.noFactTables ? (
-        <SCard title="Aggregation">
-          <div className="px-4 py-[15px] text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-            No fact tables yet. Define one in Fact tables before creating a fact metric.
-          </div>
-        </SCard>
-      ) : draft.factComposition === 'single' ? (
+      {draft.factComposition === 'single' ? (
         <SCard title="Aggregation">
           <FactOperandEditor
             slug={slug}

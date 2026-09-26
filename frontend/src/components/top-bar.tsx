@@ -1,8 +1,9 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
+  AlertTriangle,
   Bell,
   CheckCircle2,
   ChevronRight,
@@ -19,7 +20,13 @@ import { planBranchesApi } from '@/api/planBranches'
 import { useBranchContext } from '@/hooks/useBranch'
 import { requestPageLeave } from '@/hooks/useUnsavedChangesGuard'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
-import { formatIncidentCount } from '@/lib/alertStatus'
+import { useConfirm, type ConfirmOptions } from '@/hooks/useConfirm'
+import { formatIncidentCount, incidentMagnitudeLabel } from '@/lib/alertStatus'
+import { formatRelativeTime } from '@/lib/datetime'
+import { getAlertingPath } from '@/lib/navigation'
+// From lib/, not pages/alerting/channelMeta: the shell must not pull page
+// modules (and their icons) into the entry chunk.
+import { channelLabel, TICKET_CHANNELS } from '@/lib/alertChannels'
 import {
   signalScopeLabel,
   signalScopeRefLabel,
@@ -39,9 +46,15 @@ import { Chip } from '@/components/primitives/chip'
 import { CountBadge } from '@/components/primitives/count-badge'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
-import type { AlertDelivery, MonitoringSignal } from '@/types'
+import type { AlertDelivery, AlertInboxGroup, MonitoringSignal } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { alertDeliveriesKey, planBranchesKey, topbarDeliveriesKey } from '@/lib/queryKeys'
+import {
+  alertDeliveriesKey,
+  planBranchesKey,
+  projectsQueryOptions,
+  topbarDeliveriesKey,
+  topbarInboxKey,
+} from '@/lib/queryKeys'
 // The branch pages' own status words, so the strip cannot drift from them.
 import { STATUS_LABEL } from '@/lib/branchStatus'
 
@@ -240,8 +253,23 @@ export function BranchStrip({ slug }: { slug: string | undefined }) {
 }
 
 const SIGNAL_PREVIEW_LIMIT = 4
+const INCIDENT_PREVIEW_LIMIT = 4
 
 function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
+  const [open, setOpen] = useState(false)
+  // A ticket-channel retry asks first. The dialog renders outside the popover,
+  // and while it is up the popover ignores the focus moving into it, so the row
+  // that asked (and its error line) is still there when it answers.
+  const { confirm, dialog } = useConfirm()
+  const [confirming, setConfirming] = useState(false)
+  const confirmRetry = async (options: ConfirmOptions) => {
+    setConfirming(true)
+    try {
+      return await confirm(options)
+    } finally {
+      setConfirming(false)
+    }
+  }
   // Stream-aware fallback: the SSE invalidation map refreshes these on
   // signals.updated / activity.created, so poll only when the stream is down.
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
@@ -261,15 +289,34 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
     refetchInterval,
     staleTime: 30_000,
   })
+  // The badge counts OPEN INCIDENTS, off the project summary the sidebar's
+  // Alerting badge reads — the shell already holds this list, so it costs no
+  // request. Counting signals here put "3" on the bell beside "Alerting 1" in
+  // the sidebar for the same project (AL-40 / SH-17); signals keep their own
+  // section and count below.
+  const projectsQuery = useQuery({ ...projectsQueryOptions(), enabled: !!projectSlug })
+  const openIncidentCount = projectSlug
+    ? projectsQuery.data?.find(project => project.slug === projectSlug)?.summary.open_incident_count ?? 0
+    : 0
+  // The incidents themselves only while the popover is open: the shell should
+  // not pay for a list nobody is looking at. Under the inbox prefix, so every
+  // inbox invalidation (stream or triage action) refreshes it too.
+  const incidentsQuery = useQuery({
+    meta: SILENT_ERROR_META,
+    queryKey: topbarInboxKey(projectSlug),
+    queryFn: () => alertingApi.listInbox(projectSlug!, { status: 'open', limit: INCIDENT_PREVIEW_LIMIT }),
+    enabled: !!projectSlug && open,
+    staleTime: 30_000,
+  })
+  const incidents = incidentsQuery.data?.items ?? []
+  // The list's own total when it has answered, else the summary's.
+  const incidentTotal = incidentsQuery.data?.total ?? openIncidentCount
 
   // Sorted biggest-effect-first, so the four rows previewed below are the four
   // worst rather than an arbitrary slice.
   const signals = selectSignificantSignals(signalsQuery.data)
   const previewSignals = signals.slice(0, SIGNAL_PREVIEW_LIMIT)
   const deliveries = deliveriesQuery.data?.items ?? []
-  // "Active" semantics belong to currently-firing signals only. Deliveries are
-  // history (see Recent alert deliveries below) and must never be folded in.
-  const activeSignalCount = signals.length
   const failedDeliveryCount = deliveries.filter(delivery => delivery.status === 'failed').length
   // First load only. `isFetching` swapped the bell for a spinner on every
   // stream invalidation and poll, so with a live stream the most visible
@@ -280,123 +327,190 @@ function NotificationsMenu({ projectSlug }: { projectSlug?: string }) {
   const isError = signalsQuery.isError || deliveriesQuery.isError
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={activeSignalCount > 0 ? `Notifications — ${activeSignalCount} active` : 'Notifications'}
-          className="relative flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-active)] sm:h-8 sm:w-8"
-          style={{ color: activeSignalCount > 0 ? 'var(--fg)' : 'var(--fg-muted)' }}
+    <>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            aria-label={
+              openIncidentCount > 0
+                ? `Alerts — ${openIncidentCount} open ${openIncidentCount === 1 ? 'incident' : 'incidents'}`
+                : 'Alerts'
+            }
+            className="relative flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-active)] sm:h-8 sm:w-8"
+            style={{ color: openIncidentCount > 0 ? 'var(--fg)' : 'var(--fg-muted)' }}
+          >
+            {isLoading && projectSlug ? (
+              <Loader2
+                className="h-4 w-4 animate-spin"
+                aria-hidden="true"
+                data-testid="notifications-loading"
+              />
+            ) : (
+              <Bell className="h-4 w-4" aria-hidden="true" />
+            )}
+            {isRefreshing && projectSlug && openIncidentCount === 0 && (
+              <span
+                aria-hidden="true"
+                data-testid="notifications-refreshing"
+                className="absolute right-1.5 top-1.5 h-1 w-1 rounded-full"
+                style={{ background: 'var(--fg-subtle)' }}
+              />
+            )}
+            {openIncidentCount > 0 && (
+              <CountBadge
+                count={openIncidentCount}
+                max={9}
+                urgent
+                className="absolute -right-0.5 -top-0.5"
+              />
+            )}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="end"
+          collisionPadding={8}
+          className="w-[min(360px,calc(100vw-16px))] p-0"
+          // Focus moving into the retry confirmation is not "outside" in any
+          // sense the reader means; closing here would unmount the row mid-ask.
+          onInteractOutside={event => {
+            if (confirming) event.preventDefault()
+          }}
         >
-          {isLoading && projectSlug ? (
-            <Loader2
-              className="h-4 w-4 animate-spin"
-              aria-hidden="true"
-              data-testid="notifications-loading"
-            />
-          ) : (
-            <Bell className="h-4 w-4" aria-hidden="true" />
-          )}
-          {isRefreshing && projectSlug && activeSignalCount === 0 && (
-            <span
-              aria-hidden="true"
-              data-testid="notifications-refreshing"
-              className="absolute right-1.5 top-1.5 h-1 w-1 rounded-full"
-              style={{ background: 'var(--fg-subtle)' }}
-            />
-          )}
-          {activeSignalCount > 0 && (
-            <CountBadge
-              count={activeSignalCount}
-              max={9}
-              urgent
-              className="absolute -right-0.5 -top-0.5"
-            />
-          )}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        collisionPadding={8}
-        className="w-[min(360px,calc(100vw-16px))] p-0"
-      >
-        <div
-          className="flex items-center gap-2 border-b px-3.5 py-2.5"
-          style={{ borderColor: 'var(--border-subtle)' }}
-        >
-          <Bell className="h-3.5 w-3.5" style={{ color: 'var(--fg-muted)' }} />
-          <span className="text-body-sm font-semibold">Notifications</span>
-          <div className="flex-1" />
-          {projectSlug && activeSignalCount > 0 && (
-            <span className="tnum text-micro" style={{ color: 'var(--fg-faint)' }}>
-              {activeSignalCount} active
-            </span>
-          )}
-        </div>
-
-        {!projectSlug ? (
-          <EmptyNotifications message="Open a project to see monitoring and alert notifications." />
-        ) : isError ? (
-          <EmptyNotifications message="Notifications could not be loaded from the backend." />
-        ) : (
-          <div className="max-h-[420px] overflow-y-auto py-2">
-            <NotificationSection title="Active signals" count={signals.length}>
-              {signals.length === 0 ? (
-                <EmptySectionText>No active monitoring signals.</EmptySectionText>
-              ) : (
-                previewSignals.map(signal => (
-                  <SignalNotification
-                    key={`${signal.scope_type}:${signal.scope_ref}`}
-                    slug={projectSlug}
-                    signal={signal}
-                  />
-                ))
-              )}
-            </NotificationSection>
-
-            <NotificationSection
-              title="Recent alert deliveries"
-              count={deliveries.length}
-              accent={
-                failedDeliveryCount > 0 ? (
-                  <Chip
-                    tone="danger"
-                    size="xs"
-                    className="tnum"
-                    icon={<XCircle aria-hidden="true" />}
-                  >
-                    {failedDeliveryCount} failed
-                  </Chip>
-                ) : null
-              }
-            >
-              {deliveries.length === 0 ? (
-                <EmptySectionText>No alert deliveries yet.</EmptySectionText>
-              ) : (
-                deliveries.map(delivery => (
-                  <DeliveryNotification key={delivery.id} slug={projectSlug} delivery={delivery} />
-                ))
-              )}
-            </NotificationSection>
-          </div>
-        )}
-
-        {projectSlug && (
           <div
-            className="border-t px-3.5 py-2"
+            className="flex items-center gap-2 border-b px-3.5 py-2.5"
             style={{ borderColor: 'var(--border-subtle)' }}
           >
-            <Link
-              to={`/p/${projectSlug}/settings/alerting`}
-              className="text-caption font-medium no-underline hover:underline"
-              style={{ color: 'var(--fg-muted)' }}
-            >
-              Open alerting settings
-            </Link>
+            <Bell className="h-3.5 w-3.5" style={{ color: 'var(--fg-muted)' }} />
+            <span className="text-body-sm font-semibold">Alerts</span>
+            <div className="flex-1" />
+            {projectSlug && openIncidentCount > 0 && (
+              <span className="tnum text-micro" style={{ color: 'var(--fg-faint)' }}>
+                {openIncidentCount} open
+              </span>
+            )}
           </div>
-        )}
-      </PopoverContent>
-    </Popover>
+
+          {!projectSlug ? (
+            <EmptyNotifications message="Open a project to see its alerts and monitoring signals." />
+          ) : isError ? (
+            <EmptyNotifications message="Alerts could not be loaded from the backend." />
+          ) : (
+            <div className="max-h-[420px] overflow-y-auto py-2">
+              {/* The incidents first: they are what the badge counts and what
+                  somebody still owes an answer on (AL-40 / SH-17). */}
+              <NotificationSection title="Open incidents" count={incidentTotal}>
+                {incidentsQuery.isPending ? (
+                  <EmptySectionText>Loading incidents…</EmptySectionText>
+                ) : incidentsQuery.isError ? (
+                  <EmptySectionText>Incidents could not be loaded.</EmptySectionText>
+                ) : incidents.length === 0 ? (
+                  <EmptySectionText>No open incidents.</EmptySectionText>
+                ) : (
+                  <>
+                    {incidents.map(group => (
+                      <IncidentNotification key={group.correlation_group_id} slug={projectSlug} group={group} />
+                    ))}
+                    {incidentTotal > incidents.length && (
+                      <Link
+                        to={`${getAlertingPath(projectSlug)}?section=inbox`}
+                        className="px-1.5 py-1 text-caption no-underline hover:underline"
+                        style={{ color: 'var(--fg-muted)' }}
+                      >
+                        +{incidentTotal - incidents.length} more
+                      </Link>
+                    )}
+                  </>
+                )}
+              </NotificationSection>
+
+              <NotificationSection title="Active signals" count={signals.length}>
+                {signals.length === 0 ? (
+                  <EmptySectionText>No active monitoring signals.</EmptySectionText>
+                ) : (
+                  <>
+                    {previewSignals.map(signal => (
+                      <SignalNotification
+                        key={`${signal.scope_type}:${signal.scope_ref}`}
+                        slug={projectSlug}
+                        signal={signal}
+                      />
+                    ))}
+                    {/* The rest are one click away rather than silently cut
+                        (AL-40 / SH-17). */}
+                    {signals.length > previewSignals.length && (
+                      <Link
+                        to={`/p/${projectSlug}/anomalies`}
+                        className="px-1.5 py-1 text-caption no-underline hover:underline"
+                        style={{ color: 'var(--fg-muted)' }}
+                      >
+                        +{signals.length - previewSignals.length} more
+                      </Link>
+                    )}
+                  </>
+                )}
+              </NotificationSection>
+
+              <NotificationSection
+                title="Recent alert deliveries"
+                count={deliveries.length}
+                accent={
+                  failedDeliveryCount > 0 ? (
+                    <Chip
+                      tone="danger"
+                      size="xs"
+                      className="tnum"
+                      icon={<XCircle aria-hidden="true" />}
+                    >
+                      {failedDeliveryCount} failed
+                    </Chip>
+                  ) : null
+                }
+              >
+                {deliveries.length === 0 ? (
+                  <EmptySectionText>No alert deliveries yet.</EmptySectionText>
+                ) : (
+                  deliveries.map(delivery => (
+                    <DeliveryNotification
+                      key={delivery.id}
+                      slug={projectSlug}
+                      delivery={delivery}
+                      confirm={confirmRetry}
+                    />
+                  ))
+                )}
+              </NotificationSection>
+            </div>
+          )}
+
+          {projectSlug && (
+            <div
+              className="border-t px-3.5 py-2"
+              style={{ borderColor: 'var(--border-subtle)' }}
+            >
+              {/* The two lists this popover previews, each in full (JR-9). */}
+              <div className="flex items-center justify-between gap-3">
+                <Link
+                  to={`/p/${projectSlug}/anomalies`}
+                  className="text-caption font-medium no-underline hover:underline"
+                  style={{ color: 'var(--fg-muted)' }}
+                >
+                  All anomalies →
+                </Link>
+                <Link
+                  to={`${getAlertingPath(projectSlug)}?section=inbox`}
+                  className="text-caption font-medium no-underline hover:underline"
+                  style={{ color: 'var(--fg-muted)' }}
+                >
+                  Alert inbox →
+                </Link>
+              </div>
+            </div>
+          )}
+        </PopoverContent>
+      </Popover>
+      {dialog}
+    </>
   )
 }
 
@@ -412,7 +526,8 @@ function NotificationSection({
   children: ReactNode
 }) {
   return (
-    <section className="px-2 py-1.5">
+    // Named, so each list is a landmark a screen reader can jump between.
+    <section aria-label={title} className="px-2 py-1.5">
       <div className="flex items-center gap-2 px-1.5 pb-1">
         <span
           className="micro-label"
@@ -432,6 +547,30 @@ function NotificationSection({
       </div>
       <div className="flex flex-col gap-px">{children}</div>
     </section>
+  )
+}
+
+function IncidentNotification({ slug, group }: { slug: string; group: AlertInboxGroup }) {
+  const verb = group.direction === 'drop' ? 'Drop' : 'Spike'
+  const names = group.scope_names.join(', ')
+  const title = `${verb} on ${names || 'a deleted scope'}`
+  return (
+    <Link
+      // The incident's own card in the inbox, not the top of the page.
+      to={getAlertingPath(slug, { incidentId: group.correlation_group_id })}
+      className="flex gap-2 rounded-md px-1.5 py-2 no-underline transition-colors hover:bg-[var(--surface-active)]"
+      style={{ color: 'inherit' }}
+    >
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: 'var(--danger)' }} aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-body-sm font-medium" title={title}>
+          {title}
+        </div>
+        <div className="tnum mt-0.5 truncate text-micro" style={{ color: 'var(--fg-subtle)' }}>
+          {incidentMagnitudeLabel(group)} · {formatRelativeTime(group.latest_delivery_at)}
+        </div>
+      </div>
+    </Link>
   )
 }
 
@@ -481,9 +620,11 @@ function SignalNotification({
 function DeliveryNotification({
   slug,
   delivery,
+  confirm,
 }: {
   slug: string
   delivery: AlertDelivery
+  confirm: (options: ConfirmOptions) => Promise<boolean>
 }) {
   const qc = useQueryClient()
   // Compact re-queue for a failed delivery. Mirrors the alerting-tab row: the
@@ -497,6 +638,21 @@ function DeliveryNotification({
       qc.invalidateQueries({ queryKey: alertDeliveriesKey(slug) })
     },
   })
+  // The delivery row's rule, not a shortcut around it: a retry to Jira or
+  // Linear opens a second ticket, so it asks first (AL-40). Slack, Telegram,
+  // email and webhooks repeat a message nobody got, and one click is right.
+  const handleRetry = async () => {
+    if (TICKET_CHANNELS.has(delivery.channel)) {
+      const ok = await confirm({
+        title: 'Retry this delivery',
+        message: `Retrying sends this alert through "${delivery.destination_name}" again, and ${channelLabel(delivery.channel)} opens a new issue for it.`,
+        confirmLabel: 'Retry',
+        variant: 'primary',
+      })
+      if (!ok) return
+    }
+    if (!retryMut.isPending) retryMut.mutate()
+  }
   const StatusIcon = delivery.status === 'sent'
     ? CheckCircle2
     : delivery.status === 'failed'
@@ -512,7 +668,7 @@ function DeliveryNotification({
     <div className="rounded-md transition-colors hover:bg-[var(--surface-active)]">
       <div className="flex items-center gap-1 pr-1">
         <Link
-          to={`/p/${slug}/settings/alerting`}
+          to={getAlertingPath(slug, { deliveryId: delivery.id })}
           className="flex min-w-0 flex-1 gap-2 px-1.5 py-2 no-underline"
           style={{ color: 'inherit' }}
         >
@@ -521,15 +677,18 @@ function DeliveryNotification({
             <div className="truncate text-body-sm font-medium">
               {delivery.rule_name}
             </div>
+            {/* Words, not wire values: "Failed · Slack · 3 matched · 2h ago"
+                rather than "failed · slack · 3 matched" (AL-40 / SH-18). */}
             <div className="mt-0.5 text-micro" style={{ color: 'var(--fg-subtle)' }}>
-              {delivery.status} · {delivery.channel} · {delivery.matched_count} matched
+              {deliveryStatusWord(delivery.status)} · {channelLabel(delivery.channel)} ·{' '}
+              {delivery.matched_count} matched · {formatRelativeTime(delivery.created_at)}
             </div>
           </div>
         </Link>
         {isFailed && (
           <button
             type="button"
-            onClick={() => retryMut.mutate()}
+            onClick={() => void handleRetry()}
             disabled={retryMut.isPending}
             aria-label={`Retry delivery for ${delivery.rule_name}`}
             className="flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-micro font-medium transition-colors hover:bg-[var(--surface-active)] disabled:opacity-60"
@@ -551,6 +710,10 @@ function DeliveryNotification({
       )}
     </div>
   )
+}
+
+function deliveryStatusWord(status: string): string {
+  return status ? status.charAt(0).toUpperCase() + status.slice(1) : status
 }
 
 function EmptyNotifications({ message }: { message: string }) {

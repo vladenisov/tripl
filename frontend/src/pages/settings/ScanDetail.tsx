@@ -10,7 +10,8 @@ import { Button } from "@/components/ui/button"
 import { IconButton } from "@/components/ui/icon-button"
 import { Chip } from "@/components/primitives/chip"
 import { ErrorState } from "@/components/error-state"
-import { DisabledReason, SectionSkeleton, StatValueSkeleton, disabledReasonAria } from '@/components/states'
+import { SectionSkeleton, StatValueSkeleton } from '@/components/states'
+import { countOf } from '@/lib/plural'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { getErrorMessage } from '@/lib/utils'
 import { friendlyScanError } from '@/lib/scanError'
@@ -27,7 +28,16 @@ import { JobDetails } from './scans/JobDetails'
 import { ReplayChunkProgress } from './scans/ReplayChunkProgress'
 import { jobRowsReadTitle } from './scans/runReport'
 import { SCAN_MODE_DETAIL_LABEL, type ScanMode, scanModeOf } from './scans/scanMode'
-import { consecutiveFailedRuns, jobDurationSeconds, jobMetricPoints, jobRowsScanned, scanJobsHaveActiveWork } from './scans/scanUtils'
+import {
+  consecutiveFailedRuns,
+  formatDueIn,
+  formatJobScanned,
+  jobDurationSeconds,
+  jobMetricPoints,
+  jobScanned,
+  metricsFreshness,
+  scanJobsHaveActiveWork,
+} from './scans/scanUtils'
 import { useAdaptiveRefetchIntervalFn } from '@/realtime/streamContext'
 import {
   platformPresenceKey,
@@ -41,9 +51,6 @@ import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
 import { useConfirm } from '@/hooks/useConfirm'
 import { ScanErrorTechnicalDetails } from './scans/ScanErrorTechnicalDetails'
-
-/** Why Apply groups is off: there is nothing saved to apply. */
-const APPLY_GROUPS_BLOCKER = 'Add event group rules first.'
 
 function chipList(values: string[]) {
   if (values.length === 0) return <NoneTag />
@@ -63,8 +70,15 @@ function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfi
     meta: SILENT_ERROR_META,
   })
 
+  // Say how many events the matrix covers, so one row reads as "one event
+  // so far", not as a truncated table (#247 DA-19).
+  const seenEverywhere = data
+    ? data.items.filter(item => data.platforms.every(platform => item.present_platforms.includes(platform))).length
+    : 0
   const subtitle = data?.platform_column
-    ? `Per-event coverage across ${data.platform_column}`
+    ? data.items.length > 0 && data.platforms.length > 0
+      ? `${seenEverywhere} of ${countOf(data.items.length, 'event', 'events')} seen on every ${data.platform_column} value`
+      : `Per-event coverage across ${data.platform_column}`
     : 'Events seen per platform value'
 
   let body: React.ReactNode
@@ -87,14 +101,14 @@ function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfi
     )
   } else if (!data?.platform_column) {
     body = (
-      <p className="px-4 py-3 text-body" style={{ color: 'var(--fg-subtle)' }}>
-        No platform column configured
+      <p className="px-4 py-3 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        No platform column configured. Set one in Configuration › App version.
       </p>
     )
   } else if (data.items.length === 0 || data.platforms.length === 0) {
     body = (
-      <p className="px-4 py-3 text-body" style={{ color: 'var(--fg-subtle)' }}>
-        No platform data yet
+      <p className="px-4 py-3 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        No platform data yet. It fills in as runs see each event.
       </p>
     )
   } else {
@@ -168,6 +182,7 @@ export function ScanDetail({
   // banner already summarizes them (tripl-7l83.4).
   const [streakExpanded, setStreakExpanded] = useState(false)
   const [applyGroupsMessage, setApplyGroupsMessage] = useState('')
+  const [highlightedJobId, setHighlightedJobId] = useState<string | null>(null)
   const { confirm, dialog } = useConfirm()
 
   const etName = eventTypes.find((et: EventType) => et.id === scanConfig.event_type_id)?.display_name
@@ -206,8 +221,11 @@ export function ScanDetail({
   const applyGroupsMut = useMutation({
     mutationFn: () => scansApi.applyEventGroups(slug, scanConfig.id),
     onMutate: () => setApplyGroupsMessage(''),
-    onSuccess: () => {
+    onSuccess: (job) => {
+      // Point at the run it queued too, not only say so: its row is
+      // highlighted in Recent runs (#247 DA-18).
       setApplyGroupsMessage('Group apply queued.')
+      setHighlightedJobId(job.id)
       invalidateRuns()
       qc.invalidateQueries({ queryKey: scansKey(slug) })
       qc.invalidateQueries({ queryKey: projectEventsKey(slug) })
@@ -243,12 +261,27 @@ export function ScanDetail({
   })
 
   const lastJob = jobs[0] ?? null
-  const lastRows = jobRowsScanned(lastJob)
+  const lastScanned = jobScanned(lastJob)
   const lastEvents = lastJob?.result_summary?.events_created ?? null
+  const mode = scanModeOf(scanConfig)
+  // The newest METRICS run, not the newest run: a catalog Run now on top of the
+  // list left this card "—" on every monitoring scan (#247 DA-5).
+  const freshness = metricsFreshness(jobs, scanConfig.interval)
+  const lastMetricsJob = freshness.job
   // One formula, shared with the list chip (scanUtils.jobMetricPoints). The old
   // `breakdown_event_metrics ?? event_metrics` fallback disagreed with the chip
   // for every scan that had breakdowns.
-  const lastMetricPoints = jobMetricPoints(lastJob)
+  const lastMetricPoints = jobMetricPoints(lastMetricsJob)
+  const metricsDelta = mode !== 'monitoring'
+    ? undefined
+    : freshness.lastAt
+      ? `${formatRelativeTime(freshness.lastAt)}${freshness.nextAt != null ? ` · next ${formatDueIn(freshness.nextAt)}` : ''}`
+      : 'no collection yet'
+  // Retry belongs to the failure that is still current: on an old failure that
+  // later runs succeeded past it, it read as something left to fix (#247 DA-22).
+  const latestSettledId = jobs.find(j => j.status !== 'pending' && j.status !== 'running')?.id ?? null
+  const platformColumn = scanConfig.platform_column ?? null
+  const groupRuleCount = scanConfig.event_group_rules.length
 
   // Last-good timestamp: when the most recent run failed, surface when the scan
   // last succeeded so a red row is never the only signal.
@@ -273,20 +306,21 @@ export function ScanDetail({
   const collapseStreak = failingStreak >= 2
   const streakJobs = collapseStreak ? jobs.slice(0, failingStreak) : []
   const restJobs = collapseStreak ? jobs.slice(failingStreak) : jobs
-  const mode = scanModeOf(scanConfig)
   const renderJobRow = (job: ScanJob) => (
     <JobRow
       key={job.id}
       job={job}
       slug={slug}
       scanConfigId={scanConfig.id}
+      dataSourceId={scanConfig.data_source_id}
       mode={mode}
       watched={job.id === scanJobId}
+      highlighted={job.id === highlightedJobId}
       expanded={expandedJobId === job.id}
       onToggle={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
       onCancel={canRun ? () => void requestCancel(job.id) : undefined}
       cancelPending={cancelMut.isPending && cancelMut.variables === job.id}
-      onRetry={canRun ? () => retryMut.mutate() : undefined}
+      onRetry={canRun && job.id === latestSettledId ? () => retryMut.mutate() : undefined}
       retryPending={retryMut.isPending}
     />
   )
@@ -312,17 +346,31 @@ export function ScanDetail({
                 : 'never'
           }
         />
-        {/* One label, two populations: a catalog run reports scan_rows_processed
-            and a metrics run reports query_rows_scanned. The figure cannot say
-            which, so the title does. */}
+        {/* "Scanned", with the unit on the figure: a catalog run reads back
+            distinct column combinations (grouped in the warehouse), a metrics
+            run warehouse rows, and "Rows read 153" was off by ~180× from the
+            dry run's row count (#247 DA-4). The title says which cap applied. */}
         <div title={jobRowsReadTitle(lastJob)}>
-          <MiniStat label="Rows read · last run" value={isLoading ? <StatValueSkeleton /> : lastRows == null ? '—' : lastRows.toLocaleString()} />
+          <MiniStat label="Scanned · last run" value={isLoading ? <StatValueSkeleton /> : formatJobScanned(lastScanned)} />
         </div>
         <MiniStat label="Events written" value={isLoading ? <StatValueSkeleton /> : lastEvents == null ? '—' : lastEvents.toLocaleString()} />
         {/* "Metric points", not "Metric rows": these are time-series points on a
             metric, and "Metrics" is the name of a different surface (Observe ›
-            Metrics, the user-defined catalog). */}
-        <MiniStat label="Metric points" value={isLoading ? <StatValueSkeleton /> : lastMetricPoints == null ? '—' : lastMetricPoints.toLocaleString()} />
+            Metrics, the user-defined catalog). The figure is the newest
+            collection's, with when it landed and when the next is due; amber
+            once the series is two intervals behind (#247 DA-5). */}
+        <MiniStat
+          label="Metric points"
+          value={
+            isLoading
+              ? <StatValueSkeleton />
+              : mode !== 'monitoring'
+                ? 'Not collected'
+                : lastMetricPoints == null ? '—' : lastMetricPoints.toLocaleString()
+          }
+          delta={isLoading ? undefined : metricsDelta}
+          tone={!isLoading && freshness.overdue ? 'warning' : 'neutral'}
+        />
       </MiniStatStrip>
 
       {/* Source & query */}
@@ -388,20 +436,71 @@ export function ScanDetail({
             }
             mono={!!scanConfig.app_version_column}
           />
+          {/* With no platform column the presence matrix below has nothing to
+              show, so the fact is one line here instead of a full-width panel
+              that said only "No platform column configured" (#247 DA-19). */}
+          {!platformColumn && (
+            <KV
+              label="Platform column"
+              value={
+                <span className="inline-flex flex-wrap items-center gap-x-1.5">
+                  <NoneTag />
+                  <span className="text-caption" style={{ color: 'var(--fg-faint)' }}>
+                    Set in Configuration › App version
+                  </span>
+                </span>
+              }
+            />
+          )}
+          {/* Apply groups sits on the rules it applies, not 400px below in the
+              Recent runs header, and only when there are rules (#247 DA-18). */}
           <KV
             label="Event group rules"
             value={
-              scanConfig.event_group_rules.length
-                ? `${scanConfig.event_group_rules.length} rule${scanConfig.event_group_rules.length > 1 ? 's' : ''}`
-                : <NoneTag />
+              groupRuleCount ? (
+                <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+                  {countOf(groupRuleCount, 'rule', 'rules')}
+                  {canApplyGroups && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => applyGroupsMut.mutate()}
+                      disabled={applyGroupsMut.isPending}
+                      title="Merge existing events by the saved group rules"
+                    >
+                      <GitMerge className="size-3" aria-hidden="true" />
+                      {applyGroupsMut.isPending ? 'Applying…' : 'Apply to existing events'}
+                    </Button>
+                  )}
+                </span>
+              ) : <NoneTag />
             }
           />
+          {applyGroupsMut.isError && (
+            <p className="border-t px-4 py-2 text-body-sm" style={{ color: 'var(--danger)', borderColor: 'var(--border-subtle)' }}>
+              {getErrorMessage(applyGroupsMut.error)}
+            </p>
+          )}
+          {/* Always mounted, so the live region exists before it has anything
+              to say; padded only once it does (DATA-22). */}
+          <p
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            className={applyGroupsMessage ? 'border-t px-4 py-2 text-body-sm' : 'sr-only'}
+            style={{ color: 'var(--fg-subtle)', borderColor: 'var(--border-subtle)' }}
+          >
+            {applyGroupsMessage}
+          </p>
         </Panel>
         <Panel title="Metrics & drift">
           <KV label="Breakdown columns" value={chipList(scanConfig.metric_breakdown_columns)} />
           <KV
             label="Values limit"
-            value={scanConfig.metric_breakdown_values_limit ?? <span style={{ color: 'var(--fg-faint)' }}>default</span>}
+            // Unset keeps every value, and the form's placeholder calls that
+            // "Unlimited": one word on both screens, not a "default" that
+            // names no value (#247 DA-15).
+            value={scanConfig.metric_breakdown_values_limit ?? <span style={{ color: 'var(--fg-faint)' }}>Unlimited</span>}
             mono
           />
           <KV label="Distribution drift" value={chipList(scanConfig.distribution_drift_fields)} />
@@ -410,64 +509,18 @@ export function ScanDetail({
         </Panel>
       </div>
 
-      {/* Platform presence matrix */}
-      <PlatformPresencePanel slug={slug} scanConfigId={scanConfig.id} />
+      {/* Platform presence matrix — only for a scan that has a platform
+          column; without one, Event mapping says so in a line (#247 DA-19). */}
+      {platformColumn && <PlatformPresencePanel slug={slug} scanConfigId={scanConfig.id} />}
 
       {/* Recent runs */}
-      <Panel
-        title="Recent runs"
-        subtitle={recentJobsSubtitle}
-        right={canApplyGroups ? (
-          // With no rules the reason is a caption beside the button, not a
-          // `title` a disabled button never shows (#237 DA-9).
-          <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1">
-            <DisabledReason
-              id="apply-groups"
-              tone="muted"
-              reason={scanConfig.event_group_rules.length === 0 ? APPLY_GROUPS_BLOCKER : null}
-            />
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => applyGroupsMut.mutate()}
-              disabled={scanConfig.event_group_rules.length === 0 || applyGroupsMut.isPending}
-              {...disabledReasonAria(
-                'apply-groups',
-                scanConfig.event_group_rules.length === 0 ? APPLY_GROUPS_BLOCKER : null,
-              )}
-              title={
-                scanConfig.event_group_rules.length > 0
-                  ? 'Apply saved group rules to existing events'
-                  : undefined
-              }
-            >
-              <GitMerge className="size-3" />
-              {applyGroupsMut.isPending ? 'Applying…' : 'Apply groups'}
-            </Button>
-          </div>
-        ) : undefined}
-      >
-        {applyGroupsMut.isError && (
-          <p className="px-4 py-2 text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(applyGroupsMut.error)}</p>
-        )}
+      <Panel title="Recent runs" subtitle={recentJobsSubtitle}>
         {cancelMut.isError && (
           <p className="px-4 py-2 text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(cancelMut.error)}</p>
         )}
         {retryMut.isError && (
           <p className="px-4 py-2 text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(retryMut.error)}</p>
         )}
-        {/* Always mounted, so the live region exists before it has anything to
-            say; padded only once it does, instead of a blank strip over the
-            runs on every visit (DATA-22). */}
-        <p
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-          className={applyGroupsMessage ? 'px-4 py-2 text-body' : 'sr-only'}
-          style={{ color: 'var(--fg-subtle)' }}
-        >
-          {applyGroupsMessage}
-        </p>
         {failingStreak >= 2 && (
           <div
             className="mx-4 mt-3 flex flex-col gap-2 rounded-lg border p-3"
@@ -522,7 +575,7 @@ export function ScanDetail({
               <TableRow style={{ background: 'var(--bg-sunken)' }}>
                 <TableHead className="px-4">Started</TableHead>
                 <TableHead className={`px-4 text-right ${LOW_VALUE_COLUMN}`}>Duration</TableHead>
-                <TableHead className="px-4 text-right">Rows read</TableHead>
+                <TableHead className="px-4 text-right">Scanned</TableHead>
                 <TableHead className={`px-4 text-right ${LOW_VALUE_COLUMN}`}>Events</TableHead>
                 <TableHead className="px-4">Status</TableHead>
                 <TableHead className="w-8"><span className="sr-only">Actions</span></TableHead>
@@ -567,8 +620,10 @@ function JobRow({
   job,
   slug,
   scanConfigId,
+  dataSourceId,
   mode,
   watched,
+  highlighted,
   expanded,
   onToggle,
   onCancel,
@@ -580,10 +635,14 @@ function JobRow({
   /** Both only reach JobDetails, which links its Signals/Alerts counters out. */
   slug: string
   scanConfigId: string
+  /** Forwarded to JobDetails, whose failure box links to testing the source. */
+  dataSourceId: string
   /** The config's mode, forwarded to the run report's catalog-only line. */
   mode: ScanMode
   /** This is the run the coached demo scenario is following — at most one row. */
   watched: boolean
+  /** The run an Apply groups click just queued. */
+  highlighted: boolean
   expanded: boolean
   onToggle: () => void
   /** Omitted for a viewer, as is `onRetry`: both are editor actions. */
@@ -596,9 +655,10 @@ function JobRow({
   const duration = durationSec != null
     ? `${durationSec.toFixed(1)}s`
     : job.status === 'running' ? 'running…' : '—'
-  const rows = jobRowsScanned(job)
+  const scanned = jobScanned(job)
   const events = job.result_summary?.events_created ?? null
   const isActive = job.status === 'pending' || job.status === 'running'
+  const expandable = Boolean(job.result_summary || job.error_message)
   const failedMessage = job.status === 'failed'
     ? friendlyScanError(job.error_message).message
     : null
@@ -613,7 +673,22 @@ function JobRow({
           stays undescribed on purpose — a tab stop on a non-interactive row
           would be worse than the hint going unheard. */}
       <ScenarioCoachMark step="live-loop/watch-scan" when={watched}>
-        <TableRow>
+        {/* The whole row opens the run report, not only the 24px chevron at the
+            far edge (#247 DA-21). The chevron stays the keyboard control; a
+            click on any button in the row (Stop, Retry, the chevron itself) is
+            left to that button. */}
+        <TableRow
+          className={expandable ? 'cursor-pointer' : undefined}
+          style={highlighted ? { background: 'var(--accent-soft)' } : undefined}
+          onClick={
+            expandable
+              ? event => {
+                if ((event.target as HTMLElement).closest('button, a')) return
+                onToggle()
+              }
+              : undefined
+          }
+        >
           <TableCell className="px-4 text-body-sm" style={{ color: 'var(--fg-muted)' }}>
             {/* A queued run has no start yet; its queue time says more than a
                 dash, and it is what the scans list shows for it (DATA-23). */}
@@ -624,17 +699,25 @@ function JobRow({
           {/* Durations and counts are figures: sans with tabular digits, not
               mono (DS-17). */}
           <TableCell className={`tnum px-4 text-right text-caption ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-subtle)' }}>{duration}</TableCell>
-          {/* The header says "Rows read" for every row, but a catalog run and a
-              metrics run count different populations under different caps. Per
-              cell is the only place that distinction fits. */}
-          <TableCell className="tnum px-4 text-right text-caption" title={jobRowsReadTitle(job)}>
-            {rows == null ? '—' : rows.toLocaleString()}
+          {/* A catalog run and a metrics run count different populations
+              under different caps: the unit rides on the figure ("153 combos",
+              "4,428 rows"), the cap in the title (#247 DA-4). */}
+          <TableCell className="tnum whitespace-nowrap px-4 text-right text-caption" title={jobRowsReadTitle(job)}>
+            {formatJobScanned(scanned)}
           </TableCell>
           <TableCell className={`tnum px-4 text-right text-caption ${LOW_VALUE_COLUMN}`} style={{ color: 'var(--fg-muted)' }}>
             {events == null ? '—' : events.toLocaleString()}
           </TableCell>
           <TableCell className="px-4">
             <RunStatusPill status={runPillStatus(job.status)} title={failedMessage ?? undefined} />
+            {/* Why it failed, readable in the table rather than only in a hover
+                title or after expanding the row, as the Scans list does
+                (#247 DA-20). */}
+            {failedMessage && (
+              <span className="mt-0.5 block max-w-64 truncate text-caption" style={{ color: 'var(--danger)' }}>
+                {failedMessage}
+              </span>
+            )}
           </TableCell>
           <TableCell className="px-2">
             <div className="flex items-center justify-end gap-1 pointer-coarse:gap-2">
@@ -660,7 +743,7 @@ function JobRow({
                   <RotateCcw className="size-3" aria-hidden="true" />
                 </IconButton>
               )}
-              {(job.result_summary || job.error_message) && (
+              {expandable && (
                 <IconButton
                   variant="ghost"
                   className={RUN_CONTROL_SIZE}
@@ -689,7 +772,7 @@ function JobRow({
       {expanded && (
         <TableRow className="hover:bg-transparent">
           <TableCell colSpan={6} className="p-0">
-            <JobDetails job={job} slug={slug} scanConfigId={scanConfigId} mode={mode} />
+            <JobDetails job={job} slug={slug} scanConfigId={scanConfigId} mode={mode} dataSourceId={dataSourceId} />
           </TableCell>
         </TableRow>
       )}

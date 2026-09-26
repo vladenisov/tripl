@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useEffect, type Ref } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -700,6 +700,145 @@ describe('ScenarioCoachMark — the docked card (DEMO-1, DEMO-13 / LIVE-13)', ()
       'data-coach-side',
       'right',
     )
+  })
+
+  it('docks under the demo banner, not on its controls (#251 SH-5)', () => {
+    // The card used to sit at a fixed top-14, exactly over the banner's hide
+    // hints / dismiss / tour / Reset / Delete: the controls that put it away.
+    const banner = document.createElement('div')
+    banner.setAttribute('data-demo-banner', '')
+    document.body.appendChild(banner)
+    const box = (top: number, height: number) =>
+      ({
+        top,
+        left: 0,
+        width: 100,
+        height,
+        right: 100,
+        bottom: top + height,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      // The banner under the top bar; the row near the bottom of the screen.
+      return this === banner ? box(56, 46) : box(window.innerHeight - 60, 30)
+    })
+    try {
+      renderMark(rowMark)
+
+      const docked = document.querySelector<HTMLElement>('[data-coach-docked="true"]')
+      expect(docked).toHaveAttribute('data-coach-edge', 'top')
+      // Banner bottom (102) plus the 8px gap.
+      expect(docked?.style.top).toBe('110px')
+    } finally {
+      banner.remove()
+    }
+  })
+
+  it('docks every mark on a phone, clear of the page title (#251 DA-45)', () => {
+    stubAnchorRect(IN_VIEWPORT_RECT)
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((query: string) => ({
+        matches: query === '(max-width: 639px)',
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })),
+    )
+
+    // A plain button, not a table row: from `sm` up it gets the anchored card.
+    renderMark(
+      <ScenarioCoachMark step="live-loop/run-scan">
+        <button type="button">Run scan</button>
+      </ScenarioCoachMark>,
+    )
+
+    expect(callout()).toBeNull()
+    const docked = document.querySelector('[data-coach-docked="true"]')
+    // The anchor is in the upper half, near the title: the card takes the bottom.
+    expect(docked).toHaveAttribute('data-coach-edge', 'bottom')
+  })
+
+  it('stays a bottom sheet on a phone when the anchor is low on the screen (#251 DA-45)', () => {
+    // Docked at the top, the full-width card sat on the page title and its
+    // Overview / Configuration tabs whenever the row's Run button was low.
+    stubAnchorRect({ top: window.innerHeight - 60, left: 100, width: 120, height: 30 })
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((query: string) => ({
+        matches: query === '(max-width: 639px)',
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })),
+    )
+
+    renderMark(rowMark)
+
+    const docked = document.querySelector<HTMLElement>('[data-coach-docked="true"]')
+    expect(docked).toHaveAttribute('data-coach-edge', 'bottom')
+    expect(docked?.style.top).toBe('')
+  })
+
+  it('follows the banner when it grows or lands late (#251 SH-5)', async () => {
+    // Opening the phone pill, the strip's chunk landing and a failure line all
+    // move the banner's bottom edge without a resize or a scroll; on a hard
+    // load the banner is not there at all when the card mounts.
+    const resizeCallbacks: Array<() => void> = []
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: () => void) {
+          resizeCallbacks.push(callback)
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    let bannerHeight = 46
+    const banner = document.createElement('div')
+    banner.setAttribute('data-demo-banner', '')
+    const box = (top: number, height: number) =>
+      ({
+        top,
+        left: 0,
+        width: 100,
+        height,
+        right: 100,
+        bottom: top + height,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      return this === banner ? box(56, bannerHeight) : box(window.innerHeight - 60, 30)
+    })
+    try {
+      renderMark(rowMark)
+      const docked = () => document.querySelector<HTMLElement>('[data-coach-docked="true"]')
+      // No banner yet: just under the top bar.
+      expect(docked()?.style.top).toBe('56px')
+
+      // The banner lands: the card moves under it.
+      document.body.appendChild(banner)
+      await waitFor(() => expect(docked()?.style.top).toBe('110px'))
+
+      // It grows (the pill opens): the card follows.
+      bannerHeight = 120
+      act(() => {
+        for (const callback of resizeCallbacks) callback()
+      })
+      await waitFor(() => expect(docked()?.style.top).toBe('184px'))
+    } finally {
+      banner.remove()
+    }
   })
 
   it('collapses to its step line, so it never has to cover a tap target for good', () => {

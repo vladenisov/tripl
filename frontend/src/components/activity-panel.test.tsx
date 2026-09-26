@@ -29,7 +29,7 @@ function completedRun(id: string, scanName: string, occurredAt: string) {
     type: 'scan',
     severity: 'low',
     title: `Scan completed: ${scanName}`,
-    detail: 'no new events discovered · 512 rows scanned',
+    detail: 'no new events discovered · 512 column combinations',
     occurred_at: occurredAt,
     target_path: '/p/demo/scans',
   }

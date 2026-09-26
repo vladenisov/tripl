@@ -150,6 +150,11 @@ function renderPanel(props: HarnessProps = {}, role: Role = 'editor') {
   )
 }
 
+/** The range is one "Sent" chip now; its two inputs live in a popover (AL-19). */
+function openDates() {
+  fireEvent.click(screen.getByRole('button', { name: /^Sent filter:/ }))
+}
+
 // Loading and empty shared one branch, so a request that had not answered
 // rendered the same sentence as one that answered "nothing" — and the sentence
 // asserted the second (tripl-oxkt.10). IncidentDeliveries.tsx gets this right
@@ -160,6 +165,8 @@ describe('AlertAuditPanel states', () => {
 
     expect(screen.getByText('Loading deliveries…')).toBeInTheDocument()
     expect(screen.queryByText('No deliveries yet.')).toBeNull()
+    // Nor "0 deliveries" in the header before the first answer (AL-21).
+    expect(screen.queryByText('0 deliveries')).toBeNull()
   })
 
   it('says the request failed rather than that nothing was ever sent', () => {
@@ -249,6 +256,7 @@ describe('AlertAuditPanel date range', () => {
     const onFilters = vi.fn()
     renderPanel({ deliveries: page(2, 5), onFilters })
 
+    openDates()
     fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-08-12' } })
 
     const written = onFilters.mock.lastCall?.[0] as DeliveryFilters
@@ -263,6 +271,7 @@ describe('AlertAuditPanel date range', () => {
     const onFilters = vi.fn()
     renderPanel({ deliveries: page(2, 5), onFilters })
 
+    openDates()
     fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-08-12' } })
 
     const written = onFilters.mock.lastCall?.[0] as DeliveryFilters
@@ -274,6 +283,7 @@ describe('AlertAuditPanel date range', () => {
   it('shows the chosen day back in the input it came from', () => {
     renderPanel({ deliveries: page(2, 5) })
 
+    openDates()
     const input = screen.getByLabelText('From')
     fireEvent.change(input, { target: { value: '2026-08-12' } })
 
@@ -303,6 +313,7 @@ describe('AlertAuditPanel filters', () => {
     const onOffset = vi.fn()
     renderPanel({ deliveries: page(2, 5), initialOffset: 2, onOffset })
 
+    openDates()
     fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-08-12' } })
 
     expect(onOffset).toHaveBeenLastCalledWith(0)
@@ -343,7 +354,7 @@ describe('AlertAuditPanel viewer gating (tripl-oxkt.9)', () => {
     renderPanel({ deliveries: failedPage }, 'viewer')
 
     expect(screen.getByRole('combobox', { name: /^Status filter/ })).toBeEnabled()
-    expect(screen.getByLabelText('From')).toBeEnabled()
+    expect(screen.getByRole('button', { name: /^Sent filter:/ })).toBeEnabled()
     expect(screen.getByText('Ops')).toBeInTheDocument()
   })
 

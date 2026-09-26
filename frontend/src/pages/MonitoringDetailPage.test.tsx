@@ -1743,10 +1743,30 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     await screen.findByTestId('metrics-chart')
     expect(await screen.findByRole('heading', { name: 'Annotations' })).toBeInTheDocument()
     expect(screen.getByText(/Adding and removing them is done by an editor or owner/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Collect now|Refresh source metrics/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Collect now|Recompute/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Label')).not.toBeInTheDocument()
+  })
+
+  it('says a draft is not collected and invites a description (JR-16)', async () => {
+    installMetricDetailFetch('1h', { status: 'draft' }, { data: [] })
+    renderMetricDetail()
+
+    expect(await screen.findByText("This metric is a draft and isn't collected.")).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Add a description…' })).toHaveAttribute(
+      'href',
+      '/p/demo/metrics/metric-1/edit',
+    )
+  })
+
+  it('tells an active SQL metric with no values to compute now (JR-16)', async () => {
+    installMetricDetailFetch('1h', {}, { data: [] })
+    renderMetricDetail()
+
+    expect(
+      await screen.findByText('No values yet — compute now or wait for the next scheduled run.'),
+    ).toBeInTheDocument()
   })
 
   it('opens on 7d like every scope and keeps the 1d interval as its granularity (MON-43, tripl-4m86)', async () => {
@@ -2055,7 +2075,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     })
     renderMetricDetail()
 
-    const button = await screen.findByRole('button', { name: 'Refresh source metrics' })
+    const button = await screen.findByRole('button', { name: 'Recompute' })
     expect(button.getAttribute('title')).toMatch(
       /current warehouse data.*all dependent active metrics.*one batch/i,
     )
@@ -2068,7 +2088,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
           && init?.method === 'POST',
       )).toBe(true)
     })
-    expect(screen.getByRole('button', { name: 'Refreshing source metrics…' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Recomputing…' })).toBeDisabled()
   })
 
   it('reports how many metrics the fact batch actually refreshes', async () => {
@@ -2083,7 +2103,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     })
     renderMetricDetail()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Refresh source metrics' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Recompute' }))
 
     await waitFor(() => {
       expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining('3 metrics'))
@@ -2108,7 +2128,7 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     const { queryClient } = renderMetricDetail()
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Refresh source metrics' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Recompute' }))
 
     await waitFor(() => {
       expect(invalidateSpy).toHaveBeenCalledWith({

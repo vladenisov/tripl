@@ -188,7 +188,9 @@ describe('FactTableForm', () => {
     expect(list).toHaveTextContent('id')
     expect(list).toHaveTextContent('bigint')
     expect(list).toHaveTextContent('user_id')
-    expect(screen.getByText(/Suggested identifiers:/)).toBeInTheDocument()
+    // The suggestion is applied to the boxes, so no line repeats it (MT-20).
+    expect(screen.getByLabelText('Use user_id as an identifier column')).toBeChecked()
+    expect(screen.queryByText(/Suggested identifiers:/)).not.toBeInTheDocument()
 
     submit()
 
@@ -245,8 +247,13 @@ describe('FactTableForm', () => {
     expect(
       summary().getByText(/Row filter 1 needs both a name and a SQL condition/),
     ).toBeInTheDocument()
-    // Inline too, on the half that is missing.
-    expect(screen.getByLabelText('Row filter 1 SQL condition')).toHaveAttribute('aria-invalid', 'true')
+    // Inline too, on the half that is missing: the condition is a compact SQL
+    // editor (MT-22), which mirrors these props onto its contenteditable.
+    const conditionProps = sqlEditorProps.mock.calls
+      .map(([props]) => props)
+      .filter(props => props.ariaLabel === 'Row filter 1 SQL condition')
+      .at(-1)
+    expect(conditionProps).toMatchObject({ compact: true, ariaInvalid: true })
     expect(factTablesApi.create).not.toHaveBeenCalled()
   })
 
@@ -700,5 +707,32 @@ describe('FactTableForm delete (MET-36)', () => {
   it('is not offered on a new fact table', () => {
     renderForm()
     expect(screen.queryByRole('button', { name: 'Delete fact table' })).toBeNull()
+  })
+})
+
+describe('FactTableForm columns card (MT-19, MT-20)', () => {
+  it('fills an empty timestamp from the only timestamp column the preview found', async () => {
+    renderForm()
+    fireEvent.change(document.getElementById('fact-data-source')!, { target: { value: 'ds-1' } })
+    fireEvent.change(screen.getByLabelText('Fact table SQL'), {
+      target: { value: 'SELECT id, user_id, created_at FROM orders' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Preview columns/ }))
+
+    await waitFor(() => expect(document.getElementById('fact-timestamp')).toHaveValue('created_at'))
+    expect(screen.getByText(/Detected: created_at/)).toBeInTheDocument()
+  })
+
+  it('offers unused identifier suggestions as one click', async () => {
+    renderForm()
+    fillRequired()
+    fireEvent.click(screen.getByRole('button', { name: /Preview columns/ }))
+    const userId = await screen.findByLabelText('Use user_id as an identifier column')
+    fireEvent.click(userId)
+    expect(userId).not.toBeChecked()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use suggestions' }))
+    expect(userId).toBeChecked()
   })
 })

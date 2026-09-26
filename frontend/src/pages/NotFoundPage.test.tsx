@@ -39,7 +39,7 @@ describe('NotFoundPage exits', () => {
 
     expect(screen.getByRole('link', { name: 'Back to Demo Project' })).toHaveAttribute(
       'href',
-      '/p/demo/events',
+      '/p/demo/overview',
     )
     expect(screen.getByRole('link', { name: 'All projects' })).toHaveAttribute(
       'href',

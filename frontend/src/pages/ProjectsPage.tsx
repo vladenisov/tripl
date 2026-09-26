@@ -11,6 +11,7 @@ import { PageHeader } from '@/components/primitives/page-header'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatValueSkeleton } from '@/components/states'
+import { countRealSources } from '@/components/onboarding-utils'
 import { WorkspaceWelcome } from '@/components/workspace-welcome'
 import { DemoProvisioningDialog } from '@/demo/DemoProvisioningDialog'
 import {
@@ -78,6 +79,9 @@ export default function MainPage() {
     failingScanConfigCount,
   } = useMemo(() => summarizePortfolio(projectsQuery.data ?? []), [projectsQuery.data])
   const dataSourceCount = dataSourcesQuery.data?.length ?? 0
+  // What the getting-started checklist counts: a demo's synthetic warehouse is
+  // not a connected source (the cards' setup line reads the same steps).
+  const realSourceCount = countRealSources(dataSourcesQuery.data ?? [])
 
   // The workspace list is the one place that knows every project this browser
   // can still reach, so it clears demo state left behind by projects that are
@@ -267,7 +271,7 @@ export default function MainPage() {
             className="flex flex-col gap-3 rounded-card border p-3"
             style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
           >
-            <MiniStatStrip className="px-1">
+            <MiniStatStrip phoneGrid className="px-1">
               <MiniStat label="Projects" value={String(portfolio.projectCount)} />
               <MiniStat
                 label="Coverage"
@@ -330,8 +334,13 @@ export default function MainPage() {
               <AttentionStat
                 icon={AlertTriangle}
                 label="Failed runs"
-                value={String(projectsWithFailedScan)}
-                unit={pluralize(projectsWithFailedScan, 'project', 'projects')}
+                // "0 projects" under "Failed runs" read backwards (SH-27).
+                value={projectsWithFailedScan > 0 ? String(projectsWithFailedScan) : 'None'}
+                unit={
+                  projectsWithFailedScan > 0
+                    ? pluralize(projectsWithFailedScan, 'project', 'projects')
+                    : undefined
+                }
                 hint={
                   projectsWithFailedScan > 0
                     ? `${pluralize(
@@ -389,6 +398,8 @@ export default function MainPage() {
                   project={project}
                   canDelete={canDeleteProject}
                   isOwner={isOwner}
+                  canSetUp={canCreateProject}
+                  sourceCount={realSourceCount}
                   isDeleting={
                     settlingSlug === project.slug ||
                     (deleteMut.isPending && deleteMut.variables === project.slug)
@@ -411,7 +422,7 @@ function ProjectsPageSkeleton() {
       <Skeleton className="h-[72px] rounded-lg" />
       <div className="grid gap-3">
         {[0, 1, 2, 3].map((index) => (
-          <Skeleton key={index} className="h-64 rounded-lg" />
+          <Skeleton key={index} className="h-28 rounded-lg" />
         ))}
       </div>
     </div>

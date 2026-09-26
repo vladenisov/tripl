@@ -446,6 +446,14 @@ class DataSourceResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # What depends on this source, workspace-wide (DA-40): the scans reading it
+    # and the runs they logged — both deleted with the source. Counts, not
+    # names: a scan can sit in a project the caller does not work in. Merged in
+    # per request, never served from the list cache, so a scan created a
+    # moment ago is counted.
+    scan_count: int = 0
+    scan_run_count: int = 0
+
     model_config = {"from_attributes": True}
 
 

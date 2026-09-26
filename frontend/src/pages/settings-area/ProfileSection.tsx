@@ -1,8 +1,7 @@
 import { useAuth } from '@/components/auth-context'
-import { Chip } from '@/components/primitives/chip'
-import { Field, SCard, SHeader } from '@/components/settings/kit'
+import { InfoRow, SCard, SHeader } from '@/components/settings/kit'
+import { RoleChip } from '@/components/settings/role-chip'
 import { UserAvatar } from '@/components/ui/user-avatar'
-import { ROLE_OPTIONS } from '@/types'
 import { ComingLaterCard } from './ComingLaterCard'
 import { ReadOnlyNotice } from '@/components/states'
 
@@ -42,7 +41,6 @@ const UNBUILT = [
  */
 export default function ProfileSection() {
   const { user } = useAuth()
-  const roleLabel = ROLE_OPTIONS.find((r) => r.value === user?.role)?.label ?? user?.role ?? '—'
 
   return (
     <div>
@@ -54,27 +52,39 @@ export default function ProfileSection() {
         These details can't be changed here yet. A workspace owner sets your role.
       </ReadOnlyNotice>
 
+      {/* Read-only values in read-only rows (ST-23): editable-form Field rows
+          top-aligned each value about 6px off its label and made four facts
+          380px tall. The avatar and name head the card; the rest are InfoRows,
+          in the body font — mono is for machine identifiers. */}
       <SCard title="Your details">
-        <Field label="Name" hint="Set when the account was created." htmlFor={false}>
-          <div className="flex items-center gap-3">
-            {/* The shared avatar on --avatar-bg, the colour the sidebar shows for
-                the same account. A hand-picked lighter blue here fell below AA
-                for the white initials and read as a second identity (WS-38). */}
-            <UserAvatar name={user?.name || user?.email} size={40} />
-            <span className="text-body">{user?.name || '—'}</span>
+        <div
+          className="flex items-center gap-3 px-4 py-[13px]"
+          style={{ borderBottom: '1px solid var(--border-subtle)' }}
+        >
+          {/* The shared avatar on --avatar-bg, the colour the sidebar shows for
+              the same account. A hand-picked lighter blue here fell below AA
+              for the white initials and read as a second identity (WS-38). */}
+          <UserAvatar name={user?.name || user?.email} size={40} />
+          <div className="min-w-0">
+            <div className="truncate text-body font-medium">{user?.name || '—'}</div>
+            <div className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+              Set when the account was created.
+            </div>
           </div>
-        </Field>
-        <Field label="Email" hint="Used for sign-in and notifications." htmlFor={false}>
-          <span className="mono text-body">{user?.email ?? '—'}</span>
-        </Field>
-        <Field label="Role" hint="Set by a workspace owner." htmlFor={false}>
-          <Chip tone="accent" size="md">
-            {roleLabel}
-          </Chip>
-        </Field>
-        <Field label="Timezone" hint="Read from this browser; timestamps follow it." last htmlFor={false}>
-          <span className="mono text-body">{browserTimezone()}</span>
-        </Field>
+        </div>
+        <InfoRow label="Email" value={user?.email ?? '—'} mono={false} />
+        <InfoRow label="Role" value={user?.role ? <RoleChip role={user.role} /> : '—'} mono={false} />
+        <InfoRow
+          label="Timezone"
+          value={
+            <>
+              <span>{browserTimezone()}</span>
+              <span style={{ color: 'var(--fg-subtle)' }}> · from this browser</span>
+            </>
+          }
+          mono={false}
+          last
+        />
       </SCard>
 
       <ComingLaterCard items={UNBUILT} />

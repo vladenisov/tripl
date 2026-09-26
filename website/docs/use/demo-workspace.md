@@ -138,15 +138,21 @@ synthetic source:
 
 The demo offers two guides, and they do different jobs.
 
-- **The product tour** (*Take the tour* on the welcome panel) walks the surfaces:
+- **The product tour** (the **Quick overview** stepper in the *Tour &amp;
+  chapters* dialog — *Browse chapters* on the welcome panel) walks the surfaces:
   Events, Scans, Overview, Metrics and fact tables, Alert rules, Anomalies,
   Coverage, Reconciliation, Branches and the alert preview, and ends by opening
   *Search by meaning* (the command palette) for you. Opening a step's surface
   advances the tour and it remembers where you were, so it can be followed across
-  navigations instead of restarting every time. **All surfaces** at the bottom
+  navigations instead of restarting every time. **Open &lt;surface&gt;** leaves
+  the tour docked as a small card on that page — *Tour · step N of 11*, the
+  page's name, **Next: &lt;next page&gt;**, **All steps** to reopen the dialog,
+  and **Close the tour**, which keeps your place. The card hides while a
+  chapter is running. **All surfaces** at the bottom
   of the tour expands a direct index of every surface and metric building block.
-- **The coached chapters** (*Coached chapters* on the welcome panel, or *Try it
-  hands-on* from the tour) each make one thing happen end to end. The first,
+- **The coached chapters** (**Start: &lt;chapter&gt;** on the welcome panel, or
+  **Hands-on chapters** at the top of the *Tour &amp; chapters* dialog) each make
+  one thing happen end to end. The first,
   **Run the live loop**, is the core:
 
   1. **Run a scan** — from any scan's *Run now*.
@@ -163,7 +169,8 @@ The demo offers two guides, and they do different jobs.
   the local demo sink), and **Explore the rest**.
 
   A strip joined to the bottom of the demo banner — one bar, not two cards — tracks which chapter and step you are on and
-  links to where the next action lives; a callout points at — and visibly
+  links to where the next action lives (the link hides when you are already on
+  that page); a callout points at — and visibly
   rings — the exact button or input that performs it. Callouts use an opaque
   raised surface anchored beside the control they ring, and flip to stay inside
   the viewport. A control inside a data table has no free side — every direction
@@ -173,7 +180,8 @@ The demo offers two guides, and they do different jobs.
   window; full width on a phone), and
   the rows stay readable. A docked card collapses to its step line with its
   chevron. The ring is clipped to what can be seen of the control, so it never
-  floats over the page when the control scrolls out of a table. Screen readers
+  floats over the page when the control scrolls out of a table. On a phone the
+  coach card always docks at the bottom of the screen. Screen readers
   hear the step's instruction as the control's description. **Hide hints** — on
   the callout, or in the strip — quiets the callouts for the rest of the browser
   session on that project; **Show hints** in the strip brings them back. Both
@@ -188,18 +196,21 @@ The demo offers two guides, and they do different jobs.
   realtime update is missed, so completing the step never requires a reload.
   Progress is remembered per project (in your browser), so reloading mid-scan
   resumes the watch, and two tabs on the same demo keep each other's progress.
+  A viewer, who cannot run scans or edit, sees "This step needs edit access…"
+  in place of the action.
   On your first visit to the Overview the welcome panel stands in for the strip;
   the strip appears there once you start a chapter or put the panel away.
 
-  Dismiss it at any point — including after finishing. The welcome panel that
-  carries the tour and the chapter picker opens **collapsed**, as a single row
-  with a **Show me around** expander, so the Overview leads with the product
-  rather than with onboarding; expanding it is not remembered between visits.
-  Dismissing the panel outright (the **✕**) hides it for that project and
-  offers **Undo** for a few seconds. After that, the demo bar's **Tour &amp;
-  chapters** button — present on every demo surface, for everyone — opens the
-  tour, and the tour offers **Show the welcome panel on Overview** while the panel
-  is hidden.
+  Dismiss it at any point — including after finishing. The welcome panel is a
+  single row, so the Overview leads with the product rather than with
+  onboarding: **Start: &lt;chapter&gt;** (or **Continue: &lt;chapter&gt;** once you
+  have begun), **Browse chapters**, which opens the *Tour &amp; chapters* dialog
+  — **Hands-on chapters** first, then the **Quick overview** stepper — and
+  **Create a real project**. Dismissing the panel outright (the **✕**) hides it
+  for that project and offers **Undo** for a few seconds. After that, the demo
+  bar's **Tour &amp; chapters** button — present on every demo surface, for
+  everyone — opens the same dialog, and the tour offers **Show the welcome panel
+  on Overview** while the panel is hidden.
 
 ## Lifecycle
 

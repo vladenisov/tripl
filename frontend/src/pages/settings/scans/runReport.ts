@@ -1,7 +1,7 @@
 import type { ScanJob, ScanJobResultSummary } from '@/types'
 import type { ScanMode } from './scanMode'
 import { countOf } from '@/lib/plural'
-import { jobMetricPoints, jobRowsScanned } from './scanUtils'
+import { jobMetricPoints, jobScanned } from './scanUtils'
 
 /**
  * Which population a run's "Rows read" figure counts.
@@ -15,13 +15,15 @@ import { jobMetricPoints, jobRowsScanned } from './scanUtils'
 type RunRowsKind = 'catalog' | 'metrics'
 
 const ROWS_READ_TITLE: Record<RunRowsKind, string> = {
-  catalog: 'Warehouse rows the catalog analyzer read this run (capped by the row cap).',
+  // The catalog analyzer groups in the warehouse (GROUP BY ALL), so what it
+  // reads back are distinct column combinations, not warehouse rows (#247 DA-4).
+  catalog: 'Distinct column combinations the catalog analyzer read back this run, grouped in the warehouse (capped by the row cap).',
   metrics: 'Warehouse rows read across every metrics chunk (capped by the metrics row cap).',
 }
 
 /**
- * The counter `jobRowsScanned` actually returned for this run, or null when the
- * run reported neither. The precedence MUST match `jobRowsScanned`, or a cell
+ * The counter `jobScanned` actually returned for this run, or null when the
+ * run reported neither. The precedence MUST match `jobScanned`, or a cell
  * would be labelled as the population it is not.
  */
 function jobRowsKind(job: ScanJob | null): RunRowsKind | null {
@@ -131,10 +133,15 @@ export function buildRunReport(
 
   const lines: RunReportLine[] = []
 
-  const rows = jobRowsScanned(job)
-  if (rows != null) {
+  const scanned = jobScanned(job)
+  if (scanned) {
     const chunks = chunksRead(summary)
-    const rowsText = countOf(rows, 'warehouse row', 'warehouse rows')
+    // A catalog run's figure is grouped combinations, not warehouse rows: the
+    // same data read "28,160 rows" in the dry run and "153 warehouse rows" in
+    // the run (#247 DA-4).
+    const rowsText = scanned.unit === 'rows'
+      ? countOf(scanned.value, 'warehouse row', 'warehouse rows')
+      : `${countOf(scanned.value, 'distinct column combination', 'distinct column combinations')} (grouped in the warehouse)`
     lines.push({
       id: 'rows-read',
       text: chunks == null

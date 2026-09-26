@@ -35,7 +35,9 @@ export default function MetricsPage({ tab = 'catalog' }: { tab?: MetricsTab }) {
       <Button asChild size="sm">
         <Link to={`/p/${slug}/metrics/fact-tables/new`} className="no-underline">
           <Plus className="h-3.5 w-3.5" />
-          New fact table
+          {/* "New table" on a phone, so the button stays beside the title
+              as "New metric" does instead of wrapping under it (MT-37). */}
+          New <span className="max-sm:hidden">fact </span>table
         </Link>
       </Button>
     ) : slug ? (

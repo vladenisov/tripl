@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,6 +16,8 @@ from tripl import cache
 from tripl.core.adapters.errors import WarehouseCapabilityError
 from tripl.crypto import encrypt_value
 from tripl.models.data_source import DataSource, DBType, TestStatus
+from tripl.models.scan_config import ScanConfig
+from tripl.models.scan_job import ScanJob
 from tripl.schemas.data_source import (
     SSLKEY_STORAGE_KEY,
     ConnectionSettingsError,
@@ -35,7 +37,9 @@ from tripl.services.search_service import reindex_project_branch
 async def list_data_sources(session: AsyncSession) -> list[DataSourceResponse]:
     cached = await cache.get_json(cache.key_data_sources_list())
     if cached is not None:
-        return [DataSourceResponse.model_validate(item) for item in cached]
+        return await _with_usage(
+            session, [DataSourceResponse.model_validate(item) for item in cached]
+        )
 
     result = await session.execute(
         select(DataSource).order_by(DataSource.created_at.desc()).limit(1000)
@@ -47,12 +51,64 @@ async def list_data_sources(session: AsyncSession) -> list[DataSourceResponse]:
         [r.model_dump(mode="json") for r in responses],
         ttl_seconds=300,
     )
-    return responses
+    return await _with_usage(session, responses)
 
 
 async def get_data_source(session: AsyncSession, ds_id: uuid.UUID) -> DataSourceResponse:
     ds = await _fetch_data_source(session, ds_id)
-    return _to_response(ds)
+    return (await _with_usage(session, [_to_response(ds)]))[0]
+
+
+async def _with_usage(
+    session: AsyncSession, sources: list[DataSourceResponse]
+) -> list[DataSourceResponse]:
+    """Merge each source's scan and scan-run counts in (DA-40).
+
+    Every path that hands a source back goes through here, not only list and
+    get: the page writes the create / update / test responses straight into its
+    list cache, and ``DataSourceResponse`` defaults both counts to 0, so a bare
+    ``_to_response`` there would tell the delete confirm that a source with
+    scans has none.
+
+    Two grouped queries over the listed ids, run on every read rather than
+    cached with the list: scans are created and deleted in projects, and no
+    project path invalidates the data-source cache.
+    """
+    if not sources:
+        return sources
+    ids = [source.id for source in sources]
+    scan_counts = dict(
+        (
+            await session.execute(
+                select(ScanConfig.data_source_id, func.count(ScanConfig.id))
+                .where(ScanConfig.data_source_id.in_(ids))
+                .group_by(ScanConfig.data_source_id)
+            )
+        )
+        .tuples()
+        .all()
+    )
+    run_counts = dict(
+        (
+            await session.execute(
+                select(ScanConfig.data_source_id, func.count(ScanJob.id))
+                .join(ScanJob, ScanJob.scan_config_id == ScanConfig.id)
+                .where(ScanConfig.data_source_id.in_(ids))
+                .group_by(ScanConfig.data_source_id)
+            )
+        )
+        .tuples()
+        .all()
+    )
+    return [
+        source.model_copy(
+            update={
+                "scan_count": int(scan_counts.get(source.id, 0) or 0),
+                "scan_run_count": int(run_counts.get(source.id, 0) or 0),
+            }
+        )
+        for source in sources
+    ]
 
 
 # Fields on a synthetic source that, if edited, would turn it into (or point it
@@ -152,7 +208,7 @@ async def create_data_source(session: AsyncSession, data: DataSourceCreate) -> D
     await session.commit()
     await session.refresh(ds)
     await cache.delete_prefix(cache.prefix_data_sources())
-    return _to_response(ds)
+    return (await _with_usage(session, [_to_response(ds)]))[0]
 
 
 async def update_data_source(
@@ -204,7 +260,7 @@ async def update_data_source(
         raise
     await session.refresh(ds)
     await cache.delete_prefix(cache.prefix_data_sources())
-    return _to_response(ds)
+    return (await _with_usage(session, [_to_response(ds)]))[0]
 
 
 async def _name_taken_by_other(session: AsyncSession, name: str, ds_id: uuid.UUID) -> bool:
@@ -447,7 +503,7 @@ async def test_data_source_connection(
         success=success,
         message=message,
         tested_at=tested_at,
-        data_source=_to_response(ds),
+        data_source=(await _with_usage(session, [_to_response(ds)]))[0],
     )
 
 

@@ -71,6 +71,13 @@ function isUnrendered(anchor: HTMLElement): boolean {
   return typeof anchor.checkVisibility === 'function' && !anchor.checkVisibility()
 }
 
+/** Below `sm`: a phone, where an anchored card has no side that is not page. */
+const PHONE_QUERY = '(max-width: 639px)'
+
+function isPhone(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia(PHONE_QUERY).matches
+}
+
 function placementOf(anchor: HTMLElement | null): Placement {
   if (!anchor) return 'pending'
   if (isUnrendered(anchor)) return 'hidden'
@@ -78,7 +85,33 @@ function placementOf(anchor: HTMLElement | null): Placement {
   // space that is not table: every side the card can open on lands on the
   // rows it is explaining, and Radix only flips to avoid the VIEWPORT edge,
   // not the content underneath (tripl-jfm3.62). Such marks dock the card.
-  return anchor.closest('table') ? 'docked' : 'anchored'
+  // So does every mark on a phone (#251 DA-45): at 390px a 16rem card beside
+  // a row's Run button covered the page title and its tabs, which could not
+  // be used until the hints were hidden. Docked, it is a full-width bottom
+  // sheet there, and it collapses.
+  return anchor.closest('table') || isPhone() ? 'docked' : 'anchored'
+}
+
+/** The 44px top bar plus a gap: `top-14`. */
+const TOP_BAR_CLEARANCE_PX = 56
+const BELOW_BANNER_GAP_PX = 8
+
+/**
+ * Where a card docked at the top starts (#251 SH-5). `top-14` cleared only
+ * the top bar, so at 1440 the card landed exactly on the demo banner's own
+ * controls — hide hints, dismiss, the tour, Reset, Delete — hiding the very
+ * buttons that would put it away. While the banner is on screen the card
+ * starts under it; scrolled away, it goes back up to the top bar. Never past
+ * the upper third, where it would reach down into the half it is keeping
+ * clear.
+ */
+function dockTop(): number {
+  const banner = document.querySelector('[data-demo-banner]')
+  if (!banner) return TOP_BAR_CLEARANCE_PX
+  const below = banner.getBoundingClientRect().bottom + BELOW_BANNER_GAP_PX
+  return Math.round(
+    Math.max(TOP_BAR_CLEARANCE_PX, Math.min(below, window.innerHeight / 3)),
+  )
 }
 
 /** Which half of the viewport the anchor's centre is in — the docked card takes the other. */
@@ -368,7 +401,8 @@ export function ScenarioCoachMark({
  * as a <div> directly inside <tbody>. And it must not become the thing it
  * hides (DEMO-13 / LIVE-13):
  * - it takes the half of the viewport the anchor is NOT in, so a row action
- *   near the bottom gets its card at the top instead of under it;
+ *   near the bottom gets its card at the top instead of under it — except on
+ *   a phone, where it is always a bottom sheet (#251 DA-45);
  * - below `sm` it spans the width with a gutter rather than covering ~70% of
  *   a phone screen from the right edge;
  * - it collapses to a one-line tab, so it never has to block taps for good —
@@ -377,12 +411,15 @@ export function ScenarioCoachMark({
  * bottom-[68px] clears the tweaks FAB (fixed bottom-1, h-8 → top edge at 36px;
  * tripl-tvqk tucked it into the activity rail's footer strip) rather than
  * fighting it on z-index, which would also put the coach over modal dialogs
- * (tripl-gr0x). top-14 clears the 44px top bar.
+ * (tripl-gr0x). top-14 clears the 44px top bar, and the demo banner below it
+ * while that is on screen (see `dockTop`).
  */
 function DockedCoachCard({ anchor, children }: { anchor: HTMLElement; children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false)
   const [half, setHalf] = useState<'upper' | 'lower'>(() => anchorHalf(anchor))
   const [column, setColumn] = useState<'left' | 'right'>(() => anchorColumn(anchor))
+  const [top, setTop] = useState(dockTop)
+  const [phone, setPhone] = useState(isPhone)
 
   useEffect(() => {
     let frame = 0
@@ -391,6 +428,8 @@ function DockedCoachCard({ anchor, children }: { anchor: HTMLElement; children: 
       frame = requestAnimationFrame(() => {
         setHalf(anchorHalf(anchor))
         setColumn(anchorColumn(anchor))
+        setTop(dockTop())
+        setPhone(isPhone())
       })
     }
     window.addEventListener('resize', refresh)
@@ -403,7 +442,43 @@ function DockedCoachCard({ anchor, children }: { anchor: HTMLElement; children: 
     }
   }, [anchor])
 
-  const edge = half === 'lower' ? 'top-14' : 'bottom-[68px]'
+  // The banner's bottom edge moves with no resize or scroll to hear it by
+  // (#251 SH-5): the phone pill opens, the scenario strip's chunk lands in the
+  // row, a failure line appears under it — and on a hard load the banner is a
+  // placeholder first, then a different element. So the banner is watched for
+  // its size, and the document for the banner being swapped in or out.
+  useEffect(() => {
+    let frame = 0
+    const refreshTop = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => setTop(dockTop()))
+    }
+    const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(refreshTop)
+    // The banner there at mount is already measured by the initial state.
+    let observed: Element | null = document.querySelector('[data-demo-banner]')
+    if (observed) resize?.observe(observed)
+    const track = () => {
+      const banner = document.querySelector('[data-demo-banner]')
+      if (banner === observed) return
+      if (observed) resize?.unobserve(observed)
+      observed = banner
+      if (banner) resize?.observe(banner)
+      refreshTop()
+    }
+    const swaps = typeof MutationObserver === 'undefined' ? null : new MutationObserver(track)
+    swaps?.observe(document.body, { childList: true, subtree: true })
+    return () => {
+      cancelAnimationFrame(frame)
+      resize?.disconnect()
+      swaps?.disconnect()
+    }
+  }, [])
+
+  // On a phone the card is always a bottom sheet (#251 DA-45): docked at the
+  // top it sat on the page title and its tabs whenever the anchor was low on
+  // the screen. A wider screen still takes the half the anchor is not in.
+  const atTop = half === 'lower' && !phone
+  const edge = atTop ? 'top-14' : 'bottom-[68px]'
   // From `sm` up the card is 16rem wide and sits on the anchor's side; below
   // it the card spans the width, so the side does not matter.
   const side = column === 'left' ? 'sm:left-4 sm:right-auto' : 'sm:left-auto sm:right-4'
@@ -413,11 +488,15 @@ function DockedCoachCard({ anchor, children }: { anchor: HTMLElement; children: 
       role="note"
       aria-label="Demo hint"
       data-coach-docked="true"
-      data-coach-edge={half === 'lower' ? 'top' : 'bottom'}
+      data-coach-edge={atTop ? 'top' : 'bottom'}
       data-coach-side={column}
       data-collapsed={collapsed ? 'true' : undefined}
       className={`group/coach fixed ${edge} left-3 right-3 z-50 rounded-lg border p-3 text-left shadow-lg motion-reduce:animate-none ${side} sm:w-64`}
-      style={{ background: 'var(--bg-elevated)', borderColor: 'var(--accent)' }}
+      style={{
+        background: 'var(--bg-elevated)',
+        borderColor: 'var(--accent)',
+        ...(atTop ? { top } : {}),
+      }}
     >
       <button
         type="button"
@@ -429,7 +508,7 @@ function DockedCoachCard({ anchor, children }: { anchor: HTMLElement; children: 
       >
         {/* The chevron points the way the card will move: a bottom card
             collapses downwards and expands upwards, a top card the reverse. */}
-        {collapsed === (half === 'lower') ? (
+        {collapsed === atTop ? (
           <ChevronDown className="h-3.5 w-3.5" />
         ) : (
           <ChevronUp className="h-3.5 w-3.5" />

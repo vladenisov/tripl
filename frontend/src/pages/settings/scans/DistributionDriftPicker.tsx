@@ -3,6 +3,8 @@ import { Checkbox } from '@/components/ui/checkbox'
 import type { ScanConfigPreview } from '@/types'
 import { isJsonPreviewType } from './scanUtils'
 
+const RESERVED_TITLE = 'Used by this scan as its event type, time, app version or platform column.'
+
 export function DistributionDriftPicker({
   columns,
   selectedFields,
@@ -29,8 +31,11 @@ export function DistributionDriftPicker({
     <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
       <div>
         <div className="text-body font-medium">Distribution drift</div>
+        {/* Plain words first; "PSI" and "scalar" explained nothing to the
+            reader choosing columns (#247 DA-16). */}
         <p className="text-body-sm text-muted-foreground">
-          Selected scalar fields are compared against their rolling baseline with PSI.
+          tripl watches the mix of values in these columns (e.g. the share of iOS vs Android) and flags
+          when it shifts from the usual pattern (population stability index).
         </p>
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
@@ -50,13 +55,19 @@ export function DistributionDriftPicker({
                 }}
               />
               <span className="min-w-0 flex-1 truncate font-mono text-body-sm">{column.name}</span>
-              {disabled && <Chip variant="outline" size="xs">reserved</Chip>}
+              {disabled && (
+                <Chip variant="outline" size="xs" title={RESERVED_TITLE}>
+                  reserved
+                </Chip>
+              )}
             </label>
           )
         })}
       </div>
       {availableColumns.length === 0 && (
-        <p className="text-body-sm text-muted-foreground">No scalar columns found in preview.</p>
+        <p className="text-body-sm text-muted-foreground">
+          The preview has no plain-value columns to watch (JSON columns cannot be).
+        </p>
       )}
     </div>
   )

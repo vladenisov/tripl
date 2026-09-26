@@ -5,6 +5,9 @@ import { Label } from '@/components/ui/label'
 import type { ScanConfigPreview } from '@/types'
 import { isJsonPreviewType } from './scanUtils'
 
+/** Why a column cannot be picked: the scan already uses it (#247 DA-16). */
+const RESERVED_TITLE = 'Used by this scan as its event type, time, app version or platform column.'
+
 export function MetricBreakdownPicker({
   columns,
   selectedColumns,
@@ -40,7 +43,8 @@ export function MetricBreakdownPicker({
         <div>
           <div className="text-body font-medium">Metric breakdowns</div>
           <p className="text-body-sm text-muted-foreground">
-            Each selected scalar column is collected as a separate database-level grouping.
+            Each selected column gets its own series per value (e.g. one per platform), grouped in
+            the warehouse.
           </p>
         </div>
         <div className="grid w-40 gap-1">
@@ -85,13 +89,19 @@ export function MetricBreakdownPicker({
                 }}
               />
               <span className="min-w-0 flex-1 truncate font-mono text-body-sm">{column.name}</span>
-              {disabled && <Chip variant="outline" size="xs">reserved</Chip>}
+              {disabled && (
+                <Chip variant="outline" size="xs" title={RESERVED_TITLE}>
+                  reserved
+                </Chip>
+              )}
             </label>
           )
         })}
       </div>
       {availableColumns.length === 0 && (
-        <p className="text-body-sm text-muted-foreground">No scalar columns found in preview.</p>
+        <p className="text-body-sm text-muted-foreground">
+          The preview has no plain-value columns to break down by (JSON columns cannot be).
+        </p>
       )}
     </div>
   )

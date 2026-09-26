@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { toast } from 'sonner'
 
 import { ApiError } from '@/api/client'
 import { trackerConfigApi } from '@/api/trackerConfig'
@@ -51,12 +52,12 @@ function authValue(role: Role): AuthContextValue {
   }
 }
 
-function renderDialog(role: Role = 'owner') {
+function renderDialog(role: Role = 'owner', onOpenChange: (open: boolean) => void = () => {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={authValue(role)}>
-        <TrackerConfigDialog slug="demo" open onOpenChange={() => {}} />
+        <TrackerConfigDialog slug="demo" open onOpenChange={onOpenChange} />
       </AuthContext.Provider>
     </QueryClientProvider>,
   )
@@ -93,8 +94,10 @@ describe('TrackerConfigDialog', () => {
   it('saves a change via PATCH and omits api_token when the token field is blank', async () => {
     vi.mocked(trackerConfigApi.get).mockResolvedValue(makeConfig())
     vi.mocked(trackerConfigApi.update).mockResolvedValue(makeConfig({ project_key: 'PAY' }))
+    const toastSuccess = vi.spyOn(toast, 'success')
+    const onOpenChange = vi.fn()
 
-    renderDialog('owner')
+    renderDialog('owner', onOpenChange)
 
     const projectKey = await screen.findByLabelText('Project key')
     fireEvent.change(projectKey, { target: { value: 'PAY' } })
@@ -108,7 +111,11 @@ describe('TrackerConfigDialog', () => {
     // The blank token field must not be part of the payload.
     const [, payload] = at(vi.mocked(trackerConfigApi.update).mock.calls, 0)
     expect(payload).not.toHaveProperty('api_token')
-    expect(await screen.findByText('Tracker configuration saved.')).toBeInTheDocument()
+    // A save closes the dialog and says so in a toast, instead of a green line
+    // over a still-offered Cancel (AU-38).
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
+    expect(toastSuccess).toHaveBeenCalledWith('Jira tracker connected')
+    toastSuccess.mockRestore()
   })
 
   it('includes api_token in the PATCH only when the user types one', async () => {

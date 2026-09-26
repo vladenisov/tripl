@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Command } from 'cmdk'
-import { ChevronLeft, Folder, LayoutDashboard, LogOut, Search } from 'lucide-react'
+import { ChevronLeft, Folder, LayoutDashboard, LogOut, Search, SlidersHorizontal } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Kbd } from '@/components/primitives/kbd'
 import { SETTINGS_CONTENT_ID } from './landmarks'
 import { visibleGroupsAll } from './nav'
+import { projectHomePath } from '@/lib/navigation'
 import type { Project } from '@/types'
 
 type PaletteIcon = React.ComponentType<{ className?: string; style?: React.CSSProperties }>
@@ -63,15 +64,20 @@ function matchesQuery(query: string, row: PaletteRow): boolean {
 export function SettingsCommandPalette({
   activePath,
   backHref,
+  backLabel = 'Back to project',
   isOwner,
   projects,
   onLeave,
+  onSwitchProject,
   onSignOut,
 }: {
   /** Current section path (e.g. 'project/general'), marked as the current row. */
   activePath: string
   /** Where "Back to project" returns to; '/workspace' when nothing is bound. */
   backHref: string
+  /** The rail's words for the same link ("Back to Windy iOS"), so both name
+   *  where it really goes (ST-4). */
+  backLabel?: string
   isOwner: boolean
   projects: readonly Pick<Project, 'name' | 'slug'>[]
   /** Guarded navigation. `settingsPath` is null for a destination outside /settings. */
@@ -79,6 +85,9 @@ export function SettingsCommandPalette({
    *  layout's blocker asks about the URL itself, so nothing here has to
    *  classify it (tripl-l33u.14). */
   onLeave: (href: string) => void
+  /** Rebind the Project sections to this project without leaving settings
+   *  (ST-6). Omitted, the palette offers no such rows. */
+  onSwitchProject?: (slug: string) => void
   onSignOut: () => void
 }) {
   const [open, setOpenState] = useState(false)
@@ -155,7 +164,7 @@ export function SettingsCommandPalette({
       : [
           {
             value: `nav:${backHref}`,
-            label: 'Back to project',
+            label: backLabel,
             hint: backHref,
             icon: ChevronLeft,
             onSelect: () => run(() => onLeave(backHref)),
@@ -193,8 +202,21 @@ export function SettingsCommandPalette({
     label: project.name,
     hint: project.slug,
     icon: Folder,
-    onSelect: () => run(() => onLeave(`/p/${project.slug}/events`)),
+    // The project's front door, as "Back to project" uses (#250 JR-1).
+    onSelect: () => run(() => onLeave(projectHomePath(project.slug))),
   }))
+
+  // The same projects as places to point the Project settings at, staying in
+  // the area: the rows above leave it for the project's app (ST-6).
+  const projectSettingsRows: PaletteRow[] = onSwitchProject
+    ? projects.map(project => ({
+        value: `project-settings:${project.slug}`,
+        label: `Project settings for ${project.name}`,
+        hint: project.slug,
+        icon: SlidersHorizontal,
+        onSelect: () => run(() => onSwitchProject(project.slug)),
+      }))
+    : []
 
   const accountRows: PaletteRow[] = [
     {
@@ -213,6 +235,7 @@ export function SettingsCommandPalette({
     { heading: 'Navigate', rows: leaveRows },
     ...sectionGroups,
     { heading: 'Projects', rows: projectRows },
+    { heading: 'Switch project', rows: projectSettingsRows },
     { heading: 'Account', rows: accountRows },
   ]
     .map(group => ({

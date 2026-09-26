@@ -1,4 +1,5 @@
-import type { AlertInboxStatus, MetricScopeType } from '@/types'
+import { ALERT_INBOX_STATUSES, alertInboxStatusLabel } from '@/lib/alertStatus'
+import type { AlertInboxStatus, AlertInboxStatusCounts, MetricScopeType } from '@/types'
 
 /**
  * How far back the inbox reads, in days.
@@ -13,6 +14,15 @@ import type { AlertInboxStatus, MetricScopeType } from '@/types'
  * shorter on a loud project, which is what `window_truncated_at` reports.
  */
 export const INBOX_LOOKBACK_DAYS = 30
+
+/**
+ * The status the inbox opens on when the URL names none (AL-14): the triage
+ * queue, not every incident in the window.
+ */
+export const INBOX_DEFAULT_STATUS: AlertInboxStatus = 'open'
+
+/** `?status=` value that asks for every status, since no key now means Open. */
+export const INBOX_ALL_STATUS_PARAM = 'all'
 
 /** Direction as the inbox spells it. Mirrors `AnomalyDirection`. */
 export type InboxDirection = 'spike' | 'drop'
@@ -205,4 +215,18 @@ export function earliestReachableDay(now: Date): string {
   const month = String(at.getMonth() + 1).padStart(2, '0')
   const day = String(at.getDate()).padStart(2, '0')
   return `${at.getFullYear()}-${month}-${day}`
+}
+
+/**
+ * The status filter's options, each carrying its incident count once the
+ * server has sent one ("Open · 3"), so the reader sees what a status holds
+ * before picking it (AL-14). Without counts the labels are the bare names.
+ */
+export function inboxStatusOptions(
+  counts?: AlertInboxStatusCounts | null,
+): { value: AlertInboxStatus; label: string }[] {
+  return ALERT_INBOX_STATUSES.map(status => ({
+    value: status,
+    label: counts ? `${alertInboxStatusLabel(status)} · ${counts[status] ?? 0}` : alertInboxStatusLabel(status),
+  }))
 }

@@ -655,10 +655,39 @@ describe('ScanFormSections — batch 4', () => {
 
     expect(rowCap).toHaveAttribute('aria-invalid', 'true')
     expect(rowCap).toHaveAccessibleDescription(/whole number of 1 or more/)
-    const save = screen.getByRole('button', { name: 'Save' })
+    const save = screen.getByRole('button', { name: 'Save changes' })
     expect(save).toBeDisabled()
     // Visible beside Save, not in a `title` a disabled button never shows (#237 DA-9).
     expect(save).toHaveAccessibleDescription('Fix Row cap per run.')
     expect(screen.getByText('Fix Row cap per run.')).toBeVisible()
+  })
+
+  it('opens Limits and focuses it when a failed run links to #scan-limits (F15)', async () => {
+    setupFetch()
+    window.location.hash = '#scan-limits'
+    try {
+      renderConfigurationTab({
+        id: 'sc-1',
+        data_source_id: 'ds-1',
+        name: 'Nightly',
+        base_query: 'SELECT * FROM analytics.events',
+        event_type_column: 'event_name',
+        time_column: 'event_ts',
+        interval: '1h',
+        cardinality_threshold: 100,
+      } as unknown as ScanConfig)
+
+      const toggle = await screen.findByRole('button', { name: /Limits/ })
+      // No custom limit is saved, so only the link opens the section.
+      expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      expect(toggle).toHaveFocus()
+      expect(toggle.closest('section')).toHaveAttribute('id', 'scan-limits')
+      // No auth here, so the tab is read-only: the toggle stays usable (a
+      // viewer opens a section to read it), the fields behind it do not.
+      expect(toggle).toBeEnabled()
+      expect(document.getElementById('scan-row-limit')).toBeDisabled()
+    } finally {
+      window.location.hash = ''
+    }
   })
 })

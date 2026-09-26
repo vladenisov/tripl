@@ -167,3 +167,36 @@ describe('SqlEditor', () => {
     expect(body).toMatch(/flex-shrink:\s*1/)
   })
 })
+
+describe('SqlEditor compact mode and inline error (MT-14, MT-8)', () => {
+  it('drops Format and the table browser for a one-line fragment', () => {
+    render(
+      <SqlEditor
+        value="amount > 0"
+        onChange={vi.fn()}
+        compact
+        tables={[{ name: 'orders', columns: [{ name: 'amount', data_type: 'Float64' }] }]}
+        ariaLabel="Filter 1 SQL"
+      />,
+    )
+
+    expect(screen.getByLabelText('Filter 1 SQL')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Format' })).toBeNull()
+    expect(screen.queryByText(/Tables/)).toBeNull()
+  })
+
+  it('renders the error right under the editor, before Format', () => {
+    render(
+      <SqlEditor
+        value=""
+        onChange={vi.fn()}
+        ariaLabel="Metric SQL"
+        error={<p>The metric SQL query is required.</p>}
+      />,
+    )
+
+    const error = screen.getByText('The metric SQL query is required.')
+    const format = screen.getByRole('button', { name: 'Format' })
+    expect(error.compareDocumentPosition(format) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -6,7 +6,7 @@ import type { DataSource, FactTableListItem, FactTableListResponse } from '@/typ
 import { FactTablesList } from './FactTablesList'
 
 vi.mock('@/api/factTables', () => ({
-  factTablesApi: { list: vi.fn() },
+  factTablesApi: { list: vi.fn(), remove: vi.fn() },
 }))
 vi.mock('@/api/dataSources', () => ({
   dataSourcesApi: { list: vi.fn() },
@@ -26,6 +26,9 @@ function makeItem(overrides: Partial<FactTableListItem>): FactTableListItem {
     order: 0,
     data_source_id: 'ds-1',
     timestamp_column: 'created_at',
+    metric_count: 0,
+    column_count: 0,
+    identifier_count: 0,
     created_at: '2026-06-01T00:00:00Z',
     updated_at: '2026-06-20T00:00:00Z',
     ...overrides,
@@ -45,6 +48,7 @@ function renderList() {
       <MemoryRouter initialEntries={['/p/demo/metrics/fact-tables']}>
         <Routes>
           <Route path="/p/:slug/metrics/fact-tables" element={<FactTablesListHarness />} />
+          <Route path="/p/:slug/metrics/fact-tables/:id/edit" element={<div>fact table editor</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -190,5 +194,57 @@ describe('FactTablesList data source column (MET-37)', () => {
     ] as unknown as DataSource[])
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(await within(row).findByText('Warehouse')).toBeInTheDocument()
+  })
+})
+
+describe('FactTablesList rows (MT-30)', () => {
+  it('says how many metrics use each table, and counts the tables in use', async () => {
+    mockList({
+      items: [
+        makeItem({ id: 'ft-1', display_name: 'Orders', metric_count: 3, column_count: 5, identifier_count: 1 }),
+        makeItem({ id: 'ft-2', name: 'refunds', display_name: 'Refunds', metric_count: 0 }),
+      ],
+      total: 2,
+    })
+    renderList()
+
+    const orders = (await screen.findByRole('link', { name: 'Orders' })).closest('[role="row"]')!
+    expect(within(orders as HTMLElement).getByText('3 metrics')).toHaveAttribute(
+      'title',
+      '5 columns, 1 identifier',
+    )
+    const refunds = screen.getByRole('link', { name: 'Refunds' }).closest('[role="row"]')!
+    expect(within(refunds as HTMLElement).getByText('No metrics')).toBeInTheDocument()
+    // Tables, not a sum of metric_count: a cross-table ratio counts in both
+    // tables' metric_count, so summing them double-counted it.
+    expect(screen.getByText('Tables in use').parentElement?.textContent).toBe('Tables in use1')
+  })
+
+  it('deletes a table from its row menu after a confirm, without opening it', async () => {
+    mockList({ items: [makeItem({ id: 'ft-1', display_name: 'Orders' })], total: 1 })
+    vi.mocked(factTablesApi.remove).mockResolvedValue(undefined)
+    renderList()
+
+    const trigger = await screen.findByRole('button', { name: 'Actions for Orders' })
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    expect(await screen.findByRole('menuitem', { name: 'Edit' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete fact table' }))
+    await waitFor(() => expect(factTablesApi.remove).toHaveBeenCalledWith('demo', 'ft-1'))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    // The menu's clicks do not fall through to the row's open-on-click.
+    expect(screen.queryByText('fact table editor')).toBeNull()
+  })
+
+  it('opens the fact table from anywhere on its row', async () => {
+    mockList({ items: [makeItem({ id: 'ft-1', display_name: 'Orders' })], total: 1 })
+    renderList()
+
+    const row = (await screen.findByRole('link', { name: 'Orders' })).closest('[role="row"]')!
+    fireEvent.click(within(row as HTMLElement).getByText('created_at'))
+
+    expect(await screen.findByText('fact table editor')).toBeInTheDocument()
   })
 })

@@ -77,7 +77,7 @@ describe('Settings command palette destinations', () => {
     // The app palette bound itself to `projects[0]` on these routes, because no
     // /settings/* route carries a :slug — so it searched Windy Android and
     // navigated into it from a takeover bound to Windy iOS.
-    expect(onLeave).toHaveBeenCalledWith('/p/windy-ios/events')
+    expect(onLeave).toHaveBeenCalledWith('/p/windy-ios/overview')
   })
 
   it('offers nothing scoped to a project it cannot know it is in', async () => {

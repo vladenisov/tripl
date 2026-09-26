@@ -1,6 +1,7 @@
 import { createElement } from 'react'
-import { ClipboardList, Globe, Inbox, Mail, Send, Ticket, Webhook, type LucideIcon, type LucideProps } from 'lucide-react'
+import { ClipboardList, Globe, Inbox, Mail, MessageSquare, Send, Ticket, type LucideIcon, type LucideProps } from 'lucide-react'
 
+import { CHANNEL_LABELS, channelLabel } from '@/lib/alertChannels'
 import type { AlertDestinationType } from '@/types'
 
 import type { DestinationChannel } from './constants'
@@ -14,23 +15,20 @@ export interface ChannelMeta {
 // Channel catalogue — drives both the per-channel sections and the compact
 // add-channel affordance, so every type stays addable from one place.
 export const CHANNEL_META: ChannelMeta[] = [
-  { channel: 'slack', label: 'Slack', Icon: Webhook },
-  { channel: 'telegram', label: 'Telegram', Icon: Send },
-  { channel: 'webhook', label: 'Webhook', Icon: Globe },
-  { channel: 'email', label: 'Email', Icon: Mail },
-  { channel: 'jira', label: 'Jira', Icon: Ticket },
-  { channel: 'linear', label: 'Linear', Icon: ClipboardList },
+  // A chat bubble for Slack, not lucide's Webhook glyph: that is the same
+  // concept as the separate Webhook channel below (AL-27). Lucide has no
+  // brand marks.
+  { channel: 'slack', label: CHANNEL_LABELS.slack, Icon: MessageSquare },
+  { channel: 'telegram', label: CHANNEL_LABELS.telegram, Icon: Send },
+  { channel: 'webhook', label: CHANNEL_LABELS.webhook, Icon: Globe },
+  { channel: 'email', label: CHANNEL_LABELS.email, Icon: Mail },
+  { channel: 'jira', label: CHANNEL_LABELS.jira, Icon: Ticket },
+  { channel: 'linear', label: CHANNEL_LABELS.linear, Icon: ClipboardList },
 ]
 
-/**
- * The channel as a reader names it — "Slack", not the raw `slack` / `demo_sink`
- * type the API carries (AL-3, AL-11). The demo sink is not a creatable
- * channel, so it is not in CHANNEL_META, but it is a destination people see.
- */
-export function channelLabel(type: AlertDestinationType): string {
-  if (type === 'demo_sink') return 'Demo sink (local)'
-  return CHANNEL_META.find(meta => meta.channel === type)?.label ?? type
-}
+// The labels live in lib/ so the app shell can name a channel without
+// importing this page module (and its icons); re-exported for page callers.
+export { channelLabel }
 
 /** The channel's icon, or a generic one for the demo sink. */
 export function channelIcon(type: AlertDestinationType): LucideIcon {

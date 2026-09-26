@@ -1,8 +1,9 @@
 import { act, render, screen, fireEvent } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { useState } from 'react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandPaletteContext } from '@/components/command-palette-context'
-import { ProductTour } from './ProductTour'
+import { ProductTour, TourDock } from './ProductTour'
 import { buildTourSteps } from './tourSteps'
 import { setWelcomeDismissed } from './welcomeDismissal'
 import { expectNoAxeViolations } from '@/test/axe'
@@ -33,7 +34,7 @@ describe('ProductTour — progress survives the navigation it asks for (tripl-2s
     const { unmount } = renderTour(onOpenChange)
 
     expect(screen.getByText(/^Step 1 of/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('link', { name: /open events & tracking plan/i }))
+    fireEvent.click(screen.getByRole('link', { name: /^open events$/i }))
 
     // Visiting the surface is progress, and it closes the dialog.
     expect(onOpenChange).toHaveBeenCalledWith(false)
@@ -101,7 +102,7 @@ describe('ProductTour', () => {
     expect(
       screen.getByText(`Step 1 of ${TOTAL_STEPS} · a quick guided path through tripl.`),
     ).toBeInTheDocument()
-    const open = screen.getByRole('link', { name: /open events & tracking plan/i })
+    const open = screen.getByRole('link', { name: /^open events$/i })
     expect(open).toHaveAttribute('href', '/p/acme/events')
   })
 
@@ -120,7 +121,7 @@ describe('ProductTour', () => {
       'href',
       '/p/acme/scans',
     )
-    expect(screen.getByRole('link', { name: /^Branches$/i })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: /^Plan branches$/i })).toHaveAttribute(
       'href',
       '/p/acme/settings/branches',
     )
@@ -270,5 +271,106 @@ describe('ProductTour — the welcome panel is its own choice (DEMO-26)', () => 
     renderTour()
 
     expect(screen.queryByRole('button', { name: /show the welcome panel/i })).toBeNull()
+  })
+})
+
+function Path() {
+  return <span data-testid="path">{useLocation().pathname}</span>
+}
+
+/** The banner's arrangement: the dialog mounted while open, the dock always. */
+function TourWithDock({ initiallyOpen = true }: { initiallyOpen?: boolean }) {
+  const [open, setOpen] = useState(initiallyOpen)
+  return (
+    <>
+      {open && <ProductTour slug="acme" open onOpenChange={setOpen} />}
+      <TourDock slug="acme" onOpenTour={() => setOpen(true)} />
+      <Path />
+    </>
+  )
+}
+
+function renderTourWithDock(options: { initiallyOpen?: boolean; palette?: () => void } = {}) {
+  return render(
+    <MemoryRouter initialEntries={['/p/acme/overview']}>
+      <CommandPaletteContext.Provider value={{ open: false, setOpen: options.palette ?? (() => {}) }}>
+        <TourWithDock initiallyOpen={options.initiallyOpen} />
+      </CommandPaletteContext.Provider>
+    </MemoryRouter>,
+  )
+}
+
+const dock = () => screen.queryByRole('region', { name: 'Product tour' })
+
+describe('ProductTour — the tour stays with you on the surface it opens (#251 JR-22)', () => {
+  it('docks on the opened surface, and Next walks on to the following one', () => {
+    const steps = buildTourSteps('acme')
+    renderTourWithDock()
+    expect(dock()).toBeNull()
+
+    fireEvent.click(screen.getByRole('link', { name: /^open events$/i }))
+
+    // The dialog stepped aside; the tour did not.
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByTestId('path').textContent).toBe('/p/acme/events')
+    expect(dock()).toHaveTextContent(`step 1 of ${TOTAL_STEPS}`)
+    expect(dock()).toHaveTextContent(steps[0]?.title ?? '')
+
+    fireEvent.click(screen.getByRole('button', { name: `Next: ${steps[1]?.title ?? ''}` }))
+
+    expect(screen.getByTestId('path').textContent).toBe(steps[1]?.to)
+    expect(dock()).toHaveTextContent(`step 2 of ${TOTAL_STEPS}`)
+    // The dialog's place moves with the dock: reopened, it waits on step 3.
+    expect(window.localStorage.getItem('tripl-tour:acme')).toBe('2')
+  })
+
+  it('reopens the dialog from the dock', () => {
+    renderTourWithDock()
+    fireEvent.click(screen.getByRole('link', { name: /^open events$/i }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'All steps' }))
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByText(/^Step 2 of/)).toBeInTheDocument()
+  })
+
+  it('closes without losing the place', () => {
+    renderTourWithDock()
+    fireEvent.click(screen.getByRole('link', { name: /^open events$/i }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close the tour' }))
+
+    expect(dock()).toBeNull()
+    expect(window.localStorage.getItem('tripl-tour:acme')).toBe('1')
+  })
+
+  it('opens search for the palette step, and finishes on the last', () => {
+    const setOpen = vi.fn()
+    // Docked one before the last step, as after opening that step's surface.
+    window.localStorage.setItem('tripl-tour:acme', String(LAST_INDEX))
+    renderTourWithDock({ palette: setOpen })
+    fireEvent.click(screen.getByRole('button', { name: /^back$/i }))
+    const beforeLast = buildTourSteps('acme')[LAST_INDEX - 1]
+    fireEvent.click(screen.getByRole('link', { name: `Open ${beforeLast?.title ?? ''}` }))
+
+    fireEvent.click(screen.getByRole('button', { name: /^Next: Search by meaning$/ }))
+
+    expect(setOpen).toHaveBeenCalledWith(true)
+    expect(dock()).toHaveTextContent(`step ${TOTAL_STEPS} of ${TOTAL_STEPS}`)
+    expect(window.localStorage.getItem('tripl-tour:acme')).toBe('0')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Finish' }))
+    expect(dock()).toBeNull()
+  })
+
+  it('shows nothing until a surface is opened from the tour', () => {
+    renderTourWithDock({ initiallyOpen: false })
+    expect(dock()).toBeNull()
+  })
+
+  it('has no axe violations while docked', async () => {
+    renderTourWithDock()
+    fireEvent.click(screen.getByRole('link', { name: /^open events$/i }))
+    await expectNoAxeViolations(document.body)
   })
 })

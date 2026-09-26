@@ -11,12 +11,14 @@
  * into a real project.
  */
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useContext, useEffect, useState, type ReactNode } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { ArrowRight, Eye, EyeOff, Plus, RotateCcw, X } from 'lucide-react'
+import { ActiveProjectContext } from '@/components/active-project-context'
 import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { Button } from '@/components/ui/button'
+import { useCanManageProject, useCanWriteProject } from '@/lib/permissions'
 import { useCoachPresence, useDemoScenario, useDemoScenarioActions } from './demoScenarioContext'
 import {
   CHAPTER_TITLES,
@@ -39,7 +41,18 @@ const REGION_LABEL = 'Demo scenario'
 const MISSING_TARGET_DELAY_MS = 1000
 
 const MISSING_TARGET_COPY =
-  "The highlighted control isn't visible — it may be filtered out, below the fold, or already handled. Resetting the demo project restores every guided example."
+  "The highlighted control isn't visible — it may be filtered out, below the fold, or already handled."
+
+/** Only for whoever can reset the demo: offering it to anyone else was a dead end. */
+const RESET_RESTORES_COPY = 'Resetting the demo project restores every guided example.'
+
+/**
+ * A viewer on a step's surface has no coach mark because the control is not
+ * rendered for their role (#251 JR-17): "isn't visible … reset" read as a bug
+ * and pointed at a Reset they cannot use either.
+ */
+const NEEDS_EDITOR_COPY =
+  'This step needs edit access — ask an owner for it, or keep exploring the rest of the demo.'
 
 /** True only after `value` has held true for `delayMs` without interruption. */
 function useDeferredFlag(value: boolean, delayMs: number): boolean {
@@ -100,6 +113,14 @@ interface ActiveStripProps {
   isWatching: boolean
   /** The user is on the step's surface but no coach mark is mounted there. */
   targetMissing: boolean
+  /**
+   * The user is already on the page the step's link opens (#251 SH-6): the
+   * "Open Scans" button there was a no-op, and its room goes to the
+   * instruction instead.
+   */
+  onStepPage: boolean
+  /** What to say when the mark is missing — the reason differs by role. */
+  missingCopy: string
   /** On-surface callouts are silenced — offer the way back. */
   hintsMuted: boolean
   /** The step has an on-surface mark to silence. */
@@ -117,6 +138,8 @@ function ActiveStrip({
   hint,
   isWatching,
   targetMissing,
+  onStepPage,
+  missingCopy,
   hintsMuted,
   hasMark,
   onShowHints,
@@ -155,14 +178,14 @@ function ActiveStrip({
       </div>
 
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
-        {/* When the on-surface mark is missing, the CTA is the only pointer
-            left — pulse it so the eye lands somewhere. */}
-        <Button asChild size="xs" className={targetMissing ? 'pulse-dot' : undefined}>
-          <Link to={step.to}>
-            {step.ctaLabel}
-            <ArrowRight className="h-3 w-3" />
-          </Link>
-        </Button>
+        {!onStepPage && (
+          <Button asChild size="xs">
+            <Link to={step.to}>
+              {step.ctaLabel}
+              <ArrowRight className="h-3 w-3" />
+            </Link>
+          </Button>
+        )}
         {/* "Hide hints" is the coach card's only control and it used to be a
             one-way door: nothing turned the marks back on for the rest of the
             chapter (tripl-gr0x). */}
@@ -222,7 +245,7 @@ function ActiveStrip({
 
       {targetMissing && (
         <p className="basis-full text-caption" style={{ color: 'var(--fg-muted)' }}>
-          {MISSING_TARGET_COPY}
+          {missingCopy}
         </p>
       )}
     </StripShell>
@@ -321,6 +344,8 @@ export function DemoScenarioStrip() {
   const location = useLocation()
   const { slug } = useParams()
   const welcomeDismissed = useWelcomeDismissed(slug ?? '')
+  const canEdit = useCanWriteProject()
+  const canManage = useCanManageProject(useContext(ActiveProjectContext))
 
   // The user is standing on the step's own surface (query params aside), yet no
   // coach mark for the step is mounted — the control is filtered out, on another
@@ -335,6 +360,14 @@ export function DemoScenarioStrip() {
     location.pathname.startsWith(stepPath) &&
     !present.has(step.id)
   const showTargetMissing = useDeferredFlag(targetMissing, MISSING_TARGET_DELAY_MS)
+  // The page itself, not a page under it: from a scan's detail the link back
+  // to the Scans list still goes somewhere.
+  const onStepPage = location.pathname.replace(/\/$/, '') === stepPath.replace(/\/$/, '')
+  const missingCopy = !canEdit
+    ? NEEDS_EDITOR_COPY
+    : canManage
+      ? `${MISSING_TARGET_COPY} ${RESET_RESTORES_COPY}`
+      : MISSING_TARGET_COPY
 
   // First visit (LIVE-9): the Overview's welcome panel already offers every
   // chapter, and banner + strip + panel stacked three demo blocks above the
@@ -358,6 +391,8 @@ export function DemoScenarioStrip() {
         hint={state.chapters[activeChapter]?.hint}
         isWatching={isWatching}
         targetMissing={showTargetMissing}
+        onStepPage={onStepPage}
+        missingCopy={missingCopy}
         hintsMuted={hintsMuted}
         hasMark={step.coach !== undefined}
         onShowHints={unmuteHints}

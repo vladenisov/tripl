@@ -18,6 +18,7 @@ import type { DbType } from '@/types/dataSources'
 import type { TableSchema } from '@/types/dataSourceSchema'
 import type { FactOperandPreviewResponse } from '@/types/metricsCatalog'
 import type { FactTableColumn } from '@/types/factTables'
+import { formatNumber } from '@/lib/format'
 
 import {
   VALUELESS_CONDITION_OPERATORS,
@@ -66,6 +67,13 @@ interface FactFilterEditorProps {
 }
 
 const MENU_ITEM_CLASS = 'text-body-sm'
+
+/** Each row's visible type, beside its number (MT-12 / MT-13). */
+const FILTER_KIND_LABEL: Record<FactFilter['kind'], string> = {
+  named: 'Named',
+  condition: 'Where',
+  sql: 'SQL',
+}
 
 /**
  * Point-and-click editor for an operand's filter list. An "Add filter" menu
@@ -146,10 +154,29 @@ export function FactFilterEditor({
             const aria = rowId ? errorAria(errors, rowId) : {}
             return (
               <li key={filter.id} className="flex flex-col gap-1">
+                {/* Rows are ANDed, and numbered so "Filter 2: …" in an error
+                    points at a row the reader can find (MT-13). The controls
+                    carry the same number in their names. */}
+                {index > 0 && (
+                  <span aria-hidden="true" className="micro-label" style={{ color: 'var(--fg-faint)' }}>
+                    and
+                  </span>
+                )}
                 <div className="flex items-start gap-2">
+                  <span
+                    aria-hidden="true"
+                    className="flex h-8 w-[52px] shrink-0 items-center gap-1 text-caption"
+                    style={{ color: 'var(--fg-subtle)' }}
+                  >
+                    <span className="tnum">{index + 1}</span>
+                    <span>{FILTER_KIND_LABEL[filter.kind]}</span>
+                  </span>
                   <div className="min-w-0 flex-1">
                     {filter.kind === 'named' ? (
                       <NativeSelect
+                        // Fills the row's cell; the kit's 280px cap left a
+                        // hole in the middle of it (MT-12).
+                        width="fill"
                         id={rowId}
                         value={filter.name}
                         onChange={value => setName(filter.id, value)}
@@ -179,7 +206,9 @@ export function FactFilterEditor({
                         placeholder={sqlPlaceholder("A condition on this fact table's columns, e.g.", "status = 'completed' AND amount > 0")}
                         dialect={dialect}
                         tables={tables}
-                        minHeight="60px"
+                        // A WHERE fragment: no gutter, Format or table
+                        // browser per row; completion still works (MT-14).
+                        compact
                         readOnly={disabled}
                         ariaInvalid={aria['aria-invalid']}
                         ariaDescribedBy={aria['aria-describedby']}
@@ -309,6 +338,7 @@ function ConditionRow({
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(150px,1fr)_120px_minmax(150px,1fr)]">
       <NativeSelect
+        width="fill"
         id={id}
         value={filter.column}
         onChange={onColumn}
@@ -318,6 +348,7 @@ function ConditionRow({
         {...aria}
       />
       <NativeSelect
+        width="fill"
         value={filter.operator}
         onChange={value =>
           onChange(withConditionOperator(filter, value as FactConditionOperator))
@@ -385,7 +416,7 @@ function FilterCheckPanel({ result, transportError }: FilterCheckPanelProps) {
     >
       <CheckCircle2 size={14} style={{ color: 'var(--success, var(--fg-muted))' }} />
       {result.row_count > 0
-        ? 'Filters ran clean against the warehouse.'
+        ? `Filters ran clean against the warehouse and matched ${formatNumber(result.row_count)} ${result.row_count === 1 ? 'row' : 'rows'} in the last 7 days.`
         : 'Filters ran clean against the warehouse, but matched no rows in the last 7 days.'}
     </div>
   )

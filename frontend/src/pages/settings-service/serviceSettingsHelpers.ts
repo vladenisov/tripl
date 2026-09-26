@@ -424,25 +424,30 @@ export function resetPayload(section: SectionKey): ServiceSettingsUpdate {
  * the exact opposite (a redeploy note on Runtime, which needs none, and silence
  * on Storage and Observability, which do) — tripl-tezn.
  */
+// One line each: the sticky bar held a 3-4 line paragraph, a quarter of a
+// phone screen pinned while scrolling (ST-28). The fallback rule every section
+// shares lives once, in SOURCE_LEGEND, not in every bar.
 const APPLY_NOTES: Record<SectionKey, string> = {
-  runtime: 'Saved overrides apply to the very next request or scan task — no restart needed.',
-  email: 'Saved overrides apply to the next message tripl sends — no restart needed.',
-  ai: 'Saved overrides apply to the next AI call — no restart needed.',
-  security:
-    'Saved overrides apply after the next restart of the API, except Self-service registration, which applies to the very next signup attempt.',
-  storage:
-    'Saved overrides apply after the next restart of the API and workers — until then photos keep landing on the backend that is running now.',
-  observability: 'Saved overrides apply after the next restart of the API and workers.',
+  runtime: 'Applies to the next request or scan task — no restart needed.',
+  email: 'Applies to the next message tripl sends — no restart needed.',
+  ai: 'Applies to the next AI call — no restart needed.',
+  security: 'Applies after the next restart of the API; Self-service registration applies at once.',
+  storage: 'Applies after the next restart of the API and workers.',
+  observability: 'Applies after the next restart of the API and workers.',
 }
 
+/**
+ * What the source badges mean, said once per page above the fields (ST-25,
+ * ST-28). "Or to the built-in default where none is set" is not hedging: on AI
+ * the three system prompts have no environment variable at all — the backend
+ * reads them off ai_defaults — and an unset variable falls back to the pydantic
+ * default, not to nothing (tripl-wkwv.2).
+ */
+export const SOURCE_LEGEND =
+  'Fields marked Override are stored here; Env comes from the environment. Unmarked fields fall back to their environment variable, or to the built-in default where none is set.'
+
 export function applyNote(section: SectionKey): string {
-  // "or to the built-in default where none is set" is not hedging: on AI the
-  // three system prompts have no environment variable at all — the backend reads
-  // them off ai_defaults, not off Settings — so this note sat two lines above
-  // three rows badged "Default" promising them a source that cannot exist
-  // (tripl-wkwv.2). It is true of every section: an unset variable falls back to
-  // the pydantic default, not to nothing.
-  return `${APPLY_NOTES[section]} Unset fields fall back to their environment variable, or to the built-in default where none is set.`
+  return APPLY_NOTES[section]
 }
 
 /** The highest-consequence fields each section reset nulls, named in the confirm. */

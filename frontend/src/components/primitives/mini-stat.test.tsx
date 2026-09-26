@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { MiniStat, MiniStatStrip } from './mini-stat'
 
 // MON-42: `tone` with no delta used to render nothing, while the call sites
@@ -118,5 +118,51 @@ describe('MiniStatStrip boxed', () => {
     const strip = container.querySelector('[data-slot="mini-stat-strip"]')
     expect(strip).not.toHaveClass('rounded-card')
     expect(strip).not.toHaveClass('bg-bg-sunken')
+  })
+})
+
+// MT-26 / SH-27: four stats as a 2x2 grid on a phone, not a row that orphans
+// the last one with its own divider.
+describe('MiniStatStrip phoneGrid', () => {
+  it('lays the row out as a two-column grid below sm and hides the dividers there', () => {
+    const { container } = render(
+      <MiniStatStrip phoneGrid>
+        <MiniStat label="A" value="1" />
+        <MiniStat label="B" value="2" />
+      </MiniStatStrip>,
+    )
+    const row = container.querySelector('[data-phone-grid]')
+    expect(row).toHaveClass('grid', 'grid-cols-2', 'sm:flex')
+    const divider = container.querySelector('[data-slot="mini-stat-divider"]')
+    expect(divider).toHaveClass('max-sm:hidden')
+  })
+
+  it('keeps the wrapping row by default', () => {
+    const { container } = render(
+      <MiniStatStrip>
+        <MiniStat label="A" value="1" />
+      </MiniStatStrip>,
+    )
+    expect(container.querySelector('[data-phone-grid]')).toBeNull()
+  })
+})
+
+// F31/AL-47: a stat that filters is a real toggle button, not a <dl> inside a
+// role="button" div.
+describe('MiniStat pressable', () => {
+  it('renders a toggle named "<label> <value>" with no definition list inside', () => {
+    const onPress = vi.fn()
+    render(<MiniStat label="Firing" value="3" tone="danger" onPress={onPress} pressed={false} />)
+
+    const toggle = screen.getByRole('button', { name: 'Firing 3' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    expect(toggle.querySelector('dl, dt, dd')).toBeNull()
+    fireEvent.click(toggle)
+    expect(onPress).toHaveBeenCalledTimes(1)
+  })
+
+  it('says when its filter is on', () => {
+    render(<MiniStat label="Healthy" value="7" onPress={() => {}} pressed />)
+    expect(screen.getByRole('button', { name: 'Healthy 7' })).toHaveAttribute('aria-pressed', 'true')
   })
 })

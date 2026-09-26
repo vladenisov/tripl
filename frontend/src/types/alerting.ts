@@ -140,10 +140,27 @@ export interface AlertDestination {
  * and the channel's own message rather than a 5xx the UI would render as
  * "something went wrong on our side".
  */
+/** What kind of failure a test send's `error` describes (AL-30). */
+export type DestinationTestErrorKind =
+  | 'config'
+  | 'policy'
+  | 'dns'
+  | 'timeout'
+  | 'tls'
+  | 'network'
+  | 'http_status'
+  | 'smtp'
+  | 'other'
+
 export interface AlertDestinationTestResponse {
   ok: boolean
   error: string | null
   sent_at: string | null
+  /** The failure's kind, and the status code when it is `http_status`, so the
+   * card reads a field rather than the exception text (AL-30). Optional:
+   * servers and fixtures before them send neither. */
+  error_kind?: DestinationTestErrorKind | null
+  http_status?: number | null
 }
 
 export interface SimulatedRuleFiring {
@@ -437,9 +454,18 @@ export interface AlertInboxBulkActionResponse {
   overrides_written: number | null
 }
 
+/** Incidents per effective status, over the whole window (AL-14). */
+export type AlertInboxStatusCounts = Record<AlertInboxStatus, number>
+
 export interface AlertInboxListResponse {
   items: AlertInboxGroup[]
   total: number
+  /**
+   * Incidents per status after every other filter and before the status one,
+   * so a status option can say what picking it would list (AL-14). Always
+   * sent; optional so fixtures written before it still type.
+   */
+  status_counts?: AlertInboxStatusCounts
   /**
    * Where the list's window really starts, or `null` when the documented
    * 30-day one held.

@@ -275,10 +275,12 @@ export default function OverviewPage() {
           launch the tour before anything else below the title. */}
       {projectQuery.data?.is_demo && <DemoWelcomePanel project={projectQuery.data} />}
 
-      {/* Guided first-run checklist (UX-24) — a "start here" for the core
-          Plan → Observe → Govern loop. Self-derives done-state from REAL project
-          data, is dismissible, and auto-hides once complete. Synthetic demo
-          sources are excluded from the "connect a source" step. */}
+      {/* Guided first-run checklist (UX-24) — a "start here": connect a
+          source, run a scan, review what it imported, define a metric, set up
+          alerting (#250 JR-2). Self-derives done-state from REAL project data,
+          is dismissible, and auto-hides once complete. Synthetic demo sources
+          are excluded from the "connect a source" step. The metric step reads
+          `summary.metric_count` and stays out until the backend sends it. */}
       {slug && (
         <OnboardingChecklist
           slug={slug}

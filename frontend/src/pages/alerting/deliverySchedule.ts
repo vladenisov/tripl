@@ -200,8 +200,23 @@ export function formatInProjectZone(iso: string, timeZone: string | undefined): 
 }
 
 /** A one-line description of a cron expression, for the card and the form. */
+// `M H * * 1-5`: the common custom cron the cadence editor has no mode for,
+// named in words on every surface that describes a schedule (AL-24).
+const WEEKDAYS_CRON = /^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+1-5$/
+
+function describeWeekdaysCron(cron: string): string | null {
+  const match = WEEKDAYS_CRON.exec(cron.trim())
+  if (!match) return null
+  const minute = Number(match[1])
+  const hour = Number(match[2])
+  if (minute >= 60 || hour >= 24) return null
+  return `Weekdays at ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+}
+
 export function describeCron(cron: string | null | undefined): string {
   if (!cron || cron.trim() === '') return 'Immediately, after every collection'
+  const weekdays = describeWeekdaysCron(cron)
+  if (weekdays) return weekdays
   const draft = cronToCadence(cron)
   switch (draft.mode) {
     case 'hourly':

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AuthContextValue } from '@/components/auth-context'
@@ -10,7 +10,7 @@ import type { EventType, EventTypeRelation } from '@/types'
 import { RelationsTab } from './RelationsTab'
 
 vi.mock('@/api/relations', () => ({
-  relationsApi: { list: vi.fn(), create: vi.fn(), del: vi.fn() },
+  relationsApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), del: vi.fn() },
 }))
 vi.mock('@/api/eventTypes', () => ({
   eventTypesApi: { list: vi.fn() },
@@ -64,6 +64,7 @@ describe('RelationsTab', () => {
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
     expect(screen.queryByRole('button', { name: /New relation/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Delete relation/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Edit relation/ })).not.toBeInTheDocument()
   })
 
   it('names the joined fields in each row and in the delete confirm (PLAN-52)', async () => {
@@ -106,5 +107,69 @@ describe('RelationsTab', () => {
     expect(await screen.findByText("Couldn't load relations")).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
     expect(screen.queryByText('No relations')).not.toBeInTheDocument()
+  })
+
+  it('shows the relation type in words and the join in one cell (AU-13)', async () => {
+    renderTab(authAs('editor'))
+
+    const source = await screen.findByText('purchase.user_id')
+    expect(screen.getByText('shared field')).toBeInTheDocument()
+    expect(source.closest('td')).toHaveTextContent('purchase.user_id→ to signup.user_id')
+  })
+
+  it('groups each end of a new relation and previews the join (AU-13)', async () => {
+    renderTab(authAs('editor'))
+    await screen.findByText('purchase.user_id')
+
+    fireEvent.click(screen.getByRole('button', { name: /New relation/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'New relation' })
+
+    // A field select waits for its type.
+    expect(within(dialog).getByRole('combobox', { name: 'From field' })).toBeDisabled()
+    expect(within(dialog).getByText('Pick a field on each side to preview the join.')).toBeInTheDocument()
+
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'From event type' }), { target: { value: 'et-1' } })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'From field' }), { target: { value: 'f-1' } })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'To event type' }), { target: { value: 'et-2' } })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'To field' }), { target: { value: 'f-2' } })
+
+    expect(within(dialog).getByText(/^Joins/)).toHaveTextContent('Joins purchase.user_id → signup.user_id')
+    expect(within(dialog).getByRole('button', { name: 'Create' })).toBeEnabled()
+  })
+
+  it('edits a relation in place with the same From/To dialog (AU-13)', async () => {
+    vi.mocked(relationsApi.update).mockResolvedValue(RELATION)
+    renderTab(authAs('editor'))
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Edit relation between purchase.user_id and signup.user_id' }),
+    )
+    const dialog = await screen.findByRole('dialog', { name: 'Edit relation' })
+
+    // Seeded with the relation's ends; Save waits for a change.
+    expect(within(dialog).getByRole('combobox', { name: 'From event type' })).toHaveValue('et-1')
+    expect(within(dialog).getByRole('combobox', { name: 'To field' })).toHaveValue('f-2')
+    const save = within(dialog).getByRole('button', { name: 'Save' })
+    expect(save).toBeDisabled()
+
+    // Swap the ends.
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'From event type' }), { target: { value: 'et-2' } })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'From field' }), { target: { value: 'f-2' } })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'To event type' }), { target: { value: 'et-1' } })
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'To field' }), { target: { value: 'f-1' } })
+    fireEvent.click(save)
+
+    await waitFor(() => expect(relationsApi.update).toHaveBeenCalledWith(
+      'demo',
+      'rel-1',
+      {
+        source_event_type_id: 'et-2',
+        target_event_type_id: 'et-1',
+        source_field_id: 'f-2',
+        target_field_id: 'f-1',
+      },
+      null,
+    ))
+    expect(relationsApi.create).not.toHaveBeenCalled()
   })
 })

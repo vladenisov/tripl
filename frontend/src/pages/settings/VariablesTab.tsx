@@ -32,7 +32,7 @@ import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice } from '@/components/states'
 import { countOf, pluralize } from '@/lib/plural'
-import { variablesKey, variablesUsagePageKey } from '@/lib/queryKeys'
+import { projectKey, variablesKey, variablesUsagePageKey } from '@/lib/queryKeys'
 
 // Rows rendered at once. The whole set arrives in one request, but a governance
 // project can hold >1k variables and painting them all froze the tab for
@@ -98,6 +98,8 @@ export function VariablesTab({
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
+  // Stable, so the memoized rows do not all re-render for a new function (AU-29).
+  const eventHref = useCallback((eventId: string) => `/p/${slug}/events/all/${eventId}`, [slug])
   const canWrite = useCanWriteProject()
   const focusRef = useRef<HTMLTableRowElement | null>(null)
   // The excluded panel renders <li>s, not table rows, so the focused variable
@@ -188,6 +190,8 @@ export function VariablesTab({
     mutationFn: () => variablesApi.bulkDelete(slug, [...selectedIds], branchId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
+      // The sidebar count reads the project summary (AU-32).
+      qc.invalidateQueries({ queryKey: projectKey(slug) })
       selection.clear()
     },
   })
@@ -266,6 +270,7 @@ export function VariablesTab({
     // raises 404 for the batch on the first id it cannot load (tripl-42en).
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: variablesKey(slug, branchId) })
+      qc.invalidateQueries({ queryKey: projectKey(slug) })
       deselect(id)
     },
   })
@@ -507,7 +512,8 @@ export function VariablesTab({
       <PageHeader
         eyebrow="Plan"
         title="Variables"
-        description={<>Template placeholders: use <CodeToken>{'${var_name}'}</CodeToken> in event field values.</>}
+        // One sentence of purpose, like its siblings (AU-11).
+        description={<>Placeholders like <CodeToken>{'${platform}'}</CodeToken> that stand in for a value family in event field values. Scans learn which values each one takes.</>}
         actions={
           canWrite && (
             <Button size="sm" onClick={() => setShowForm(true)}>
@@ -574,7 +580,11 @@ export function VariablesTab({
             {/* The shared filter bar (DS-15): "Search variables…" and the
                 result count on the right. The usage scope is the one
                 segmented control (DS-16) instead of a row of text buttons. */}
-            <FilterBar
+            {/* Over a project with no variables at all, the search and the
+                usage scope filter nothing; the empty state below is the
+                answer (AU-34). A non-default scope keeps them up, so the way
+                back to All is always on screen (PLAN-23). */}
+            {(activeVariables.length > 0 || usageFilter !== 'all') && <FilterBar
               className="px-4 py-2"
               count={
                 activeVariables.length > 0
@@ -598,7 +608,7 @@ export function VariablesTab({
                 options={USAGE_FILTERS}
                 onChange={value => changeMatchSet(() => setUsageFilter(value))}
               />
-            </FilterBar>
+            </FilterBar>}
             {variablesQuery.isError && (
               // Rows are still on screen from the last answer, so the failed
               // refresh is said beside them rather than replacing them.
@@ -636,11 +646,17 @@ export function VariablesTab({
                           its pills no longer wrap and would otherwise be squeezed
                           out. Doc/Observed values share whatever is left. */}
                       <TableHead className="w-[24%]">Variable</TableHead>
-                      <TableHead className="w-[13%]">Events</TableHead>
+                      {/* The events a scan has SEEN this variable in (its value
+                          contexts), not every event whose template names it:
+                          "Events" read as the latter and undercounted (AU-29). */}
+                      <TableHead className="w-[13%]" title="Events a scan observed this variable in">Observed in</TableHead>
                       <TableHead className="w-[20%]">Description</TableHead>
                       <TableHead>Documented values</TableHead>
                       <TableHead>Observed values</TableHead>
-                      <TableHead className="w-24"><span className="sr-only">Actions</span></TableHead>
+                      {/* Pinned to the right edge, so on a phone the row actions
+                          are on screen without discovering the sideways
+                          scroll (AU-27). */}
+                      <TableHead className="sticky right-0 w-24 bg-surface"><span className="sr-only">Actions</span></TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -648,7 +664,9 @@ export function VariablesTab({
                       <VariablesTableRow
                         key={variable.id}
                         variable={variable}
-                        typeLabel={TYPE_LABELS[variable.variable_type]}
+                        // The schema's own spelling, lowercase mono, as meta
+                        // fields and event fields show theirs (AU-30).
+                        typeLabel={variable.variable_type}
                         selected={selectedIds.has(variable.id)}
                         focused={variable.id === focusId}
                         rowRef={variable.id === focusId ? focusRef : undefined}
@@ -657,6 +675,7 @@ export function VariablesTab({
                         onEdit={startEdit}
                         onExclude={handleExclude}
                         onDelete={handleDelete}
+                        eventHref={eventHref}
                       />
                     ))}
                     {pageVariables.length === 0 && (
@@ -725,7 +744,16 @@ export function VariablesTab({
               </div>
             ) : (
               <div className="px-4 py-8">
-                <EmptyState icon={VariableIcon} title="No variables" description="Define template placeholders to reuse across event field values." />
+                <EmptyState
+                  icon={VariableIcon}
+                  title="No variables yet"
+                  description="Scans create them as they find value families, or define one to reuse across event field values."
+                  action={canWrite ? (
+                    <Button type="button" size="sm" onClick={() => setShowForm(true)}>
+                      <Plus className="size-3.5" />Create your first variable
+                    </Button>
+                  ) : undefined}
+                />
               </div>
             )}
             {rowActionError && (

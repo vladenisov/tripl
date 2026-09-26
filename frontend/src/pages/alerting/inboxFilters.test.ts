@@ -6,6 +6,7 @@ import {
   earliestReachableDay,
   hasActiveInboxFilters,
   inboxFilterQuery,
+  inboxStatusOptions,
   readInboxFilters,
   writeInboxFilters,
 } from './inboxFilters'
@@ -134,5 +135,27 @@ describe('earliestReachableDay', () => {
 
   it('crosses a month and a year boundary', () => {
     expect(earliestReachableDay(new Date('2026-01-05T12:00:00'))).toBe('2025-12-06')
+  })
+})
+
+describe('inboxStatusOptions (AL-14)', () => {
+  it('shows the bare status names until the server sends counts', () => {
+    expect(inboxStatusOptions().map(option => option.label)).not.toContainEqual(
+      expect.stringContaining('·'),
+    )
+  })
+
+  it("puts each status's incident count on its option", () => {
+    const options = inboxStatusOptions({
+      open: 3,
+      acknowledged: 0,
+      muted: 1,
+      resolved: 12,
+      false_positive: 0,
+    })
+    const open = options.find(option => option.value === 'open')
+    const resolved = options.find(option => option.value === 'resolved')
+    expect(open?.label).toMatch(/ · 3$/)
+    expect(resolved?.label).toMatch(/ · 12$/)
   })
 })

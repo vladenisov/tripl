@@ -32,14 +32,18 @@ import { type ScanFormMode, scanModeOf } from './scanMode'
  * own interval bucket closes. So `Run now` fills the plan and records nothing,
  * and both notes tie the points to the schedule instead of to the run.
  */
-const FORM_NOTE: Record<ScanFormMode, string> = {
+/**
+ * Only what the mode radio above it does not already say. The radio
+ * descriptions carry the consequence of each mode, and restating it here made
+ * four sentences of one idea before the Name field (#247 DA-13). What the
+ * monitoring radio lacks is WHEN points arrive and WHERE their output shows up;
+ * Catalog only has nothing to add, so it gets no note.
+ */
+const FORM_NOTE: Record<ScanFormMode, string | null> = {
   monitoring:
-    'This scan will add events to your tracking plan on every run, and record metric points on'
-    + ' its schedule. Anomaly detection reads those points and raises signals; alerts are sent'
-    + ' from signals.',
-  catalog:
-    'This scan will add events and fields to your tracking plan.'
-    + ' It records no metric points, so it raises no anomalies and sends no alerts.',
+    'Metric points are recorded on the schedule, not by Run now. Signals appear on Anomalies;'
+    + ' alerts go out from Alerting.',
+  catalog: null,
 }
 
 /**
@@ -85,6 +89,7 @@ export function ScanCausalNote(props: ScanCausalNoteProps) {
   const isMisconfigured =
     props.variant === 'config' && scanModeOf(props.config) === 'misconfigured'
   const text = props.variant === 'form' ? FORM_NOTE[props.mode] : configNote(props.config)
+  if (!text) return null
 
   return (
     <p

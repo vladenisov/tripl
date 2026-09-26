@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, Play } from 'lucide-react'
 import type { DataSource, EventType, IntervalCode } from '@/types'
 import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
@@ -19,6 +19,9 @@ import { FieldError } from '@/components/forms/FieldError'
 import { sqlPlaceholder } from '@/components/forms/placeholders'
 import { invalidAria } from '@/components/forms/validation'
 import type { ScanFormMode } from './scanMode'
+import { rowCapHint, useRowLimitDefaults } from './rowCapHints'
+import type { NamingFixTarget } from './scanDryRunWarnings'
+import { LIMITS_SECTION_ID } from './scanErrorNextStep'
 import { CHUNK_LABELS, SELECT_CLASS, eligibleChunkIntervals } from './scanUtils'
 import {
   MONITORING_INCOMPLETE_TITLE,
@@ -60,8 +63,6 @@ const MODE_OPTIONS: {
 const PREVIEW_GATE_TEXT =
   "Load preview first — tripl needs your query's columns to offer choices here."
 
-// Module-private on purpose: the tests assert the rendered sentence, which is the
-// only place it matters.
 const NO_LOOKBACK_WITHOUT_TIME_COLUMN =
   'Each run reads everything the base query returns. Pick a Time column to bound runs to a window.'
 
@@ -94,22 +95,51 @@ function CollapsibleSection({
   title,
   explanation,
   defaultOpen,
+  toggleId,
+  sectionId,
+  revealOnMount = false,
+  readOnly = false,
   children,
 }: {
   title: string
   explanation: string
   defaultOpen: boolean
+  /** Lets another control open this section (the dry run's flood warning). */
+  toggleId?: string
+  /** An anchor a link can name (`#scan-limits`). */
+  sectionId?: string
+  /** Scroll to the section and focus its toggle once, on arrival by link. */
+  revealOnMount?: boolean
+  /**
+   * Lock the fields, not the disclosure: someone who may not edit the scan
+   * still opens a section to read it, and a link to `#scan-limits` still
+   * lands focus on its toggle.
+   */
+  readOnly?: boolean
   children: ReactNode
 }) {
   const [open, setOpen] = useState(defaultOpen)
+  const sectionRef = useRef<HTMLElement>(null)
+  const toggleRef = useRef<HTMLButtonElement>(null)
+  // Read once: the link is followed on arrival, not on every re-render.
+  const [reveal] = useState(revealOnMount)
+  useEffect(() => {
+    if (!reveal) return
+    sectionRef.current?.scrollIntoView?.({ block: 'start' })
+    toggleRef.current?.focus({ preventScroll: true })
+  }, [reveal])
   const Chevron = open ? ChevronDown : ChevronRight
   return (
     <section
+      ref={sectionRef}
+      id={sectionId}
       className="mb-5 overflow-hidden rounded-card border"
       style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
     >
       <button
+        ref={toggleRef}
         type="button"
+        id={toggleId}
         aria-expanded={open}
         onClick={() => setOpen(current => !current)}
         className="flex w-full items-start gap-3 px-4 py-4 text-left transition-colors hover:bg-[var(--surface-hover)]"
@@ -126,7 +156,11 @@ function CollapsibleSection({
       </button>
       {open && (
         <div className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
-          {children}
+          {/* `disabled` on a fieldset reaches every native control inside it;
+              `contents` keeps it out of the layout. */}
+          <fieldset disabled={readOnly} className="contents">
+            {children}
+          </fieldset>
         </div>
       )}
     </section>
@@ -138,6 +172,25 @@ function CollapsibleSection({
  * (AU-4). The input points at it with `aria-describedby` via `invalidAria`, so
  * it is read with the field rather than only seen.
  */
+
+const NAMING_TOGGLE_ID = 'scan-naming-toggle'
+
+/**
+ * Open "Event names and grouping" and put the reader on the control the dry
+ * run's flood warning named: the fix sat in a collapsed section below, and
+ * nothing pointed at it (#247 DA-1).
+ */
+function openNamingControl(target: NamingFixTarget) {
+  const toggle = document.getElementById(NAMING_TOGGLE_ID)
+  if (toggle?.getAttribute('aria-expanded') === 'false') toggle.click()
+  requestAnimationFrame(() => {
+    const control = target === 'format'
+      ? document.getElementById('scan-event-name-format')
+      : document.getElementById('scan-event-groups')
+    control?.scrollIntoView({ block: 'center' })
+    control?.focus()
+  })
+}
 
 function PreviewGate() {
   return (
@@ -205,16 +258,19 @@ export function ScanEssentialsSection({
   const eventTypeColumnChoices = withSaved(state.eventTypeColumn)
 
   return (
-    <SCard title="">
+    // A real title: the card used to open with an empty one, and the mode
+    // legend sat in the fieldset's border slot, flush with the card's top edge.
+    // Floated, the legend lays out inside the padding like any label (#247 DA-12).
+    <SCard title="Source and schedule">
       <fieldset
         data-testid="scan-mode"
         className="border-b px-4 py-4"
         style={{ borderColor: 'var(--border-subtle)' }}
       >
-        <legend className="mb-2 text-body font-medium" style={{ color: 'var(--fg)' }}>
+        <legend className="float-left mb-2 w-full text-body font-medium" style={{ color: 'var(--fg)' }}>
           What this scan does
         </legend>
-        <div className="flex flex-col gap-2">
+        <div className="clear-both flex flex-col gap-2">
           {MODE_OPTIONS.map(option => (
             <div
               key={option.value}
@@ -254,11 +310,13 @@ export function ScanEssentialsSection({
         </div>
       </fieldset>
 
-      {/* Next sibling of the mode radio: the consequence of the selection above,
-          restated as the chain it feeds (tripl-3y7z.2). */}
-      <div className="border-b px-4 pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
-        <ScanCausalNote variant="form" mode={state.mode} />
-      </div>
+      {/* Next sibling of the mode radio: only what its description lacks,
+          so Catalog only has none (tripl-3y7z.2, #247 DA-13). */}
+      {monitoring && (
+        <div className="border-b px-4 pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+          <ScanCausalNote variant="form" mode={state.mode} />
+        </div>
+      )}
 
       <Field label="Name" htmlFor="scan-name">
         <Input
@@ -505,6 +563,7 @@ export function ScanEssentialsSection({
             dryRunError={dryRunMut.isError ? dryRunMut.error : null}
             eventTargetMissing={!hasEventTarget(state)}
             onRecheck={runDryRun}
+            onFixNaming={openNamingControl}
           />
           {/* Directly under the answer it acts on, and driven by the same
               `unmapped_columns` the panel just listed — it used to sit hundreds
@@ -529,7 +588,7 @@ export function ScanEssentialsSection({
   )
 }
 
-export function EventNamingSection({ form }: SectionProps) {
+export function EventNamingSection({ form, readOnly }: SectionProps) {
   const {
     state, set, preview, fieldErrors,
     toggleJsonValuePath, discoverJsonMut, discoverJsonPaths,
@@ -548,7 +607,9 @@ export function EventNamingSection({ form }: SectionProps) {
 
   return (
     <CollapsibleSection
+      readOnly={readOnly}
       title="Event names and grouping"
+      toggleId={NAMING_TOGGLE_ID}
       explanation="Reshape the names tripl derives above — rewrite them from a template, collapse high-cardinality values, or merge several into one. Leave this alone and each name is used as it is."
       defaultOpen={defaultOpen}
     >
@@ -602,7 +663,7 @@ export function EventNamingSection({ form }: SectionProps) {
   )
 }
 
-export function AppVersionSection({ form }: SectionProps) {
+export function AppVersionSection({ form, readOnly }: SectionProps) {
   const { state, setAppVersionColumn, setPlatformColumn, set, preview, fieldErrors } = form
   const defaultOpen = Boolean(
     state.appVersionColumn
@@ -613,6 +674,7 @@ export function AppVersionSection({ form }: SectionProps) {
 
   return (
     <CollapsibleSection
+      readOnly={readOnly}
       title="App version"
       explanation="Attach an app release and platform to every event. Leave this alone if you do not ship versioned apps."
       defaultOpen={defaultOpen}
@@ -636,7 +698,7 @@ export function AppVersionSection({ form }: SectionProps) {
 }
 
 /** Rendered only in Catalog + monitoring — there are no metrics to break down otherwise. */
-export function MetricsDriftSection({ form }: SectionProps) {
+export function MetricsDriftSection({ form, readOnly }: SectionProps) {
   const {
     state, set, preview, fieldErrors,
     toggleMetricBreakdownColumn, toggleDistributionDriftField,
@@ -651,6 +713,7 @@ export function MetricsDriftSection({ form }: SectionProps) {
 
   return (
     <CollapsibleSection
+      readOnly={readOnly}
       title="Metric breakdowns and drift"
       explanation="Extra columns to split metrics by, and columns whose value mix you want watched for drift. Leave this alone to collect one series per event."
       defaultOpen={defaultOpen}
@@ -688,8 +751,10 @@ export function MetricsDriftSection({ form }: SectionProps) {
   )
 }
 
-export function LimitsSection({ form }: SectionProps) {
+export function LimitsSection({ form, readOnly }: SectionProps) {
   const { state, set, fieldErrors } = form
+  // The instance's real caps for the hints, else the shipped ones (B15).
+  const rowLimitDefaults = useRowLimitDefaults()
   const monitoring = state.mode === 'monitoring'
   // A create-page lookback of "24" is this form's own default, not a user choice,
   // so it must not spring the section open on every edit of a fresh config.
@@ -708,12 +773,21 @@ export function LimitsSection({ form }: SectionProps) {
     || fieldErrors.scanRowLimit
     || fieldErrors.metricsRowLimit,
   )
+  // A failed run's "Open Limits" link names this section (F15). The form also
+  // renders outside a router (its tests, the edit dialog), so the hash comes
+  // from the address bar rather than useLocation, which would throw there.
+  const [linkedHere] = useState(
+    () => typeof window !== 'undefined' && window.location.hash === `#${LIMITS_SECTION_ID}`,
+  )
 
   return (
     <CollapsibleSection
+      readOnly={readOnly}
       title="Limits"
       explanation="Caps on how much warehouse data each run reads. Leave these alone unless runs are slow or expensive."
-      defaultOpen={defaultOpen}
+      defaultOpen={defaultOpen || linkedHere}
+      sectionId={LIMITS_SECTION_ID}
+      revealOnMount={linkedHere}
     >
       {monitoring && state.interval && (
         <Field
@@ -744,7 +818,7 @@ export function LimitsSection({ form }: SectionProps) {
         <Field
           label="Lookback (hours)"
           htmlFor="scan-lookback-hours"
-          hint={`How far back each run reads, counted on ${state.timeColumn}. Default 24.`}
+          hint={`How far back each run reads, counted on ${state.timeColumn}. Empty means the 24-hour default.`}
         >
           <Input
             id="scan-lookback-hours"
@@ -753,7 +827,7 @@ export function LimitsSection({ form }: SectionProps) {
             value={state.scanLookbackHours}
             onChange={e => set('scanLookbackHours', e.target.value)}
             className="font-mono max-w-[280px]"
-            placeholder="Default"
+            placeholder="24"
             {...invalidAria('scan-lookback-hours', fieldErrors.scanLookbackHours)}
           />
           <FieldError id="scan-lookback-hours-error" message={fieldErrors.scanLookbackHours} />
@@ -767,7 +841,7 @@ export function LimitsSection({ form }: SectionProps) {
           </p>
         </Field>
       )}
-      <Field label="Row cap per run" htmlFor="scan-row-limit" last={!monitoring}>
+      <Field label="Row cap per run" htmlFor="scan-row-limit" hint={rowCapHint('catalog', rowLimitDefaults)} last={!monitoring}>
         <Input
           id="scan-row-limit"
           type="number"
@@ -775,7 +849,7 @@ export function LimitsSection({ form }: SectionProps) {
           value={state.scanRowLimit}
           onChange={e => set('scanRowLimit', e.target.value)}
           className="font-mono max-w-[280px]"
-          placeholder="Default"
+          placeholder="Instance default"
           {...invalidAria('scan-row-limit', fieldErrors.scanRowLimit)}
         />
         <FieldError id="scan-row-limit-error" message={fieldErrors.scanRowLimit} />
@@ -788,7 +862,7 @@ export function LimitsSection({ form }: SectionProps) {
           saved while monitoring survives a switch to Catalog only and comes back
           the moment monitoring does. */}
       {monitoring && (
-        <Field label="Row cap per metrics run" htmlFor="scan-metrics-row-limit" last>
+        <Field label="Row cap per metrics run" htmlFor="scan-metrics-row-limit" hint={rowCapHint('metrics', rowLimitDefaults)} last>
           <Input
             id="scan-metrics-row-limit"
             type="number"
@@ -796,7 +870,7 @@ export function LimitsSection({ form }: SectionProps) {
             value={state.metricsRowLimit}
             onChange={e => set('metricsRowLimit', e.target.value)}
             className="font-mono max-w-[280px]"
-            placeholder="Default"
+            placeholder="Instance default"
             {...invalidAria('scan-metrics-row-limit', fieldErrors.metricsRowLimit)}
           />
           <FieldError id="scan-metrics-row-limit-error" message={fieldErrors.metricsRowLimit} />

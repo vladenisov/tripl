@@ -16,7 +16,7 @@ import Layout from './Layout'
 import { expectNoAxeViolations } from '@/test/axe'
 import { toast } from 'sonner'
 import { surfaceQueryError } from '@/lib/errorFeedback'
-import { usePageTitle } from './shell-chrome-context'
+import { editPageTitle, usePageTitle } from './shell-chrome-context'
 import { at } from '@/test/at'
 
 vi.mock('@/api/alerting', () => ({
@@ -426,6 +426,43 @@ describe('Layout detail crumbs from the entity (MO-13)', () => {
     expect(within(banner).getAllByText('Plan').length).toBeGreaterThan(0)
     expect(within(banner).queryByText('Observe')).toBeNull()
     expect(within(banner).queryByText('Anomalies')).toBeNull()
+  })
+})
+
+describe('Layout metric editor crumbs (MT-31)', () => {
+  it('names the new-metric editor under Metrics', async () => {
+    renderLayout('/p/demo/metrics/new', '/p/:slug/metrics/new', 'Metric form body')
+    await screen.findByText('Metric form body')
+
+    const banner = screen.getByRole('banner')
+    expect(within(banner).getByText('Metrics')).toBeInTheDocument()
+    expect(within(banner).getByText('New metric')).toBeInTheDocument()
+  })
+
+  it('files a fact table editor under Metrics › Fact tables', async () => {
+    renderLayout('/p/demo/metrics/fact-tables/ft-1/edit', '/p/:slug/metrics/fact-tables/:id/edit', 'Fact form body')
+    await screen.findByText('Fact form body')
+
+    const banner = screen.getByRole('banner')
+    expect(within(banner).getByText('Fact tables')).toBeInTheDocument()
+    expect(within(banner).getByText('Edit fact table')).toBeInTheDocument()
+  })
+
+  it('reads Metrics › <metric> › Edit once the editor names its metric', async () => {
+    function NamedEditor() {
+      usePageTitle(editPageTitle('Active Sessions'))
+      return <div>Metric form body</div>
+    }
+    renderLayout('/p/demo/metrics/m-1/edit', '/p/:slug/metrics/:id/edit', undefined, {
+      page: <NamedEditor />,
+    })
+    await screen.findByText('Metric form body')
+
+    const banner = screen.getByRole('banner')
+    expect(within(banner).getByText('Metrics')).toBeInTheDocument()
+    expect(within(banner).getByText('Active Sessions')).toBeInTheDocument()
+    expect(within(banner).getByText('Edit')).toHaveClass('font-semibold')
+    expect(within(banner).queryByText('Edit · Active Sessions')).toBeNull()
   })
 })
 

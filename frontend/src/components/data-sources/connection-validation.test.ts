@@ -4,6 +4,7 @@ import {
   EMPTY_CONNECTION_CORE_FORM,
   coreConnectionChanged,
   dataSourceToCoreForm,
+  serverCoreErrors,
   serviceAccountKeyError,
 } from './connection-core'
 import {
@@ -116,5 +117,46 @@ describe('coreConnectionChanged (DATA-30)', () => {
     const bq = { ...source, db_type: 'bigquery' } as DataSource
     const form = { ...EMPTY_CONNECTION_CORE_FORM, host: bq.host, databaseName: bq.database_name }
     expect(coreConnectionChanged(bq, { ...form, port: 1, username: 'x' })).toBe(false)
+  })
+})
+
+describe('serverCoreErrors (DA-38)', () => {
+  function apiError(fields: { loc: (string | number)[]; msg: string; type: string }[]) {
+    return Object.assign(new Error('raw'), { fields })
+  }
+
+  it('maps named fields onto their controls and keeps the rest', () => {
+    const result = serverCoreErrors(
+      apiError([
+        { loc: ['body', 'host'], msg: 'String should have at least 1 character', type: 'string_too_short' },
+        { loc: ['body', 'database_name'], msg: 'Bad name', type: 'value_error' },
+        { loc: ['body', 'timeout_seconds'], msg: 'Too large', type: 'less_than_equal' },
+      ]),
+      'clickhouse',
+      'Required',
+    )
+    expect(result.fields).toEqual({ host: 'Required', databaseName: 'Bad name' })
+    expect(result.rest).toBe('timeout_seconds: Too large')
+  })
+
+  it('only pins what the type shows: no port for BigQuery, no password box message elsewhere', () => {
+    const port = { loc: ['body', 'port'], msg: 'Bad port', type: 'value_error' }
+    const password = { loc: ['body', 'password'], msg: 'Bad key', type: 'value_error' }
+    expect(serverCoreErrors(apiError([port, password]), 'bigquery', 'Required')).toEqual({
+      fields: { secret: 'Bad key' },
+      rest: 'port: Bad port',
+    })
+    expect(serverCoreErrors(apiError([port, password]), 'postgres', 'Required')).toEqual({
+      fields: { port: 'Bad port' },
+      rest: 'password: Bad key',
+    })
+  })
+
+  it('returns an unstructured error whole, and nothing for no error', () => {
+    expect(serverCoreErrors(new Error('Connection refused'), 'clickhouse', 'Required')).toEqual({
+      fields: {},
+      rest: 'Connection refused',
+    })
+    expect(serverCoreErrors(null, 'clickhouse', 'Required')).toEqual({ fields: {}, rest: null })
   })
 })

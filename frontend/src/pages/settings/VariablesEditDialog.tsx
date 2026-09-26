@@ -354,9 +354,12 @@ export function VariablesEditDialog({
       <Dialog open onOpenChange={open => { if (!open) onClose() }}>
         <DialogContent className="max-w-4xl">
           {/* Only the body scrolls: the title and Save stay in view (AL-4). */}
+          {/* min-w-0 all the way down: the observed-values table's min-content
+              width used to widen the form past a 390px dialog and clip every
+              control at the right edge (AU-3). */}
           <form
             noValidate
-            className="flex min-h-0 flex-col gap-4"
+            className="flex min-h-0 min-w-0 flex-col gap-4"
             onSubmit={e => {
               e.preventDefault()
               if (!canWrite) return
@@ -369,12 +372,13 @@ export function VariablesEditDialog({
               if (!typeChangeBlocked) updateMut.mutate()
             }}
           >
-            <DialogHeader><DialogTitle>{canWrite ? 'Edit' : 'Variable'}: {variable.name}</DialogTitle></DialogHeader>
+            {/* pr-8 keeps a long name from running under the close button. */}
+            <DialogHeader className="pr-8"><DialogTitle className="break-all leading-tight">{canWrite ? 'Edit' : 'Variable'}: {variable.name}</DialogTitle></DialogHeader>
             {/* A viewer opens the same dialog to read the drift, overrides and
                 observed values; `disabled` on the fieldset reaches every
                 control inside it, and `contents` keeps it out of the layout. */}
             <fieldset disabled={!canWrite} className="contents">
-            <DialogBody className="grid gap-4">
+            <DialogBody className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4">
               <div className="grid gap-2">
                 <Label htmlFor={nameId}>Name</Label>
                 <Input
@@ -452,6 +456,13 @@ export function VariablesEditDialog({
                   <div className={`mb-1 text-body-sm font-semibold uppercase tracking-wide ${activeDrifts.length > 0 ? 'text-warning' : 'text-muted-foreground'}`}>
                     Value drift — observed values outside the documented list
                   </div>
+                  {/* These buttons act on their own, so Cancel below does not
+                      undo them; saying so ends the guess. A stopgap only: AU-26's
+                      variable detail page, which would give these actions a home
+                      of their own, is not built. */}
+                  {canWrite && activeDrifts.length > 0 && (
+                    <p className="mb-1.5 text-caption text-muted-foreground">Each action applies at once.</p>
+                  )}
                   {visibleDrifts.length > 0 && (
                     <ul className="space-y-1.5">
                       {visibleDrifts.map(({ drift, state }, driftIndex) => (
@@ -537,6 +548,7 @@ export function VariablesEditDialog({
                 </div>
                 <p className="mb-2 text-caption text-muted-foreground">
                   An override replaces the documented list above for that specific event.
+                  {' '}Save override applies it at once; the dialog's Save and Cancel do not touch it.
                 </p>
                 {overrides.length > 0 && (
                   <ul className="mb-2 space-y-1">

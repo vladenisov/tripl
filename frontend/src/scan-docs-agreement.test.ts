@@ -53,15 +53,16 @@ const SCAN_DOCS = [
 const SCAN_CONFIG_NOUN = /\bscan config(?:uration)?s?\b/i
 
 describe('the scan docs describe the product this branch ships', () => {
-  it('feature-reference names the three tiles the Scans page renders', () => {
+  it('feature-reference names the four figures the Scans page renders', () => {
     const page = readFileSync(join(SRC, 'pages', 'settings', 'ScansTab.tsx'), 'utf8')
     const labels = [...page.matchAll(/<MiniStat\s[\s\S]*?label="([^"]+)"/g)].map((m) => m[1])
-    expect(labels, 'ScansTab.tsx should still render exactly three KPI tiles').toHaveLength(3)
+    // Scans · Monitoring · Failing · Warehouse rows 24h (#247 DA-11, DA-4).
+    expect(labels, 'ScansTab.tsx should still render exactly four KPI figures').toHaveLength(4)
 
     const doc = readDoc('use/feature-reference.md')
     const paragraph = doc
       .split('\n\n')
-      .find((block) => block.includes('The scan list heads three figures'))
+      .find((block) => block.includes('The scan list heads four figures'))
     expect(
       paragraph,
       'feature-reference.md no longer has the paragraph naming the Scans page tiles, so nothing '
@@ -113,8 +114,9 @@ describe('the scan docs describe the product this branch ships', () => {
    * The correction that took metric points off "every run" is right — `run_scan`
    * writes no `EventMetric` row — but it is one word away from a second false
    * claim, and quick-start.md shipped it: "only the schedule records metric
-   * points". The Configuration tab ships a manual metrics path next to that
-   * sentence. **Run a one-off replay** posts to `/metrics/replay` →
+   * points". The scan page ships a manual metrics path next to that
+   * sentence. **Replay a period…** in its header (#247 DA-8 moved it out of
+   * the Configuration tab's Danger zone) posts to `/metrics/replay` →
    * `scan_service.trigger_metrics_replay`, which dispatches `collect_metrics`
    * for an explicit window — the same task beat dispatches, and the one that
    * UPSERTs `event_metrics` rows. troubleshooting.md sends a user with an empty
@@ -122,19 +124,19 @@ describe('the scan docs describe the product this branch ships', () => {
    * of waiting with the fix on screen.
    */
   it('never makes the schedule the only path to a metric point', () => {
-    const form = readFileSync(join(SRC, 'pages', 'settings', 'scans', 'ScanConfigForm.tsx'), 'utf8')
-    const CONTROL = 'Run a one-off replay'
+    const page = readFileSync(join(SRC, 'pages', 'settings', 'ScanConfigDetailView.tsx'), 'utf8')
+    const CONTROL = 'Replay a period…'
 
     expect(
-      form,
-      `The Configuration tab no longer offers "${CONTROL}". If the manual metrics path is gone, `
+      page,
+      `The scan page header no longer offers "${CONTROL}". If the manual metrics path is gone, `
         + 'the docs may say the schedule is the only one — retire this guard with it.',
     ).toContain(CONTROL)
     expect(
-      form,
+      page,
       'The replay control is no longer gated on time_column && interval, the pair '
         + 'trigger_metrics_replay 400s without. The docs describe it as unlocking with both.',
-    ).toMatch(/canReplay = Boolean\(scanConfig\.time_column && scanConfig\.interval\)/)
+    ).toMatch(/canReplay = Boolean\(sc\.time_column && sc\.interval\)/)
 
     // Only the exclusive shape is banned. "records metric points on its
     // schedule" is the true claim and must stay sayable.
@@ -152,7 +154,7 @@ describe('the scan docs describe the product this branch ships', () => {
       expect(
         offenders,
         `${relative} says the schedule is the only thing that records metric points, but `
-          + `"${CONTROL}" on the scan's Configuration tab replays a past window through `
+          + `"${CONTROL}" in the scan page header replays a past window through `
           + 'collect_metrics. Say Run now records none — not that nothing else can.',
       ).toEqual([])
     }

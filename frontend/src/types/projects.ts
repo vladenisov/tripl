@@ -19,6 +19,10 @@ export interface ProjectSummary {
   archived_event_count: number
   variable_count: number
   scan_count: number
+  // Metric definitions in the project, any status: the "Define a key metric"
+  // onboarding step's done-state (JR-2). Always sent; optional so summaries
+  // built before it still type, and a missing count leaves that step out.
+  metric_count?: number
   alert_destination_count: number
   // Enabled alert rules across this project's destinations. A destination on
   // its own routes nothing, so "alerting is set up" needs both counters.

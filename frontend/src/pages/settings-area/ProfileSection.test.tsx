@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import ProfileSection from './ProfileSection'
 
@@ -30,12 +30,12 @@ describe('Account · Profile', () => {
   it('shows the account’s real details', () => {
     render(<ProfileSection />)
 
-    expect(within(screen.getByRole('group', { name: 'Name' })).getByText('Ada Lovelace'))
-      .toBeInTheDocument()
-    expect(within(screen.getByRole('group', { name: 'Email' })).getByText('ada@example.com'))
-      .toBeInTheDocument()
-    expect(within(screen.getByRole('group', { name: 'Role' })).getByText('Owner'))
-      .toBeInTheDocument()
+    expect(screen.getByText('Ada Lovelace')).toBeInTheDocument()
+    expect(screen.getByText('ada@example.com')).toBeInTheDocument()
+    // The shared role chip, the one Members shows too (ST-16).
+    expect(screen.getByText('Owner')).toHaveAttribute('data-slot', 'chip')
+    // Plain text, not a form of read-only fields (ST-23).
+    expect(screen.queryAllByRole('group')).toHaveLength(0)
   })
 
   /**
@@ -46,9 +46,7 @@ describe('Account · Profile', () => {
     render(<ProfileSection />)
 
     expect(
-      within(screen.getByRole('group', { name: 'Timezone' })).getByText(
-        Intl.DateTimeFormat().resolvedOptions().timeZone,
-      ),
+      screen.getByText(Intl.DateTimeFormat().resolvedOptions().timeZone),
     ).toBeInTheDocument()
   })
 

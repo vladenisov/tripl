@@ -289,3 +289,73 @@ describe('DestinationCard enable switch (ALR-6)', () => {
   })
 })
 
+
+describe('DestinationCard test failures in words (AL-30)', () => {
+  it('says what a transport error means and keeps the raw text under Details', async () => {
+    vi.spyOn(alertingApi, 'testDestination').mockResolvedValue({
+      ok: false,
+      error: '<urlopen error Tunnel connection failed: 403 Forbidden>',
+      sent_at: null,
+    })
+    renderCard()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send a test message through TG' }))
+
+    expect(
+      await screen.findByText(
+        "Test message not delivered. Couldn't reach the URL: a network proxy blocked the request.",
+      ),
+    ).toHaveAttribute('role', 'status')
+    expect(screen.getByText('Details')).toBeInTheDocument()
+    expect(screen.getByText('<urlopen error Tunnel connection failed: 403 Forbidden>')).toBeInTheDocument()
+  })
+})
+
+describe('DestinationCard facts (AL-24)', () => {
+  it('names the channel instead of printing its enum, and folds stored secrets into one word', () => {
+    renderCard()
+
+    expect(screen.getByText('Telegram')).toBeInTheDocument()
+    expect(screen.queryByText('telegram')).toBeNull()
+    expect(screen.getByText('Configured')).toBeInTheDocument()
+    expect(screen.queryByText('bot token set')).toBeNull()
+    // The switch is the state; no pill repeats it while enabled.
+    expect(screen.queryByText('enabled')).toBeNull()
+  })
+
+  it('marks a disabled destination', () => {
+    renderCard(makeDestination({ enabled: false }))
+
+    expect(screen.getByText('Disabled')).toBeInTheDocument()
+  })
+})
+
+describe('DestinationCard delete (AL-25)', () => {
+  it('puts Delete inside the card, named by the destination', () => {
+    const onDelete = vi.fn()
+    const queryClient = new QueryClient()
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <DestinationCard
+            slug="windy-ios"
+            destination={makeDestination()}
+            canWrite
+            onEditDestination={() => {}}
+            onDeleteDestination={onDelete}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete destination TG' }))
+
+    expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ id: 'dest-1' }))
+  })
+
+  it('offers no delete where the section passes none', () => {
+    renderCard()
+
+    expect(screen.queryByRole('button', { name: /^Delete destination/ })).toBeNull()
+  })
+})

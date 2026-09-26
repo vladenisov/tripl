@@ -7,9 +7,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.data_source import DataSource
+from tripl.models.domain_enums import MetricKind
 from tripl.models.fact_table import FactTable
 from tripl.models.metric_definition import MetricDefinition
-from tripl.schemas.fact_table import FactTableCreate, FactTableUpdate
+from tripl.schemas.fact_table import FactTableCreate, FactTableListItem, FactTableUpdate
 from tripl.services.data_source_scope import (
     DATA_SOURCE_NOT_AVAILABLE,
     data_source_out_of_project_scope,
@@ -277,6 +278,63 @@ async def list_fact_tables(
         .limit(min(limit, _LIST_HARD_CAP))
     )
     return list(result.scalars().all()), int(total)
+
+
+async def list_fact_table_items(
+    session: AsyncSession,
+    slug: str,
+    *,
+    search: str | None = None,
+    offset: int = 0,
+    limit: int = 200,
+) -> tuple[list[FactTableListItem], int]:
+    """The catalog page with its per-row rollups (MT-30).
+
+    ``metric_count`` counts every fact metric that READS the table, the way
+    ``fact_table_dependents.metrics_depending_on`` decides it: the metric's own
+    ``fact_table_id`` plus both ratio operands in ``config``. A cross-table
+    ratio keeps its denominator's table only in that JSON, so a grouped count on
+    the column alone would call a denominator-only table unused. The operand ids
+    are not indexable, so this is one query for the project's fact metrics and
+    the tally in Python (bounded by the project's metric count, never a query
+    per row); the column and identifier counts come off the row's own JSON.
+    """
+    # Function-local for the reason ``metrics_depending_on`` gives: a
+    # module-level import of the metrics service here would close an import loop.
+    from tripl.services.metric_definition_service import _metric_fact_table_ids
+
+    fact_tables, total = await list_fact_tables(
+        session, slug, search=search, offset=offset, limit=limit
+    )
+    metric_counts: dict[uuid.UUID, int] = {}
+    if fact_tables:
+        listed_ids = {ft.id for ft in fact_tables}
+        fact_metrics = (
+            (
+                await session.execute(
+                    select(MetricDefinition).where(
+                        MetricDefinition.project_id == fact_tables[0].project_id,
+                        MetricDefinition.kind == MetricKind.fact,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for metric in fact_metrics:
+            for fact_table_id in _metric_fact_table_ids(metric) & listed_ids:
+                metric_counts[fact_table_id] = metric_counts.get(fact_table_id, 0) + 1
+    items = [
+        FactTableListItem.model_validate(fact_table).model_copy(
+            update={
+                "metric_count": metric_counts.get(fact_table.id, 0),
+                "column_count": len(fact_table.columns or []),
+                "identifier_count": len(fact_table.identifier_columns or []),
+            }
+        )
+        for fact_table in fact_tables
+    ]
+    return items, total
 
 
 async def get_fact_table(session: AsyncSession, slug: str, fact_table_id: uuid.UUID) -> FactTable:

@@ -97,7 +97,9 @@ one a person renamed, edited, documented, or excluded from scans is kept. See
 
 A **relation** records how events connect to each other — for example, that
 `checkout_started` is expected to be followed by `checkout_completed`. It
-captures the structure of a flow, not just the individual events.
+captures the structure of a flow, not just the individual events. Relations
+are created, edited in place (**Edit** on a relation's row) and deleted from
+**Plan › Relations**.
 
 ### Metric
 

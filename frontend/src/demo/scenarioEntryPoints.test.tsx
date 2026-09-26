@@ -99,11 +99,6 @@ const picker = () => at(screen.getAllByRole('list', { name: 'Scenario chapters' 
 const chapterRow = (title: string) =>
   within(picker()).getByRole('button', { name: new RegExp(title) })
 
-/** The welcome panel opens collapsed (tripl-wnzi) — one click reveals the rest. */
-function expandWelcome(): void {
-  fireEvent.click(screen.getByRole('button', { name: /Show me around/ }))
-}
-
 beforeEach(() => {
   vi.spyOn(scansApi, 'getJob').mockResolvedValue(scanJob())
   vi.spyOn(metricsCatalogApi, 'get').mockResolvedValue({
@@ -118,21 +113,15 @@ afterEach(() => {
 })
 
 describe('DemoWelcomePanel — how much of the Overview it occupies', () => {
-  it('opens collapsed, and one click brings the chapters back (tripl-wnzi)', () => {
+  it('is one row: no second chapter list, no expander (tripl-wnzi, #251 SH-3 / SH-4)', () => {
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
 
-    // Expanded, this panel stacked under the demo banner and the coach strip
-    // and pushed the Overview's own "Live activity" heading ~770px down — at
-    // 1512x950 the first thing a new user saw of the product was nothing.
-    expect(screen.queryByRole('list', { name: 'Scenario chapters' })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Take the tour/ })).toBeNull()
-    // The panel still says what it is, so the expander is not a mystery.
+    // Expanded, this panel pushed the Overview's own heading ~500-770px down
+    // and listed the same seven chapters the "Tour & chapters" dialog does.
     expect(screen.getByRole('heading', { name: /Welcome to your demo workspace/ })).toBeInTheDocument()
-
-    expandWelcome()
-
-    expect(picker()).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Take the tour/ })).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Scenario chapters' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Show me around/ })).toBeNull()
+    expect(screen.queryByText('Metric building blocks')).toBeNull()
   })
 
   it('comes back when the dismissal is cleared elsewhere (tripl-imco)', () => {
@@ -150,7 +139,7 @@ describe('DemoWelcomePanel — how much of the Overview it occupies', () => {
     expect(screen.getByRole('heading', { name: /Welcome to your demo workspace/ })).toBeInTheDocument()
   })
 
-  it('opens the tour at the step stored since the panel mounted', () => {
+  it('browses the chapters in the tour, at the step stored since the panel mounted', () => {
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
 
     // The banner hosts a second ProductTour on this same page. Stepping that one
@@ -159,15 +148,14 @@ describe('DemoWelcomePanel — how much of the Overview it occupies', () => {
     // and its first Next would write that back over the stored step.
     window.localStorage.setItem('tripl-tour:acme', '3')
 
-    expandWelcome()
-    fireEvent.click(screen.getByRole('button', { name: /Take the tour/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Browse chapters/ }))
 
     expect(screen.getByText(/^Step 4 of/)).toBeInTheDocument()
+    expect(picker()).toBeInTheDocument()
   })
 
   it('points at the real product, not only at more demo (tripl-1mzh)', () => {
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
-    expandWelcome()
 
     expect(screen.getByRole('link', { name: /Create a real project/ })).toHaveAttribute(
       'href',
@@ -216,10 +204,61 @@ describe('DemoWelcomePanel — dismissing it (DEMO-25, DEMO-24, LIVE-9)', () => 
   })
 })
 
-describe('DemoWelcomePanel — the chapter picker', () => {
-  it('lists every chapter in order', () => {
+describe('DemoWelcomePanel — the one way in (#251 SH-3 / JR-23)', () => {
+  it('starts the first chapter and lands the user on its first surface', () => {
     renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
-    expandWelcome()
+
+    fireEvent.click(
+      screen.getByRole('button', { name: `Start: ${CHAPTER_TITLES['live-loop']}` }),
+    )
+
+    expect(path()).toBe(`/p/${SLUG}/scans`)
+    expect(readScenarioState(SLUG).activeChapter).toBe('live-loop')
+  })
+
+  it('offers the next unfinished chapter once one is done', () => {
+    writeScenarioState(SLUG, liveLoopState('live-loop/see-chart', { status: 'completed' }))
+    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+
+    expect(
+      screen.getByRole('button', { name: `Start: ${CHAPTER_TITLES['edit-event']}` }),
+    ).toBeInTheDocument()
+  })
+
+  it('continues the chapter the user is in, where it left off', () => {
+    // `engaged`: the user picked it themselves, unlike the live loop a fresh
+    // demo starts with.
+    writeScenarioState(SLUG, {
+      ...chapterState('branches', 'branches/review-diff', 'active'),
+      engaged: true,
+    })
+    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
+
+    fireEvent.click(
+      screen.getByRole('button', { name: `Continue: ${CHAPTER_TITLES.branches}` }),
+    )
+
+    expect(readScenarioState(SLUG).chapters.branches).toMatchObject({
+      status: 'active',
+      step: 'branches/review-diff',
+    })
+  })
+
+  it('offers no chapter when there is no scenario', () => {
+    renderWithScenario(
+      <DemoWelcomePanel project={demoProject()} />,
+      demoProject({ is_demo: false }),
+    )
+
+    expect(screen.queryByRole('button', { name: /^Start:/ })).toBeNull()
+    // The tour is still the way in.
+    expect(screen.getByRole('button', { name: /Take the tour/ })).toBeInTheDocument()
+  })
+})
+
+describe('ChapterPicker — status', () => {
+  it('lists every chapter in order', () => {
+    renderWithScenario(<ProductTour slug={SLUG} open onOpenChange={() => {}} />, demoProject())
 
     expect(picker()).toHaveClass('min-w-0')
     const rows = within(picker()).getAllByRole('button')
@@ -229,59 +268,13 @@ describe('DemoWelcomePanel — the chapter picker', () => {
     expect(rows[rows.length - 1]).toHaveTextContent(CHAPTER_TITLES.explore)
   })
 
-  it('shows each chapter’s status', () => {
+  it('marks what is done and leaves a chapter not started plain (#251 SH-3)', () => {
     writeScenarioState(SLUG, liveLoopState('live-loop/see-chart', { status: 'completed' }))
-    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
-    expandWelcome()
+    renderWithScenario(<ProductTour slug={SLUG} open onOpenChange={() => {}} />, demoProject())
 
     expect(chapterRow(CHAPTER_TITLES['live-loop'])).toHaveTextContent('Completed')
-    expect(chapterRow(CHAPTER_TITLES['edit-event'])).toHaveTextContent('Not started')
-  })
-
-  it('explains what a chapter teaches before the click commits (tripl-vgm9)', () => {
-    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
-    expandWelcome()
-
-    // Picking is not a preview — it starts the chapter, navigates away, and
-    // reassigns the active chapter the strip may be mid-way through. The
-    // compact rows are bare titles, so the blurb rides along as a tooltip.
-    expect(chapterRow(CHAPTER_TITLES.explore)).toHaveAttribute('title', CHAPTER_BLURBS.explore)
-  })
-
-  it('starts a chapter and lands the user on its first surface', () => {
-    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
-    expandWelcome()
-
-    fireEvent.click(chapterRow(CHAPTER_TITLES.variables))
-
-    expect(path()).toBe(`/p/${SLUG}/settings/variables`)
-    expect(readScenarioState(SLUG).activeChapter).toBe('variables')
-    expect(readScenarioState(SLUG).chapters.variables?.status).toBe('active')
-  })
-
-  it('resumes a dismissed chapter where it left off', () => {
-    writeScenarioState(SLUG, chapterState('branches', 'branches/review-diff', 'dismissed'))
-    renderWithScenario(<DemoWelcomePanel project={demoProject()} />, demoProject())
-    expandWelcome()
-
-    fireEvent.click(chapterRow(CHAPTER_TITLES.branches))
-
-    expect(readScenarioState(SLUG).chapters.branches).toMatchObject({
-      status: 'active',
-      step: 'branches/review-diff',
-    })
-  })
-
-  it('offers no chapters when there is no scenario', () => {
-    renderWithScenario(
-      <DemoWelcomePanel project={demoProject()} />,
-      demoProject({ is_demo: false }),
-    )
-    expandWelcome()
-
-    expect(screen.queryByRole('list', { name: 'Scenario chapters' })).toBeNull()
-    // The tour is still the way in.
-    expect(screen.getByRole('button', { name: /Take the tour/ })).toBeInTheDocument()
+    expect(chapterRow(CHAPTER_TITLES['edit-event'])).not.toHaveTextContent('Not started')
+    expect(chapterRow(CHAPTER_TITLES['edit-event'])).toHaveTextContent(CHAPTER_BLURBS['edit-event'])
   })
 })
 

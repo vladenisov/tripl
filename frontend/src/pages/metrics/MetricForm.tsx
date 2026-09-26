@@ -2,8 +2,9 @@ import { useMemo, useState } from 'react'
 import { Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, ChevronLeft, Loader2, Plus, Save } from 'lucide-react'
+import { Activity, AlertTriangle, ChevronLeft, Code2, Loader2, Plus, Save, Table2 } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
+import { usersApi } from '@/api/users'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
 import { PageSkeleton, QueryErrorState, ReadOnlyNotice } from '@/components/states'
@@ -20,10 +21,12 @@ import {
   TextArea,
   TextInput,
   Field,
+  type RadioCardOption,
 } from '@/components/settings/kit'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useDataSourceSchema } from '@/hooks/useDataSourceSchema'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
+import { editPageTitle, usePageTitle } from '@/components/shell-chrome-context'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { isIntervalFinerThan } from '@/lib/metricFormat'
 import { getMetricMonitoringPath } from '@/lib/monitoring'
@@ -35,12 +38,14 @@ import {
   metricDrilldownKeys,
   metricGeneratedSqlKey,
   metricsCatalogKey,
+  usersKey,
 } from '@/lib/queryKeys'
 import {
   METRIC_STATUSES,
   METRIC_STATUS_LABEL,
   type DataSource,
   type MetricDefinitionDetailResponse,
+  type MetricDefinitionListResponse,
   type MetricKind,
   type MetricScanInterval,
   type MetricStatus,
@@ -50,10 +55,13 @@ import { FactDefinitionFields } from './FactDefinitionFields'
 import { MonitoringFields } from './MonitoringFields'
 import { SqlDefinitionFields } from './SqlDefinitionFields'
 import { TemplateGallery } from './TemplateGallery'
+import { eventRosterQuery } from './eventRoster'
 import { errorAria, focusField } from '@/lib/fieldErrors'
 import {
+  METRIC_COLOR_SWATCHES,
   columnsOfReferencedTables,
   draftFromMetric,
+  nextMetricColor,
   savedDimensions,
   toIdentifier,
   validateDraft,
@@ -77,23 +85,59 @@ import {
 } from './metricTemplates'
 import { useFactTableDetails } from './useFactTableDetails'
 
-const KIND_OPTIONS: { value: MetricKind; label: string; description: string }[] = [
-  {
-    value: 'sql',
-    label: 'SQL',
-    description: 'Run a custom SQL query that returns one numeric value per bucket.',
-  },
-  {
-    value: 'fact',
-    label: 'Fact',
-    description: 'Aggregate a reusable fact table (count, sum, average, ratio…).',
-  },
-  {
-    value: 'event_composition',
-    label: 'Event composition',
-    description: 'Combine existing event series (single, ratio, per distinct user).',
-  },
-]
+// What each kind measures and what it needs, in the words of the person
+// choosing, most approachable first (MT-3). The stored kind names stay in the
+// catalog's chips and filters. A kind the project cannot complete yet says so
+// on its card, before it is picked (MT-3, MT-11).
+function kindOptions({
+  noEvents,
+  noFactTables,
+}: {
+  noEvents: boolean
+  noFactTables: boolean
+}): (RadioCardOption & { value: MetricKind })[] {
+  return [
+    {
+      value: 'event_composition',
+      label: 'From tracked events',
+      description: noEvents
+        ? 'Count an event, or divide one event by another. No events are tracked in this project yet.'
+        : 'Count an event, or divide one event by another (e.g. checkout conversion). No SQL needed.',
+      icon: <Activity size={14} aria-hidden="true" style={{ color: 'var(--fg-muted)' }} />,
+    },
+    {
+      value: 'fact',
+      label: 'From a fact table',
+      description: noFactTables
+        ? 'Sum, average or count rows of a reusable warehouse table. This project has no fact tables yet.'
+        : 'Sum, average or count rows of a reusable warehouse table (e.g. revenue). Needs a fact table.',
+      icon: <Table2 size={14} aria-hidden="true" style={{ color: 'var(--fg-muted)' }} />,
+    },
+    {
+      value: 'sql',
+      label: 'Custom SQL',
+      description: 'Write a query that returns a time column and a value. For analysts.',
+      icon: <Code2 size={14} aria-hidden="true" style={{ color: 'var(--fg-muted)' }} />,
+    },
+  ]
+}
+
+/** Units offered as one-click chips beside the Unit input (MT-17). */
+const UNIT_SUGGESTIONS = ['%', 'ms', '$', 'users'] as const
+
+/** Why a draft or archived metric shows no data: said under Status (MT-1). */
+const STATUS_HINT =
+  'Only active metrics are collected on schedule and monitored. Draft and archived metrics are not.'
+
+/** Every catalog row cached for `slug`, across the filtered pages. */
+function cachedCatalogItems(
+  qc: ReturnType<typeof useQueryClient>,
+  slug: string,
+): MetricDefinitionListResponse['items'] {
+  return qc
+    .getQueriesData<MetricDefinitionListResponse>({ queryKey: metricsCatalogKey(slug) })
+    .flatMap(([, data]) => (data && Array.isArray(data.items) ? data.items : []))
+}
 
 /** What the history-loss confirm and the inline notice both say. */
 const DEFINITION_CHANGE_MESSAGE =
@@ -129,6 +173,12 @@ interface MetricFormProps {
   onRetryDataSources?: () => void
   /** Cancel / back. */
   onClose: () => void
+  /**
+   * The header's "Metrics" link; defaults to {@link onClose}. The route sends
+   * it to the catalog it names, while Cancel returns to wherever the editor
+   * was opened from (MT-31).
+   */
+  onBack?: () => void
   /** After a successful save; defaults to {@link onClose}. */
   onSaved?: (metricId: string, created: boolean) => void
 }
@@ -150,6 +200,7 @@ export function MetricForm({
   dataSourcesError,
   onRetryDataSources,
   onClose,
+  onBack,
   onSaved,
 }: MetricFormProps) {
   const qc = useQueryClient()
@@ -157,7 +208,13 @@ export function MetricForm({
   const canWrite = useCanWriteProject()
   const isNew = !metric
 
-  const [draft, setDraft] = useState<MetricDraft>(() => draftFromMetric(metric))
+  // A new metric takes the first colour no cached catalog metric uses (MT-35).
+  const [draft, setDraft] = useState<MetricDraft>(() =>
+    draftFromMetric(
+      metric,
+      metric ? undefined : nextMetricColor(cachedCatalogItems(qc, slug).map(item => item.color)),
+    ),
+  )
   const patch = (next: Partial<MetricDraft>) => setDraft(current => ({ ...current, ...next }))
 
   // Tracks whether the user has typed the internal name directly; once they
@@ -181,8 +238,44 @@ export function MetricForm({
   // Create-only starter gallery: shown pristine above the form; picking a
   // template or "Start from scratch" dismisses it. Never shown when editing.
   const [showTemplates, setShowTemplates] = useState(isNew)
+  // The template that seeded the form, named in a slim banner that reopens the
+  // gallery, so the choice is neither invisible nor final (MT-32).
+  const [pickedTemplate, setPickedTemplate] = useState<MetricTemplate | null>(null)
+  // Set when the Unit was filled in for the author because the metric became
+  // a ratio, so the row can say why it changed (MT-17).
+  const [unitAutoSet, setUnitAutoSet] = useState(false)
+  // The last SQL preview failed and nothing it ran against has changed since:
+  // creating from here asks first (MT-15).
+  const [sqlPreviewFailed, setSqlPreviewFailed] = useState(false)
 
-  const facts = useFactTableDetails(slug, draft, dataSources)
+  const facts = useFactTableDetails(slug, draft, dataSources, { loadList: isNew })
+  // The unfiltered first page of the event picker, shared with it by key: a
+  // new metric's kind step says when the project has no events (MT-3).
+  const eventRoster = useQuery({ ...eventRosterQuery(slug, ''), enabled: isNew })
+  const noEvents = eventRoster.isSuccess && eventRoster.data.total === 0
+  // The top bar names the edited metric after "Metrics", as the heading
+  // does (MT-31).
+  usePageTitle(metric ? editPageTitle(metric.display_name) : null)
+  // Who can own the metric: the workspace roster, readable by any member.
+  const usersQuery = useQuery({
+    queryKey: usersKey(),
+    queryFn: () => usersApi.list(),
+    // The picker falls back to "No owner" plus the stored owner.
+    meta: SILENT_ERROR_META,
+  })
+  const ownerOptions = useMemo(() => {
+    const users = usersQuery.data ?? []
+    const options = [
+      { value: '', label: 'No owner' },
+      ...users.map(user => ({ value: user.id, label: user.name || user.email })),
+    ]
+    // A stored owner the roster does not list (not loaded, or since removed)
+    // stays selectable rather than being silently cleared on save.
+    if (draft.ownerId && !users.some(user => user.id === draft.ownerId)) {
+      options.push({ value: draft.ownerId, label: 'Current owner' })
+    }
+    return options
+  }, [usersQuery.data, draft.ownerId])
   const operandColumns: OperandColumns = {
     numerator: facts.numerator.detail.columns,
     denominator: facts.denominator.detail.columns,
@@ -202,8 +295,16 @@ export function MetricForm({
     if (previewColumns) return previewColumns
     return columnsOfReferencedTables(sqlSchemaData?.tables ?? [], draft.metricSql)
   }, [previewColumns, sqlSchemaData, draft.metricSql])
-  const columnChoices =
+  // The metric's own time column is never a breakdown (MT-16).
+  const timeColumn =
+    draft.kind === 'fact'
+      ? facts.numerator.detail.timestampColumn ?? ''
+      : draft.kind === 'sql'
+        ? draft.sqlTimeColumn.trim()
+        : ''
+  const columnChoices = (
     draft.kind === 'fact' ? facts.numerator.detail.columns.map(column => column.name) : sqlColumns
+  ).filter(column => column !== timeColumn)
 
   const fieldErrors = useMemo(
     () => (submitAttempted ? validateDraft(draft, isNew) : {}),
@@ -227,11 +328,20 @@ export function MetricForm({
   const saveMut = useMutation({
     // Rendered inline at the foot of the form ("Could not save …").
     meta: SILENT_ERROR_META,
-    mutationFn: () =>
+    // A create says its status through the button pressed: "Create and start
+    // collecting" (active) or "Save as draft" (MT-1).
+    // The owner rides along with the presentation fields (MT-25).
+    mutationFn: (createStatus?: MetricStatus) =>
       metric
-        ? metricsCatalogApi.update(slug, metric.id, buildUpdatePayload(draft, operandColumns))
-        : metricsCatalogApi.create(slug, buildCreatePayload(draft, operandColumns)),
-    onSuccess: saved => {
+        ? metricsCatalogApi.update(slug, metric.id, {
+            ...buildUpdatePayload(draft, operandColumns),
+            owner_id: draft.ownerId || null,
+          })
+        : metricsCatalogApi.create(slug, {
+            ...buildCreatePayload({ ...draft, status: createStatus ?? draft.status }, operandColumns),
+            owner_id: draft.ownerId || null,
+          }),
+    onSuccess: (saved, createStatus) => {
       unsaved.release()
       void qc.invalidateQueries({ queryKey: metricsCatalogKey(slug) })
       void qc.invalidateQueries({ queryKey: metricGeneratedSqlKey(slug) })
@@ -244,7 +354,13 @@ export function MetricForm({
         }
         void qc.invalidateQueries({ queryKey: activeSignalsKey(slug) })
       }
-      toast.success(isNew ? 'Metric created.' : 'Metric saved.')
+      toast.success(
+        !isNew
+          ? 'Metric saved.'
+          : createStatus === 'active'
+            ? 'Metric created. Collection starts on the next scheduled run.'
+            : 'Metric saved as a draft. It is not collected until you set it to Active.',
+      )
       if (onSaved) onSaved(saved.id, isNew)
       else onClose()
     },
@@ -326,13 +442,22 @@ export function MetricForm({
     if (next !== draft.kind) applyKind(next)
   }
 
+  // A ratio reads as a fraction (0.08) until it has a unit: becoming one with
+  // the Unit empty fills in `%` and says so (MT-17).
+  const ratioUnit = (becomesRatio: boolean): Partial<MetricDraft> => {
+    if (!becomesRatio || draft.unit.trim()) return {}
+    setUnitAutoSet(true)
+    return { unit: '%' }
+  }
   const onFactCompositionChange = (next: FactComposition) => {
     setSubmitAttempted(false)
-    patch({ factComposition: next })
+    patch({ factComposition: next, ...ratioUnit(next === 'ratio') })
   }
   const onEventCompositionPatch = (next: Partial<MetricDraft>) => {
     if (next.composition !== undefined && next.composition !== draft.composition) {
       setSubmitAttempted(false)
+      patch({ ...next, ...ratioUnit(next.composition === 'ratio') })
+      return
     }
     patch(next)
   }
@@ -347,7 +472,7 @@ export function MetricForm({
     )
   }
 
-  const onSubmit = async () => {
+  const onSubmit = async (createStatus?: MetricStatus) => {
     if (facts.loading || facts.error) return
     setSubmitAttempted(true)
     const errs = validateDraft(draft, isNew)
@@ -365,7 +490,22 @@ export function MetricForm({
       })
       if (!ok) return
     }
-    saveMut.mutate()
+    // `previewColumns` is set only by a clean preview of the current inputs;
+    // any edit or data-source change clears it. So a query never previewed is
+    // asked about too, not only one whose preview failed (MT-15).
+    if (isNew && draft.kind === 'sql' && (sqlPreviewFailed || previewColumns === null)) {
+      const ok = await confirm({
+        title: sqlPreviewFailed
+          ? 'Create a metric whose preview failed?'
+          : 'Create a metric that hasn’t previewed?',
+        message: sqlPreviewFailed
+          ? "The query hasn't previewed successfully, so collection will likely fail the same way. Create it anyway?"
+          : 'Run Preview first to check the query returns what this metric expects. Collection fails on the first run if it does not. Create it anyway?',
+        confirmLabel: 'Create anyway',
+      })
+      if (!ok) return
+    }
+    saveMut.mutate(isNew ? (createStatus ?? 'active') : undefined)
   }
 
   // Seed the create form from a starter template, then reveal the (now
@@ -375,7 +515,14 @@ export function MetricForm({
   const applyTemplate = (template: MetricTemplate) => {
     const { seed } = template
     applyKind(seed.kind)
-    onDisplayNameChange(seed.displayName)
+    // A template's generic name ("Conversion") may already be taken: suffix it
+    // the way Duplicate does, so the seeded internal name does not 409 (MT-32).
+    const takenNames = new Set(cachedCatalogItems(qc, slug).map(item => item.display_name.toLowerCase()))
+    let seededName = seed.displayName
+    for (let n = 2; takenNames.has(seededName.toLowerCase()); n += 1) {
+      seededName = `${seed.displayName} ${n}`
+    }
+    onDisplayNameChange(seededName)
     setDraft(current => ({
       ...current,
       unit: seed.unit,
@@ -395,6 +542,8 @@ export function MetricForm({
       sqlTimeColumn: seed.sqlTimeColumn ?? current.sqlTimeColumn,
     }))
     if (seed.sqlTemplate !== undefined) setSqlTemplateId(seed.sqlTemplate)
+    setUnitAutoSet(false)
+    setPickedTemplate(template)
     setShowTemplates(false)
   }
 
@@ -418,15 +567,17 @@ export function MetricForm({
           back={
             <button
               type="button"
-              onClick={onClose}
+              onClick={onBack ?? onClose}
               className="inline-flex items-center gap-1 text-caption transition-colors hover:text-[var(--fg)]"
               style={{ color: 'var(--fg-muted)' }}
             >
-              <ChevronLeft size={14} /> Back
+              {/* Names where it leads, like the fact-table editor's (MT-31). */}
+              <ChevronLeft size={14} /> Metrics
             </button>
           }
           eyebrow="Observe · Metric"
-          title={isNew ? 'New metric' : canWrite ? 'Edit metric' : 'Metric'}
+          // The edited metric is named, so two open editors are told apart (MT-31).
+          title={metric ? `${canWrite ? 'Edit' : 'Metric'} · ${metric.display_name}` : 'New metric'}
         />
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
@@ -437,12 +588,89 @@ export function MetricForm({
           {isNew && showTemplates && (
             <TemplateGallery onPick={applyTemplate} onSkip={() => setShowTemplates(false)} />
           )}
+          {/* The gallery stays one click away once dismissed, whether a
+              template was picked or the author started from scratch (MT-32). */}
+          {isNew && !showTemplates && (
+            <div
+              className="mb-[18px] flex flex-wrap items-center gap-x-2 gap-y-1 rounded-card border px-4 py-2 text-body-sm"
+              style={{ borderColor: 'var(--border)', background: 'var(--bg-sunken)', color: 'var(--fg-muted)' }}
+            >
+              {pickedTemplate ? (
+                <span role="status">
+                  Started from{' '}
+                  <strong className="font-semibold" style={{ color: 'var(--fg)' }}>
+                    {pickedTemplate.label}
+                  </strong>
+                </span>
+              ) : (
+                <span>Not sure where to begin?</span>
+              )}
+              <Button type="button" variant="ghost" size="xs" onClick={() => setShowTemplates(true)}>
+                {pickedTemplate ? 'Change template' : 'Browse templates'}
+              </Button>
+            </div>
+          )}
 
-          {/* One column, full width — the same shape as the sibling event and
-              fact-table forms: kit Field spends a fixed 232px on its label
-              gutter from `sm` up, so nothing narrower than the page leaves a
-              usable control (tripl-vv2f). */}
-          <SCard title="Details">
+          {/* What the metric measures comes first: the kind decides every
+              field below it, the unit included (MT-2). One column, full
+              width — kit Field spends a fixed 232px on its label gutter from
+              `sm` up, so nothing narrower than the page leaves a usable
+              control (tripl-vv2f). */}
+          <SCard title="What to measure" description="Where the metric's value comes from.">
+            <Field label="Metric kind" stacked last>
+              <RadioCards
+                groupLabel="Metric kind"
+                value={draft.kind}
+                onChange={value => changeKind(value as MetricKind)}
+                options={kindOptions({ noEvents, noFactTables: facts.noFactTables })}
+              />
+            </Field>
+          </SCard>
+
+          {definitionChanged && <DefinitionChangeNotice />}
+
+          {draft.kind === 'sql' && (
+            <SqlDefinitionFields
+              slug={slug}
+              draft={draft}
+              patch={patch}
+              errors={fieldErrors}
+              canWrite={canWrite}
+              dataSources={dataSources}
+              dataSourcesError={dataSourcesError}
+              onRetryDataSources={onRetryDataSources}
+              onDataSourceChange={onDataSourceChange}
+              onIntervalChange={onIntervalChange}
+              clearedReplayChunk={clearedReplayChunk}
+              schemaTables={sqlSchemaData?.tables}
+              columnSuggestions={sqlColumns}
+              onPreviewColumns={setPreviewColumns}
+              onPreviewFailed={setSqlPreviewFailed}
+            />
+          )}
+          {draft.kind === 'fact' && (
+            <FactDefinitionFields
+              slug={slug}
+              draft={draft}
+              patch={patch}
+              errors={fieldErrors}
+              facts={facts}
+              onIntervalChange={onIntervalChange}
+              onFactCompositionChange={onFactCompositionChange}
+              clearedReplayChunk={clearedReplayChunk}
+            />
+          )}
+          {draft.kind === 'event_composition' && (
+            <EventCompositionFields
+              slug={slug}
+              draft={draft}
+              patch={onEventCompositionPatch}
+              errors={fieldErrors}
+              disabled={!canWrite}
+            />
+          )}
+
+          <SCard title="Name and display">
             <Field
               label="Display name"
               htmlFor="metric-display-name"
@@ -497,81 +725,108 @@ export function MetricForm({
                 placeholder="What does this metric measure?"
               />
             </Field>
-            <Field label="Unit" htmlFor="metric-unit" hint="Optional display unit (e.g. %, ms). With %, stored fractions render ×100 (0.08 → 8 %).">
-              <TextInput id="metric-unit" value={draft.unit} onChange={value => patch({ unit: value })} placeholder={examplePlaceholder('%', 'ms', '$')} />
+            <Field
+              label="Unit"
+              htmlFor="metric-unit"
+              hint={
+                unitAutoSet && draft.unit === '%'
+                  ? 'Set to % for a ratio. Ratios with % display as percentages (0.08 → 8%).'
+                  : 'Shown after the value. Ratios with % display as percentages (0.08 → 8%).'
+              }
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="w-[120px]">
+                  <TextInput
+                    id="metric-unit"
+                    value={draft.unit}
+                    onChange={value => {
+                      setUnitAutoSet(false)
+                      patch({ unit: value })
+                    }}
+                    placeholder={examplePlaceholder('%')}
+                  />
+                </div>
+                {UNIT_SUGGESTIONS.map(unit => (
+                  <Button
+                    key={unit}
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    aria-pressed={draft.unit === unit}
+                    aria-label={`Use unit ${unit}`}
+                    onClick={() => {
+                      setUnitAutoSet(false)
+                      patch({ unit })
+                    }}
+                  >
+                    {unit}
+                  </Button>
+                ))}
+              </div>
             </Field>
-            <Field label="Color" htmlFor="metric-color">
-              <input
-                id="metric-color"
-                type="color"
-                value={draft.color}
-                onChange={e => patch({ color: e.target.value })}
-                className="h-8 w-12 cursor-pointer rounded-sm border bg-transparent"
-                style={{ borderColor: 'var(--border)' }}
-              />
+            {/* Swatches plus a custom picker: the OS colour dialog was the only
+                way to choose, and every new metric got the same indigo (MT-35).
+                No single control for a <label>, so the row names the group. */}
+            <Field label="Color" htmlFor={false}>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {METRIC_COLOR_SWATCHES.map(swatch => {
+                  const selected = draft.color.toLowerCase() === swatch.value.toLowerCase()
+                  return (
+                    <button
+                      key={swatch.value}
+                      type="button"
+                      aria-label={swatch.label}
+                      aria-pressed={selected}
+                      title={swatch.label}
+                      onClick={() => patch({ color: swatch.value })}
+                      className="size-6 rounded-full border-2 transition-transform hover:scale-110"
+                      style={{
+                        background: swatch.value,
+                        borderColor: selected ? 'var(--fg)' : 'transparent',
+                        boxShadow: selected ? '0 0 0 2px var(--bg) inset' : undefined,
+                      }}
+                    />
+                  )
+                })}
+                <label
+                  className="ml-1 inline-flex cursor-pointer items-center gap-1.5 text-caption"
+                  style={{ color: 'var(--fg-muted)' }}
+                >
+                  <input
+                    id="metric-color"
+                    type="color"
+                    value={draft.color}
+                    onChange={e => patch({ color: e.target.value })}
+                    className="h-6 w-8 cursor-pointer rounded-sm border bg-transparent"
+                    style={{ borderColor: 'var(--border)' }}
+                  />
+                  Custom…
+                </label>
+              </div>
             </Field>
-            <Field label="Status" htmlFor="metric-status" last>
+            {/* Who answers for the numbers, shown as an avatar in the catalog
+                (MT-25). */}
+            <Field label="Owner" htmlFor="metric-owner" last={isNew}>
               <NativeSelect
-                id="metric-status"
-                value={draft.status}
-                onChange={value => patch({ status: value as MetricStatus })}
-                options={METRIC_STATUSES.map(s => ({ value: s, label: METRIC_STATUS_LABEL[s] }))}
+                id="metric-owner"
+                value={draft.ownerId}
+                onChange={value => patch({ ownerId: value })}
+                options={ownerOptions}
               />
             </Field>
+            {/* On create the Save buttons choose the status (MT-1); an edit
+                keeps the select, with what each status means. */}
+            {!isNew && (
+              <Field label="Status" htmlFor="metric-status" hint={STATUS_HINT} last>
+                <NativeSelect
+                  id="metric-status"
+                  value={draft.status}
+                  onChange={value => patch({ status: value as MetricStatus })}
+                  options={METRIC_STATUSES.map(s => ({ value: s, label: METRIC_STATUS_LABEL[s] }))}
+                />
+              </Field>
+            )}
           </SCard>
-
-          <SCard title="Kind" description="How this metric produces its per-bucket value.">
-            <Field label="Metric kind" stacked last>
-              <RadioCards
-                groupLabel="Metric kind"
-                value={draft.kind}
-                onChange={value => changeKind(value as MetricKind)}
-                options={KIND_OPTIONS}
-              />
-            </Field>
-          </SCard>
-
-          {definitionChanged && <DefinitionChangeNotice />}
-
-          {draft.kind === 'sql' && (
-            <SqlDefinitionFields
-              slug={slug}
-              draft={draft}
-              patch={patch}
-              errors={fieldErrors}
-              canWrite={canWrite}
-              dataSources={dataSources}
-              dataSourcesError={dataSourcesError}
-              onRetryDataSources={onRetryDataSources}
-              onDataSourceChange={onDataSourceChange}
-              onIntervalChange={onIntervalChange}
-              clearedReplayChunk={clearedReplayChunk}
-              schemaTables={sqlSchemaData?.tables}
-              columnSuggestions={sqlColumns}
-              onPreviewColumns={setPreviewColumns}
-            />
-          )}
-          {draft.kind === 'fact' && (
-            <FactDefinitionFields
-              slug={slug}
-              draft={draft}
-              patch={patch}
-              errors={fieldErrors}
-              facts={facts}
-              onIntervalChange={onIntervalChange}
-              onFactCompositionChange={onFactCompositionChange}
-              clearedReplayChunk={clearedReplayChunk}
-            />
-          )}
-          {draft.kind === 'event_composition' && (
-            <EventCompositionFields
-              slug={slug}
-              draft={draft}
-              patch={onEventCompositionPatch}
-              errors={fieldErrors}
-              disabled={!canWrite}
-            />
-          )}
 
           <MonitoringFields
             draft={draft}
@@ -616,15 +871,30 @@ export function MetricForm({
         )}
 
         {/* Sticky, so Save and the reason it is blocked stay on screen on a
-            2,500-3,600px form (MT-4). The status jumps to the first field. */}
+            2,500-3,600px form (MT-4). The status jumps to the first field.
+            A new metric is created collecting, or parked as a draft: the old
+            Draft default was never collected and nothing said so (MT-1). */}
         <SaveBar
-          status={attentionSummary(errorEntries.length)}
-          statusTone="danger"
+          status={
+            attentionSummary(errorEntries.length)
+            ?? (isNew && canWrite ? 'Drafts are saved but not collected or monitored.' : null)
+          }
+          statusTone={errorEntries.length > 0 ? 'danger' : 'muted'}
           onStatusClick={errorEntries[0] ? () => focusField(errorEntries[0]![0]) : undefined}
         >
           <Button type="button" variant="outline" onClick={onClose}>
             {canWrite ? 'Cancel' : 'Close'}
           </Button>
+          {canWrite && isNew && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saveMut.isPending || facts.loading || facts.error != null}
+              onClick={() => void onSubmit('draft')}
+            >
+              Save as draft
+            </Button>
+          )}
           {canWrite && (
             <Button type="submit" disabled={saveMut.isPending || facts.loading || facts.error != null}>
               {saveMut.isPending ? (
@@ -634,7 +904,7 @@ export function MetricForm({
               ) : (
                 <Save aria-hidden="true" />
               )}
-              {isNew ? 'Create metric' : 'Save metric'}
+              {isNew ? 'Create and start collecting' : 'Save metric'}
             </Button>
           )}
         </SaveBar>
@@ -742,6 +1012,7 @@ export default function MetricEditPage() {
       dataSourcesError={dataSourcesQuery.error ?? undefined}
       onRetryDataSources={() => void dataSourcesQuery.refetch()}
       onClose={goBack}
+      onBack={() => navigate(`/p/${slug}/metrics`)}
       onSaved={onSaved}
     />
   )

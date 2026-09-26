@@ -1,20 +1,38 @@
 import { useQuery } from '@tanstack/react-query'
+import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import { SCard, NativeSelect, TextInput, Field } from '@/components/settings/kit'
-import { eventTypesKey } from '@/lib/queryKeys'
+import { eventKey, eventTypesKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+import { eventNameLabel } from '@/lib/eventName'
 import { METRIC_COMPOSITIONS, type EventType, type MetricComposition } from '@/types'
 import { EventRefPicker, type EventRef } from './EventRefPicker'
 import { errorAria, type FieldErrors } from '@/lib/fieldErrors'
 import type { MetricDraft } from './metricDraft'
 import { examplePlaceholder } from '@/components/forms/placeholders'
 
-// Human-readable labels for the composition select (raw option values are kept
-// as-is on the wire).
+// What each composition calculates, in words (MT-18); the raw option values
+// are kept as-is on the wire.
 const COMPOSITION_LABEL: Record<MetricComposition, string> = {
-  single: 'Single',
-  ratio: 'Ratio',
-  per_distinct_user: 'Per distinct user',
+  single: 'Count of an event',
+  ratio: 'Ratio of two events (A ÷ B)',
+  per_distinct_user: 'Per user (events ÷ distinct users)',
+}
+
+/**
+ * The display name of what one side counts, for the formula line: the event
+ * (read from the cache the picker fills, same key) or "every <type> event".
+ */
+function useEventRefName(slug: string, ref: EventRef, eventTypes: readonly EventType[]): string | null {
+  const eventQuery = useQuery({
+    queryKey: eventKey(slug, null, ref.eventId),
+    queryFn: () => eventsApi.get(slug, ref.eventId),
+    enabled: !!ref.eventId,
+    meta: SILENT_ERROR_META,
+  })
+  if (ref.eventId) return eventQuery.data ? eventNameLabel(eventQuery.data.name) : null
+  const type = eventTypes.find(candidate => candidate.id === ref.eventTypeId)
+  return type ? `every ${type.display_name} event` : null
 }
 
 const EMPTY_EVENT_TYPES: EventType[] = []
@@ -54,10 +72,25 @@ export function EventCompositionFields({
     eventId: draft.denominatorEventId,
     eventTypeId: draft.denominatorEventTypeId,
   }
+  const numeratorName = useEventRefName(slug, numerator, eventTypes)
+  const denominatorName = useEventRefName(slug, isRatio ? denominator : { eventId: '', eventTypeId: '' }, eventTypes)
+  // One line saying what the metric will compute, so a swapped numerator and
+  // denominator is visible before saving (MT-9).
+  const formula = !numeratorName
+    ? null
+    : draft.composition === 'ratio'
+      ? denominatorName
+        ? `${numeratorName} ÷ ${denominatorName}`
+        : null
+      : draft.composition === 'per_distinct_user'
+        ? `${numeratorName} ÷ distinct users`
+        : `Count of ${numeratorName}`
 
   return (
-    <SCard title="Event composition" description="Combine existing event series.">
-      <Field label="Composition" htmlFor="metric-composition" required>
+    <SCard title="Events" description="Count tracked events, or divide one by another.">
+      {/* "Calculate", not "Composition": the kind already says where the
+          value comes from, this says how (MT-18). */}
+      <Field label="Calculate" htmlFor="metric-composition" required>
         <NativeSelect
           id="metric-composition"
           value={draft.composition}
@@ -128,6 +161,14 @@ export function EventCompositionFields({
             />
           </div>
         </Field>
+      )}
+      {formula && (
+        <p
+          className="border-t px-4 py-[11px] text-body-sm"
+          style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-muted)' }}
+        >
+          Computes: <span style={{ color: 'var(--fg)' }}>{formula}</span>
+        </p>
       )}
     </SCard>
   )
