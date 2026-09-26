@@ -10,14 +10,14 @@ Components are real compiled React, imported by name from the design-system pack
 ## Styling idiom
 Prefer composing components through their **props** — `<Button variant="danger" size="sm">`, `<Chip tone="success" variant="soft">`, `<Badge variant="outline">`, `<MiniStat tone="success">`. For any custom styling or layout glue, use the design tokens as **CSS variables** — all are defined in `:root`, so they always resolve in a rendered design:
 - surfaces: `var(--bg)` `var(--bg-elevated)` `var(--bg-sunken)` `var(--surface)` `var(--surface-hover)` `var(--surface-active)`
-- text: `var(--fg)` `var(--fg-muted)` `var(--fg-subtle)` `var(--fg-faint)`
+- text: `var(--fg)` `var(--fg-secondary)` (body copy, labels) `var(--fg-tertiary)` (captions, meta); `var(--fg-muted)` `var(--fg-subtle)` `var(--fg-faint)` are older names for the same steps
 - borders: `var(--border)` `var(--border-strong)` `var(--border-subtle)`; radii `var(--radius)` `var(--radius-sm)` `var(--radius-lg)`
 - brand: `var(--accent)` `var(--accent-hover)` `var(--accent-soft)` `var(--accent-fg)`
 - semantic: `var(--success)` `var(--warning)` `var(--danger)` `var(--info)` — each with a matching `--*-soft` tint
 - shadcn aliases: `var(--primary)` `var(--secondary)` `var(--muted)` `var(--destructive)` `var(--card)` `var(--popover)` `var(--ring)`
 - fonts: `var(--font-sans)` (Inter), `var(--font-mono)` (JetBrains Mono)
 
-The components are built with **Tailwind v4 utilities mapped to these tokens**; the shipped stylesheet already includes the utility classes the components use — e.g. `bg-primary` `text-primary-foreground` `bg-muted` `text-muted-foreground` `bg-secondary` `border-border` `rounded-md` `rounded-lg` `rounded-xl`, common layout utilities (`flex`, `gap-2`, `items-center`), and `mono` / `tnum` for monospace/tabular numerals. **The stylesheet is static (no per-design Tailwind compile), so a utility class you invent may not exist** — when in doubt, style with the `var(--*)` tokens above (always available), or check `styles.css` for what's present.
+The components are built with **Tailwind v4 utilities mapped to these tokens**; the shipped stylesheet already includes the utility classes the components use — e.g. `bg-primary` `text-primary-foreground` `bg-muted` `text-fg-secondary` `text-fg-tertiary` `bg-secondary` `border-border` `rounded-md` `rounded-lg` `rounded-xl`, common layout utilities (`flex`, `gap-2`, `items-center`), and `mono` / `tnum` for monospace/tabular numerals. **The stylesheet is static (no per-design Tailwind compile), so a utility class you invent may not exist** — when in doubt, style with the `var(--*)` tokens above (always available), or check `styles.css` for what's present.
 
 ## Where the truth lives
 - The stylesheet closure `styles.css` (it `@import`s the token layer + `_ds_bundle.css`) — read it before inventing colors, radii, or utility classes.

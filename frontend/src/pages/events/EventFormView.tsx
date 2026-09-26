@@ -42,6 +42,7 @@ import { branchTicket } from '@/lib/branchTicket'
 import {
   branchEventIdentityProbesKey,
   branchEventsKey,
+  eventNameSampleKey,
   eventTagsKey,
   planBranchesKey,
   projectEventKey,
@@ -62,6 +63,11 @@ import {
   withPendingChip,
 } from './eventFormValues'
 import { useEventIdentityProbe, type CreatedIdentity } from './useEventIdentityProbe'
+import {
+  breaksNameConvention,
+  inferNameConvention,
+  NAME_SAMPLE_SIZE,
+} from './eventNameConvention'
 import { SuccessorPicker } from './SuccessorPicker'
 import { FieldValuesCard, MetaFieldsCard, TagsBreakdownsCard } from './EventFormCards'
 
@@ -401,6 +407,24 @@ export function EventForm({
     typedName !== ''
     && createdHere.some(item => item.name === typedName && item.eventTypeId === etId)
   const namesake = !generatedName && !repeatsCreated ? identityTaken : null
+
+  // The convention this type's own events follow, read off a few of them
+  // (AU-41): the placeholder shows one, and a name in another style is pointed
+  // out without blocking. Only for a free name — a rule writes the name itself.
+  const nameSampleQuery = useQuery({
+    queryKey: eventNameSampleKey(slug, branchId, etId),
+    queryFn: ({ signal }) =>
+      eventsApi.list(slug, { event_type_id: etId, limit: NAME_SAMPLE_SIZE }, branchId, signal),
+    enabled: isNew && !!etId && !nameFormat,
+    staleTime: 60_000,
+    // Advisory: without a sample the placeholder stays generic.
+    meta: SILENT_ERROR_META,
+  })
+  const nameConvention = useMemo(
+    () => inferNameConvention((nameSampleQuery.data?.items ?? []).map(item => item.name)),
+    [nameSampleQuery.data],
+  )
+  const offConvention = !generatedName && isNew && !namesake && breaksNameConvention(name, nameConvention)
 
   // Adjust-during-render with an equality guard — this repo's idiom for state
   // that has to follow a computed value (see the comments in
@@ -753,12 +777,11 @@ export function EventForm({
                 // field card stayed hidden, Create stayed blocked, and nothing said
                 // a type has to exist first. This is the first thing a new project
                 // does (tripl-u2h9.3).
-                <p className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+                <p className="text-body-sm text-fg-secondary">
                   This project has no event types yet, and an event belongs to one.{' '}
                   <Link
-                    to={`/p/${slug}/settings/event-types`}
-                    className="underline underline-offset-2"
-                    style={{ color: 'var(--accent)' }}
+                    to={`/p/${slug}/event-types`}
+                    className="underline underline-offset-2 text-accent"
                   >
                     Create an event type
                   </Link>{' '}
@@ -808,7 +831,7 @@ export function EventForm({
                     // The typed name is kept in state (switching to a type with no
                     // rule brings it back), so say plainly that it is not being used
                     // rather than letting it vanish and reappear (tripl-u2h9.7).
-                    <p className="mt-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                    <p className="mt-1 text-body-sm text-fg-tertiary">
                       This event type names its events from the scan rule, so “{name.trim()}” is not used.
                     </p>
                   )}
@@ -828,6 +851,13 @@ export function EventForm({
                         open it
                       </Link>
                       . Creating another splits the events that match between the two.
+                    </p>
+                  )}
+                  {offConvention && nameConvention && (
+                    // A pointer, not a block: the name must be what the app
+                    // sends, whatever the other events look like.
+                    <p className="mt-1 text-body-sm text-warning">
+                      Other {typeLabel} events look like “{nameConvention.example}”.
                     </p>
                   )}
                   {identityBlocks && identityTaken && (
@@ -857,11 +887,17 @@ export function EventForm({
                 value={generatedName ? generatedName.name : name}
                 onChange={e => setName(e.target.value)}
                 // No example to offer once the rule writes this box (tripl-u2h9.9).
-                // Not a sample name either: "e.g. checkout:completed" suggested a
-                // convention next to catalogs that use another one (AU-41), and
-                // the one rule that holds everywhere is that it must match what
-                // the app sends.
-                placeholder={generatedName ? undefined : 'The exact name the app sends'}
+                // Not a fixed sample either: "e.g. checkout:completed" suggested
+                // a convention next to catalogs that use another one (AU-41). A
+                // name of this type's own is the example when its events agree
+                // on a style; otherwise the one rule that holds everywhere.
+                placeholder={
+                  generatedName
+                    ? undefined
+                    : nameConvention
+                      ? `e.g. ${nameConvention.example}`
+                      : 'The exact name the app sends'
+                }
                 aria-required
                 readOnly={!!generatedName}
                 aria-readonly={generatedName ? 'true' : undefined}
@@ -893,7 +929,7 @@ export function EventForm({
               htmlFor="form-description"
               notes={
                 aiDescribeMut.isError ? (
-                  <p className="mt-1 text-caption" style={{ color: 'var(--danger)' }}>
+                  <p className="mt-1 text-caption text-danger">
                     {aiDescribeMut.error instanceof Error ? aiDescribeMut.error.message : 'AI unavailable'}
                   </p>
                 ) : undefined
@@ -1002,7 +1038,6 @@ export function EventForm({
             storedFieldValues={storedFieldValues}
             collectedBreakdownColumns={collectedBreakdownColumns}
             breakdownColumns={metricBreakdownColumns}
-            onToggleBreakdown={toggleBreakdown}
             coachStep={editFieldCoachStep}
             coachActive={editFieldCoachActive}
             errors={shownErrors}

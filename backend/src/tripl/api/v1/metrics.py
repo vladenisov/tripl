@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from tripl.api.deps import BranchIdDep, SessionDep
+from tripl.api.deps import BranchIdDep, EditorUserDep, SessionDep
 from tripl.models.domain_enums import MetricScopeType
 from tripl.models.event import EventStatus
 from tripl.schemas.event_metric import (
@@ -21,11 +21,22 @@ from tripl.schemas.event_metric import (
     OverviewKpiSeriesResponse,
     ReleaseRegressionsResponse,
     SeasonalityHeatmapResponse,
+    SignalExpectedRequest,
+    SignalMuteRequest,
+    SignalSeriesQuery,
+    SignalSeriesResponse,
+    SignalTriageScope,
+    SignalTriageState,
     TopEventResponse,
     TopMoverItem,
 )
 from tripl.schemas.text_filters import FreeTextFilter
-from tripl.services import metrics_insights_service, metrics_service
+from tripl.services import (
+    audit_service,
+    metrics_insights_service,
+    metrics_service,
+    signal_triage_service,
+)
 
 router = APIRouter(tags=["metrics"])
 
@@ -229,6 +240,213 @@ async def query_active_signals(
 ) -> list[MetricSignalResponse]:
     return await metrics_insights_service.get_active_signals(
         session, slug, event_ids=data.event_ids or None
+    )
+
+
+@router.post(
+    "/projects/{slug}/anomalies/signals/series",
+    response_model=list[SignalSeriesResponse],
+)
+async def query_signal_series(
+    session: SessionDep,
+    slug: str,
+    data: SignalSeriesQuery,
+) -> list[SignalSeriesResponse]:
+    """Row sparklines for many open signals in one request (MO-19). POST for
+    the same reason as ``/signals/query``: the batch outgrows a query string."""
+    return await metrics_insights_service.get_signal_series(session, slug, data.scopes)
+
+
+# --- Signal triage (MO-4 / JR-5) ----------------------------------------------
+# Verdicts on open signals no rule routed to an incident; a routed signal is
+# triaged in the alert inbox and these refuse it (409). Each POST answers with
+# the signal's triage fields as the lists will show them; each DELETE is the
+# Undo and is idempotent. Scope query parameters mirror ``SignalTriageScope``.
+
+ScanConfigParam = Annotated[uuid.UUID | None, Query()]
+# FreeTextFilter strips a NUL before the length check: the value is bound into
+# an equality, and a NUL aborts inside asyncpg before SQL runs (tripl-8wez).
+ScopeRefParam = Annotated[FreeTextFilter, Query(min_length=1, max_length=64)]
+
+
+def _signal_audit_name(scope_type: MetricScopeType | str, scope_ref: str) -> str:
+    return f"{scope_type}:{scope_ref}"
+
+
+@router.post(
+    "/projects/{slug}/anomalies/signals/acknowledge",
+    response_model=SignalTriageState,
+)
+async def acknowledge_signal(
+    session: SessionDep,
+    slug: str,
+    data: SignalTriageScope,
+    current_user: EditorUserDep,
+) -> SignalTriageState:
+    target = await signal_triage_service.resolve_target(session, slug, data)
+    row, created = await signal_triage_service.acknowledge(session, target, user_id=current_user.id)
+    # A repeat POST (retry, double click) changes nothing, so it is not audited.
+    if created and row is not None:
+        await audit_service.record(
+            session,
+            user=current_user,
+            action="signal.acknowledge",
+            target_type="signal",
+            target_id=row.id,
+            target_name=_signal_audit_name(data.scope_type, data.scope_ref),
+            project=target.project,
+            payload={"bucket": target.bucket.isoformat()},
+        )
+    return await signal_triage_service.state_after_write(session, target.project_id, target.key)
+
+
+@router.delete("/projects/{slug}/anomalies/signals/acknowledge", status_code=204)
+async def unacknowledge_signal(
+    session: SessionDep,
+    slug: str,
+    current_user: EditorUserDep,
+    scope_type: MetricScopeType,
+    scope_ref: ScopeRefParam,
+    bucket: datetime,
+    scan_config_id: ScanConfigParam = None,
+) -> None:
+    project, row = await signal_triage_service.unacknowledge(
+        session,
+        slug,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        bucket=bucket,
+    )
+    if row is None:
+        return
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="signal.unacknowledge",
+        target_type="signal",
+        target_id=row.id,
+        target_name=_signal_audit_name(scope_type, scope_ref),
+        project=project,
+        payload={"bucket": bucket.isoformat()},
+    )
+
+
+@router.post(
+    "/projects/{slug}/anomalies/signals/mute",
+    response_model=SignalTriageState,
+)
+async def mute_signal_scope(
+    session: SessionDep,
+    slug: str,
+    data: SignalMuteRequest,
+    current_user: EditorUserDep,
+) -> SignalTriageState:
+    """Hide every signal on the scope for 24 h, 7 d or until unmuted."""
+    target = await signal_triage_service.resolve_target(session, slug, data)
+    row = await signal_triage_service.mute(session, target, data.duration, user_id=current_user.id)
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="signal.mute",
+        target_type="signal",
+        target_id=row.id,
+        target_name=_signal_audit_name(data.scope_type, data.scope_ref),
+        project=target.project,
+        payload={
+            "duration": data.duration,
+            "muted_until": row.muted_until.isoformat() if row.muted_until else None,
+        },
+    )
+    return await signal_triage_service.state_after_write(session, target.project_id, target.key)
+
+
+@router.delete("/projects/{slug}/anomalies/signals/mute", status_code=204)
+async def unmute_signal_scope(
+    session: SessionDep,
+    slug: str,
+    current_user: EditorUserDep,
+    scope_type: MetricScopeType,
+    scope_ref: ScopeRefParam,
+    scan_config_id: ScanConfigParam = None,
+) -> None:
+    project, row = await signal_triage_service.unmute(
+        session,
+        slug,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+    )
+    if row is None:
+        return
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="signal.unmute",
+        target_type="signal",
+        target_id=row.id,
+        target_name=_signal_audit_name(scope_type, scope_ref),
+        project=project,
+    )
+
+
+@router.post(
+    "/projects/{slug}/anomalies/signals/expected",
+    response_model=SignalTriageState,
+)
+async def mark_signal_expected(
+    session: SessionDep,
+    slug: str,
+    data: SignalExpectedRequest,
+    current_user: EditorUserDep,
+) -> SignalTriageState:
+    """Record a known cause: annotate the signal's bucket and hide the signal."""
+    target = await signal_triage_service.resolve_target(session, slug, data)
+    row = await signal_triage_service.mark_expected(
+        session, target, data.note, user_id=current_user.id
+    )
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="signal.mark_expected",
+        target_type="signal",
+        target_id=row.id,
+        target_name=_signal_audit_name(data.scope_type, data.scope_ref),
+        project=target.project,
+        payload={"bucket": target.bucket.isoformat(), "note": row.note},
+    )
+    return await signal_triage_service.state_after_write(session, target.project_id, target.key)
+
+
+@router.delete("/projects/{slug}/anomalies/signals/expected", status_code=204)
+async def unmark_signal_expected(
+    session: SessionDep,
+    slug: str,
+    current_user: EditorUserDep,
+    scope_type: MetricScopeType,
+    scope_ref: ScopeRefParam,
+    bucket: datetime,
+    scan_config_id: ScanConfigParam = None,
+) -> None:
+    project, row = await signal_triage_service.unmark_expected(
+        session,
+        slug,
+        scan_config_id=scan_config_id,
+        scope_type=scope_type,
+        scope_ref=scope_ref,
+        bucket=bucket,
+    )
+    if row is None:
+        return
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="signal.unmark_expected",
+        target_type="signal",
+        target_id=row.id,
+        target_name=_signal_audit_name(scope_type, scope_ref),
+        project=project,
+        payload={"bucket": bucket.isoformat()},
     )
 
 

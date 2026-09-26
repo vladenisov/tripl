@@ -6,11 +6,9 @@ import { ColumnSuggestInput } from '@/components/column-suggest'
 import { ErrorState } from '@/components/error-state'
 import { FieldError } from '@/components/forms/FieldError'
 import { DisabledReason, disabledReasonAria } from '@/components/states'
-import { Sparkline } from '@/components/primitives/sparkline'
 import { SqlEditor } from '@/components/sql-editor'
 import { SCard, NativeSelect, type SelectOption, Field } from '@/components/settings/kit'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { formatMetricValue } from '@/lib/metricFormat'
 import type {
   DataSource,
   MetricPreviewRequest,
@@ -19,82 +17,11 @@ import type {
 } from '@/types'
 import type { TableSchema } from '@/types/dataSourceSchema'
 import { IntervalField } from './IntervalField'
+import { MetricPreviewPanel } from './MetricPreviewPanel'
 import { starterSql } from './metricTemplates'
 import { examplePlaceholder, sqlPlaceholder } from '@/components/forms/placeholders'
 import { errorAria, fieldErrorId, type FieldErrors } from '@/lib/fieldErrors'
 import type { MetricDraft } from './metricDraft'
-
-interface SqlPreviewPanelProps {
-  result: MetricPreviewResponse
-  color: string
-  unit: string
-}
-
-/**
- * Compact result panel for the SQL dry-run. Expected user mistakes (bad SQL,
- * missing columns, warehouse errors) arrive as a 200 with `error` set and
- * render in the standard danger style; a successful run renders a chart that
- * follows the panel's width, the value range, and a mono summary line — or
- * says what an empty or one-point result most likely means (MET-44).
- */
-function SqlPreviewPanel({ result, color, unit }: SqlPreviewPanelProps) {
-  if (result.error) {
-    return (
-      <div
-        role="alert"
-        className="mt-[10px] rounded-card border px-4 py-3 text-body-sm"
-        style={{
-          background: 'var(--danger-soft)',
-          borderColor: 'color-mix(in oklab, var(--danger) 35%, var(--border))',
-          color: 'var(--danger)',
-        }}
-      >
-        {result.error}
-      </div>
-    )
-  }
-  const points = result.points ?? []
-  const columns = result.columns ?? []
-  const values = points.map(p => p.value)
-  const lastValue = values[values.length - 1]
-  const summary = `${result.point_count} buckets · columns: ${columns.join(', ')}${
-    result.truncated ? ' · truncated' : ''
-  }`
-  const guidance =
-    points.length === 0
-      ? 'The query ran but returned no rows in the preview window. Check its WHERE clause and time range, and that the time column holds recent timestamps.'
-      : points.length === 1
-        ? 'Only one bucket came back, so there is no trend to draw. Make sure the query groups by the time column.'
-        : null
-  const format = (value: number) => formatMetricValue(value, unit.trim() || null)
-  return (
-    <div
-      role="status"
-      className="mt-[10px] rounded-card border px-4 py-3"
-      style={{ borderColor: 'var(--border)' }}
-    >
-      {points.length > 1 && (
-        <div className="mb-[8px]">
-          <Sparkline data={values} color={color} width={560} height={64} responsive />
-        </div>
-      )}
-      {lastValue !== undefined && (
-        <p className="mono mb-[4px] text-body-sm" style={{ color: 'var(--fg)' }}>
-          min {format(Math.min(...values))} · max {format(Math.max(...values))} · last{' '}
-          {format(lastValue)}
-        </p>
-      )}
-      {guidance && (
-        <p className="mb-[4px] text-body-sm" style={{ color: 'var(--fg-muted)' }}>
-          {guidance}
-        </p>
-      )}
-      <p className="mono text-body-sm" style={{ color: 'var(--fg-muted)' }}>
-        {summary}
-      </p>
-    </div>
-  )
-}
 
 interface SqlDefinitionFieldsProps {
   slug: string
@@ -293,8 +220,7 @@ export function SqlDefinitionFields({
               onClick={onPreview}
               disabled={!canPreview}
               {...disabledReasonAria('metric-sql-preview', previewBlocker)}
-              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50"
-              style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
+              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-50 border-border text-fg-secondary"
             >
               {previewMut.isPending ? (
                 <Loader2 className="animate-spin" size={12} />
@@ -306,7 +232,7 @@ export function SqlDefinitionFields({
             {previewBlocker ? (
               <DisabledReason id="metric-sql-preview" reason={previewBlocker} />
             ) : (
-              <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+              <span className="text-caption text-fg-tertiary">
                 Dry-run against the data source over recent buckets; nothing is saved.
               </span>
             )}
@@ -316,7 +242,7 @@ export function SqlDefinitionFields({
               <ErrorState compact title="Preview failed" error={previewMut.error} />
             </div>
           )}
-          {preview && <SqlPreviewPanel result={preview} color={draft.color} unit={draft.unit} />}
+          {preview && <MetricPreviewPanel result={preview} color={draft.color} unit={draft.unit} />}
         </Field>
         <Field
           label="Time column"

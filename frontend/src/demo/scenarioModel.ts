@@ -647,14 +647,14 @@ export function buildChapterSteps(
           id: 'variables/open-variables',
           title: 'Open Variables',
           instruction: 'Open the Variables settings — the templating layer behind field values.',
-          to: `${base}/settings/variables`,
+          to: `${base}/variables`,
           ctaLabel: 'Open Variables',
         },
         {
           id: 'variables/inspect-values',
           title: 'Inspect product_id',
           instruction: `Open ${SCENARIO_SEEDED.driftVariableName} to compare observed values against the documented list.`,
-          to: `${base}/settings/variables`,
+          to: `${base}/variables`,
           ctaLabel: 'Open Variables',
           coach: { side: 'left', align: 'center', emphasis: 'ring' },
         },
@@ -663,7 +663,7 @@ export function buildChapterSteps(
           title: 'Review the value drift',
           instruction:
             'A scan saw prod_weekly outside the documented values — review the drift row.',
-          to: `${base}/settings/variables`,
+          to: `${base}/variables`,
           ctaLabel: 'Open Variables',
           coach: { side: 'bottom', align: 'end', emphasis: 'ring' },
         },
@@ -674,14 +674,14 @@ export function buildChapterSteps(
           id: 'branches/open-branches',
           title: 'Open Branches',
           instruction: 'Open plan branches — version control for the tracking plan.',
-          to: `${base}/settings/branches`,
+          to: `${base}/branches`,
           ctaLabel: 'Open Branches',
         },
         {
           id: 'branches/open-branch',
           title: 'Open the feature branch',
           instruction: `Open ${SCENARIO_SEEDED.branchName} to review its pending change.`,
-          to: `${base}/settings/branches`,
+          to: `${base}/branches`,
           ctaLabel: 'Open Branches',
           coach: { side: 'right', align: 'center', emphasis: 'ring' },
         },
@@ -689,7 +689,7 @@ export function buildChapterSteps(
           id: 'branches/review-diff',
           title: 'Review the diff',
           instruction: `Expand the change to ${SCENARIO_SEEDED.changedEventName} — one modified event, before and after.`,
-          to: `${base}/settings/branches`,
+          to: `${base}/branches`,
           ctaLabel: 'Open Branches',
           coach: { side: 'bottom', align: 'start', emphasis: 'ring' },
         },
@@ -697,7 +697,7 @@ export function buildChapterSteps(
           id: 'branches/comment',
           title: 'Leave a comment',
           instruction: 'Post a review comment (or approve) — merging stays your call.',
-          to: `${base}/settings/branches`,
+          to: `${base}/branches`,
           ctaLabel: 'Open Branches',
           coach: { side: 'top', align: 'end', emphasis: 'ring' },
         },
@@ -734,7 +734,7 @@ export function buildChapterSteps(
           id: 'alerting/open-alerting',
           title: 'Open Alerting',
           instruction: 'Open alerting — destinations, rules and the local demo sink.',
-          to: `${base}/settings/alerting`,
+          to: `${base}/alerting`,
           ctaLabel: 'Open Alerting',
         },
         {
@@ -742,7 +742,7 @@ export function buildChapterSteps(
           title: 'Create a rule',
           instruction:
             'Add a rule on the local demo sink — deliveries render locally, nothing is sent.',
-          to: `${base}/settings/alerting`,
+          to: `${base}/alerting`,
           ctaLabel: 'Open Alerting',
           coach: { side: 'left', align: 'center', emphasis: 'ring' },
         },
@@ -750,7 +750,7 @@ export function buildChapterSteps(
           id: 'alerting/simulate',
           title: 'Simulate a firing',
           instruction: `Replay ${SCENARIO_SEEDED.firingRuleName} to preview a delivery over real anomalies.`,
-          to: `${base}/settings/alerting`,
+          to: `${base}/alerting`,
           ctaLabel: 'Open Alerting',
           coach: { side: 'left', align: 'center', emphasis: 'ring' },
         },
@@ -843,13 +843,13 @@ export function stepCompletedByPath(
       // know event ids, and editing anything still teaches the surface.
       return pathname.startsWith(`${base}/events/`) && pathname.endsWith('/edit')
     case 'variables/open-variables':
-      return pathname.startsWith(`${base}/settings/variables`)
+      return pathname.startsWith(`${base}/variables`)
     case 'branches/open-branches':
-      return pathname.startsWith(`${base}/settings/branches`)
+      return pathname.startsWith(`${base}/branches`)
     case 'reconcile/open-reconciliation':
       return pathname.startsWith(`${base}/reconciliation`)
     case 'alerting/open-alerting':
-      return pathname.startsWith(`${base}/settings/alerting`)
+      return pathname.startsWith(`${base}/alerting`)
     case 'explore/visit-coverage':
       return pathname.startsWith(`${base}/coverage`)
     case 'explore/visit-anomaly':

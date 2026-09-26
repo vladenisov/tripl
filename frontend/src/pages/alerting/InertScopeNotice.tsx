@@ -65,7 +65,7 @@ const SCOPE_COPY: Record<DriftScope, ScopeCopy> = {
       'Value drift is on, but no variable that scans observe documents an allowed-values list on the main branch — this scope cannot fire until one does.',
     note: 'Variables opens on the branch you have selected; a list documented on a working branch counts only once it merges.',
     linkLabel: 'Variables',
-    href: (slug) => `/p/${slug}/settings/variables`,
+    href: (slug) => `/p/${slug}/variables`,
   },
 }
 
@@ -117,13 +117,11 @@ export function InertScopeNotice({
   const copy = SCOPE_COPY[scope]
   return (
     <div
-      className="flex items-start gap-2 rounded-md px-3 py-2 text-body-sm"
-      style={{ background: 'var(--warning-soft)', color: 'var(--fg-muted)' }}
+      className="flex items-start gap-2 rounded-md px-3 py-2 text-body-sm bg-warning-soft text-fg-secondary"
     >
       <AlertTriangle
         aria-hidden="true"
-        className="mt-[1px] h-3.5 w-3.5 shrink-0"
-        style={{ color: 'var(--warning)' }}
+        className="mt-[1px] h-3.5 w-3.5 shrink-0 text-warning"
       />
       {/* The sentence keeps its own element so it stays the whole of its node's
           text: the note is a sibling, not more words inside it. */}
@@ -137,15 +135,14 @@ export function InertScopeNotice({
               // browser, so this is what keeps the dialog mounted.
               target={newTab ? '_blank' : undefined}
               rel={newTab ? 'noreferrer' : undefined}
-              className="no-underline hover:underline"
-              style={{ color: 'var(--fg)' }}
+              className="no-underline hover:underline text-fg"
             >
               {copy.linkLabel}
             </Link>
           )}
         </span>
         {copy.note && (
-          <span className="mt-0.5 block" style={{ color: 'var(--fg-faint)' }}>
+          <span className="mt-0.5 block text-fg-tertiary">
             {copy.note}
           </span>
         )}

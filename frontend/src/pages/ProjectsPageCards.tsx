@@ -66,8 +66,7 @@ export function AttentionStat({
     <div
       // `min-w-0` and no flex basis: the grid column decides the width now, and
       // a min-width here is what used to push the third card onto its own row.
-      className="relative flex min-w-0 items-start gap-2.5 overflow-hidden rounded-lg border py-2.5 pl-4 pr-3"
-      style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+      className="relative flex min-w-0 items-start gap-2.5 overflow-hidden rounded-lg border py-2.5 pl-4 pr-3 bg-surface border-border"
     >
       <span
         aria-hidden="true"
@@ -78,7 +77,7 @@ export function AttentionStat({
       {/* Term first, as a <dl> requires, and now also first on screen (WS-42,
           SH-27): the label, the figure, then the breakdown. */}
       <dl className="m-0 min-w-0 flex-1">
-        <dt className="flex items-center gap-1.5 text-body-sm font-medium" style={{ color: 'var(--fg-muted)' }}>
+        <dt className="flex items-center gap-1.5 text-body-sm font-medium text-fg-secondary">
           <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" style={{ color: toneColor }} />
           {label}
         </dt>
@@ -88,12 +87,12 @@ export function AttentionStat({
           )}
           <span className="tnum text-title font-semibold leading-none">{value}</span>
           {unit ? (
-            <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="text-caption text-fg-tertiary">
               {unit}
             </span>
           ) : null}
         </dd>
-        <dd className="m-0 mt-1 text-caption leading-[1.35]" style={{ color: 'var(--fg-subtle)' }}>
+        <dd className="m-0 mt-1 text-caption leading-[1.35] text-fg-tertiary">
           {hint}
         </dd>
       </dl>
@@ -175,8 +174,7 @@ export function ProjectCard({
             {/* The name is the way in, like the Open button (JR-34). */}
             <Link
               to={home}
-              className="truncate text-heading font-semibold no-underline hover:underline"
-              style={{ color: 'var(--fg)' }}
+              className="truncate text-heading font-semibold no-underline hover:underline text-fg"
             >
               {project.name}
             </Link>
@@ -190,11 +188,11 @@ export function ProjectCard({
             )}
           </div>
           {project.description && (
-            <p className="mt-0.5 truncate text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="mt-0.5 truncate text-body-sm text-fg-tertiary">
               {project.description}
             </p>
           )}
-          <p className="mt-0.5 text-caption" style={{ color: 'var(--fg-faint)' }}>
+          <p className="mt-0.5 text-caption text-fg-tertiary">
             <span className="mono">{project.slug}</span> · Updated {formatDate(project.updated_at)}
           </p>
         </div>
@@ -213,7 +211,7 @@ export function ProjectCard({
               <DropdownMenuTrigger asChild>
                 <IconButton
                   variant="ghost"
-                  className="shrink-0 text-muted-foreground"
+                  className="shrink-0 text-fg-tertiary"
                   label={`Project actions for ${project.name}`}
                   disabled={isDeleting || deleteLocked}
                 >
@@ -280,11 +278,10 @@ function SetupLine({
     <div className={rowClass} style={rowStyle}>
       <Link
         to={projectHomePath(project.slug)}
-        className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 no-underline hover:underline"
-        style={{ color: 'var(--accent)' }}
+        className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 no-underline hover:underline text-accent"
       >
         <span className="font-medium">Continue setup</span>
-        <span className="tnum" style={{ color: 'var(--fg-subtle)' }}>
+        <span className="tnum text-fg-tertiary">
           {`${completed} of ${total} set up`}
           {next ? ` · Next: ${next.title}` : ''}
         </span>
@@ -315,11 +312,10 @@ function ProjectFacts({
   const job = summary.latest_scan_job
   return (
     <div
-      className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t px-4 py-2.5 text-caption"
-      style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-subtle)' }}
+      className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t px-4 py-2.5 text-caption border-border-subtle text-fg-tertiary"
     >
       <div className="flex min-w-0 items-center gap-2">
-        <span className="font-medium" style={{ color: 'var(--fg)' }}>
+        <span className="font-medium text-fg">
           {summary.active_event_count > 0 ? `${coverageDisplay} implemented` : 'No active events'}
         </span>
         {/* A real progressbar, so the bar's value is not only a width (WS-43). */}
@@ -334,8 +330,7 @@ function ProjectFacts({
               ? `${summary.implemented_event_count} of ${summary.active_event_count} active events implemented`
               : 'No active events'
           }
-          className="h-1.5 w-20 overflow-hidden rounded-full"
-          style={{ background: 'var(--bg-sunken)' }}
+          className="h-1.5 w-20 overflow-hidden rounded-full bg-bg-sunken"
         >
           <div
             className="h-full rounded-full transition-[width]"
@@ -426,10 +421,9 @@ function ProjectFacts({
 function ProjectDetails({ project, isOwner }: { project: Project; isOwner: boolean }) {
   const { summary } = project
   return (
-    <details className="group border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+    <details className="group border-t border-border-subtle">
       <summary
-        className="flex cursor-pointer list-none items-center gap-1 px-4 py-2 text-caption font-medium select-none hover:bg-[var(--surface-hover)] [&::-webkit-details-marker]:hidden"
-        style={{ color: 'var(--fg-subtle)' }}
+        className="flex cursor-pointer list-none items-center gap-1 px-4 py-2 text-caption font-medium select-none hover:bg-[var(--surface-hover)] [&::-webkit-details-marker]:hidden text-fg-tertiary"
       >
         <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
         Details
@@ -476,12 +470,10 @@ function ProjectDetails({ project, isOwner }: { project: Project; isOwner: boole
 function Metric({ label, value, danger = false }: { label: string; value: string; danger?: boolean }) {
   return (
     <dl
-      className="m-0 rounded-md border px-2.5 py-2"
-      style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
+      className="m-0 rounded-md border px-2.5 py-2 bg-bg-sunken border-border-subtle"
     >
       <dt
-        className="micro-label"
-        style={{ color: 'var(--fg-faint)' }}
+        className="micro-label text-fg-tertiary"
       >
         {label}
       </dt>
@@ -507,13 +499,11 @@ function Panel({
 }) {
   return (
     <div
-      className="rounded-md border p-3"
-      style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
+      className="rounded-md border p-3 bg-bg-sunken border-border-subtle"
     >
       <div className="mb-2 flex items-center gap-2">
         <div
-          className="flex h-6 w-6 items-center justify-center rounded-sm"
-          style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+          className="flex h-6 w-6 items-center justify-center rounded-sm bg-accent-soft text-accent"
         >
           <Icon className="h-3 w-3" />
         </div>
@@ -533,7 +523,7 @@ function LatestScanJobSummary({
 }) {
   if (!job) {
     return (
-      <div className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="text-caption text-fg-tertiary">
         No scan runs yet. Configure a scan and run it once to start surfacing execution
         history here.
       </div>
@@ -563,7 +553,7 @@ function LatestScanJobSummary({
           {job.status}
         </Chip>
       </div>
-      <div className="space-y-0.5 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="space-y-0.5 text-caption text-fg-tertiary">
         <p>{describeScanJobTiming(job)}</p>
         {/* What this number counts, spelled out in the line: warehouse rows a
             metrics run read, or the column combinations a catalog run grouped —
@@ -587,11 +577,11 @@ function LatestScanJobSummary({
         )}
         {scanError && (
           <div className="space-y-1">
-            <p className="line-clamp-2" style={{ color: 'var(--danger)' }}>
+            <p className="line-clamp-2 text-danger">
               {scanError.message}
             </p>
             {isOwner && scanError.technical && (
-              <details className="text-caption" style={{ color: 'var(--fg-faint)' }}>
+              <details className="text-caption text-fg-tertiary">
                 <summary className="cursor-pointer select-none">View technical details</summary>
                 <p className="mono mt-1 whitespace-pre-wrap break-words">{scanError.technical}</p>
               </details>
@@ -633,7 +623,7 @@ function LatestSignalSummary({
 }) {
   if (!signal) {
     return (
-      <div className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="text-caption text-fg-tertiary">
         No recent monitoring signals. Once metrics collection finds anomalies, the latest signal
         will appear here.
       </div>
@@ -664,8 +654,7 @@ function LatestSignalSummary({
             workspace summary only carries project_total / event_type / event
             scopes, and all three are EventMetric volume (tripl-h5um). */}
         <p
-          className="text-caption"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="text-caption text-fg-tertiary"
           title="What the detector measured in this one bucket, against the baseline it expected. Not a row count."
         >
           <span className="tnum">{signal.actual_count.toLocaleString()}</span> events in this
@@ -674,7 +663,7 @@ function LatestSignalSummary({
         </p>
         {/* "Bucket" names the timestamp, so it is not read as the scan tile's
             "Completed <time>". */}
-        <p className="text-caption" style={{ color: 'var(--fg-faint)' }}>
+        <p className="text-caption text-fg-tertiary">
           Bucket {formatDateTime(signal.bucket)} · via {signal.scan_name}
         </p>
       </div>

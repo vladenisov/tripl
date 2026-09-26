@@ -199,3 +199,30 @@ describe('ScanBadges — metrics bounds belong to the mode that applies them (tr
     expect(screen.queryByText(/Distribution/)).toBeNull()
   })
 })
+
+describe('ScanBadges — next metrics run (i9mt.16 DA-5)', () => {
+  it('puts the scheduler\'s next run beside the interval of a monitoring scan', () => {
+    const inAnHour = new Date(Date.now() + 61 * 60_000).toISOString()
+    render(<ScanBadges sc={badgeConfig()} intervalLabel={{ '1h': 'Hourly' }} nextRunAt={inAnHour} />)
+
+    expect(screen.getByText('Next run in 1h')).toBeInTheDocument()
+  })
+
+  it('says a scan that is due is due, not "in 0m"', () => {
+    const past = new Date(Date.now() - 60_000).toISOString()
+    render(<ScanBadges sc={badgeConfig()} intervalLabel={{ '1h': 'Hourly' }} nextRunAt={past} />)
+
+    expect(screen.getByText('Next run due now')).toBeInTheDocument()
+  })
+
+  it('shows no next run on a scan the scheduler never collects, or without the server\'s answer', () => {
+    const soon = new Date(Date.now() + 30 * 60_000).toISOString()
+    const { rerender } = render(
+      <ScanBadges sc={badgeConfig({ interval: null })} intervalLabel={{}} nextRunAt={soon} />,
+    )
+    expect(screen.queryByText(/Next run/)).toBeNull()
+
+    rerender(<ScanBadges sc={badgeConfig()} intervalLabel={{ '1h': 'Hourly' }} />)
+    expect(screen.queryByText(/Next run/)).toBeNull()
+  })
+})

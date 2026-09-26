@@ -45,16 +45,27 @@ export const NOT_FOUND_TITLE_LABEL = 'Page not found'
 
 // Human labels per top-level project surface (the `/p/:slug/<surface>` segment).
 // Every segment that resolves to a real route belongs here, INCLUDING the ones
-// that only redirect (`alerting`, `fact-tables`) — they render for a frame
+// that only redirect (`monitoring`, `fact-tables`) — they render for a frame
 // before the redirect commits and must not flash "Page not found". Anything
 // absent from this map has no route and is titled as not-found.
+//
+// The Plan, Observe and Govern pages that used to sit under `/settings/<x>`
+// are top-level surfaces now (#238 JR-25 / AL-42 / ST-5), named with the
+// labels the sidebar uses.
 const PROJECT_SURFACE_LABELS: Record<string, string> = {
   events: 'Events',
+  'event-types': 'Event types',
+  'meta-fields': 'Meta fields',
+  variables: 'Variables',
+  relations: 'Relations',
+  branches: 'Plan branches',
+  history: 'Plan history',
   overview: 'Overview',
   monitors: 'Alert rules',
   monitoring: 'Monitoring',
   anomalies: 'Anomalies',
   alerting: 'Alerting',
+  audit: 'Audit log',
   reconciliation: 'Reconciliation',
   coverage: 'Coverage',
   metrics: 'Metrics',
@@ -83,10 +94,10 @@ const LEGACY_TOP_LEVEL_LABELS: Record<string, string> = {
 // one per event type) and the metric editors (`new`, `<id>/edit`) — must stay
 // absent, or every tab switch would rewrite the browser-tab title.
 //
-// Most `settings` sub-surfaces are their own sidebar destinations (see
-// `lib/navigation.ts`) rather than tabs of a settings page, so they are named
-// here with the labels the sidebar uses. `general` is the one that really is
-// project configuration, so it alone stays on the parent label.
+// `settings` holds project configuration only. Its old surface segments
+// (`/settings/event-types`, `/settings/alerting`, …) are redirect-only since
+// those pages moved to `/p/:slug/<surface>`; they stay named here because the
+// redirect renders for a frame, and that frame must not flash "Page not found".
 const PROJECT_SUBSURFACE_LABELS: Record<string, Record<string, string>> = {
   metrics: { 'fact-tables': 'Fact tables' },
   settings: {
@@ -103,9 +114,6 @@ const PROJECT_SUBSURFACE_LABELS: Record<string, Record<string, string>> = {
     // breadcrumb leaf in `lib/navigation.ts`; a test pins the two together.
     monitoring: 'Detection settings',
     alerting: 'Alerting',
-    // `settings/scans` is redirect-only since Scans moved to `/p/:slug/scans`.
-    // It stays named here for the same reason `alerting` does: the redirect
-    // renders for a frame, and that frame must not flash "Page not found".
     scans: 'Scans',
     audit: 'Audit log',
   },

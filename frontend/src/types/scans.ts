@@ -38,6 +38,11 @@ export interface ScanJobResultSummary {
   alerts_queued?: number
   scan_row_limit?: number
   scan_rows_processed?: number
+  /**
+   * Warehouse rows behind a catalog run's breakdown (the sum of each GROUP BY
+   * row's count), the population the dry run reports. Absent on older runs.
+   */
+  catalog_rows_scanned?: number
   metrics_row_limit?: number
   query_rows_scanned?: number
   replay_chunk_interval?: string
@@ -126,6 +131,13 @@ export interface ScanConfig {
    * Optional so hand-built configs (tests, the form's draft) need not invent it.
    */
   readonly monitoring_enabled?: boolean
+  /**
+   * Sent only by `GET /scans/{id}` (i9mt.16 DA-5): when the newest scheduled
+   * metrics collection finished, and the earliest moment the scheduler
+   * considers the scan due again. Null for a scan it never collects.
+   */
+  readonly last_metrics_run_at?: string | null
+  readonly next_metrics_run_at?: string | null
 }
 
 export interface PlatformPresenceRow {

@@ -177,7 +177,7 @@ export function ReplayDialog({
               </div>
             </div>
             {replayMut.isError && (
-              <p role="alert" className="text-body" style={{ color: 'var(--danger)' }}>{getErrorMessage(replayMut.error)}</p>
+              <p role="alert" className="text-body text-danger">{getErrorMessage(replayMut.error)}</p>
             )}
           </DialogBody>
           <DialogFooter>

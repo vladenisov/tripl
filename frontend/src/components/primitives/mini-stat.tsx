@@ -112,7 +112,9 @@ export function MiniStat({
 
   if (onPress) {
     // The space between caption and figure sits outside both spans, so the
-    // button's name reads "Firing 3", not "Firing3".
+    // button's name reads "Firing 3", not "Firing3". `-mx-2` cancels the hover
+    // padding sideways, so the caption lines up with a plain stat's: in the
+    // phoneGrid 2x2 the pressable second row sat 8px right of the first.
     return (
       <button
         type="button"
@@ -121,7 +123,7 @@ export function MiniStat({
         onClick={onPress}
         data-slot="mini-stat-pressable"
         className={cn(
-          '-my-1 flex cursor-pointer flex-col items-start gap-px rounded-md px-2 py-1 text-left outline-none transition-colors',
+          '-mx-2 -my-1 flex cursor-pointer flex-col items-start gap-px rounded-md px-2 py-1 text-left outline-none transition-colors',
           'hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]',
           pressed && 'bg-[var(--surface-hover)]',
         )}
@@ -192,15 +194,16 @@ export function MiniStatStrip({
       className={cn(boxed && 'rounded-card border border-border bg-bg-sunken px-4 py-3', className)}
       style={style}
     >
-      {/* The clip box sits 4px outside the row, enough for a focus ring on a
-          stat at the edge; the dividers sit 12px out, in the 24px gap. It
+      {/* The clip box sits 10px outside the row, enough for the focus ring
+          of a pressable stat, whose box reaches 8px past its caption; the
+          dividers sit 12px out, in the 24px gap, so they stay clipped. It
           clips sideways only: a divider only ever pokes out at the left, and a
           vertical clip cut the top and bottom of the focus ring of a stat that
           reaches past its row (the Metrics catalog's filter toggles). */}
       <div
-        className="-m-1 p-1"
-        data-slot="mini-stat-clip"
+        className="-m-2.5 p-2.5"
         style={{ overflowX: 'clip', overflowY: 'visible' }}
+        data-slot="mini-stat-clip"
       >
         <div
           data-phone-grid={phoneGrid || undefined}
@@ -220,8 +223,8 @@ export function MiniStatStrip({
                   className={cn(
                     'absolute -left-3 top-1/2 h-6 w-px -translate-y-1/2',
                     phoneGrid && 'max-sm:hidden',
+                    'bg-border',
                   )}
-                  style={{ background: 'var(--border)' }}
                 />
               )}
               {item}

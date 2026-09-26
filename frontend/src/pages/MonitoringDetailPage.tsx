@@ -1,9 +1,8 @@
-import { DEFAULT_ENTITY_COLOR } from '@/types'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { AlertTriangle, GitBranch, GitCompareArrows, Grid3x3, Layers, TrendingUp } from 'lucide-react'
+import { GitBranch, GitCompareArrows, Grid3x3, Layers } from 'lucide-react'
 import { eventCommentsApi } from '@/api/eventComments'
 import { eventTypesApi } from '@/api/eventTypes'
 import { eventsApi } from '@/api/events'
@@ -11,9 +10,7 @@ import { metaFieldsApi } from '@/api/metaFields'
 import { eventMetricsApi } from '@/api/eventMetrics'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { scansApi } from '@/api/scans'
-import { Chip } from '@/components/primitives/chip'
 import { PageContainer } from '@/components/primitives/page-container'
-import { PageHeader } from '@/components/primitives/page-header'
 import { EmptyState } from '@/components/empty-state'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import EventPhotosSection from '@/components/event-photos-section'
@@ -21,17 +18,11 @@ import { EventValueDriftPanel } from '@/pages/events/EventValueDriftPanel'
 import { EventSpecCard } from '@/components/EventSpecCard'
 import { MetricDefinitionCard } from '@/components/monitoring/metric-definition-card'
 import { SeasonalityHeatmap } from '@/components/monitoring/seasonality-heatmap'
-import { TopMoversPanel } from '@/components/monitoring/top-movers-panel'
-import { ChartSkeleton, EntityNotFound, PageSkeleton, QueryErrorState, SectionSkeleton } from '@/components/states'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardTitle } from '@/components/ui/card'
-import { MetricsChart } from '@/components/ui/chart-lazy'
+import { EntityNotFound, PageSkeleton, QueryErrorState, SectionSkeleton } from '@/components/states'
+import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
-import { formatIncidentCount } from '@/lib/alertStatus'
-import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
-import { formatNumber } from '@/lib/format'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import {
   adaptMetricSeries,
@@ -43,7 +34,6 @@ import { formatMetricValue, metricAxisFormatter } from '@/lib/metricFormat'
 import { aggregateMetricPoints, clampGranularityToRange, type MetricsGranularity } from '@/lib/metrics'
 import { resolveDetailScope } from '@/lib/monitoring'
 import { getAlertingPath } from '@/lib/navigation'
-import { formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
 import { useCanWriteProject } from '@/lib/permissions'
 import {
   eventCommentsKey,
@@ -57,8 +47,7 @@ import {
   scanConfigKey,
 } from '@/lib/queryKeys'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
-import type { EventType, FieldDefinition, MetaFieldDefinition, MonitoringSignal } from '@/types'
-import { AnnotationsCard } from './monitoring/AnnotationsCard'
+import type { EventType, FieldDefinition, MetaFieldDefinition } from '@/types'
 import { BreakdownsTab } from './monitoring/BreakdownsTab'
 import { DistributionTab, type DistributionScope } from './monitoring/DistributionTab'
 import { EventDetailHero, EventDetailSkeleton } from './monitoring/event/EventDetailHero'
@@ -66,43 +55,19 @@ import { EventDiscussion } from './monitoring/event/EventDiscussion'
 import { EventFieldsTable } from './monitoring/event/EventFieldsTable'
 import { EventSideColumn } from './monitoring/event/EventSideColumn'
 import { LIVE_STATUSES } from './monitoring/event/surface'
-import { MetricHeaderActions } from './monitoring/MetricHeaderActions'
-import { ChartCardHeader, MetricsRangeControls } from './monitoring/MetricsRangeControls'
+import { MonitoringDetailHeader } from './monitoring/MonitoringDetailHeader'
+import { useAnnotateHandoff } from './monitoring/useAnnotateHandoff'
 import { useChartAnnotations } from './monitoring/useChartAnnotations'
 import { useMetricCollect } from './monitoring/useMetricCollect'
 import { useMonitoringDetailSearch, type MonitoringDetailTab } from './monitoring/useMonitoringDetailSearch'
 import { partialWindow } from './monitoring/partialBuckets'
-import { SignalSummary } from './monitoring/SignalSummary'
 import { VersionsTab } from './monitoring/VersionsTab'
+import { VolumeTab } from './monitoring/VolumeTab'
 import { usePageTitle } from '@/components/shell-chrome-context'
 
 // Stable empty reference so `metaFieldsQuery.data ?? EMPTY_META_FIELDS`
 // doesn't mint a new array each render and bust the memoized lookup map.
 const EMPTY_META_FIELDS: MetaFieldDefinition[] = []
-
-// The collection cadence in words, for the chart caption (MO-39).
-const CADENCE_LABEL: Record<MetricsGranularity, string> = {
-  '15min': 'Every 15 minutes',
-  hour: 'Hourly',
-  '6h': 'Every 6 hours',
-  day: 'Daily',
-  week: 'Weekly',
-  month: 'Monthly',
-}
-
-/**
- * The header's status chip for the latest signal (MO-12): which way, how far
- * and when ("Spike · +82% at Sep 25, 6:00 PM"), not "Latest scan spike
- * anomaly".
- */
-function signalChipLabel(signal: MonitoringSignal): string {
-  const word = signal.direction === 'drop' ? 'Drop' : 'Spike'
-  if (signal.direction === 'drop' && signal.actual_count === 0) {
-    return `Drop to zero at ${formatTimestamp(signal.bucket)}`
-  }
-  const delta = ratioDelta(signal.actual_count, signal.expected_count)
-  return `${word} · ${formatRatioDelta(delta)} at ${formatTimestamp(signal.bucket)}`
-}
 
 /**
  * One page, four scopes: an event, an event type, a scan's project total, and a
@@ -110,14 +75,6 @@ function signalChipLabel(signal: MonitoringSignal): string {
  * the metric definition, the series); every secondary tab lives under
  * `pages/monitoring/` and owns its own query and error state (MON-35).
  */
-
-/** Scroll the Volume tab's annotation form into view and focus its label. */
-function focusAnnotationForm() {
-  window.setTimeout(() => {
-    document.getElementById('chart-annotations')?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
-    document.getElementById('annotation-label')?.focus({ preventScroll: true })
-  }, 0)
-}
 
 export default function MonitoringDetailPage() {
   const { slug, scope: scopeParam, id, eventId } = useParams<{
@@ -334,38 +291,6 @@ export default function MonitoringDetailPage() {
     }
   }, [selectedTab, tabStrip])
 
-  // The signal banner's "Annotate" (JR-5): the Volume tab, the annotation
-  // form prefilled with the flagged bucket, and focus in its label field.
-  const [annotatePrefill, setAnnotatePrefill] = useState<string | null>(null)
-  const startAnnotation = (bucket: string) => {
-    searchActions.setTab('volume')
-    setAnnotatePrefill(bucket)
-    focusAnnotationForm()
-  }
-  // The Anomalies row menu's "Annotate" (MO-4) arrives here with the bucket in
-  // the navigation state: start the same annotation once, then drop the state
-  // so Back or a reload does not start it again.
-  const location = useLocation()
-  const pendingAnnotateBucket = (location.state as { annotateBucket?: unknown } | null)?.annotateBucket
-  // The prefill is taken while rendering (the adjust-state-on-prop-change
-  // pattern); the effect only rewrites the URL (Volume tab, no state) and
-  // moves focus, so it sets no React state.
-  const [takenAnnotateBucket, setTakenAnnotateBucket] = useState<string | null>(null)
-  if (typeof pendingAnnotateBucket === 'string' && pendingAnnotateBucket !== takenAnnotateBucket) {
-    setTakenAnnotateBucket(pendingAnnotateBucket)
-    setAnnotatePrefill(pendingAnnotateBucket)
-  } else if (typeof pendingAnnotateBucket !== 'string' && takenAnnotateBucket !== null) {
-    setTakenAnnotateBucket(null)
-  }
-  useEffect(() => {
-    if (typeof pendingAnnotateBucket !== 'string') return
-    const params = new URLSearchParams(location.search)
-    params.delete('tab')
-    const query = params.toString()
-    void navigate(`${location.pathname}${query ? `?${query}` : ''}`, { replace: true, state: null })
-    focusAnnotationForm()
-  }, [pendingAnnotateBucket, navigate, location.pathname, location.search])
-
   // The hero's "Discussion (n)" chip and the banner's "Discuss" (JR-7 / JR-5).
   // The thread's own query and cache key, so the count and the thread below
   // cannot disagree, and a posted comment updates both.
@@ -410,9 +335,6 @@ export default function MonitoringDetailPage() {
     () => aggregateMetricPoints(metrics?.data ?? [], granularity, rollupMode),
     [granularity, metrics?.data, rollupMode],
   )
-  // The API forecasts exactly one native collection bucket. Once actuals are
-  // rolled up (for example 1h -> day), that single point is not a forecast for
-  // the whole display bucket and can even duplicate the last x-axis date.
   // Where the collected series ends: the newest bucket's start plus one
   // bucket. An annotation past it is parked on that bucket, and the form says
   // so (MO-8).
@@ -425,10 +347,6 @@ export default function MonitoringDetailPage() {
     const span = previous ? Math.max(0, lastTime - new Date(previous.bucket).getTime()) : 0
     return new Date(lastTime + span).toISOString()
   }, [metrics?.data])
-  const chartForecast = nativeGranularity === granularity
-    ? metrics?.forecast
-    : undefined
-
   const annotationsQuery = useChartAnnotations({ slug, scope, scopeId, rangeDays, timeRange })
 
   const eventType = (eventTypes ?? []).find((candidate: EventType) => (
@@ -469,7 +387,7 @@ export default function MonitoringDetailPage() {
       return metricDefinition && canWrite ? (
         <Link
           to={metricEditPath}
-          className="text-muted-foreground underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-current"
+          className="text-fg-tertiary underline decoration-fg-tertiary/50 underline-offset-2 hover:decoration-current"
         >
           Add a description…
         </Link>
@@ -492,13 +410,10 @@ export default function MonitoringDetailPage() {
     }
     return 'Run a scan to start collecting values for this metric.'
   })()
-  const latestSignal = metrics?.latest_signal
   const partialBuckets = useMemo(
     () => partialWindow(metrics?.data ?? [], granularity, nativeGranularity),
     [granularity, metrics?.data, nativeGranularity],
   )
-  const lastBucket = metrics?.data[metrics.data.length - 1]?.bucket
-
   const isEventScope = scope === 'event'
 
   // Only the queries that define the entity blank the page; every tab renders
@@ -506,6 +421,16 @@ export default function MonitoringDetailPage() {
   // the list covers every scope.
   const entityQueries = [eventQuery, eventTypesQuery, metricDefinitionQuery, metricsQuery]
   const failedEntityQuery = entityQueries.find(query => query.isError)
+  // Whether the Volume tab is on screen rather than a skeleton or an error —
+  // the moment an annotation handed over from the Anomalies list can take focus.
+  const detailReady = !failedEntityQuery
+    && !(scope === 'metric' && metricDefinitionQuery.isPending)
+    && !(scope === 'event_type' && eventTypesQuery.isPending)
+    && !(isEventScope && !event)
+  const { annotatePrefill, startAnnotation } = useAnnotateHandoff({
+    ready: detailReady,
+    showVolumeTab: () => searchActions.setTab('volume'),
+  })
   // A missing entity is not a failure to retry (SH-33): a deleted event or
   // metric, or a stale link, says so and offers the way back to its list.
   const notFound = scope === 'metric'
@@ -632,69 +557,20 @@ export default function MonitoringDetailPage() {
           alertsPath={slug ? getAlertingPath(slug) : undefined}
         />
       ) : (
-        <PageHeader
+        <MonitoringDetailHeader
+          slug={slug}
+          scope={scope}
+          scopeId={scopeId}
           eyebrow={eyebrow}
           title={headerTitle}
-          actions={
-            scope === 'metric' && canWrite && slug ? (
-              <MetricHeaderActions
-                slug={slug}
-                scopeId={scopeId}
-                metricDefinition={metricDefinition}
-                editPath={metricEditPath}
-                collect={metricCollect}
-              />
-            ) : undefined
-          }
-          titleAddon={
-            <>
-              {headerIdentity && (
-                <span className="mono text-body" style={{ color: 'var(--fg-muted)' }} data-testid="header-identity">
-                  {headerIdentity}
-                </span>
-              )}
-              {/* No type badge: on an event-type page it repeated the title
-                  (MO-12). The type's colour is a dot beside it instead. */}
-              {scope === 'event_type' && eventType && (
-                <span
-                  aria-hidden="true"
-                  data-testid="event-type-dot"
-                  className="inline-block size-2.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: eventType.color || DEFAULT_ENTITY_COLOR }}
-                />
-              )}
-              {scope === 'project_total' && (metrics?.scan_config_name || metrics?.scan_config_id) && (
-                // The scan's name, as the Overview names it; the raw id only
-                // on hover (MO-12).
-                <span
-                  className="text-body"
-                  style={{ color: 'var(--fg-muted)' }}
-                  title={metrics.scan_config_id ?? undefined}
-                  data-testid="header-scan"
-                >
-                  Scan: {metrics.scan_config_name || metrics.scan_config_id?.slice(0, 8)}
-                </span>
-              )}
-              {latestSignal && (
-                // The soft status chip every other status uses: a recent
-                // signal in the warning tone, the latest scan's in danger.
-                <Chip
-                  tone={latestSignal.state === 'recent' ? 'warning' : 'danger'}
-                  icon={<AlertTriangle className="size-3" aria-hidden="true" />}
-                >
-                  {signalChipLabel(latestSignal)}
-                </Chip>
-              )}
-              {/* Not a dead end (MO-4): the signal's incident, with its Ack /
-                  Mute / Resolve, lives in the alert inbox. */}
-              {latestSignal && slug && (
-                <Button variant="link" size="sm" className="h-auto p-0 text-caption" asChild>
-                  <Link to={getAlertingPath(slug)}>View alerts</Link>
-                </Button>
-              )}
-            </>
-          }
+          identity={headerIdentity}
           description={headerDescription}
+          eventType={eventType}
+          metrics={metrics}
+          metricDefinition={metricDefinition}
+          metricEditPath={metricEditPath}
+          metricCollect={metricCollect}
+          canWrite={canWrite}
         />
       )}
 
@@ -773,115 +649,34 @@ export default function MonitoringDetailPage() {
           </div>
 
           <TabsContent value="volume" className="space-y-6">
-            {latestSignal && (
-              // One sentence and its reason, not a 4-up grid of raw figures
-              // the reader had to assemble (MO-2 / MO-4).
-              <SignalSummary
-                signal={latestSignal}
-                formatActual={value => (isMetricScope
-                  ? formatMetricValue(value, metricUnit)
-                  : `${formatNumber(value)} ${value === 1 ? 'event' : 'events'}`)}
-                formatExpected={value => (isMetricScope
-                  ? formatMetricValue(value, metricUnit)
-                  : // Value-aware: an event count can still carry a
-                    // sub-unit baseline, which plain rounding wrote as "0".
-                    formatIncidentCount(value))}
-                sigmaThreshold={metrics?.sigma_threshold}
-              />
-            )}
-
-            {/* scan_config_id is NULL only for metric-scope signals, which the
-                scope guard already excludes — but it is checked rather than
-                asserted, so a future scope that also lacks one cannot put a null
-                into the query key. */}
-            {latestSignal?.scan_config_id && slug && scope !== 'metric' && (
-              <TopMoversPanel
-                slug={slug}
-                scanConfigId={latestSignal.scan_config_id}
-                scopeType={latestSignal.scope_type}
-                scopeRef={latestSignal.scope_ref}
-                bucket={latestSignal.bucket}
-                rangeDays={rangeDays}
-                timeRange={timeRange}
-              />
-            )}
-
-            {/* One section-card geometry (DS-4 / MO-10): the header bar with
-                a 12.5px h2 and the range controls, a 16px body. */}
-            <Card>
-              <ChartCardHeader title={<CardTitle as="h2">{volumeLabel}</CardTitle>}>
-                <MetricsRangeControls
-                  rangeDays={rangeDays}
-                  granularity={granularity}
-                  nativeGranularity={nativeGranularity}
-                  onRangeDaysChange={searchActions.setRangeDays}
-                  onGranularityChange={setGranularity}
-                />
-              </ChartCardHeader>
-              <CardContent>
-                {chartIsLoading ? (
-                  <ChartSkeleton height={200} label="Loading monitoring data…" />
-                ) : chartData.length === 0 ? (
-                  <div className="h-[200px] flex items-center justify-center">
-                    <EmptyState
-                      icon={TrendingUp}
-                      title="No metrics data available"
-                      description={chartEmptyDescription}
-                    />
-                  </div>
-                ) : (
-                  <MetricsChart
-                    data={chartData}
-                    forecast={chartForecast}
-                    annotations={annotationsQuery.data ?? []}
-                    height={200}
-                    // The entity's own colour when it has one; otherwise the
-                    // chart's fixed single-series default (DS-27), not an
-                    // arbitrary chart slot.
-                    color={eventType?.color || metricDefinition?.color || undefined}
-                    granularity={granularity}
-                    seriesLabel={metricSeriesLabel}
-                    valueFormatter={metricValueFormatter}
-                    tooltipFormatter={metricTooltipFormatter}
-                    // The sigma the detector scored THIS scope with, so the band
-                    // and the "±Nσ" tooltip agree with the dots inside them. The
-                    // metric scope serves it too (`adaptMetricSeries`, tripl-4cgl).
-                    sigmaThreshold={metrics?.sigma_threshold}
-                    // The axis spans the range picked above, not just the
-                    // buckets that have data (MON-22).
-                    from={timeRange.from}
-                    to={timeRange.to}
-                    // Rolled-up first/last buckets the data only partly
-                    // covers draw dashed, not as cliffs (MO-5).
-                    partial={partialBuckets}
-                    // What the dashes, whiskers and triangles mean (MO-1).
-                    legend
-                  />
-                )}
-                {/* The cadence and the newest bucket, not the raw interval
-                    string; nothing under an empty chart, and nothing on a
-                    metric, whose Definition already names the cadence
-                    (MO-39 / MO-33). */}
-                {!chartIsLoading && chartData.length > 0 && !isMetricScope && nativeGranularity && (
-                  <p className="mt-2 text-caption text-muted-foreground" data-testid="chart-caption">
-                    {CADENCE_LABEL[nativeGranularity]}
-                    {lastBucket && ` · newest bucket ${formatRelativeTime(lastBucket)}`}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-
-            {slug && (
-              <AnnotationsCard
-                slug={slug}
-                scope={scope}
-                scopeId={scopeId}
-                canWrite={canWrite}
-                query={annotationsQuery}
-                prefillBucket={annotatePrefill}
-                dataEnd={dataEnd}
-              />
-            )}
+            <VolumeTab
+              slug={slug}
+              scope={scope}
+              scopeId={scopeId}
+              label={volumeLabel}
+              metrics={metrics}
+              metricUnit={metricUnit}
+              chartData={chartData}
+              chartIsLoading={chartIsLoading}
+              chartEmptyDescription={chartEmptyDescription}
+              chartColor={eventType?.color || metricDefinition?.color || undefined}
+              granularity={granularity}
+              nativeGranularity={nativeGranularity}
+              rangeDays={rangeDays}
+              timeRange={timeRange}
+              partialBuckets={partialBuckets}
+              seriesLabel={metricSeriesLabel}
+              valueFormatter={metricValueFormatter}
+              tooltipFormatter={metricTooltipFormatter}
+              annotationsQuery={annotationsQuery}
+              annotatePrefill={annotatePrefill}
+              dataEnd={dataEnd}
+              canWrite={canWrite}
+              // The event hero's signal banner carries its own Annotate (JR-5).
+              onAnnotate={canWrite && !isEventScope ? startAnnotation : undefined}
+              onRangeDaysChange={searchActions.setRangeDays}
+              onGranularityChange={setGranularity}
+            />
           </TabsContent>
 
           {hasVersionColumn && slug && (

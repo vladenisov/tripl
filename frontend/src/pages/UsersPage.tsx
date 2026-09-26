@@ -256,7 +256,7 @@ function InviteMemberCard() {
             htmlFor="invite-role"
             hint={
               role === 'owner' ? (
-                <span id="invite-owner-warning" style={{ color: 'var(--warning)' }}>
+                <span id="invite-owner-warning" className="text-warning">
                   {OWNER_POWERS}
                 </span>
               ) : undefined
@@ -294,7 +294,7 @@ function InviteMemberCard() {
                 Dismiss
               </Button>
             </div>
-            <p className="m-0 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="m-0 text-caption text-fg-tertiary">
               This link is shown once and cannot be retrieved later. It expires{' '}
               {formatDate(minted.expires_at)} and works a single time.
             </p>
@@ -324,7 +324,7 @@ function InviteMemberCard() {
               {copyState === 'copied' ? 'Invite link copied to the clipboard.' : ''}
             </p>
             {copyState === 'failed' && (
-              <p role="alert" className="m-0 text-caption" style={{ color: 'var(--danger)' }}>
+              <p role="alert" className="m-0 text-caption text-danger">
                 Couldn’t reach the clipboard. The link above is selected — press Ctrl/⌘+C to copy it.
               </p>
             )}
@@ -481,7 +481,7 @@ export default function UsersPage() {
         }
       >
         {users.length > MEMBER_SEARCH_THRESHOLD && (
-          <div className="px-4 py-2.5" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+          <div className="px-4 py-2.5 border-b border-b-border-subtle">
             <FilterSearch things="members" value={memberQuery} onValueChange={setMemberQuery} />
           </div>
         )}
@@ -490,8 +490,7 @@ export default function UsersPage() {
             {[0, 1, 2].map((index) => (
               <div
                 key={index}
-                className="flex items-center gap-3 border-b px-4 py-2.5 last:border-0"
-                style={{ borderColor: 'var(--border-subtle)' }}
+                className="flex items-center gap-3 border-b px-4 py-2.5 last:border-0 border-border-subtle"
               >
                 <Skeleton className="h-7 w-7 shrink-0 rounded-full" />
                 <div className="min-w-0 flex-1 space-y-1">
@@ -524,8 +523,7 @@ export default function UsersPage() {
           shownUsers.map((u: UserListItem) => (
             <div
               key={u.id}
-              className="border-b px-4 py-2.5 last:border-0"
-              style={{ borderColor: 'var(--border-subtle)' }}
+              className="border-b px-4 py-2.5 last:border-0 border-border-subtle"
             >
               <div className="flex items-center gap-3">
                 {/* One avatar colour, the same token the shell and the settings
@@ -540,13 +538,12 @@ export default function UsersPage() {
                     {u.name ?? u.email}
                   </div>
                   <div
-                    className="truncate text-caption leading-tight"
-                    style={{ color: 'var(--fg-subtle)' }}
+                    className="truncate text-caption leading-tight text-fg-tertiary"
                   >
                     {u.email}
                   </div>
                   {/* On phones the date is a second line, not gone (ST-40). */}
-                  <div className="text-caption leading-tight sm:hidden" style={{ color: 'var(--fg-subtle)' }}>
+                  <div className="text-caption leading-tight sm:hidden text-fg-tertiary">
                     Joined {formatDate(u.created_at)}
                   </div>
                 </div>
@@ -555,8 +552,7 @@ export default function UsersPage() {
                     headers to answer it (tripl-h3bb). A date in the body font,
                     as a person reads it, not mono ISO (ST-40). */}
                 <span
-                  className="hidden w-36 shrink-0 text-right text-caption sm:block"
-                  style={{ color: 'var(--fg-subtle)' }}
+                  className="hidden w-36 shrink-0 text-right text-caption sm:block text-fg-tertiary"
                 >
                   Joined {formatDate(u.created_at)}
                 </span>
@@ -589,8 +585,7 @@ export default function UsersPage() {
                 return (
                   <p
                     role="status"
-                    className={`m-0 text-right text-body-sm${updated ? ' mt-1.5' : ''}`}
-                    style={{ color: 'var(--success)' }}
+                    className={`m-0 text-right text-body-sm${updated ? ' mt-1.5' : ''} text-success`}
                   >
                     {updated ? 'Role updated' : ''}
                   </p>

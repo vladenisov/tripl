@@ -66,7 +66,7 @@ lint: lint-be lint-fe ## Lint backend + frontend
 lint-be: ## Lint backend (ruff check + format --check)
 	cd $(BACKEND) && uv run ruff check && uv run ruff format --check
 
-lint-fe: ## Lint frontend (oxlint, then eslint for the rules oxlint lacks; zero warnings)
+lint-fe: ## Lint frontend (oxlint plus the project rule tests; zero warnings)
 	cd $(FRONTEND) && pnpm lint
 
 format: ## Auto-format backend (ruff format)

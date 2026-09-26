@@ -179,7 +179,7 @@ export default function ProjectGeneralSection({
 }) {
   if (!slug) {
     return (
-      <div className="text-body" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="text-body text-fg-tertiary">
         Select a project to edit its settings.
       </div>
     )
@@ -437,7 +437,7 @@ function ProjectGeneralBody({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => navigate(`/p/${slug}/settings/event-types`)}
+              onClick={() => navigate(`/p/${slug}/event-types`)}
             >
               {/* Named for what it opens: event types, meta fields, alerting…
                   "Project operations" described none of them (#238 ST-5). */}
@@ -483,9 +483,9 @@ function ProjectGeneralBody({
               className="mb-4"
               note={
                 saved && !dirty ? (
-                  <span style={{ color: 'var(--success)' }}>Saved</span>
+                  <span className="text-success">Saved</span>
                 ) : dirty ? (
-                  <span style={{ color: 'var(--warning)' }}>Unsaved changes</span>
+                  <span className="text-warning">Unsaved changes</span>
                 ) : (
                   'Saves the project details and the version policy together.'
                 )
@@ -608,18 +608,18 @@ function ProjectGeneralBody({
                   <div className={DANGER_ROW_CLASS}>
                     <div className="min-w-0 flex-1">
                       <div className="text-body font-medium">Rebuild search index</div>
-                      <div className="mt-[3px] text-body-sm leading-[1.45]" style={{ color: 'var(--fg-subtle)' }}>
+                      <div className="mt-[3px] text-body-sm leading-[1.45] text-fg-tertiary">
                         Rebuild project search when existing events, descriptions, or fields do not appear
                         in global search.
                       </div>
                       {reindexMut.isSuccess && (
-                        <div className="mt-2 text-body-sm" style={{ color: 'var(--success)' }}>
+                        <div className="mt-2 text-body-sm text-success">
                           Indexed {reindexMut.data.documents_indexed} documents
                           {reindexMut.data.embeddings_scheduled ? '; embeddings queued.' : '.'}
                         </div>
                       )}
                       {reindexMut.isError && (
-                        <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
+                        <div className="mt-2 text-body-sm text-danger">
                           {getErrorMessage(reindexMut.error)}
                         </div>
                       )}
@@ -650,11 +650,11 @@ function ProjectGeneralBody({
                     busy={resetAnomaliesMut.isPending}
                     feedback={
                       resetAnomaliesMut.isSuccess ? (
-                        <div className="mt-2 text-body-sm" style={{ color: 'var(--success)' }}>
+                        <div className="mt-2 text-body-sm text-success">
                           {summarizeAnomalyCounts(resetAnomaliesMut.data)}
                         </div>
                       ) : resetAnomaliesMut.isError ? (
-                        <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
+                        <div className="mt-2 text-body-sm text-danger">
                           {getErrorMessage(resetAnomaliesMut.error)}
                         </div>
                       ) : null
@@ -672,11 +672,11 @@ function ProjectGeneralBody({
                     busy={resetDriftsMut.isPending}
                     feedback={
                       resetDriftsMut.isSuccess ? (
-                        <div className="mt-2 text-body-sm" style={{ color: 'var(--success)' }}>
+                        <div className="mt-2 text-body-sm text-success">
                           {summarizeDriftCounts(resetDriftsMut.data)}
                         </div>
                       ) : resetDriftsMut.isError ? (
-                        <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
+                        <div className="mt-2 text-body-sm text-danger">
                           {getErrorMessage(resetDriftsMut.error)}
                         </div>
                       ) : null
@@ -697,19 +697,19 @@ function ProjectGeneralBody({
                     preview={retirementPreview}
                     feedback={
                       retireVariablesMut.isSuccess ? (
-                        <div className="mt-2 text-body-sm" style={{ color: 'var(--success)' }}>
+                        <div className="mt-2 text-body-sm text-success">
                           {summarizeRetirement(retireVariablesMut.data, true)}
                         </div>
                       ) : retireVariablesMut.isError ? (
-                        <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
+                        <div className="mt-2 text-body-sm text-danger">
                           {getErrorMessage(retireVariablesMut.error)}
                         </div>
                       ) : previewRetirementMut.isError ? (
-                        <div className="mt-2 text-body-sm" style={{ color: 'var(--danger)' }}>
+                        <div className="mt-2 text-body-sm text-danger">
                           {getErrorMessage(previewRetirementMut.error)}
                         </div>
                       ) : retirementPreview ? (
-                        <div className="mt-2 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                        <div className="mt-2 text-body-sm text-fg-tertiary">
                           {summarizeRetirement(retirementPreview, false)}
                         </div>
                       ) : null

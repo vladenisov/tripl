@@ -237,7 +237,7 @@ export function MetricDefinitionCard({ slug, definition }: MetricDefinitionCardP
     // 12.5px h2, then the body.
     <Card>
       <CardHeader className="flex-row flex-wrap items-center gap-2">
-        <BookOpen aria-hidden="true" className="size-4 text-muted-foreground" />
+        <BookOpen aria-hidden="true" className="size-4 text-fg-tertiary" />
         <CardTitle as="h2">Definition</CardTitle>
         {/* The metric's kind is a category tag: an outline chip (DS-6). */}
         <Chip variant="outline" size="xs">{METRIC_KIND_LABEL[kind]}</Chip>
@@ -287,7 +287,7 @@ function SqlExpression({ config }: { config: Record<string, unknown> }) {
   const valueColumn = configString(config, 'value_column')
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-1.5 text-body-sm text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-1.5 text-body-sm text-fg-tertiary">
         {/* Column names are identifiers: code tokens, not pills (DS-6). A
             column the metric does not use is left out, not shown as an
             empty "–" token (MO-33). */}
@@ -306,7 +306,7 @@ function SqlExpression({ config }: { config: Record<string, unknown> }) {
       </div>
       {metricSql && (
         <details className="rounded-md border">
-          <summary className="cursor-pointer select-none px-3 py-1.5 text-body-sm font-medium text-muted-foreground">
+          <summary className="cursor-pointer select-none px-3 py-1.5 text-body-sm font-medium text-fg-tertiary">
             Show SQL
           </summary>
           <div className="border-t p-2">
@@ -341,13 +341,13 @@ function FactFilterLines({
     <ul className="space-y-0.5 pl-4 text-body-sm">
       {filters.rowFilters.map(name => (
         <li key={`row-filter-${name}`}>
-          <span className="text-muted-foreground">filter · </span>
+          <span className="text-fg-tertiary">filter · </span>
           {name}
         </li>
       ))}
       {filters.conditions.map((condition, index) => (
         <li key={`condition-${index}`}>
-          <span className="text-muted-foreground">{index === 0 ? 'where' : 'and'} </span>
+          <span className="text-fg-tertiary">{index === 0 ? 'where' : 'and'} </span>
           <code className="font-mono">
             {conditionText(condition, columnType(condition.column))}
           </code>
@@ -355,7 +355,7 @@ function FactFilterLines({
       ))}
       {filters.filterSql && (
         <li>
-          <span className="text-muted-foreground">
+          <span className="text-fg-tertiary">
             {filters.conditions.length === 0 ? 'where' : 'and'}{' '}
           </span>
           <code className="font-mono">{filters.filterSql}</code>
@@ -380,11 +380,11 @@ function FactOperandBlock({
     <div className="space-y-0.5">
       <p className="font-mono text-body">
         {operand.aggregation}({operand.column ?? '*'})
-        <span className="text-muted-foreground"> from </span>
+        <span className="text-fg-tertiary"> from </span>
         {operand.factTableId ? (
           <Link
             to={`/p/${slug}/metrics/fact-tables/${operand.factTableId}/edit`}
-            className="underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-current"
+            className="underline decoration-fg-tertiary/50 underline-offset-2 hover:decoration-current"
           >
             {factTableName(operand.factTableId)}
           </Link>
@@ -423,7 +423,7 @@ function FactExpression({
             factTableColumnType={factTableColumnType}
           />
         )}
-        <p aria-hidden="true" className="text-body text-muted-foreground">÷</p>
+        <p aria-hidden="true" className="text-body text-fg-tertiary">÷</p>
         {denominator && (
           <FactOperandBlock
             slug={slug}
@@ -471,22 +471,22 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
       className="rounded-md border"
       onToggle={event => setOpen(event.currentTarget.open)}
     >
-      <summary className="cursor-pointer select-none px-3 py-1.5 text-body-sm font-medium text-muted-foreground">
+      <summary className="cursor-pointer select-none px-3 py-1.5 text-body-sm font-medium text-fg-tertiary">
         Generated batch SQL
       </summary>
       <div className="space-y-2 border-t p-2">
-        <p className="px-1 text-body-sm text-muted-foreground">
+        <p className="px-1 text-body-sm text-fg-tertiary">
           Primary queries executed by Collect now. Compatible aggregates from dependent metrics
           are folded into one query per fact table, interval, and replay chunk.
         </p>
-        {query.isFetching && <p className="px-1 text-body-sm text-muted-foreground">Loading SQL…</p>}
+        {query.isFetching && <p className="px-1 text-body-sm text-fg-tertiary">Loading SQL…</p>}
         {query.isError && (
           <p role="alert" className="px-1 text-body-sm text-destructive">
             Could not generate batch SQL.
           </p>
         )}
         {query.isSuccess && queries.length === 0 && (
-          <p className="px-1 text-body-sm text-muted-foreground">No generated SQL is available.</p>
+          <p className="px-1 text-body-sm text-fg-tertiary">No generated SQL is available.</p>
         )}
         {queries.map((item, index) => {
           const editorLabel = queries.length > 1
@@ -497,7 +497,7 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
               key={`${item.fact_table_id}-${item.interval}-${item.window_from}-${index}`}
               className="space-y-1"
             >
-              <p className="px-1 text-caption text-muted-foreground">
+              <p className="px-1 text-caption text-fg-tertiary">
                 <span className="font-medium text-foreground">{item.label}</span>
                 {' · '}{item.metric_ids.length} metric{item.metric_ids.length === 1 ? '' : 's'}
                 {' · '}{formatDateTime(item.window_from)} → {formatDateTime(item.window_to)}
@@ -513,7 +513,7 @@ function GeneratedBatchSqlDisclosure({ slug, metricId }: { slug: string; metricI
           )
         })}
         {query.data?.breakdown_queries_omitted && (
-          <p className="px-1 text-caption text-muted-foreground">
+          <p className="px-1 text-caption text-fg-tertiary">
             Breakdown queries are generated separately and are not shown here.
           </p>
         )}
@@ -527,7 +527,7 @@ function MetricSchedule({ slug, definition }: { slug: string; definition: Metric
   // A draft is not collected whatever its interval; the header's Activate is
   // the way out, so this only says why nothing runs (#246 JR-16).
   if (definition.status === 'draft') {
-    return <span className="text-body-sm text-muted-foreground">Not collected while draft</span>
+    return <span className="text-body-sm text-fg-tertiary">Not collected while draft</span>
   }
   // An active metric with no interval is a dead end unless the line leads to
   // where the schedule is set — for someone who can set it.
@@ -535,26 +535,26 @@ function MetricSchedule({ slug, definition }: { slug: string; definition: Metric
     return (
       <Link
         to={`/p/${slug}/metrics/${definition.id}/edit`}
-        className="text-body-sm underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-current"
+        className="text-body-sm underline decoration-fg-tertiary/50 underline-offset-2 hover:decoration-current"
       >
         Set a schedule
       </Link>
     )
   }
   if (definition.status !== 'active') {
-    return <span className="text-body-sm text-muted-foreground">Not scheduled</span>
+    return <span className="text-body-sm text-fg-tertiary">Not scheduled</span>
   }
   if (definition.collection_due) {
     return <span className="text-body-sm font-medium text-warning">Due now</span>
   }
   if (definition.next_collection_at) {
     return (
-      <span className="text-body-sm text-muted-foreground">
+      <span className="text-body-sm text-fg-tertiary">
         Next update {formatDateTime(definition.next_collection_at)}
       </span>
     )
   }
-  return <span className="text-body-sm text-muted-foreground">Not scheduled</span>
+  return <span className="text-body-sm text-fg-tertiary">Not scheduled</span>
 }
 
 function EventCompositionExpression({
@@ -570,7 +570,7 @@ function EventCompositionExpression({
     return (
       <p className="text-body">
         <span className="font-mono">{numerator}</span>
-        <span className="text-muted-foreground"> ÷ </span>
+        <span className="text-fg-tertiary"> ÷ </span>
         <span className="font-mono">
           {eventRefName(definition.denominator_event_id, definition.denominator_event_type_id)}
         </span>
@@ -581,7 +581,7 @@ function EventCompositionExpression({
     return (
       <div className="flex flex-wrap items-center gap-1.5">
         <p className="text-body">
-          <span className="text-muted-foreground">distinct users of </span>
+          <span className="text-fg-tertiary">distinct users of </span>
           <span className="font-mono">{numerator}</span>
         </p>
         {userIdColumn && (

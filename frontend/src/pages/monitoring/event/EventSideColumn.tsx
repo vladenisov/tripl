@@ -22,8 +22,8 @@ type EventHistoryItem = { id: string; field: string; created_at: string; new_val
 function PropertyRow({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
   return (
     <div role="row" className="flex gap-3 px-4 py-[6px] text-body-sm">
-      <span role="rowheader" className="w-[120px] flex-shrink-0" style={{ color: 'var(--fg-subtle)' }}>{label}</span>
-      <span role="cell" className={`min-w-0 flex-1 break-words ${mono ? 'mono' : ''}`} style={{ color: 'var(--fg)' }}>
+      <span role="rowheader" className="w-[120px] flex-shrink-0 text-fg-tertiary">{label}</span>
+      <span role="cell" className={`min-w-0 flex-1 break-words ${mono ? 'mono' : ''} text-fg`}>
         {value}
       </span>
     </div>
@@ -40,7 +40,7 @@ function EventMetaCard({
   if (event.meta_values.length === 0) return null
   return (
     <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-      <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+      <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold border-border-subtle">
         Meta fields
       </h2>
       <div role="table" aria-label="Meta fields" className="py-[6px]">
@@ -55,7 +55,7 @@ function EventMetaCard({
               key={mv.id}
               label={def?.display_name ?? def?.name ?? 'Unknown'}
               value={href
-                ? <a href={href} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: 'var(--accent)' }}>{mv.value}</a>
+                ? <a href={href} target="_blank" rel="noopener noreferrer" className="underline text-accent">{mv.value}</a>
                 : display}
               mono
             />
@@ -82,8 +82,7 @@ function EventTicketsCard({ slug, event }: { slug: string; event: TEvent }) {
   return (
     <div className={SURFACE_CARD} style={SURFACE_STYLE}>
       <h2
-        className="m-0 border-b px-4 py-3 text-body-sm font-semibold"
-        style={{ borderColor: 'var(--border-subtle)' }}
+        className="m-0 border-b px-4 py-3 text-body-sm font-semibold border-border-subtle"
       >
         Implementation tickets
       </h2>
@@ -148,7 +147,7 @@ export function EventSideColumn({
   return (
     <div className="flex flex-col gap-[14px]">
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+        <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold border-border-subtle">
           Properties
         </h2>
         <div role="table" aria-label="Properties" className="py-[6px]">
@@ -188,8 +187,7 @@ export function EventSideColumn({
                       getMonitoringPath(slug, { scope_type: 'event', scope_ref: successorId }),
                       successorBranchId,
                     )}
-                    className="underline underline-offset-2"
-                    style={{ color: 'var(--fg)' }}
+                    className="underline underline-offset-2 text-fg"
                   >
                     {successorQuery.data.name}
                   </Link>
@@ -209,19 +207,19 @@ export function EventSideColumn({
       <EventTicketsCard slug={slug} event={event} />
 
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+        <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold border-border-subtle">
           Metric breakdowns
         </h2>
         <div className="flex flex-wrap gap-[6px] px-4 py-[12px]">
           {breakdowns.length > 0
             // Column names are identifiers: code tokens, not pills (DS-6).
             ? breakdowns.map(column => <CodeToken key={column}>{column}</CodeToken>)
-            : <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>No event-level breakdowns</span>}
+            : <span className="text-body-sm text-fg-tertiary">No event-level breakdowns</span>}
         </div>
       </div>
 
       <div className={SURFACE_CARD} style={SURFACE_STYLE}>
-        <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold" style={{ borderColor: 'var(--border-subtle)' }}>
+        <h2 className="m-0 border-b px-4 py-3 text-body-sm font-semibold border-border-subtle">
           Recent activity
         </h2>
         <div className="py-[4px]">
@@ -235,8 +233,8 @@ export function EventSideColumn({
               />
             </div>
           ) : history.length === 0 ? (
-            <div className="px-4 py-5 text-center" style={{ color: 'var(--fg-subtle)' }}>
-              <p className="text-caption font-medium" style={{ color: 'var(--fg-muted)' }}>
+            <div className="px-4 py-5 text-center text-fg-tertiary">
+              <p className="text-caption font-medium text-fg-secondary">
                 No recent changes
               </p>
               <p className="mt-1 text-micro">
@@ -244,16 +242,16 @@ export function EventSideColumn({
               </p>
             </div>
           ) : history.slice(0, 4).map(change => (
-            <div key={change.id} className="flex gap-[10px] border-t px-4 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div key={change.id} className="flex gap-[10px] border-t px-4 py-2 border-border-subtle">
               <Dot tone="neutral" size={6} className="mt-[5px]" />
               <div className="min-w-0 flex-1">
                 <div className="text-caption font-medium">
                   <span className={change.field.startsWith('field:') || change.field.startsWith('meta:') ? 'mono' : ''}>
                     {historyFieldLabel(change.field)}
                   </span>
-                  {change.new_value != null && <span style={{ color: 'var(--fg-muted)' }}> → {change.new_value}</span>}
+                  {change.new_value != null && <span className="text-fg-secondary"> → {change.new_value}</span>}
                 </div>
-                <div className="mt-[2px] text-micro" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="mt-[2px] text-micro text-fg-tertiary">
                   {formatRelativeTime(change.created_at)}
                 </div>
               </div>

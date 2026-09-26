@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tripl.models.domain_enums import (
     AlertInboxStatus,
@@ -104,6 +105,21 @@ class MetricSignalResponse(BaseModel):
     # incident's status without touching any signal.
     incident_id: uuid.UUID | None = None
     incident_status: AlertInboxStatus | None = None
+    # Triage of a signal NO rule routed to an incident (MO-4 / JR-5); a signal
+    # with ``incident_id`` is triaged in the inbox and never carries these.
+    # Filled after the signals cache, like the incident fields, so a click shows
+    # up on the next fetch. ``muted`` is the live state (a lapsed mute reads
+    # False); ``muted_until`` is NULL both when unmuted and when muted until
+    # someone unmutes, so read it together with ``muted``. ``hidden`` is the one
+    # flag every count gates on: muted or expected. The collapsed list drops
+    # hidden signals outright; the expanded list keeps them so the Anomalies
+    # page can offer "Show hidden".
+    acknowledged_at: datetime | None = None
+    muted: bool = False
+    muted_until: datetime | None = None
+    expected: bool = False
+    expected_note: str | None = None
+    hidden: bool = False
 
 
 class SeasonalityCell(BaseModel):
@@ -192,6 +208,21 @@ class EventMetricsResponse(BaseModel):
     # carry no ``expected_count``/``stddev``, so no band is drawn from it
     # (tripl-0zpq.119 follow-up).
     sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD
+    # When the scan's newest completed metrics collection finished, and the
+    # earliest moment the scheduler will dispatch the next one — the bucket half
+    # of its due check (``schedule.scan_config_collection_schedule``), so a live
+    # job, the failure backoff or a demo's cooldown can still defer it. Equal to
+    # the response time when collection is due now. Both NULL on a path with no
+    # scan config or no interval; ``last_collected_at`` is also NULL before the
+    # first scheduled or manual collection completes (L4).
+    last_collected_at: datetime | None = None
+    next_collection_at: datetime | None = None
+    # The Events tab's series only (``scope == "events_total"``): its volume over
+    # the 7 days ending at the requested upper bound (or now) and the 7 before,
+    # independent of the chart's range, for "612K in 7d · +4% vs prior week"
+    # (EV-21). NULL on every other scope.
+    week_total: int | None = None
+    prior_week_total: int | None = None
     data: list[EventMetricPoint]
     forecast: list[ForecastPoint] = []
 
@@ -366,6 +397,79 @@ class EventWindowMetricsRequest(BaseModel):
 
 class ActiveSignalsQuery(BaseModel):
     event_ids: list[uuid.UUID] = []
+
+
+class SignalTriageScope(BaseModel):
+    """The scope a triage verdict is about, keyed like the signal itself.
+
+    ``scan_config_id`` is NULL for a catalog ``metric`` scope and required for
+    every other one. ``bucket`` names the signal the user acted on: the
+    per-signal verdicts pin it, and a mute uses it to refuse a signal that was
+    routed to an incident (that one is triaged in the inbox).
+    """
+
+    scan_config_id: uuid.UUID | None = None
+    scope_type: MetricScopeType
+    scope_ref: str = Field(min_length=1, max_length=64)
+    bucket: datetime
+
+
+SignalMuteDuration = Literal["24h", "7d", "until_unmuted"]
+
+
+class SignalMuteRequest(SignalTriageScope):
+    duration: SignalMuteDuration
+
+
+class SignalExpectedRequest(SignalTriageScope):
+    # Also the chart annotation's description, so the marker explains itself.
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class SignalTriageState(BaseModel):
+    """The triage fields of one signal after a write, as the list would show them."""
+
+    acknowledged_at: datetime | None = None
+    muted: bool = False
+    muted_until: datetime | None = None
+    expected: bool = False
+    expected_note: str | None = None
+    hidden: bool = False
+
+
+# Longest batch ``POST /anomalies/signals/series`` accepts. The Anomalies page
+# asks for the rows it renders; a flooded project has ~200 open signals.
+SIGNAL_SERIES_MAX_SCOPES = 500
+
+
+class SignalSeriesScope(BaseModel):
+    """One open signal whose recent series a row sparkline draws (MO-19)."""
+
+    scan_config_id: uuid.UUID
+    scope_type: MetricScopeType
+    scope_ref: str
+    bucket: datetime
+
+
+class SignalSeriesQuery(BaseModel):
+    scopes: list[SignalSeriesScope] = Field(max_length=SIGNAL_SERIES_MAX_SCOPES)
+
+
+class SignalSeriesResponse(BaseModel):
+    """Up to ``SIGNAL_SERIES_BUCKETS`` buckets around one signal's flagged bucket.
+
+    The window opens 20 buckets before ``bucket`` and closes 4 after it, so the
+    row shows the run-up and whether the move held. Gaps inside the stored range
+    are zero-filled (an absent row is a zero count); buckets past the newest
+    stored one are simply absent.
+    """
+
+    scan_config_id: uuid.UUID
+    scope_type: MetricScopeType
+    scope_ref: str
+    bucket: datetime
+    interval: ScanInterval | None = None
+    data: list[BreakdownTimelinePoint]
 
 
 class EventWindowMetricsResponse(BaseModel):

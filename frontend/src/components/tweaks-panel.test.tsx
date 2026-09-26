@@ -7,10 +7,15 @@ import { useTweaksPanel } from './tweaks-panel-context'
 function Opener() {
   const tweaks = useTweaksPanel()
   return (
-    <button type="button" onClick={() => tweaks.setOpen(true)}>
+    <button type="button" onClick={(event) => tweaks.setOpen(!tweaks.open, event.currentTarget)}>
       Appearance
     </button>
   )
+}
+
+/** Radix registers its outside-press listener a tick after the popover mounts. */
+async function settle() {
+  await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
 }
 
 function renderPanel() {
@@ -76,7 +81,7 @@ describe('TweaksPanel', () => {
     await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
     expect(dialog.contains(document.activeElement)).toBe(true)
 
-    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(opener).toHaveFocus()
   })
@@ -85,8 +90,31 @@ describe('TweaksPanel', () => {
     renderPanel()
     fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
     expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    await settle()
 
+    // Radix's Popover defers an outside dismissal from a primary-button
+    // pointerdown to the click that completes the press, so press the way a
+    // user does: pointerdown, then click. The pointerdown alone keeps it open.
     fireEvent.pointerDown(document.body)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    fireEvent.click(document.body)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('is a popover hung from its trigger, not a panel fixed to the corner (SH-24)', async () => {
+    renderPanel()
+    const opener = screen.getByRole('button', { name: 'Appearance' })
+    fireEvent.click(opener)
+    const dialog = await screen.findByRole('dialog', { name: 'Appearance' })
+    expect(dialog).toHaveAttribute('data-slot', 'popover-content')
+    expect(dialog.className).not.toMatch(/\bfixed\b/)
+    await settle()
+
+    // A press on the trigger toggles the panel instead of closing and
+    // reopening it on the same click.
+    fireEvent.pointerDown(opener)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    fireEvent.click(opener)
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 

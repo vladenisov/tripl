@@ -41,7 +41,7 @@ export function ColumnFilter({
               ? 'opacity-100 text-[color:var(--accent)]'
               // Hover-revealed only where there is hover: on a touch screen
               // an invisible control cannot be found at all (EVT-21).
-              : 'opacity-0 pointer-coarse:opacity-100 text-muted-foreground hover:text-foreground',
+              : 'opacity-0 pointer-coarse:opacity-100 text-fg-tertiary hover:text-foreground',
             open && 'opacity-100',
           )}
           onClick={(e) => e.stopPropagation()}
@@ -59,7 +59,7 @@ export function ColumnFilter({
         className="w-56 p-2"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-1.5 px-1 micro-label" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="mb-1.5 px-1 micro-label text-fg-tertiary">
           {label}
         </div>
         {type === 'text' && (
@@ -114,12 +114,11 @@ export function ColumnFilter({
           </div>
         )}
         {active && (
-          <div className="mt-1.5 border-t pt-1.5" style={{ borderColor: 'var(--border-subtle)' }}>
+          <div className="mt-1.5 border-t pt-1.5 border-border-subtle">
             <button
               type="button"
               onClick={clear}
-              className="flex w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-caption hover:bg-[var(--surface-hover)]"
-              style={{ color: 'var(--fg-muted)' }}
+              className="flex w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-caption hover:bg-[var(--surface-hover)] text-fg-secondary"
             >
               <X className="h-3 w-3" />
               Clear filter
@@ -156,7 +155,7 @@ function FilterOptionRow({
           borderColor: checked ? 'var(--accent-solid)' : 'var(--border-strong)',
         }}
       >
-        {checked && <Check className="size-3" style={{ color: 'var(--accent-solid-fg)' }} />}
+        {checked && <Check className="size-3 text-accent-solid-fg" />}
       </span>
       <span className="flex-1 truncate">{label}</span>
     </button>

@@ -773,6 +773,18 @@ a settings tab). Both `/p/<slug>/settings/scans` and
 `/p/<slug>/settings/scans/<scan-id>` redirect to the new paths, so bookmarks,
 older docs, and the deep links in already-delivered alerts keep working.
 
+**An alert message or bookmark points at `/p/<slug>/settings/alerting/…` (or `settings/event-types`, `settings/variables`, `settings/branches`, …) — is it broken?**
+No. The Plan, Observe and Govern pages have their own addresses now:
+`/p/<slug>/event-types`, `/meta-fields`, `/variables`, `/relations`,
+`/branches`, `/history`, `/alerting` and `/audit`. Every old
+`/p/<slug>/settings/<page>` address — with its item id, `?item=` / `?incident=`
+anchors and any other query string — redirects to the new one, so alerts sent
+before the move still open the exact delivery and incident. Meta fields,
+Relations, History and Audit have no per-item page, so an item id after them is
+dropped and the page itself opens.
+`/p/<slug>/settings` itself holds only project settings: General, Plan rules and
+Detection settings (`/p/<slug>/settings/monitoring`).
+
 **How do I read a scan run?**
 Open the scan, expand the run, and read **What this run did** — plain sentences
 about your data, not internal counters. It tells you how many warehouse rows the

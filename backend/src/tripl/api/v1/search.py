@@ -30,6 +30,17 @@ async def search_project(
             )
         ),
     ] = True,
+    group_variants: Annotated[
+        bool,
+        Query(
+            description=(
+                "Fold events of one event type whose names differ only in one "
+                "naming-rule placeholder into their best-ranked member, which "
+                "then carries ``variant_group``. ``limit`` and ``total`` count "
+                "the folded rows."
+            )
+        ),
+    ] = False,
 ) -> SearchResponse:
     return await search_service.search_project(
         session,
@@ -40,6 +51,7 @@ async def search_project(
         include_archived=include_archived,
         limit=limit,
         semantic=semantic,
+        group_variants=group_variants,
     )
 
 

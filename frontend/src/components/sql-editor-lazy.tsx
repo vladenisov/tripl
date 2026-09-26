@@ -19,7 +19,7 @@ export function LazySqlEditor(props: SqlEditorProps) {
       fallback={
         <div
           role="status"
-          className="flex items-center justify-center rounded-md border text-body-sm text-muted-foreground"
+          className="flex items-center justify-center rounded-md border text-body-sm text-fg-tertiary"
           style={{ minHeight: props.minHeight ?? '120px' }}
         >
           Loading editor…

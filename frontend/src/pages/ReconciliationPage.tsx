@@ -1,11 +1,11 @@
 import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
 import { TermHint, TERM_HINTS } from '@/components/term-hint'
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { Panel } from '@/components/settings/kit'
 import { Link, useParams } from 'react-router-dom'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowRight, GitCompare, Inbox, Info } from 'lucide-react'
+import { ArrowRight, ChevronDown, GitCompare, Inbox, Info } from 'lucide-react'
 import { EmptyState } from '@/components/empty-state'
 import {
   MAX_SHADOW_BATCH,
@@ -32,6 +32,7 @@ import { useActiveBranchId } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { DEAD_EVENT_DAYS } from '@/lib/coverage'
 import { formatRelativeTime } from '@/lib/datetime'
+import { countOf } from '@/lib/plural'
 import { eventNameLabel } from '@/lib/eventName'
 import { getMonitoringPath } from '@/lib/monitoring'
 import { coverageTone, toneVar } from '@/lib/statusLexicon'
@@ -558,14 +559,12 @@ export default function ReconciliationPage() {
                     {coverage.summary.total_count > 0 ? formatMatchPct(coverage.summary) : '—'}
                   </span>
                   <span
-                    className="inline-flex items-center gap-1 text-caption"
-                    style={{ color: 'var(--fg-subtle)' }}
+                    className="inline-flex items-center gap-1 text-caption text-fg-tertiary"
                     title={DATA_MATCH_HELP}
                   >
                     occurrences matched
                     <Info
-                      className="h-3 w-3 shrink-0"
-                      style={{ color: 'var(--fg-faint)' }}
+                      className="h-3 w-3 shrink-0 text-fg-tertiary"
                       aria-hidden
                     />
                   </span>
@@ -639,18 +638,17 @@ export default function ReconciliationPage() {
               {shadowIsEmpty &&
                 (shadowStatus === 'new' ? (
                   <div className="flex min-h-[240px] flex-col items-center justify-center gap-1.5 px-4 py-6 text-center">
-                    <Inbox className="h-4 w-4" style={{ color: 'var(--fg-faint)' }} aria-hidden />
-                    <div className="text-body-sm font-medium" style={{ color: 'var(--fg-muted)' }}>
+                    <Inbox className="h-4 w-4 text-fg-tertiary" aria-hidden />
+                    <div className="text-body-sm font-medium text-fg-secondary">
                       No new events
                     </div>
-                    <div className="text-micro" style={{ color: 'var(--fg-subtle)' }}>
+                    <div className="text-micro text-fg-tertiary">
                       No unexpected events seen in the last {COVERAGE_DAYS} days.
                     </div>
                   </div>
                 ) : (
                   <div
-                    className="flex min-h-[240px] flex-col items-center justify-center px-4 py-6 text-center text-body-sm"
-                    style={{ color: 'var(--fg-subtle)' }}
+                    className="flex min-h-[240px] flex-col items-center justify-center px-4 py-6 text-center text-body-sm text-fg-tertiary"
                   >
                     No {shadowStatus} events.
                   </div>
@@ -699,14 +697,14 @@ export default function ReconciliationPage() {
                       : 'Dismiss selected'}
                   </Button>
                   {selectedShadowItems.length > acceptableShadowItems.length && !bulkRunning && (
-                    <span className="text-micro" style={{ color: 'var(--fg-subtle)' }}>
+                    <span className="text-micro text-fg-tertiary">
                       Rows without an event type are accepted one at a time.
                     </span>
                   )}
                 </div>
               )}
               {(bulkProgress || bulkNotice) && (
-                <div role="status" className="px-4 pb-2 text-caption" style={{ color: 'var(--fg-muted)' }}>
+                <div role="status" className="px-4 pb-2 text-caption text-fg-secondary">
                   {bulkProgress
                     ? `${bulkProgress.action === 'accept' ? 'Accepting' : 'Dismissing'} ${bulkProgress.done} of ${bulkProgress.total}…`
                     : bulkNotice}
@@ -760,8 +758,7 @@ export default function ReconciliationPage() {
                   and then at 500 with no way past them (DATA-39). */}
               {shadow && shadow.total > shadow.items.length && (
                 <div
-                  className="flex flex-wrap items-center gap-2.5 border-t px-4 py-2 text-caption"
-                  style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-subtle)' }}
+                  className="flex flex-wrap items-center gap-2.5 border-t px-4 py-2 text-caption border-border-subtle text-fg-tertiary"
                 >
                   <span>
                     Showing {shadow.items.length.toLocaleString()} of {shadow.total.toLocaleString()}
@@ -818,7 +815,7 @@ export default function ReconciliationPage() {
                 // expected", which hinted it was often wrong without saying when
                 // (DA-34). "Planned" also disagreed with the "Implemented" subtitle.
                 <div className="flex flex-col gap-1.5 px-4 py-2">
-                  <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                  <p className="text-caption text-fg-tertiary">
                     Seasonal or rarely fired events can show up here; archive only what you have
                     retired.
                   </p>
@@ -834,8 +831,7 @@ export default function ReconciliationPage() {
                       />
                       <label
                         htmlFor="dead-select-all"
-                        className="text-caption"
-                        style={{ color: 'var(--fg-muted)' }}
+                        className="text-caption text-fg-secondary"
                       >
                         Select all
                       </label>
@@ -844,21 +840,20 @@ export default function ReconciliationPage() {
                 </div>
               )}
               {canWrite && onFeatureBranch && deadItems.length > 0 && (
-                <div className="px-4 pb-2 text-micro" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="px-4 pb-2 text-micro text-fg-tertiary">
                   Dead events are checked on the main branch, and archiving them changes main. Switch
                   to main to archive them.
                 </div>
               )}
               {archiveNotice && (
-                <div role="status" className="px-4 pb-2 text-caption" style={{ color: 'var(--fg-muted)' }}>
+                <div role="status" className="px-4 pb-2 text-caption text-fg-secondary">
                   {archiveNotice}
                 </div>
               )}
               {deadError && (
                 <div
-                  className="px-4 pb-2 text-caption"
+                  className="px-4 pb-2 text-caption text-danger"
                   role="alert"
-                  style={{ color: 'var(--danger)' }}
                 >
                   {deadError}
                 </div>
@@ -880,7 +875,7 @@ export default function ReconciliationPage() {
                 <SectionSkeleton variant="rows" rows={3} label="Loading dead events…" />
               )}
               {dead && dead.items.length === 0 && !deadQuery.isError && (
-                <div className="flex min-h-[240px] flex-col items-center justify-center px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="flex min-h-[240px] flex-col items-center justify-center px-4 py-7 text-center text-body-sm text-fg-tertiary">
                   No dead events in the last {dead.days} days.
                 </div>
               )}
@@ -895,8 +890,7 @@ export default function ReconciliationPage() {
               ))}
               {hiddenDeadCount > 0 && (
                 <div
-                  className="flex flex-wrap items-center gap-2.5 border-t px-4 py-2 text-caption"
-                  style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-subtle)' }}
+                  className="flex flex-wrap items-center gap-2.5 border-t px-4 py-2 text-caption border-border-subtle text-fg-tertiary"
                 >
                   <span>
                     Showing {shownDeadItems.length.toLocaleString()} of{' '}
@@ -979,7 +973,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
   const [head] = items
   if (!head) {
     return (
-      <div className="flex-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="flex-1 text-caption text-fg-tertiary">
         No data-match history yet.
       </div>
     )
@@ -995,8 +989,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
         <div
           role="img"
           aria-label={`Data match steady at ${steadyPct}% across the window`}
-          className="inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-caption"
-          style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-muted)' }}
+          className="inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-caption border-border-subtle text-fg-secondary"
         >
           <Dot tone={coverageTone(steadyPct)} size={6} />
           Stable at {steadyPct}% in every {unit} with data over the last {pluralize(days, 'day')}
@@ -1028,8 +1021,7 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
                 <div
                   key={bucket.bucket}
                   title={`${bucket.bucket}: no data`}
-                  className="h-full flex-1 rounded-sm border border-dashed"
-                  style={{ borderColor: 'var(--border)' }}
+                  className="h-full flex-1 rounded-sm border border-dashed border-border"
                 />
               )
             }
@@ -1067,14 +1059,36 @@ function CoverageStrip({ items, days }: { items: CoverageBucket[]; days: number 
         </tbody>
       </table>
       <div
-        className="tnum mt-1.5 flex justify-between text-micro"
-        style={{ color: 'var(--fg-faint)' }}
+        className="tnum mt-1.5 flex justify-between text-micro text-fg-tertiary"
       >
         <span>−{days}d</span>
         <span aria-hidden="true">scale 0–100%</span>
         <span>today</span>
       </div>
     </div>
+  )
+}
+
+/** The rows the collector saw for this identity, one small key/value list each. */
+function ShadowSamples({ id, samples }: { id: string; samples: ReadonlyArray<Record<string, string>> }) {
+  return (
+    <ul id={id} className="flex flex-col gap-1.5" aria-label="Sample properties">
+      {samples.map((sample, index) => (
+        <li
+          key={index}
+          className="rounded-md border px-2.5 py-1.5 border-border-subtle bg-bg-sunken"
+        >
+          <dl className="grid grid-cols-[minmax(0,max-content)_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-caption">
+            {Object.entries(sample).map(([key, value]) => (
+              <Fragment key={key}>
+                <dt className="mono truncate text-fg-tertiary">{key}</dt>
+                <dd className="mono break-all text-fg">{value}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -1115,11 +1129,13 @@ function ShadowRow({
   /** Omitted when the row cannot be bulk-selected (a viewer, a resolved row). */
   onToggleSelect?: () => void
 }) {
+  const [samplesOpen, setSamplesOpen] = useState(false)
+  const samples = item.sample_properties ?? []
+  const samplesId = `shadow-samples-${item.id}`
   return (
     // Row height follows the Density setting (DS-9).
     <div
-      className="flex min-h-(--row-h) flex-col justify-center gap-2 border-t px-4 py-2"
-      style={{ borderColor: 'var(--border-subtle)' }}
+      className="flex min-h-(--row-h) flex-col justify-center gap-2 border-t px-4 py-2 border-border-subtle"
     >
       <div className="flex items-center gap-2.5">
         {onToggleSelect && (
@@ -1131,15 +1147,14 @@ function ShadowRow({
           />
         )}
         <div className="min-w-0 flex-1">
-          <span className="mono text-body-sm" style={{ color: 'var(--fg)' }}>
+          <span className="mono text-body-sm text-fg">
             <EventName name={item.event_name} />
           </span>
           {/* Each separator opens the item after it, so a wrapped line
               starts with "·" instead of leaving one dangling at the end of
               the line above (DA-32). The scan links to where it was seen. */}
           <div
-            className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-micro [&>*+*]:before:mr-1.5 [&>*+*]:before:content-['·']"
-            style={{ color: 'var(--fg-subtle)' }}
+            className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-micro [&>*+*]:before:mr-1.5 [&>*+*]:before:content-['·'] text-fg-tertiary"
           >
             {slug ? (
               <Link to={`/p/${slug}/scans/${item.scan_config_id}`} className="hover:underline">
@@ -1150,13 +1165,30 @@ function ShadowRow({
             )}
             <span className="tnum">{item.observed_count.toLocaleString()} seen</span>
             <span>last seen {formatRelativeTime(item.last_seen_at)}</span>
+            {/* What the event looks like before it is accepted: the rows the
+                latest collection saw for it (DA-32). */}
+            {samples.length > 0 && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-0.5 hover:underline"
+                aria-expanded={samplesOpen}
+                aria-controls={samplesId}
+                onClick={() => setSamplesOpen(open => !open)}
+              >
+                {samplesOpen ? 'Hide samples' : `Show ${countOf(samples.length, 'sample', 'samples')}`}
+                <ChevronDown
+                  aria-hidden
+                  className={`size-3 transition-transform ${samplesOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+            )}
           </div>
         </div>
         {item.event_type_name ? (
           // Labelled: a bare "Click" chip did not say it was the event type.
           <Chip variant="outline" size="xs">type: {item.event_type_name}</Chip>
         ) : (
-          <span className="shrink-0 text-micro" style={{ color: 'var(--fg-faint)' }}>
+          <span className="shrink-0 text-micro text-fg-tertiary">
             no type
           </span>
         )}
@@ -1180,12 +1212,12 @@ function ShadowRow({
           </div>
         )}
       </div>
+      {samplesOpen && samples.length > 0 && <ShadowSamples id={samplesId} samples={samples} />}
       {needsEventTypeSelect && (
         <div className="flex flex-wrap items-center gap-2">
           <label
             htmlFor={`event-type-select-${item.id}`}
-            className="text-caption"
-            style={{ color: 'var(--fg-subtle)' }}
+            className="text-caption text-fg-tertiary"
           >
             Choose event type:
           </label>
@@ -1233,8 +1265,7 @@ function DeadRow({
   const isNever = !item.last_seen_at
   return (
     <div
-      className="flex min-h-(--row-h) items-center gap-2.5 border-t px-4 py-2"
-      style={{ borderColor: 'var(--border-subtle)' }}
+      className="flex min-h-(--row-h) items-center gap-2.5 border-t px-4 py-2 border-border-subtle"
     >
       {onToggle && (
         <Checkbox
@@ -1246,8 +1277,7 @@ function DeadRow({
       <Dot tone="neutral" size={6} />
       <Link
         to={slug ? getMonitoringPath(slug, { scope_type: 'event', scope_ref: item.event_id }) : '#'}
-        className="min-w-0 flex-1 truncate text-body-sm hover:underline"
-        style={{ color: 'var(--fg-muted)' }}
+        className="min-w-0 flex-1 truncate text-body-sm hover:underline text-fg-secondary"
         title={eventNameLabel(item.name)}
       >
         <EventName name={item.name} />

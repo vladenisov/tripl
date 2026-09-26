@@ -158,6 +158,12 @@ Useful query parameters:
   answer when it lands.
 - `limit`: 1 to 100, defaults to 20.
 - `branch`: optional branch id.
+- `group_variants`: defaults to `false`. `true` folds events of one event type
+  whose names differ only in one naming-rule placeholder into their best-ranked
+  hit, which then carries a `variant_group`
+  (`key`, `pattern`, `placeholder`, `count`, `variants[]`); the other members
+  are not returned as separate results. `limit`, `total` and `truncated` then
+  count rows, so a folded group is one.
 
 Search results include `entity_type`, `entity_id`, `title`, `subtitle`,
 `description`, `snippet`, `route_path`, `score`, `confidence`, and `highlights`.

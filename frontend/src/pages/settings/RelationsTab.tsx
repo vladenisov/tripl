@@ -194,7 +194,7 @@ export function RelationsTab({ slug }: { slug: string }) {
                   onFieldChange={setTgtFieldId}
                 />
               </div>
-              <p className="text-body-sm text-muted-foreground" aria-live="polite">
+              <p className="text-body-sm text-fg-tertiary" aria-live="polite">
                 {srcFieldId && tgtFieldId ? (
                   <>
                     Joins{' '}
@@ -270,19 +270,19 @@ export function RelationsTab({ slug }: { slug: string }) {
                     <TableRow key={r.id}>
                       <TableCell className="font-mono text-body-sm">
                         <span>{source}</span>
-                        <span className="px-1.5 text-muted-foreground" aria-hidden="true">→</span>
+                        <span className="px-1.5 text-fg-tertiary" aria-hidden="true">→</span>
                         <span className="sr-only"> to </span>
                         <span>{target}</span>
                       </TableCell>
                       {/* The stored key, in words: "belongs_to" was a value
                           nobody chose in the dialog. */}
-                      <TableCell className="text-muted-foreground text-body-sm">{relationTypeLabel(r.relation_type)}</TableCell>
+                      <TableCell className="text-fg-tertiary text-body-sm">{relationTypeLabel(r.relation_type)}</TableCell>
                       <TableCell className="sticky right-0 bg-surface">
                         {canWrite && (
                           <div className="flex items-center justify-end gap-0.5">
                             <IconButton
                               variant="ghost"
-                              className="h-7 w-7 text-muted-foreground"
+                              className="h-7 w-7 text-fg-tertiary"
                               label={`Edit relation between ${source} and ${target}`}
                               onClick={() => openEdit(r)}
                             >
@@ -290,7 +290,7 @@ export function RelationsTab({ slug }: { slug: string }) {
                             </IconButton>
                             <IconButton
                               variant="ghost"
-                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              className="h-7 w-7 text-fg-tertiary hover:text-destructive"
                               label={`Delete relation between ${source} and ${target}`}
                               disabled={deleteMut.isPending}
                               onClick={() => handleDelete(r)}

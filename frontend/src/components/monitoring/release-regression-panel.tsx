@@ -88,7 +88,7 @@ function RegressionRow({ slug, item }: { slug: string; item: ReleaseRegressionIt
               </Link>
             ) : item.scope_name}
           </p>
-          <p className="text-body-sm text-muted-foreground">
+          <p className="text-body-sm text-fg-tertiary">
             {isMissing ? 'Disappeared in' : 'Dropped in'}{' '}
             <span className="font-mono">{item.version}</span>
             {' (was '}
@@ -102,7 +102,7 @@ function RegressionRow({ slug, item }: { slug: string; item: ReleaseRegressionIt
           ? <Chip tone="danger" size="xs">missing</Chip>
           : <Chip variant="outline" size="xs">{`-${dropPct}%`}</Chip>}
         {/* Counts, so sans with tabular digits (DS-17). */}
-        <span className="tnum text-muted-foreground">
+        <span className="tnum text-fg-tertiary">
           {formatCount(item.observed_count)} / {formatCount(item.expected_count)}
         </span>
       </div>
@@ -148,11 +148,11 @@ export function ReleaseRegressionPanel({
       <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <CardTitle as="h2">
-            Release regressions <span className="font-normal text-muted-foreground">· whole scan</span>
+            Release regressions <span className="font-normal text-fg-tertiary">· whole scan</span>
           </CardTitle>
           {query.data?.latest_version && (
             <div className="flex items-center gap-1.5">
-              <span className="text-caption text-muted-foreground">latest active release</span>
+              <span className="text-caption text-fg-tertiary">latest active release</span>
               {/* A version is an identifier: a code token, not a pill (DS-6). */}
               <CodeToken>{query.data.latest_version}</CodeToken>
             </div>
@@ -192,7 +192,7 @@ export function ReleaseRegressionPanel({
                 {/* Every distinct reason, not only the first scope's: two
                     partitions can be withheld for different reasons. */}
                 {withheldReasons.map(reason => (
-                  <p key={reason} className="mt-1 text-body-sm text-muted-foreground">
+                  <p key={reason} className="mt-1 text-body-sm text-fg-tertiary">
                     {reason}
                   </p>
                 ))}
@@ -205,11 +205,11 @@ export function ReleaseRegressionPanel({
                 ))}
               </div>
             ) : withheld.length > 0 ? null : judged ? (
-              <p className="text-body text-muted-foreground">
+              <p className="text-body text-fg-tertiary">
                 No events regressed in the latest release.
               </p>
             ) : (
-              <p className="text-body text-muted-foreground">
+              <p className="text-body text-fg-tertiary">
                 No release comparison has run for this scan yet.
               </p>
             )}

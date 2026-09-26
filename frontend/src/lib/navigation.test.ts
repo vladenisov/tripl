@@ -7,6 +7,7 @@ import {
   getAlertingPath,
   projectHomePath,
   resolveActivityTargetPath,
+  legacySettingsRedirectPath,
   resolveNavLocation,
   switchProjectPath,
 } from './navigation'
@@ -53,18 +54,18 @@ describe('buildNavGroups', () => {
     )
     expect(hrefs).toMatchObject({
       events: '/p/demo/events',
-      'event-types': '/p/demo/settings/event-types',
-      schema: '/p/demo/settings/meta-fields',
-      branches: '/p/demo/settings/branches',
-      history: '/p/demo/settings/history',
+      'event-types': '/p/demo/event-types',
+      schema: '/p/demo/meta-fields',
+      branches: '/p/demo/branches',
+      history: '/p/demo/history',
       metrics: '/p/demo/metrics',
       anomalies: '/p/demo/anomalies',
-      alerting: '/p/demo/settings/alerting',
+      alerting: '/p/demo/alerting',
       reconciliation: '/p/demo/reconciliation',
       coverage: '/p/demo/coverage',
       // Scans is a top-level operational surface, not a settings tab.
       scans: '/p/demo/scans',
-      audit: '/p/demo/settings/audit',
+      audit: '/p/demo/audit',
     })
   })
 
@@ -187,10 +188,10 @@ describe('buildNavGroups', () => {
     expect(ids).toContain('history')
     expect(ids.indexOf('history')).toBe(ids.indexOf('branches') + 1)
     const history = plan.items.find((i) => i.id === 'history')!
-    expect(history.match('/p/demo/settings/history')).toBe(true)
-    expect(history.match('/p/demo/settings/history/rev-9')).toBe(true)
+    expect(history.match('/p/demo/history')).toBe(true)
+    expect(history.match('/p/demo/history/rev-9')).toBe(true)
     // Its sibling must not swallow it, or the sidebar would highlight branches.
-    expect(plan.items.find((i) => i.id === 'branches')!.match('/p/demo/settings/history')).toBe(
+    expect(plan.items.find((i) => i.id === 'branches')!.match('/p/demo/history')).toBe(
       false,
     )
   })
@@ -199,8 +200,8 @@ describe('buildNavGroups', () => {
     const items = buildNavGroups('demo', undefined)
       .filter((g) => g.label === 'Plan')
       .flatMap((g) => g.items)
-    expect(items.find((i) => i.id === 'variables')!.href).toBe('/p/demo/settings/variables')
-    expect(items.find((i) => i.id === 'relations')!.href).toBe('/p/demo/settings/relations')
+    expect(items.find((i) => i.id === 'variables')!.href).toBe('/p/demo/variables')
+    expect(items.find((i) => i.id === 'relations')!.href).toBe('/p/demo/relations')
   })
 
   it('no longer exposes a standalone Fact tables nav item', () => {
@@ -293,21 +294,21 @@ describe('resolveNavLocation', () => {
     ['/p/demo/events/checkout', 'Plan', 'Events'],
     ['/p/demo/monitoring/event/evt-1', 'Plan', 'Events'],
     ['/p/demo/overview', 'Observe', 'Overview'],
-    ['/p/demo/settings/event-types', 'Plan', 'Event types'],
-    ['/p/demo/settings/meta-fields', 'Plan', 'Meta fields'],
-    ['/p/demo/settings/branches', 'Plan', 'Plan branches'],
-    ['/p/demo/settings/history', 'Plan', 'Plan history'],
+    ['/p/demo/event-types', 'Plan', 'Event types'],
+    ['/p/demo/meta-fields', 'Plan', 'Meta fields'],
+    ['/p/demo/branches', 'Plan', 'Plan branches'],
+    ['/p/demo/history', 'Plan', 'Plan history'],
     // A rule's fired history is an Alerting surface; the detection settings are
     // an Anomalies one. Both used to read "Monitors" (tripl-89ps).
     ['/p/demo/monitors/rule-1', 'Observe', 'Alerting'],
     ['/p/demo/metrics', 'Observe', 'Metrics'],
     ['/p/demo/anomalies', 'Observe', 'Anomalies'],
-    ['/p/demo/settings/alerting', 'Observe', 'Alerting'],
+    ['/p/demo/alerting', 'Observe', 'Alerting'],
     ['/p/demo/reconciliation', 'Govern', 'Reconciliation'],
     ['/p/demo/coverage', 'Govern', 'Coverage'],
     ['/p/demo/scans', 'Govern', 'Scans'],
     ['/p/demo/scans/scan-1', 'Govern', 'Scans'],
-    ['/p/demo/settings/audit', 'Govern', 'Audit log'],
+    ['/p/demo/audit', 'Govern', 'Audit log'],
   ])('maps %s to %s › %s', (path, area, label) => {
     expect(resolveNavLocation('demo', path)).toEqual({ area, label })
   })
@@ -357,13 +358,13 @@ describe('resolveNavLocation', () => {
 
 describe('getAlertingPath', () => {
   it('is the plain page when no anchor is supplied', () => {
-    expect(getAlertingPath('demo')).toBe('/p/demo/settings/alerting')
-    expect(getAlertingPath('demo', {})).toBe('/p/demo/settings/alerting')
+    expect(getAlertingPath('demo')).toBe('/p/demo/alerting')
+    expect(getAlertingPath('demo', {})).toBe('/p/demo/alerting')
   })
 
   it('puts the delivery in the path segment the page reads it from', () => {
     expect(getAlertingPath('demo', { deliveryId: 'dlv-1' })).toBe(
-      '/p/demo/settings/alerting/dlv-1',
+      '/p/demo/alerting/dlv-1',
     )
   })
 
@@ -377,21 +378,21 @@ describe('getAlertingPath', () => {
         itemAnchor: 'event:evt-1',
         incidentId: 'grp-1',
       }),
-    ).toBe('/p/demo/settings/alerting/dlv-1?item=event%3Aevt-1&incident=grp-1')
+    ).toBe('/p/demo/alerting/dlv-1?item=event%3Aevt-1&incident=grp-1')
   })
 
   it('carries an incident with no delivery', () => {
     // The inbox card is addressable on its own; a caller holding only the
     // incident should not be forced back to the page index.
     expect(getAlertingPath('demo', { incidentId: 'grp-1' })).toBe(
-      '/p/demo/settings/alerting?incident=grp-1',
+      '/p/demo/alerting?incident=grp-1',
     )
   })
 
   it('drops anchors that are null rather than emitting empty params', () => {
     expect(
       getAlertingPath('demo', { deliveryId: null, itemAnchor: null, incidentId: null }),
-    ).toBe('/p/demo/settings/alerting')
+    ).toBe('/p/demo/alerting')
   })
 })
 
@@ -400,7 +401,7 @@ describe('resolveActivityTargetPath', () => {
     id: 'alert-delivery:dlv-1',
     type: 'alert' as const,
     project_slug: 'demo',
-    target_path: '/p/demo/settings/alerting',
+    target_path: '/p/demo/alerting',
   }
 
   it('rebuilds the delivery deep link for an alert row (tripl-oxkt.21)', () => {
@@ -408,13 +409,13 @@ describe('resolveActivityTargetPath', () => {
     // list of every delivery and every incident — strictly worse than the
     // telegram message the same delivery sent. The delivery id was never lost:
     // it is inside the row's own id.
-    expect(resolveActivityTargetPath(alertRow)).toBe('/p/demo/settings/alerting/dlv-1')
+    expect(resolveActivityTargetPath(alertRow)).toBe('/p/demo/alerting/dlv-1')
   })
 
   it('builds the link against the slug carried by the row itself', () => {
     // The workspace-wide feed mixes projects, so the slug has to come from the row.
     expect(resolveActivityTargetPath({ ...alertRow, project_slug: 'other' })).toBe(
-      '/p/other/settings/alerting/dlv-1',
+      '/p/other/alerting/dlv-1',
     )
   })
 
@@ -438,10 +439,10 @@ describe('resolveActivityTargetPath', () => {
     // actually know the delivery — fall back rather than build /alerting/.
     expect(
       resolveActivityTargetPath({ ...alertRow, id: 'alert:dlv-1' }),
-    ).toBe('/p/demo/settings/alerting')
+    ).toBe('/p/demo/alerting')
     expect(
       resolveActivityTargetPath({ ...alertRow, id: 'alert-delivery:' }),
-    ).toBe('/p/demo/settings/alerting')
+    ).toBe('/p/demo/alerting')
   })
 
   it('stays null when the backend sent no path and the row cannot be repaired', () => {
@@ -451,17 +452,65 @@ describe('resolveActivityTargetPath', () => {
   })
 })
 
+describe('legacySettingsRedirectPath (JR-25 / AL-42 / ST-5)', () => {
+  it('sends every moved surface to its top-level route', () => {
+    for (const tab of [
+      'event-types',
+      'meta-fields',
+      'variables',
+      'relations',
+      'branches',
+      'history',
+      'alerting',
+      'audit',
+    ]) {
+      expect(legacySettingsRedirectPath('demo', tab)).toBe(`/p/demo/${tab}`)
+    }
+  })
+
+  it('keeps the item id, query string and hash of an old link', () => {
+    // Alert messages sent before the move carry /settings/alerting/<delivery>
+    // with ?item= and ?incident= anchors; losing them loses the row.
+    expect(
+      legacySettingsRedirectPath('demo', 'alerting', 'dlv-1', '?item=event:e1&incident=g1', '#top'),
+    ).toBe('/p/demo/alerting/dlv-1?item=event:e1&incident=g1#top')
+    expect(legacySettingsRedirectPath('demo', 'variables', undefined, '?focus=v-1')).toBe(
+      '/p/demo/variables?focus=v-1',
+    )
+    expect(legacySettingsRedirectPath('demo', 'event-types', 'et-1', '?tab=settings')).toBe(
+      '/p/demo/event-types/et-1?tab=settings',
+    )
+  })
+
+  it('drops the item id for a surface that has no item route', () => {
+    // /settings/history/<id> rendered History; /p/demo/history/<id> is NotFound.
+    for (const tab of ['meta-fields', 'relations', 'history', 'audit']) {
+      expect(legacySettingsRedirectPath('demo', tab, 'x-1', '?q=1')).toBe(`/p/demo/${tab}?q=1`)
+    }
+  })
+
+  it('leaves the tabs that are still project settings alone', () => {
+    expect(legacySettingsRedirectPath('demo', 'monitoring')).toBeNull()
+    expect(legacySettingsRedirectPath('demo', 'general')).toBeNull()
+    expect(legacySettingsRedirectPath('demo', 'nope')).toBeNull()
+  })
+})
+
 describe('switchProjectPath', () => {
   it('keeps the surface when the new project has it', () => {
     expect(switchProjectPath('/p/a/anomalies', 'a', 'b')).toBe('/p/b/anomalies')
     expect(switchProjectPath('/p/a/metrics/fact-tables', 'a', 'b')).toBe('/p/b/metrics/fact-tables')
-    expect(switchProjectPath('/p/a/settings/alerting', 'a', 'b')).toBe('/p/b/settings/alerting')
+    expect(switchProjectPath('/p/a/alerting', 'a', 'b')).toBe('/p/b/alerting')
+    expect(switchProjectPath('/p/a/settings/monitoring', 'a', 'b')).toBe('/p/b/settings/monitoring')
+    // An old /settings/<surface> address lands on the surface's new home.
+    expect(switchProjectPath('/p/a/settings/alerting', 'a', 'b')).toBe('/p/b/alerting')
   })
 
   it('drops everything that names a row of the old project', () => {
     expect(switchProjectPath('/p/a/events/web/evt-1', 'a', 'b')).toBe('/p/b/events')
     expect(switchProjectPath('/p/a/scans/scan-1', 'a', 'b')).toBe('/p/b/scans')
-    expect(switchProjectPath('/p/a/settings/branches/br-1', 'a', 'b')).toBe('/p/b/settings/branches')
+    expect(switchProjectPath('/p/a/branches/br-1', 'a', 'b')).toBe('/p/b/branches')
+    expect(switchProjectPath('/p/a/variables/v-1', 'a', 'b')).toBe('/p/b/variables')
   })
 
   it('lands on the project home from anywhere else', () => {

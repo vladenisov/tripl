@@ -125,3 +125,19 @@ export function carryFieldValues(
   }
   return { values: carried, dropped }
 }
+
+/** The id of a column's toggle in the Metric breakdowns row (AU-23). */
+export const breakdownChipId = (column: string): string =>
+  `form-breakdown-chip-${encodeURIComponent(column)}`
+
+/**
+ * Bring a column's breakdown toggle into view and focus it. The per-field line
+ * only points here (AU-23): a second toggle far from the row changed the set
+ * without the reader seeing why.
+ */
+export function focusBreakdownChip(column: string): void {
+  const chip = document.getElementById(breakdownChipId(column))
+  if (!chip) return
+  chip.scrollIntoView({ block: 'center' })
+  chip.focus({ preventScroll: true })
+}

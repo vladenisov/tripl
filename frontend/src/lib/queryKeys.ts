@@ -425,6 +425,16 @@ export const eventsListKey = (
     filters.sort,
   ] as const
 
+/**
+ * The sample of a type's events the single-event form reads the naming
+ * convention off (AU-41). Under the branch's events, so a create refreshes it.
+ */
+export const eventNameSampleKey = (
+  slug: string | undefined,
+  branchId: string | null | undefined,
+  eventTypeId: string,
+) => [...branchEventsKey(slug, branchId), 'nameSample', eventTypeId] as const
+
 /** A search-as-you-type event picker; `picker` names which one. */
 export const eventsPickerKey = (
   slug: string | undefined,
@@ -526,6 +536,9 @@ export const eventsTabSignalsKey = (slug: string | undefined) =>
   [...activeSignalsKey(slug), 'tabs'] as const
 export const eventRowSignalsKey = (slug: string | undefined, bucketIds: readonly string[]) =>
   [...activeSignalsKey(slug), 'rows', bucketIds.join(',')] as const
+/** Anomalies row sparklines (MO-19): a signals invalidation refreshes them too. */
+export const signalSeriesKey = (slug: string | undefined, rowKeys: readonly string[]) =>
+  [...activeSignalsKey(slug), 'series', rowKeys.join(',')] as const
 
 export const eventTypeDriftsRootKey = () => ['eventTypeDrifts'] as const
 export const eventTypeDriftsKey = (slug: string | undefined, eventTypeId: string) =>

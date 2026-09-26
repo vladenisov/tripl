@@ -13,6 +13,7 @@ from tripl.schemas.alerting import (
     AlertDeliveryDetailResponse,
     AlertDeliveryListResponse,
     AlertDestinationCreate,
+    AlertDestinationDraftTestRequest,
     AlertDestinationResponse,
     AlertDestinationTestResponse,
     AlertDestinationUpdate,
@@ -118,6 +119,44 @@ async def delete_alert_destination(
         target_name=name,
         project_slug=slug,
     )
+
+
+@router.post(
+    "/alert-destinations/test",
+    response_model=AlertDestinationTestResponse,
+)
+async def test_alert_destination_draft(
+    session: SessionDep,
+    slug: str,
+    data: AlertDestinationDraftTestRequest,
+    current_user: EditorUserDep,
+) -> AlertDestinationTestResponse:
+    """Send the test message through settings that are not saved yet (AL-30).
+
+    The destination dialog's "Send test": an unsaved destination, or an edit
+    in progress, where ``destination_id`` lends the stored secrets the form
+    left blank. Same contract as the saved destination's Test — editor-only,
+    always 200 with ``ok``/``error`` — and the same audit action, so "who
+    pressed Test" has one place to look whichever button it was.
+    """
+    outcome = await alerting_service.send_draft_destination_test(session, slug, data)
+    result = outcome.response
+    await audit_service.record(
+        session,
+        user=current_user,
+        action="alert_destination.test",
+        target_type="alert_destination",
+        target_id=data.destination_id,
+        target_name=outcome.destination_name,
+        project_slug=slug,
+        payload={
+            "ok": result.ok,
+            "error": result.error,
+            "draft": True,
+            "target_origin": outcome.target_origin,
+        },
+    )
+    return result
 
 
 @router.post(

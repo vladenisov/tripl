@@ -41,6 +41,43 @@ export interface SearchEventVariableValue extends EventFieldVariableValue {
   field_display_name: string
 }
 
+/**
+ * One folded member of a {@link SearchVariantGroup} (#238 JR-20). Slim on
+ * purpose: enough to name and open the event.
+ */
+export interface SearchVariant {
+  id: string
+  entity_id: string
+  event_id: string | null
+  title: string
+  /** The value this member substituted for the group's placeholder. */
+  value: string
+  route_path: string
+  score: number
+  confidence: number
+}
+
+/**
+ * Event hits folded under their best-ranked member (#238 JR-20): events of one
+ * event type whose names differ only in the value of ONE naming-rule
+ * placeholder. Only present when the search asked for `group_variants`.
+ */
+export interface SearchVariantGroup {
+  /** Stable across searches: the event type plus `pattern`. */
+  key: string
+  /** The name with the varying value replaced by `{placeholder}`. */
+  pattern: string
+  placeholder: string
+  /**
+   * Every member INCLUDING the representative: `count - 1 === variants.length`.
+   * Folded from the retrieval window only, so a lower bound when the response
+   * is `truncated`.
+   */
+  count: number
+  /** The other members, best-ranked first. */
+  variants: SearchVariant[]
+}
+
 export interface SearchResult {
   id: string
   entity_type: SearchEntityType
@@ -84,6 +121,11 @@ export interface SearchResult {
    * "it was in that window too" says nothing about this row.
    */
   semantic_used: boolean
+  /**
+   * Set on the representative of a folded variant group, and only when the
+   * search asked for `group_variants`; `null` otherwise.
+   */
+  variant_group?: SearchVariantGroup | null
 }
 
 export interface SearchResponse {
@@ -91,7 +133,9 @@ export interface SearchResponse {
   /**
    * Hits IN THIS RESPONSE, not a catalog-wide count — `/search` takes no
    * `offset` and cannot be paged. Read `truncated`, not `total`, to learn
-   * whether anything was dropped (tripl-wkwv.3).
+   * whether anything was dropped (tripl-wkwv.3). With `group_variants` it and
+   * `limit` count ROWS: a folded group is one, so its members never eat into
+   * the page (#238 JR-20).
    */
   total: number
   /** Ranked hits exist that this response does not carry; raise `limit`. */

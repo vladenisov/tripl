@@ -117,17 +117,23 @@ async def _rows_read_since(
     """Sum of each job's rows read, for jobs stamped inside the window.
 
     A job's stamp is ``completed_at``, else ``started_at`` — the one the list
-    used — and its rows are ``query_rows_scanned``, else ``scan_rows_processed``
-    (``jobRowsScanned`` in the frontend). Extracted as floats: the counters are
-    JSON numbers, and a BigQuery run can read past a 32-bit integer.
+    used — and its rows are ``query_rows_scanned``, else
+    ``catalog_rows_scanned``, else ``scan_rows_processed`` (``jobRowsScanned``
+    in the frontend). Extracted as floats: the counters are JSON numbers, and a
+    BigQuery run can read past a 32-bit integer.
 
-    The two counters are not the same unit: ``query_rows_scanned`` is warehouse
-    rows a metrics run read, ``scan_rows_processed`` is the GROUP BY ALL
-    combinations a catalog run got back. The mixed total stays for older
-    clients; the split sums name their unit (B15).
+    The counters are not the same unit: ``query_rows_scanned`` is warehouse
+    rows a metrics run read, ``catalog_rows_scanned`` the warehouse rows behind
+    a catalog run's breakdown (newer runs only), and ``scan_rows_processed`` the
+    GROUP BY ALL combinations a catalog run got back. The mixed total stays for
+    older clients; the split sums name their unit (B15), and a catalog run that
+    reports warehouse rows counts there rather than as combinations.
     """
     summary = ScanJob.result_summary
-    warehouse = summary["query_rows_scanned"].as_float()
+    warehouse = func.coalesce(
+        summary["query_rows_scanned"].as_float(),
+        summary["catalog_rows_scanned"].as_float(),
+    )
     combinations = summary["scan_rows_processed"].as_float()
     zero = cast(0, Float)
     rows_read = func.coalesce(warehouse, combinations, zero)

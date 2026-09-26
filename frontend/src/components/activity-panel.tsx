@@ -276,33 +276,30 @@ export function ActivityPanel({
   return (
     <aside
       aria-label="Activity feed"
-      className={`flex ${isQuiet ? RAIL_WIDTH_QUIET : RAIL_WIDTH} flex-shrink-0 flex-col border-l`}
-      style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border)' }}
+      className={`flex ${isQuiet ? RAIL_WIDTH_QUIET : RAIL_WIDTH} flex-shrink-0 flex-col border-l border-border bg-bg-sunken`}
     >
       <div
-        className="flex h-11 items-center gap-2 border-b px-3.5"
-        style={{ borderColor: 'var(--border)' }}
+        className="flex h-11 items-center gap-2 border-b px-3.5 border-border"
       >
         <Dot tone={activityQuery.isError ? 'warning' : 'accent'} pulse={activityQuery.isFetching} size={7} />
         {/* "Activity", as the top-bar toggle says (#238 SH-8). "Recent
             activity" is the Overview card's name. */}
         <span className="text-body-sm font-semibold">Activity</span>
         {!isQuiet && (
-          <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="text-caption text-fg-tertiary">
             {activityQuery.isError ? 'offline' : 'auto-refresh'}
           </span>
         )}
         <div className="flex-1" />
         {activityQuery.isFetching && (
-          <Loader2 className="size-3.5 animate-spin" style={{ color: 'var(--fg-subtle)' }} />
+          <Loader2 className="size-3.5 animate-spin text-fg-tertiary" />
         )}
         <button
           type="button"
           onClick={() => {
             void activityQuery.refetch()
           }}
-          className="p-1"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="p-1 text-fg-tertiary"
           aria-label="Refresh activity"
         >
           <RefreshCw className="size-3.5" aria-hidden="true" />
@@ -311,8 +308,7 @@ export function ActivityPanel({
           <button
             type="button"
             onClick={onClose}
-            className="flex size-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
+            className="flex size-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] text-fg-secondary"
             aria-label="Close activity"
           >
             <X className="size-4" aria-hidden="true" />
@@ -324,12 +320,7 @@ export function ActivityPanel({
         {activityQuery.isError && hasItems && (
           <div
             role="status"
-            className="mx-3.5 mb-2 flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-caption"
-            style={{
-              background: 'var(--surface)',
-              borderColor: 'var(--border-subtle)',
-              color: 'var(--fg-subtle)',
-            }}
+            className="mx-3.5 mb-2 flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-caption bg-surface border-border-subtle text-fg-tertiary"
           >
             <span className="flex-1">Could not refresh; showing the last loaded items.</span>
             <button
@@ -337,8 +328,7 @@ export function ActivityPanel({
               onClick={() => {
                 void activityQuery.refetch()
               }}
-              className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 transition-colors hover:bg-[var(--surface-hover)]"
-              style={{ color: 'var(--fg)' }}
+              className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 transition-colors hover:bg-[var(--surface-hover)] text-fg"
             >
               <RefreshCw className="h-3 w-3" aria-hidden="true" />
               Retry
@@ -348,14 +338,9 @@ export function ActivityPanel({
         {activityQuery.isError && !isInitialLoading && !hasItems && (
           <div className="px-3.5 py-3">
             <div
-              className="rounded-md border p-3 text-caption"
-              style={{
-                background: 'var(--surface)',
-                borderColor: 'var(--border-subtle)',
-                color: 'var(--fg-subtle)',
-              }}
+              className="rounded-md border p-3 text-caption bg-surface border-border-subtle text-fg-tertiary"
             >
-              <div className="font-medium" style={{ color: 'var(--fg)' }}>
+              <div className="font-medium text-fg">
                 Activity unavailable
               </div>
               <div className="mt-1 leading-[1.35]">
@@ -366,8 +351,7 @@ export function ActivityPanel({
                 onClick={() => {
                   void activityQuery.refetch()
                 }}
-                className="mt-2 inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-caption transition-colors hover:bg-[var(--surface-hover)]"
-                style={{ color: 'var(--fg)' }}
+                className="mt-2 inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-caption transition-colors hover:bg-[var(--surface-hover)] text-fg"
               >
                 <RefreshCw className="h-3 w-3" />
                 Retry
@@ -376,7 +360,7 @@ export function ActivityPanel({
           </div>
         )}
         {isQuiet && (
-          <div className="px-3.5 py-6 text-center text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="px-3.5 py-6 text-center text-caption text-fg-tertiary">
             No recent activity
           </div>
         )}
@@ -401,8 +385,7 @@ export function ActivityPanel({
       </div>
       {!isQuiet && (
         <div
-          className="flex items-center gap-2 border-t px-3 py-2.5 text-caption"
-          style={{ borderColor: 'var(--border)', color: 'var(--fg-subtle)' }}
+          className="flex items-center gap-2 border-t px-3 py-2.5 text-caption border-border text-fg-tertiary"
         >
           <Zap className="h-3 w-3" />
           <span>
@@ -445,19 +428,17 @@ function ActivityRow({
       <div className="min-w-0 flex-1">
         <div className="text-body-sm font-medium leading-[1.35]">{rowTitle(item)}</div>
         <div
-          className="mt-0.5 text-caption leading-[1.3]"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="mt-0.5 text-caption leading-[1.3] text-fg-tertiary"
         >
           {item.detail}
         </div>
         {/* Sans, not mono: a relative time is prose, not an identifier (DS-17). */}
         <div
-          className="mt-[3px] text-caption font-medium"
-          style={{ color: 'var(--fg-muted)' }}
+          className="mt-[3px] text-caption font-medium text-fg-secondary"
         >
           {formatRelativeTime(item.occurred_at, now)}
           {projectName ? (
-            <span style={{ color: 'var(--fg-faint)' }}>{` · ${projectName(item.project_slug)}`}</span>
+            <span className="text-fg-tertiary">{` · ${projectName(item.project_slug)}`}</span>
           ) : (
             ''
           )}
@@ -473,7 +454,7 @@ function ActivityRow({
   }
 
   // Not `item.target_path` directly: the feed's alert rows arrive with the bare
-  // /p/:slug/settings/alerting, which drops the reader at the top of a page
+  // /p/:slug/alerting, which drops the reader at the top of a page
   // holding every delivery and every incident — strictly worse than the telegram
   // message the same delivery sent, which links to the exact row.
   // `resolveActivityTargetPath` rebuilds the deep link from the delivery id the
@@ -538,25 +519,22 @@ function ActivityGroupRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1 text-body-sm font-medium leading-[1.35]">
             <Chevron
-              className="h-3 w-3 shrink-0"
-              style={{ color: 'var(--fg-muted)' }}
+              className="h-3 w-3 shrink-0 text-fg-secondary"
               aria-hidden="true"
             />
             <span>{groupSummary(items)}</span>
           </div>
           <div
-            className="mt-0.5 truncate text-caption leading-[1.3]"
-            style={{ color: 'var(--fg-subtle)' }}
+            className="mt-0.5 truncate text-caption leading-[1.3] text-fg-tertiary"
           >
             {groupPreview(items)}
           </div>
           <div
-            className="mt-[3px] text-caption font-medium"
-            style={{ color: 'var(--fg-muted)' }}
+            className="mt-[3px] text-caption font-medium text-fg-secondary"
           >
             {formatRelativeTime(first.occurred_at, now)}
             {projectName ? (
-              <span style={{ color: 'var(--fg-faint)' }}>{` · ${projectName(first.project_slug)}`}</span>
+              <span className="text-fg-tertiary">{` · ${projectName(first.project_slug)}`}</span>
             ) : (
               ''
             )}
@@ -564,7 +542,7 @@ function ActivityGroupRow({
         </div>
       </button>
       {expanded && (
-        <div style={{ background: 'var(--surface)' }}>
+        <div className="bg-surface">
           {items.map((item) => (
             <ActivityRow key={item.id} item={item} projectName={projectName} now={now} />
           ))}

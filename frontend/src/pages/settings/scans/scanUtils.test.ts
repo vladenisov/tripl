@@ -112,6 +112,13 @@ describe('jobScanned (#247 DA-4)', () => {
     expect(jobScanned(job({ result_summary: {} }))).toBeNull()
   })
 
+  it('reads a catalog run in warehouse rows once the worker reports them (i9mt.16)', () => {
+    expect(jobScanned(job({ result_summary: { catalog_rows_scanned: 28160, scan_rows_processed: 153 } })))
+      .toEqual({ value: 28160, unit: 'rows', combinations: 153 })
+    expect(jobRowsScanned(job({ result_summary: { catalog_rows_scanned: 28160, scan_rows_processed: 153 } })))
+      .toBe(28160)
+  })
+
   it('prints the unit after the figure, agreeing with the raw count', () => {
     expect(formatJobScanned({ value: 4428, unit: 'rows' })).toBe(`${(4428).toLocaleString()} rows`)
     expect(formatJobScanned({ value: 1, unit: 'combinations' })).toBe('1 combo')
@@ -150,6 +157,31 @@ describe('metricsFreshness (#247 DA-5)', () => {
     const freshness = metricsFreshness(jobs, '1h', now)
     expect(freshness.job?.id).toBe('metrics')
     expect(freshness.overdue).toBe(true)
+  })
+
+  it('takes the next run from the scheduler when the server sent it (i9mt.16)', () => {
+    const jobs = [
+      job({ status: 'completed', completed_at: '2026-01-01T11:30:00Z', result_summary: { mode: 'metrics_collection' } }),
+    ]
+    const freshness = metricsFreshness(jobs, '1h', now, {
+      lastRunAt: '2026-01-01T11:30:00Z',
+      nextRunAt: '2026-01-01T13:00:00Z',
+    })
+    // The next boundary, not "last run + interval" (12:30).
+    expect(freshness.nextAt).toBe(Date.parse('2026-01-01T13:00:00Z'))
+  })
+
+  it('keeps the last run the server knows when catalog runs buried it in the job page', () => {
+    const jobs = [
+      job({ status: 'completed', completed_at: '2026-01-01T11:59:00Z', result_summary: { scan_rows_processed: 5 } }),
+    ]
+    const freshness = metricsFreshness(jobs, '1h', now, {
+      lastRunAt: '2026-01-01T11:00:00Z',
+      nextRunAt: '2026-01-01T13:00:00Z',
+    })
+    expect(freshness.job).toBeNull()
+    expect(freshness.lastAt).toBe('2026-01-01T11:00:00Z')
+    expect(freshness.overdue).toBe(false)
   })
 
   it('has nothing to say before the first metrics run', () => {

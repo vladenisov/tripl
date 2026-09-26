@@ -62,7 +62,7 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
   // (PL-13 / JR-11). Managing the list is its own item.
   const goToBranches = (create: boolean) => {
     setOpen(false)
-    navigate(`/p/${slug}/settings/branches${create ? '?new=1' : ''}`)
+    navigate(`/p/${slug}/branches${create ? '?new=1' : ''}`)
   }
 
   return (
@@ -75,15 +75,13 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
             type="button"
             title={`Branch: ${activeLabel}`}
             aria-label={`Switch branch (current: ${activeLabel})`}
-            className="relative flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-sidebar-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-            style={{ color: 'var(--fg-muted)' }}
+            className="relative flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-sidebar-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] text-fg-secondary"
           >
             <GitBranch className="size-4" aria-hidden="true" />
             {!onMain && (
               <span
                 aria-hidden="true"
-                className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full"
-                style={{ background: 'var(--info)' }}
+                className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-info"
               />
             )}
           </button>
@@ -106,7 +104,7 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
             style={{ color: onMain ? 'var(--accent)' : 'var(--info)' }}
             aria-hidden="true"
           />
-          <span className="mono min-w-0 flex-1 truncate text-left" style={{ color: 'var(--fg)' }}>
+          <span className="mono min-w-0 flex-1 truncate text-left text-fg">
             {activeLabel}
           </span>
           {!onMain && active ? (
@@ -114,18 +112,17 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
               {STATUS_LABEL[active.status]}
             </Chip>
           ) : null}
-          <ChevronDown className="size-3 shrink-0" style={{ color: 'var(--fg-subtle)' }} aria-hidden="true" />
+          <ChevronDown className="size-3 shrink-0 text-fg-tertiary" aria-hidden="true" />
         </button>
         )}
       </PopoverTrigger>
       <PopoverContent align="start" side={compact ? 'right' : 'bottom'} className="w-[260px] p-1.5">
         <div
-          className="px-2 pb-1.5 pt-1 micro-label"
-          style={{ color: 'var(--fg-faint)' }}
+          className="px-2 pb-1.5 pt-1 micro-label text-fg-tertiary"
         >
           Plan branches
           {branchesQuery.isFetching && (
-            <span className="ml-1.5 normal-case tracking-normal" style={{ color: 'var(--fg-faint)' }}>
+            <span className="ml-1.5 normal-case tracking-normal text-fg-tertiary">
               loading…
             </span>
           )}
@@ -147,20 +144,18 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
             />
           ))}
           {!branchesQuery.isFetching && workingBranches.length === 0 && (
-            <div className="px-2 py-1.5 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="px-2 py-1.5 text-caption text-fg-tertiary">
               No active branches yet.
             </div>
           )}
         </div>
         <div
-          className="mt-1 border-t pt-1"
-          style={{ borderColor: 'var(--border-subtle)' }}
+          className="mt-1 border-t pt-1 border-border-subtle"
         >
           <button
             type="button"
             onClick={() => goToBranches(true)}
-            className="flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
+            className="flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)] text-fg-secondary"
           >
             <Plus className="size-3 shrink-0" aria-hidden="true" />
             New branch from main
@@ -168,8 +163,7 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
           <button
             type="button"
             onClick={() => goToBranches(false)}
-            className="flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
+            className="flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)] text-fg-secondary"
           >
             <Settings2 className="size-3 shrink-0" aria-hidden="true" />
             Manage branches
@@ -213,7 +207,7 @@ function BranchRow({
           {STATUS_LABEL[branch.status]}
         </Chip>
       )}
-      {active && <Check className="size-3 shrink-0" style={{ color: 'var(--accent)' }} aria-hidden="true" />}
+      {active && <Check className="size-3 shrink-0 text-accent" aria-hidden="true" />}
     </button>
   )
 }

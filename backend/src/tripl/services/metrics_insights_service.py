@@ -40,9 +40,11 @@ from tripl.schemas.event_metric import (
     MetricSignalResponse,
     SeasonalityCell,
     SeasonalityHeatmapResponse,
+    SignalSeriesResponse,
+    SignalSeriesScope,
     TopMoverItem,
 )
-from tripl.services import alerting_service
+from tripl.services import alerting_service, signal_triage_service
 from tripl.services.metrics_service import (
     _get_anomaly_rows,
     _get_metric_rows,
@@ -58,6 +60,7 @@ from tripl.services.monitoring_utils import (
     classify_signal_state,
     latest_bucket_by_scan,
     scan_interval_to_timedelta,
+    scan_liveness_cutoff,
 )
 from tripl.worker.analyzers.metric_value_kind import is_count_shaped
 
@@ -348,6 +351,23 @@ async def _count_active_metric_signals_by_project(
 ) -> dict[uuid.UUID, int]:
     """Batched per-project count of open ``metric``-scope signals.
 
+    The size of :func:`_active_metric_signals_by_project` per project; callers
+    that also need to drop triaged (hidden) signals read the keys instead.
+    """
+    return {
+        project_id: len(keys)
+        for project_id, keys in (
+            await _active_metric_signals_by_project(session, project_ids)
+        ).items()
+    }
+
+
+async def _active_metric_signals_by_project(
+    session: AsyncSession,
+    project_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, list[tuple[str, datetime]]]:
+    """Batched per-project ``(scope_ref, bucket)`` of open, significant ``metric``-scope signals.
+
     A single-project :func:`_get_active_metric_signals` call issues three queries;
     the ProjectsPage / sidebar badge needs these counts for N projects at once, so
     this loads the same three datasets once for all projects and classifies in
@@ -424,7 +444,7 @@ async def _count_active_metric_signals_by_project(
     recent_windows = await _get_project_recent_signal_windows(session, project_ids)
 
     now = datetime.now(UTC)
-    counts: dict[uuid.UUID, int] = defaultdict(int)
+    keys: dict[uuid.UUID, list[tuple[str, datetime]]] = defaultdict(list)
     for scope_ref, anomaly in latest_anomalies.items():
         grid = grid_by_scope_ref.get(scope_ref)
         project_id = grid.project_id if grid is not None else None
@@ -444,8 +464,8 @@ async def _count_active_metric_signals_by_project(
                 count_shaped=scope_ref not in fractional_refs,
             )
         ):
-            counts[project_id] += 1
-    return dict(counts)
+            keys[project_id].append((scope_ref, anomaly.bucket))
+    return dict(keys)
 
 
 IncidentKey = tuple[uuid.UUID | None, datetime, str]
@@ -667,10 +687,8 @@ async def get_active_signals(
         cached = await cache.get_json(cache_key)
         if cached is not None:
             cached_signals = [MetricSignalResponse.model_validate(item) for item in cached]
-            if not expanded:
-                return cached_signals
             project = await _resolve_project(session, slug)
-            return await _with_incident_refs(session, project.id, cached_signals)
+            return await _with_live_state(session, project.id, cached_signals, expanded=expanded)
 
     project = await _resolve_project(session, slug)
     scope_types = [SCOPE_PROJECT_TOTAL, SCOPE_EVENT_TYPE]
@@ -775,9 +793,32 @@ async def get_active_signals(
             [signal.model_dump(mode="json") for signal in signals],
             ttl_seconds=30,
         )
+    return await _with_live_state(session, project.id, signals, expanded=expanded)
+
+
+async def _with_live_state(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    signals: list[MetricSignalResponse],
+    *,
+    expanded: bool,
+) -> list[MetricSignalResponse]:
+    """The per-fetch state layered over the (cacheable) signal list.
+
+    Incident refs on the expanded list, then triage (MO-4 / JR-5) on both: the
+    collapsed list drops muted / expected signals outright, because the top bar,
+    Overview and Events count what it returns; the expanded list keeps them
+    flagged ``hidden`` so the Anomalies page can offer "Show hidden (n)".
+    """
     if expanded:
-        return await _with_incident_refs(session, project.id, signals)
-    return signals
+        signals = await _with_incident_refs(session, project_id, signals)
+    return await signal_triage_service.apply_triage(
+        session,
+        project_id,
+        signals,
+        drop_hidden=not expanded,
+        incidents_resolved=expanded,
+    )
 
 
 async def _with_incident_refs(
@@ -1092,6 +1133,226 @@ async def get_breakdown_timeline(
         interval=scan_config.interval,
         data=data,
     )
+
+
+# The sparkline window around a signal's flagged bucket (MO-19): the run-up,
+# the flagged bucket, and a few after it to show whether the move held.
+SIGNAL_SERIES_BUCKETS_BEFORE = 19
+SIGNAL_SERIES_BUCKETS_AFTER = 4
+
+_SignalSeriesGroupKey = tuple[uuid.UUID, str]
+
+
+def _signal_series_bounds(
+    *,
+    interval: str,
+    recent_window: timedelta | None,
+    now: datetime,
+) -> tuple[datetime, datetime]:
+    """``[oldest, newest]`` flagged bucket a sparkline is drawn for on this grid.
+
+    ``bucket`` comes from the request body, and a group's query spans the union
+    of its windows — so without a bound, two scopes flagged in 1970 and 2100
+    would read a scan's whole ``event_metrics`` history in one request. An open
+    signal's bucket lies within the freshness horizon of its scan's newest
+    bucket, which itself lies within that horizon of now while the scan is
+    alive; twice the horizon is the oldest bucket an open signal can carry, with
+    room for a collector that is running late. Nothing open is flagged beyond
+    the bucket now falls in.
+    """
+    delta = get_interval(interval).delta
+    liveness_cutoff = scan_liveness_cutoff(interval=interval, recent_window=recent_window, now=now)
+    oldest = liveness_cutoff - (now - liveness_cutoff)
+    return oldest, now + delta
+
+
+def _signal_series_window(bucket: datetime, delta: timedelta) -> tuple[datetime, datetime]:
+    """``[start, end)`` of one signal's sparkline, on the scan's own grid."""
+    anchor = _as_utc(bucket)
+    return (
+        anchor - SIGNAL_SERIES_BUCKETS_BEFORE * delta,
+        anchor + (SIGNAL_SERIES_BUCKETS_AFTER + 1) * delta,
+    )
+
+
+def _signal_series_points(
+    counts: dict[datetime, int],
+    *,
+    start: datetime,
+    end: datetime,
+    delta: timedelta,
+) -> list[BreakdownTimelinePoint]:
+    """The stored buckets inside ``[start, end)``, interior gaps zero-filled.
+
+    Filled only between the first and last stored bucket: before the first the
+    scope may simply not have been collected yet, and after the last the bucket
+    may not have closed, so a zero there would be invented rather than observed.
+    """
+    inside = sorted(bucket for bucket in counts if start <= bucket < end)
+    if not inside:
+        return []
+    points: list[BreakdownTimelinePoint] = []
+    cursor = inside[0]
+    while cursor <= inside[-1]:
+        points.append(BreakdownTimelinePoint(bucket=cursor, count=counts.get(cursor, 0)))
+        cursor += delta
+    return points
+
+
+async def _signal_series_counts(
+    session: AsyncSession,
+    *,
+    scan_config_id: uuid.UUID,
+    scope_type: str,
+    scope_ids: set[uuid.UUID],
+    time_from: datetime,
+    time_to: datetime,
+) -> dict[str, dict[datetime, int]]:
+    """``scope_ref -> {bucket: count}`` for one scan and scope type, one query.
+
+    Bounded by the union of the group's windows, and ``get_signal_series`` only
+    admits buckets inside ``_signal_series_bounds`` — so the span is at most
+    twice the freshness horizon plus one sparkline, never the history.
+    """
+    in_window = (EventMetric.bucket >= time_from, EventMetric.bucket < time_to)
+    counts: dict[str, dict[datetime, int]] = defaultdict(dict)
+    if scope_type == SCOPE_PROJECT_TOTAL:
+        rows = await session.execute(
+            select(EventMetric.bucket, func.sum(EventMetric.count))
+            .where(
+                EventMetric.scan_config_id == scan_config_id,
+                EventMetric.event_id.is_(None),
+                EventMetric.event_type_id.is_not(None),
+                *in_window,
+            )
+            .group_by(EventMetric.bucket)
+        )
+        for bucket, count in rows.tuples().all():
+            counts[str(scan_config_id)][_as_utc(bucket)] = int(count or 0)
+        return counts
+    if scope_type == SCOPE_EVENT_TYPE:
+        scope_rows = await session.execute(
+            select(EventMetric.event_type_id, EventMetric.bucket, EventMetric.count).where(
+                EventMetric.scan_config_id == scan_config_id,
+                EventMetric.event_id.is_(None),
+                EventMetric.event_type_id.in_(scope_ids),
+                *in_window,
+            )
+        )
+    else:
+        scope_rows = await session.execute(
+            select(EventMetric.event_id, EventMetric.bucket, EventMetric.count).where(
+                EventMetric.scan_config_id == scan_config_id,
+                EventMetric.event_id.in_(scope_ids),
+                *in_window,
+            )
+        )
+    for scope_id, bucket, count in scope_rows.tuples().all():
+        counts[str(scope_id)][_as_utc(bucket)] = int(count)
+    return counts
+
+
+async def get_signal_series(
+    session: AsyncSession,
+    slug: str,
+    scopes: list[SignalSeriesScope],
+) -> list[SignalSeriesResponse]:
+    """Recent series for many open signals at once — the Anomalies row sparklines.
+
+    Kept OUT of ``get_active_signals`` and its 30 s cache on purpose: that list
+    is shared by the bell, Overview and the Events page, none of which draws a
+    sparkline, and 24 points per signal would multiply every one of their
+    payloads. One query per (scan, scope type) instead of one per signal.
+
+    Scopes this cannot draw are omitted rather than failed: catalog ``metric``
+    signals (no scan; their series live in ``metric_values``), a scan outside
+    the project or without an interval, a malformed ``scope_ref``, and a
+    ``bucket`` no open signal can carry (``_signal_series_bounds``).
+    """
+    if not scopes:
+        return []
+    project = await _resolve_project(session, slug)
+    config_ids = {scope.scan_config_id for scope in scopes}
+    intervals: dict[uuid.UUID, str] = {
+        config_id: str(interval)
+        for config_id, interval in (
+            await session.execute(
+                select(ScanConfig.id, ScanConfig.interval).where(
+                    ScanConfig.id.in_(config_ids),
+                    ScanConfig.project_id == project.id,
+                    ScanConfig.interval.is_not(None),
+                )
+            )
+        )
+        .tuples()
+        .all()
+    }
+
+    recent_window = await _get_project_recent_signal_window(session, project.id)
+    now = datetime.now(UTC)
+    bounds = {
+        config_id: _signal_series_bounds(interval=interval, recent_window=recent_window, now=now)
+        for config_id, interval in intervals.items()
+    }
+
+    drawable: list[tuple[SignalSeriesScope, timedelta, datetime, datetime]] = []
+    group_ids: dict[_SignalSeriesGroupKey, set[uuid.UUID]] = defaultdict(set)
+    group_span: dict[_SignalSeriesGroupKey, tuple[datetime, datetime]] = {}
+    for scope in scopes:
+        interval = intervals.get(scope.scan_config_id)
+        scope_type = str(scope.scope_type)
+        if interval is None or scope_type not in (
+            SCOPE_PROJECT_TOTAL,
+            SCOPE_EVENT_TYPE,
+            SCOPE_EVENT,
+        ):
+            continue
+        try:
+            scope_id = uuid.UUID(scope.scope_ref)
+        except ValueError:
+            continue
+        if scope_type == SCOPE_PROJECT_TOTAL and scope_id != scope.scan_config_id:
+            continue
+        oldest, newest = bounds[scope.scan_config_id]
+        if not oldest <= _as_utc(scope.bucket) <= newest:
+            continue
+        delta = get_interval(interval).delta
+        start, end = _signal_series_window(scope.bucket, delta)
+        key = (scope.scan_config_id, scope_type)
+        group_ids[key].add(scope_id)
+        lo, hi = group_span.get(key, (start, end))
+        group_span[key] = (min(lo, start), max(hi, end))
+        drawable.append((scope, delta, start, end))
+
+    counts_by_group: dict[_SignalSeriesGroupKey, dict[str, dict[datetime, int]]] = {}
+    for key, (time_from, time_to) in group_span.items():
+        counts_by_group[key] = await _signal_series_counts(
+            session,
+            scan_config_id=key[0],
+            scope_type=key[1],
+            scope_ids=group_ids[key],
+            time_from=time_from,
+            time_to=time_to,
+        )
+
+    return [
+        SignalSeriesResponse(
+            scan_config_id=scope.scan_config_id,
+            scope_type=scope.scope_type,
+            scope_ref=scope.scope_ref,
+            bucket=scope.bucket,
+            interval=intervals[scope.scan_config_id],
+            data=_signal_series_points(
+                counts_by_group[(scope.scan_config_id, str(scope.scope_type))].get(
+                    str(uuid.UUID(scope.scope_ref)), {}
+                ),
+                start=start,
+                end=end,
+                delta=delta,
+            ),
+        )
+        for scope, delta, start, end in drawable
+    ]
 
 
 def _parse_scope_uuid(scope_ref: str, *, label: str) -> uuid.UUID:

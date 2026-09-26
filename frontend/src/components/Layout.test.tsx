@@ -412,6 +412,16 @@ describe('Layout detail crumbs from the entity (MO-13)', () => {
     expect(within(banner).getByText('Alerting')).toBeInTheDocument()
     expect(within(banner).getByText('Rules')).toBeInTheDocument()
     expect(within(banner).getByText('Checkout drop')).toBeInTheDocument()
+    // The surfaces are links back to their lists; the nav group is not a page.
+    expect(within(banner).getByRole('link', { name: 'Alerting' })).toHaveAttribute(
+      'href',
+      '/p/demo/alerting',
+    )
+    expect(within(banner).getByRole('link', { name: 'Rules' })).toHaveAttribute(
+      'href',
+      '/p/demo/alerting?section=monitors',
+    )
+    expect(within(banner).queryByRole('link', { name: 'Observe' })).toBeNull()
   })
 
   it('files an event type\'s volume under Event types, not Anomalies', async () => {

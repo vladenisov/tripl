@@ -2,7 +2,7 @@ import { useId, type ReactNode } from 'react'
 import { CalendarDays } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { DatePicker } from '@/components/ui/date-time-picker'
 import { Label } from '@/components/ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { formatDate } from '@/lib/datetime'
@@ -92,25 +92,30 @@ export function DateRangeFilter({
             <Label htmlFor={fromId} className="text-caption font-normal text-fg-muted">
               {fromLabel}
             </Label>
-            <Input
+            {/* The app's own calendar, not <input type="date">: the native
+                control rendered "mm/dd/yyyy" whatever the theme (AL-15). Same
+                YYYY-MM-DD value, so nothing downstream changes. */}
+            <DatePicker
               id={fromId}
-              type="date"
+              label={fromLabel}
               min={min}
               max={to || undefined}
               value={from}
-              onChange={event => onRangeChange({ from: event.target.value, to })}
+              onChange={next => onRangeChange({ from: next, to })}
+              className="w-full"
             />
           </div>
           <div className="grid gap-1">
             <Label htmlFor={toId} className="text-caption font-normal text-fg-muted">
               {toLabel}
             </Label>
-            <Input
+            <DatePicker
               id={toId}
-              type="date"
+              label={toLabel}
               min={from || min}
               value={to}
-              onChange={event => onRangeChange({ from, to: event.target.value })}
+              onChange={next => onRangeChange({ from, to: next })}
+              className="w-full"
             />
           </div>
         </div>

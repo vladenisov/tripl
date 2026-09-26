@@ -239,10 +239,8 @@ export function InboxBulkActionBar({
       // Below `sm` the bar is a full-width strip pinned to the bottom edge,
       // clear of the home indicator, with one row of actions (AL-16): as a
       // floating card it wrapped into a ~190px box in mid-screen.
-      className="fixed inset-x-0 bottom-0 z-(--z-bar) flex flex-col gap-1.5 border-t px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:inset-x-auto sm:bottom-[18px] sm:left-1/2 sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:rounded-card sm:border sm:py-1.5 sm:pl-3.5 sm:pr-2"
+      className="fixed inset-x-0 bottom-0 z-(--z-bar) flex flex-col gap-1.5 border-t px-3 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:inset-x-auto sm:bottom-[18px] sm:left-1/2 sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:rounded-card sm:border sm:py-1.5 sm:pl-3.5 sm:pr-2 bg-bg-elevated border-border-strong"
       style={{
-        background: 'var(--bg-elevated)',
-        borderColor: 'var(--border-strong)',
         boxShadow: 'var(--shadow-lg)',
       }}
       // Named as a group so the bar is findable as one thing, and so its
@@ -305,11 +303,11 @@ export function InboxBulkActionBar({
             >
               Save note
             </Button>
-            <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="text-caption text-fg-tertiary">
               …or press an action below to save it with that.
             </span>
             {noteBudget && (
-              <span role="status" className="text-caption" style={{ color: 'var(--fg-muted)' }}>
+              <span role="status" className="text-caption text-fg-secondary">
                 {noteBudget}
               </span>
             )}
@@ -317,8 +315,8 @@ export function InboxBulkActionBar({
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
-      <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
-        <span className="tnum font-semibold" style={{ color: 'var(--fg)' }}>{selectedCount}</span> selected
+      <span className="text-body-sm text-fg-secondary">
+        <span className="tnum font-semibold text-fg">{selectedCount}</span> selected
       </span>
       {isOverCap && (
         // `role="status"`, so it is ANNOUNCED and not merely visible: every
@@ -326,11 +324,11 @@ export function InboxBulkActionBar({
         // and a row of controls that stops working without saying why is the
         // failure this line exists to prevent. Warning rather than danger —
         // nothing has gone wrong, the operator simply has to untick some rows.
-        <span role="status" className="text-caption" style={{ color: 'var(--warning)' }}>
+        <span role="status" className="text-caption text-warning">
           {overCapNotice(overCapBy)}
         </span>
       )}
-      <div className="h-5 w-px max-sm:hidden" style={{ background: 'var(--border)' }} />
+      <div className="h-5 w-px max-sm:hidden bg-border" />
       {/* No fixed-slot rule here, unlike the incident card (tripl-oxkt.8). That
           rule exists because the card's buttons line up in a COLUMN across
           rows, so a slot that appears on one row and not the next moves the
@@ -450,7 +448,7 @@ export function InboxBulkActionBar({
         </DropdownMenuContent>
       </DropdownMenu>
       {muteOpen && (
-        <div className="flex flex-wrap items-center gap-1 text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+        <div className="flex flex-wrap items-center gap-1 text-body-sm text-fg-secondary">
           <span>Mute for</span>
           {/* INBOX_MUTE_CHOICES, not MUTE_PRESETS, and not re-typed literals.
               The shared module documents the scope rule: the open-ended choice
@@ -480,7 +478,7 @@ export function InboxBulkActionBar({
           ))}
         </div>
       )}
-      <div className="h-5 w-px max-sm:hidden" style={{ background: 'var(--border)' }} />
+      <div className="h-5 w-px max-sm:hidden bg-border" />
       <button
         type="button"
         onClick={onClear}

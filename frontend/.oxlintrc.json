@@ -1,6 +1,9 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": [],
+  "jsPlugins": [
+    "./oxlint-plugins/tripl.js"
+  ],
   "categories": {
     "correctness": "off"
   },
@@ -314,7 +317,12 @@
         "no-var": "error",
         "prefer-const": "error",
         "prefer-rest-params": "error",
-        "prefer-spread": "error"
+        "prefer-spread": "error",
+        "tripl/no-bare-lazy": "error",
+        "tripl/no-query-key-literals": "error",
+        "tripl/no-arbitrary-sizes": "error",
+        "tripl/no-muted-foreground": "error",
+        "no-useless-assignment": "error"
       },
       "plugins": [
         "typescript",
@@ -324,6 +332,46 @@
       "env": {
         "es2020": true,
         "browser": true
+      }
+    },
+    {
+      "files": [
+        "src/pages/**/*.tsx"
+      ],
+      "rules": {
+        "tripl/no-raw-select": "error"
+      }
+    },
+    {
+      "files": [
+        "**/*.test.tsx",
+        // The event form's SelectControl primitive: the one raw <select> its
+        // fields are built from, styled with the form's own control layout.
+        "src/pages/events/eventFormLayout.tsx",
+        // The action filter is a filter-bar chip (dashed while unset, accent
+        // once set), not a form control, so NativeSelect's field look is wrong.
+        "src/pages/settings/AuditTab.tsx"
+      ],
+      "rules": {
+        "tripl/no-raw-select": "off"
+      }
+    },
+    {
+      "files": [
+        "src/lib/queryKeys.ts",
+        "**/*.test.{ts,tsx}"
+      ],
+      "rules": {
+        "tripl/no-query-key-literals": "off",
+        "tripl/no-arbitrary-sizes": "off"
+      }
+    },
+    {
+      "files": [
+        "src/lib/lazyWithReload.ts"
+      ],
+      "rules": {
+        "tripl/no-bare-lazy": "off"
       }
     }
   ]

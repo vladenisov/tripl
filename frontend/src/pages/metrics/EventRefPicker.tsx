@@ -1,13 +1,12 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown } from 'lucide-react'
 import { eventsApi } from '@/api/events'
 import { INPUT_BASE, INPUT_CLASS, INPUT_DISABLED } from '@/components/settings/input-style'
+import { NativeSelect } from '@/components/settings/kit'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { eventNameLabel } from '@/lib/eventName'
-import { cn } from '@/lib/utils'
 import type { EventType } from '@/types'
 import { eventKey } from '@/lib/queryKeys'
 import { eventRosterQuery } from './eventRoster'
@@ -141,65 +140,55 @@ export function EventRefPicker({
         className={INPUT_CLASS}
         style={{ ...INPUT_BASE, ...(disabled ? INPUT_DISABLED : {}) }}
       />
-      {/* The chevron the kit NativeSelect draws: without it "Select event…"
+      {/* The kit NativeSelect, chevron included: without one "Select event…"
           read as a second text field under the search (MT-10). */}
-      <div className="relative">
-        <select
-          id={id}
-          value={selectValue}
-          disabled={disabled}
-          aria-required
-          aria-invalid={ariaInvalid || undefined}
-          aria-describedby={ariaDescribedBy}
-          onChange={e => onSelect(e.target.value)}
-          className={cn(INPUT_CLASS, 'w-full appearance-none')}
-          style={{ ...INPUT_BASE, paddingRight: 30, ...(disabled ? INPUT_DISABLED : {}) }}
-        >
-          <option value="">Select event…</option>
-          <optgroup label="Events">
-            {eventOptions.map(option => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </optgroup>
-          {(typeOptions.length > 0 || (value.eventTypeId && !selectedTypeKnown)) && (
-            <optgroup label="All events of a type">
-              {value.eventTypeId && !selectedTypeKnown && (
-                <option value={`${TYPE_PREFIX}${value.eventTypeId}`}>
-                  Every event of type {value.eventTypeId.slice(0, 8)}
-                </option>
-              )}
-              {typeOptions.map(option => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </optgroup>
-          )}
-        </select>
-        <ChevronDown
-          size={14}
-          aria-hidden="true"
-          className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2"
-          style={{ color: 'var(--fg-subtle)' }}
-        />
-      </div>
+      <NativeSelect
+        id={id}
+        width="fill"
+        value={selectValue}
+        disabled={disabled}
+        aria-required
+        aria-invalid={ariaInvalid}
+        aria-describedby={ariaDescribedBy}
+        onChange={onSelect}
+        options={[{ value: '', label: 'Select event…' }]}
+        groups={[
+          { label: 'Events', options: eventOptions },
+          ...(typeOptions.length > 0 || (value.eventTypeId && !selectedTypeKnown)
+            ? [
+                {
+                  label: 'All events of a type',
+                  options: [
+                    ...(value.eventTypeId && !selectedTypeKnown
+                      ? [
+                          {
+                            value: `${TYPE_PREFIX}${value.eventTypeId}`,
+                            label: `Every event of type ${value.eventTypeId.slice(0, 8)}`,
+                          },
+                        ]
+                      : []),
+                    ...typeOptions,
+                  ],
+                },
+              ]
+            : []),
+        ]}
+      />
       {noEvents && (
-        <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="text-caption text-fg-tertiary">
           No events in this project yet.{' '}
-          <Link to={`/p/${slug}/events`} className="underline underline-offset-2" style={{ color: 'var(--fg)' }}>
+          <Link to={`/p/${slug}/events`} className="underline underline-offset-2 text-fg">
             Add events
           </Link>
         </p>
       )}
       {hiddenCount > 0 && (
-        <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="text-caption text-fg-tertiary">
           {hiddenCount} more events not listed — search to narrow.
         </p>
       )}
       {rosterQuery.isError && (
-        <p role="alert" className="text-caption" style={{ color: 'var(--danger)' }}>
+        <p role="alert" className="text-caption text-danger">
           Could not load events.{' '}
           <button
             type="button"

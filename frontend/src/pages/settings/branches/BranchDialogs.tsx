@@ -179,18 +179,18 @@ function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
             }
           />
           {minApprovalsInvalid ? (
-            <p id={minApprovalsErrorId} className="text-body-sm" style={{ color: 'var(--danger)' }}>
+            <p id={minApprovalsErrorId} className="text-body-sm text-danger">
               Enter a whole number from 0 to 100.
             </p>
           ) : null}
-          <p id={minApprovalsHintId} className="text-body-sm text-muted-foreground">
+          <p id={minApprovalsHintId} className="text-body-sm text-fg-tertiary">
             Distinct approvals a branch needs before it can merge. 0 disables the quota.
           </p>
         </div>
         <div className="flex items-center justify-between gap-3">
           <div>
             <Label htmlFor={blockSelfId}>Block self-approval</Label>
-            <p className="mt-1 text-body-sm text-muted-foreground">
+            <p className="mt-1 text-body-sm text-fg-tertiary">
               Branch authors cannot approve their own branch.
             </p>
           </div>
@@ -201,7 +201,7 @@ function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
           />
         </div>
         {saveMut.isError && (
-          <p className="text-body" style={{ color: 'var(--danger)' }}>
+          <p className="text-body text-danger">
             {getErrorMessage(saveMut.error)}
           </p>
         )}
@@ -313,8 +313,7 @@ export function CreateBranchDialog({
                 <button
                   type="button"
                   onClick={() => onName(usableSuggestion)}
-                  className="w-fit text-caption font-medium underline underline-offset-2"
-                  style={{ color: 'var(--accent)' }}
+                  className="w-fit text-caption font-medium underline underline-offset-2 text-accent"
                 >
                   Use <span className="mono">{usableSuggestion}</span>
                 </button>
@@ -343,7 +342,7 @@ export function CreateBranchDialog({
                 Switch to this branch now
               </Label>
             </div>
-            {error && <p role="alert" className="text-body" style={{ color: 'var(--danger)' }}>{error}</p>}
+            {error && <p role="alert" className="text-body text-danger">{error}</p>}
           </DialogBody>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

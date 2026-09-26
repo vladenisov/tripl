@@ -23,8 +23,9 @@ import {
 } from './ScanFormSections'
 import { scanFormBlocker, useScanForm, type ScanFormPayload } from './useScanForm'
 import { dryRunNameExplosion } from './scanDryRunWarnings'
+import { ScanConfigReadView } from './ScanConfigReadView'
 import { countOf } from '@/lib/plural'
-import { eventTypesKey, platformPresenceKey, scanJobsKey, scansKey } from '@/lib/queryKeys'
+import { eventTypesKey, platformPresenceKey, scanConfigKey, scanJobsKey, scansKey } from '@/lib/queryKeys'
 import { ownerOnlyReason, useIsOwner } from '@/lib/permissions'
 import { DisabledReason, ReadOnlyNotice, disabledReasonAria } from '@/components/states'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -57,7 +58,7 @@ export function ScanConfigurationTab({
   const { confirm, dialog } = useConfirm()
   const form = useScanForm(slug, scanConfig)
   // Update, preview, replay and delete are all OwnerUserDep: anyone else reads
-  // the configuration with every control disabled and no Save (DATA-6).
+  // the configuration as a definition list, with no Save (DATA-6, i9mt.12).
   const canEdit = useIsOwner()
 
   const { data: dataSources = [] } = useProjectDataSources()
@@ -69,7 +70,7 @@ export function ScanConfigurationTab({
   // What a Save would send, against what the last save (or the page load) sent.
   const payloadSnapshot = JSON.stringify(form.toBackendPayload())
   const [savedSnapshot, setSavedSnapshot] = useState(payloadSnapshot)
-  // A non-owner's form is disabled and so never dirty.
+  // A non-owner gets the read view below and so is never dirty.
   const dirty = canEdit && payloadSnapshot !== savedSnapshot
   useEffect(() => {
     onDirtyChange?.(dirty)
@@ -84,6 +85,8 @@ export function ScanConfigurationTab({
     mutationFn: (payload: ScanFormPayload) => scansApi.update(slug, scanConfig.id, payload),
     onSuccess: (_saved, payload) => {
       setSavedSnapshot(JSON.stringify(payload))
+      // The single-scan read too: a new interval moves the next metrics run.
+      void qc.invalidateQueries({ queryKey: scanConfigKey(slug, scanConfig.id) })
       return qc.invalidateQueries({ queryKey: scansKey(slug) })
     },
   })
@@ -101,6 +104,7 @@ export function ScanConfigurationTab({
       )
       qc.removeQueries({ queryKey: scanJobsKey(slug, scanConfig.id) })
       qc.removeQueries({ queryKey: platformPresenceKey(slug, scanConfig.id) })
+      qc.removeQueries({ queryKey: scanConfigKey(slug, scanConfig.id) })
       void qc.invalidateQueries({ queryKey: scansKey(slug) })
       onDeleted()
     },
@@ -130,6 +134,24 @@ export function ScanConfigurationTab({
         ? 'Saved.'
         : ''
 
+  // A reader gets the definition, not the edit form with every control
+  // disabled: live borders, pickers and author hints for someone who can only
+  // read (#237 rule 4, i9mt.12). After every hook, so their order holds.
+  if (!canEdit) {
+    return (
+      <div className="flex flex-col">
+        <ReadOnlyNotice className="mb-5">
+          {ownerOnlyReason('change, replay or delete a scan')}
+        </ReadOnlyNotice>
+        <ScanConfigReadView
+          scanConfig={scanConfig}
+          dataSources={dataSources}
+          eventTypes={eventTypes as EventType[]}
+        />
+      </div>
+    )
+  }
+
   const sectionProps = {
     form,
     slug,
@@ -137,7 +159,6 @@ export function ScanConfigurationTab({
     dataSources,
     eventTypes: eventTypes as EventType[],
     sourceLocked: true,
-    readOnly: !canEdit,
   }
 
   return (
@@ -148,17 +169,7 @@ export function ScanConfigurationTab({
           <ErrorState compact title="Could not save scan" error={updateMut.error} />
         </div>
       )}
-      {!canEdit && (
-        <ReadOnlyNotice className="mb-5">
-          {ownerOnlyReason('change, replay or delete a scan')}
-        </ReadOnlyNotice>
-      )}
-      {/* `disabled` on a fieldset reaches every native control inside it;
-          `contents` keeps it out of the layout. The collapsible sections lock
-          their own fields (`readOnly`), so their toggles still open. */}
-      <fieldset disabled={!canEdit} className="contents">
-        <ScanEssentialsSection {...sectionProps} />
-      </fieldset>
+      <ScanEssentialsSection {...sectionProps} />
       <EventNamingSection {...sectionProps} />
       <AppVersionSection {...sectionProps} />
       <MetricsDriftSection {...sectionProps} />
@@ -174,7 +185,7 @@ export function ScanConfigurationTab({
           changes, like the other settings forms (#247 DA-26). The blocker is
           visible text beside Save: a `title` on a disabled button never shows
           (#237 DA-9). */}
-      {canEdit && (dirty || updateMut.isPending || updateMut.isSuccess) && (
+      {(dirty || updateMut.isPending || updateMut.isSuccess) && (
         <SaveBar
           className="mb-5"
           status={
@@ -209,38 +220,36 @@ export function ScanConfigurationTab({
         </SaveBar>
       )}
 
-      {canEdit && (
-        <SCard title="Danger zone" tone="danger">
-          {/* Only Delete here: Replay re-reads history and deletes nothing, so
-              it moved to the page header as a dialog (#247 DA-8). */}
-          <div className="flex items-center gap-[18px] px-4 py-3.5">
-            <div className="flex-1">
-              <div className="text-body font-medium" style={{ color: 'var(--fg)' }}>
-                Delete scan
-              </div>
-              <div className="mt-0.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-                Stops adding events from this query. Events already in your plan are kept.
-              </div>
+      <SCard title="Danger zone" tone="danger">
+        {/* Only Delete here: Replay re-reads history and deletes nothing, so
+            it moved to the page header as a dialog (#247 DA-8). */}
+        <div className="flex items-center gap-[18px] px-4 py-3.5">
+          <div className="flex-1">
+            <div className="text-body font-medium text-fg">
+              Delete scan
             </div>
-            {/* Bare red in a row; the solid red is the confirm dialog's (DS-20). */}
-            <Button
-              type="button"
-              variant="danger"
-              size="sm"
-              disabled={deleteMut.isPending}
-              onClick={handleDelete}
-            >
-              <Trash2 className="size-3" />
-              {deleteMut.isPending ? 'Deleting…' : 'Delete'}
-            </Button>
+            <div className="mt-0.5 text-body-sm text-fg-tertiary">
+              Stops adding events from this query. Events already in your plan are kept.
+            </div>
           </div>
-          {deleteMut.isError && (
-            <div className="px-4 pb-3.5">
-              <ErrorState compact title="Could not delete scan" error={deleteMut.error} />
-            </div>
-          )}
-        </SCard>
-      )}
+          {/* Bare red in a row; the solid red is the confirm dialog's (DS-20). */}
+          <Button
+            type="button"
+            variant="danger"
+            size="sm"
+            disabled={deleteMut.isPending}
+            onClick={handleDelete}
+          >
+            <Trash2 className="size-3" />
+            {deleteMut.isPending ? 'Deleting…' : 'Delete'}
+          </Button>
+        </div>
+        {deleteMut.isError && (
+          <div className="px-4 pb-3.5">
+            <ErrorState compact title="Could not delete scan" error={deleteMut.error} />
+          </div>
+        )}
+      </SCard>
     </div>
   )
 }
@@ -318,8 +327,7 @@ export function ScanCreatePage({
           <button
             type="button"
             onClick={onBack}
-            className="inline-flex items-center gap-1 text-caption"
-            style={{ color: 'var(--fg-muted)' }}
+            className="inline-flex items-center gap-1 text-caption text-fg-secondary"
           >
             <span aria-hidden>←</span> Scans
           </button>

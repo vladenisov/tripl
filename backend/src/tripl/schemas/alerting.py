@@ -891,6 +891,102 @@ DestinationTestErrorKind = Literal[
 ]
 
 
+class AlertDestinationDraftTestRequest(BaseModel):
+    """A destination's settings as the dialog holds them, to test before saving (AL-30).
+
+    Setting up Slack used to take Create, close, find the card, then Test — and
+    a wrong webhook was a stored destination by the time anyone learned it.
+
+    ``destination_id`` names the saved destination an EDIT dialog is open on.
+    The dialog never holds that row's secrets (they are write-only), so a
+    secret left blank here means "the one on file", exactly as the PATCH reads
+    it; every other field is taken as sent. Without it this is an unsaved
+    destination and nothing is borrowed from anywhere.
+
+    Deliberately lenient about what is MISSING: a half-filled form is the
+    normal state of a draft, and the answer to testing one is the same
+    ``ok: false`` / ``config`` result a stored destination with a bad value gets
+    — not a 422 the dialog would render as "the request was wrong". What is
+    checked here is only what a send must never carry at all: header names and
+    values that could inject, and ids that could reach another endpoint's path.
+    Fields the form sends that a test does not use (``enabled``, the cadence,
+    the subject template) are ignored.
+    """
+
+    destination_id: uuid.UUID | None = None
+    type: AlertDestinationType
+    name: str | None = Field(None, max_length=255)
+    webhook_url: str | None = None
+    bot_token: str | None = None
+    chat_id: str | None = Field(None, max_length=255)
+    target_url: str | None = None
+    webhook_header_name: str | None = Field(None, max_length=255)
+    webhook_header_value: str | None = None
+    email_recipients: str | None = None
+    email_from_address: str | None = Field(None, max_length=255)
+    jira_base_url: str | None = Field(None, max_length=255)
+    jira_auth_email: str | None = Field(None, max_length=255)
+    jira_api_token: str | None = None
+    jira_project_key: str | None = Field(None, max_length=64)
+    jira_issue_type: str | None = Field(None, max_length=64)
+    linear_api_key: str | None = None
+    linear_team_id: str | None = Field(None, max_length=64)
+    linear_state_id: str | None = Field(None, max_length=64)
+    linear_label_ids: str | None = Field(None, max_length=1024)
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def normalize_type(cls, value: object) -> str:
+        return normalize_required_text(str(value), field_name="Destination type").lower()
+
+    @field_validator(
+        "name",
+        "webhook_url",
+        "bot_token",
+        "chat_id",
+        "target_url",
+        "email_recipients",
+        "jira_base_url",
+        "jira_auth_email",
+        "jira_api_token",
+        "jira_project_key",
+        "jira_issue_type",
+        "linear_api_key",
+        "linear_team_id",
+        mode="before",
+    )
+    @classmethod
+    def blank_is_absent(cls, value: str | None) -> str | None:
+        # Blank is "not given", as on the create schema: the form sends every
+        # input it holds, and an empty one is not a value to test with.
+        return normalize_optional_secret(value)
+
+    @field_validator("webhook_header_name")
+    @classmethod
+    def validate_header_name(cls, value: str | None) -> str | None:
+        return validate_webhook_header_name(value)
+
+    @field_validator("webhook_header_value", mode="before")
+    @classmethod
+    def validate_header_value(cls, value: str | None) -> str | None:
+        return validate_webhook_header_value(value)
+
+    @field_validator("email_from_address")
+    @classmethod
+    def validate_from(cls, value: str | None) -> str | None:
+        return _validate_email_from_override(value)
+
+    @field_validator("linear_state_id")
+    @classmethod
+    def validate_state_id(cls, value: str | None) -> str | None:
+        return validate_linear_state_id(normalize_optional_secret(value))
+
+    @field_validator("linear_label_ids")
+    @classmethod
+    def validate_label_ids(cls, value: str | None) -> str | None:
+        return validate_linear_label_ids(value)
+
+
 class AlertDestinationTestResponse(BaseModel):
     """Result of a manual test send — did this destination reach its channel?
 

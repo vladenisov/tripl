@@ -1,8 +1,8 @@
 import { formatNumber } from '@/lib/format'
 import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { MoreVertical, Pencil, Plus, Sheet, Trash2 } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Copy, MoreVertical, Pencil, Plus, Sheet, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { dataSourcesApi } from '@/api/dataSources'
 import { factTablesApi } from '@/api/factTables'
@@ -28,6 +28,7 @@ import type { FactTableListItem } from '@/types'
 import { countOf } from '@/lib/plural'
 import { dataSourcesKey, factTablesKey, projectFactTableKey } from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
+import { buildFactTableCopy } from './factTableCopy'
 
 const FACT_TABLE_GRID =
   'grid grid-cols-[1.7fr_1fr_1fr_96px_84px_24px] items-center gap-3 px-4'
@@ -55,6 +56,7 @@ const PHONE_CELL = {
 export function FactTablesList({ slug }: { slug?: string }) {
   const canWrite = useCanWriteProject()
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const { confirm, dialog: confirmDialog } = useConfirm()
   // Delete from the row, as the editor does. The API refuses a table metrics
   // still read and names them; that refusal renders inside the dialog.
@@ -106,6 +108,22 @@ export function FactTablesList({ slug }: { slug?: string }) {
     for (const ds of dataSourcesQuery.data ?? []) map.set(ds.id, ds.name)
     return map
   }, [dataSourcesQuery.data])
+
+  // Duplicate from the row (F7): the list row carries no SQL, so the full
+  // table is read first, then created under a free `_copy` name, and the copy
+  // opens in the editor to be renamed or changed.
+  const duplicateMut = useMutation({
+    mutationFn: async (table: FactTableListItem) => {
+      const source = await factTablesApi.get(slug!, table.id)
+      const names = new Set(factTables.map(t => t.name))
+      return factTablesApi.create(slug!, buildFactTableCopy(source, names))
+    },
+    onSuccess: created => {
+      void qc.invalidateQueries({ queryKey: factTablesKey(slug) })
+      toast.success('Fact table duplicated.')
+      navigate(`/p/${slug}/metrics/fact-tables/${created.id}/edit`)
+    },
+  })
 
   // Loaded with no fact tables — the true "nothing here yet" state, distinct
   // from loading and error.
@@ -207,8 +225,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
                 {dataSourceNamesState === 'error' && (
                   <div
                     role="status"
-                    className="flex flex-wrap items-center gap-2 border-b px-4 py-2 text-body-sm"
-                    style={{ borderColor: 'var(--border-subtle)', color: 'var(--warning)' }}
+                    className="flex flex-wrap items-center gap-2 border-b px-4 py-2 text-body-sm border-border-subtle text-warning"
                   >
                     Data source names could not be loaded.
                     <Button
@@ -227,8 +244,7 @@ export function FactTablesList({ slug }: { slug?: string }) {
                   <div role="rowgroup">
                     <div
                       role="row"
-                      className={`${FACT_TABLE_GRID} border-b py-2 micro-label`}
-                      style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
+                      className={`${FACT_TABLE_GRID} border-b py-2 micro-label border-border-subtle text-fg-tertiary`}
                     >
                       <span role="columnheader" className={PHONE_CELL.name}>Fact table</span>
                       {/* The card shows the source under the name, unlabelled;
@@ -253,6 +269,11 @@ export function FactTablesList({ slug }: { slug?: string }) {
                         }
                         dataSourceNamesState={dataSourceNamesState}
                         onDelete={canWrite ? () => deleteTable(table) : undefined}
+                        onDuplicate={
+                          canWrite && !duplicateMut.isPending
+                            ? () => duplicateMut.mutate(table)
+                            : undefined
+                        }
                       />
                     ))}
                   </div>
@@ -276,6 +297,8 @@ interface FactTableRowProps {
   dataSourceNamesState: DataSourceNamesState
   /** Offered to writers only; readers get no row menu. */
   onDelete?: () => void
+  /** Offered to writers only, and not while another copy is being made. */
+  onDuplicate?: () => void
 }
 
 /**
@@ -312,7 +335,7 @@ function DataSourceCell({
       </>
     )
   }
-  if (state === 'error') return <span style={{ color: 'var(--fg-faint)' }}>Unavailable</span>
+  if (state === 'error') return <span className="text-fg-tertiary">Unavailable</span>
   return (
     <span title="The data source this fact table reads was deleted. Pick another in the editor.">
       <Chip tone="warning" size="xs">
@@ -322,9 +345,17 @@ function DataSourceCell({
   )
 }
 
-function FactTableRow({ table, slug, dataSourceName, dataSourceNamesState, onDelete }: FactTableRowProps) {
+function FactTableRow({
+  table,
+  slug,
+  dataSourceName,
+  dataSourceNamesState,
+  onDelete,
+  onDuplicate,
+}: FactTableRowProps) {
   const navigate = useNavigate()
   const href = slug ? `/p/${slug}/metrics/fact-tables/${table.id}/edit` : undefined
+  const usedByTitle = `${countOf(table.column_count ?? 0, 'column', 'columns')}, ${countOf(table.identifier_count ?? 0, 'identifier', 'identifiers')}`
 
   // The whole row opens the table, as a catalog row does (MT-30); the name
   // Link stays the keyboard route, so the row adds no Tab stop of its own.
@@ -335,8 +366,7 @@ function FactTableRow({ table, slug, dataSourceName, dataSourceNamesState, onDel
       // `--row-h` floor: the Appearance density reaches this list too (DS-9).
       className={`${FACT_TABLE_GRID} min-h-(--row-h) border-b py-1.5 last:border-0 ${
         href ? 'cursor-pointer transition-colors hover:bg-[var(--surface-hover)]' : ''
-      }`}
-      style={{ borderColor: 'var(--border-subtle)' }}
+      } border-border-subtle`}
       onClick={href ? () => navigate(href) : undefined}
     >
       <span role="cell" className={`flex min-w-0 items-center gap-2 ${PHONE_CELL.name}`}>
@@ -348,44 +378,57 @@ function FactTableRow({ table, slug, dataSourceName, dataSourceNamesState, onDel
           <Link
             to={href}
             onClick={event => event.stopPropagation()}
-            className="truncate text-body-sm font-medium no-underline hover:underline"
-            style={{ color: 'var(--fg)' }}
+            className="truncate text-body-sm font-medium no-underline hover:underline text-fg"
           >
             {table.display_name}
           </Link>
         ) : (
           <span className="truncate text-body-sm font-medium">{table.display_name}</span>
         )}
-        <span className="mono truncate text-caption" style={{ color: 'var(--fg-faint)' }}>
+        <span className="mono truncate text-caption text-fg-tertiary">
           {table.name}
         </span>
       </span>
-      <span role="cell" className={`truncate text-body-sm ${PHONE_CELL.source}`} style={{ color: 'var(--fg-subtle)' }}>
+      <span role="cell" className={`truncate text-body-sm ${PHONE_CELL.source} text-fg-tertiary`}>
         <DataSourceCell
           hasSource={!!table.data_source_id}
           name={dataSourceName}
           state={dataSourceNamesState}
         />
       </span>
-      <span role="cell" className={`mono truncate text-body-sm ${PHONE_CELL.timestamp}`} style={{ color: 'var(--fg-subtle)' }}>
-        {table.timestamp_column || <span style={{ color: 'var(--fg-faint)' }}>—</span>}
+      <span role="cell" className={`mono truncate text-body-sm ${PHONE_CELL.timestamp} text-fg-tertiary`}>
+        {table.timestamp_column || <span className="text-fg-tertiary">—</span>}
       </span>
       {/* The column count rides in the title: a sixth column would push the
-          row past a laptop's width (MT-30). */}
-      <span
-        role="cell"
-        className={`tnum truncate text-body-sm ${PHONE_CELL.usedBy}`}
-        style={{ color: table.metric_count ? 'var(--fg-subtle)' : 'var(--fg-faint)' }}
-        title={`${countOf(table.column_count ?? 0, 'column', 'columns')}, ${countOf(table.identifier_count ?? 0, 'identifier', 'identifiers')}`}
-      >
-        {table.metric_count ? countOf(table.metric_count, 'metric', 'metrics') : 'No metrics'}
+          row past a laptop's width (MT-30). A count opens the catalog
+          narrowed to the metrics that read this table (F7). */}
+      <span role="cell" className={`tnum truncate text-body-sm ${PHONE_CELL.usedBy}`}>
+        {table.metric_count && slug ? (
+          <Link
+            to={`/p/${slug}/metrics?fact_table=${encodeURIComponent(table.id)}`}
+            onClick={event => event.stopPropagation()}
+            className="underline-offset-2 hover:underline text-fg-tertiary"
+            title={usedByTitle}
+          >
+            {countOf(table.metric_count, 'metric', 'metrics')}
+          </Link>
+        ) : (
+          <span style={{ color: table.metric_count ? 'var(--fg-subtle)' : 'var(--fg-faint)' }} title={usedByTitle}>
+            {table.metric_count ? countOf(table.metric_count, 'metric', 'metrics') : 'No metrics'}
+          </span>
+        )}
       </span>
-      <span role="cell" className={`tnum text-right text-micro ${PHONE_CELL.updated}`} style={{ color: 'var(--fg-faint)' }}>
+      <span role="cell" className={`tnum text-right text-micro ${PHONE_CELL.updated} text-fg-tertiary`}>
         {formatRelativeTime(table.updated_at)}
       </span>
       <span role="cell" className={`flex justify-end ${PHONE_CELL.actions}`}>
         {href && onDelete && (
-          <FactTableRowMenu name={table.display_name} href={href} onDelete={onDelete} />
+          <FactTableRowMenu
+            name={table.display_name}
+            href={href}
+            onDelete={onDelete}
+            onDuplicate={onDuplicate}
+          />
         )}
       </span>
     </div>
@@ -393,18 +436,20 @@ function FactTableRow({ table, slug, dataSourceName, dataSourceNamesState, onDel
 }
 
 /**
- * Edit and Delete from the row, the catalog's row-menu pattern. No Duplicate
- * yet: the list carries no definition to copy, and a copy would need the
- * table's full body fetched first.
+ * Edit, Duplicate and Delete from the row, the catalog's row-menu pattern.
+ * Duplicate fetches the table's full body first: the list row carries no SQL.
  */
 function FactTableRowMenu({
   name,
   href,
   onDelete,
+  onDuplicate,
 }: {
   name: string
   href: string
   onDelete: () => void
+  /** Absent while a copy is being made. */
+  onDuplicate?: () => void
 }) {
   const navigate = useNavigate()
   return (
@@ -413,8 +458,7 @@ function FactTableRowMenu({
         <button
           type="button"
           aria-label={`Actions for ${name}`}
-          className="flex items-center justify-center rounded-sm p-0.5 hover:bg-[var(--surface-hover)]"
-          style={{ color: 'var(--fg-faint)' }}
+          className="flex items-center justify-center rounded-sm p-0.5 hover:bg-[var(--surface-hover)] text-fg-tertiary"
           onClick={event => event.stopPropagation()}
         >
           <MoreVertical className="h-3.5 w-3.5" />
@@ -429,7 +473,14 @@ function FactTableRowMenu({
         onClick={event => event.stopPropagation()}
       >
         <DropdownMenuItem className="text-body-sm" onSelect={() => navigate(href)}>
-          <Pencil className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Edit
+          <Pencil className="h-3.5 w-3.5 shrink-0 text-fg-tertiary" /> Edit
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="text-body-sm"
+          disabled={!onDuplicate}
+          onSelect={() => onDuplicate?.()}
+        >
+          <Copy className="h-3.5 w-3.5 shrink-0 text-fg-tertiary" /> Duplicate
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem className="text-body-sm" variant="destructive" onSelect={onDelete}>

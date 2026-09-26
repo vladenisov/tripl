@@ -79,8 +79,7 @@ function StripShell({ children }: { children: ReactNode }) {
     <section
       aria-label={REGION_LABEL}
       data-demo-scenario=""
-      className="flex min-w-0 grow basis-full flex-wrap items-center gap-x-2 gap-y-1.5 border-t pt-1.5 lg:basis-0 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-3"
-      style={{ borderColor: 'var(--warning)' }}
+      className="flex min-w-0 grow basis-full flex-wrap items-center gap-x-2 gap-y-1.5 border-t pt-1.5 lg:basis-0 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-3 border-warning"
     >
       {children}
     </section>
@@ -169,8 +168,7 @@ function ActiveStrip({
         {/* Cut to the row's width on a desktop, whole in the DOM (and so to a
             screen reader), and whole on hover. */}
         <span
-          className="min-w-0 text-caption leading-[1.45] lg:truncate"
-          style={{ color: 'var(--fg-muted)' }}
+          className="min-w-0 text-caption leading-[1.45] lg:truncate text-fg-secondary"
           title={step.instruction}
         >
           {step.instruction}
@@ -238,13 +236,13 @@ function ActiveStrip({
           under may not have changed. A line of its own under the row: the
           exception may cost height, the normal state does not. */}
       {hint && (
-        <p role="status" className="basis-full text-caption" style={{ color: 'var(--warning)' }}>
+        <p role="status" className="basis-full text-caption text-warning">
           {SCENARIO_HINT_COPY[hint]}
         </p>
       )}
 
       {targetMissing && (
-        <p className="basis-full text-caption" style={{ color: 'var(--fg-muted)' }}>
+        <p className="basis-full text-caption text-fg-secondary">
           {missingCopy}
         </p>
       )}
@@ -275,7 +273,7 @@ function CompletedStrip({
         className="min-w-0 grow basis-full text-body-sm font-medium lg:basis-0 lg:truncate"
       >
         Chapter complete: {CHAPTER_TITLES[chapter]}.{' '}
-        <span className="font-normal" style={{ color: 'var(--fg-muted)' }}>
+        <span className="font-normal text-fg-secondary">
           {nextChapter
             ? 'Keep going — the next chapter picks up from here.'
             : 'That was the last one — you have walked the whole product. Point it at your own warehouse next.'}

@@ -51,7 +51,8 @@ export function deriveScanRunInfo(jobs: ScanJob[] | undefined): ScanRunInfo {
 // backend may populate (query rows scanned vs. processed).
 export function jobRowsScanned(job: ScanJob | null): number | null {
   if (!job?.result_summary) return null
-  return job.result_summary.query_rows_scanned ?? job.result_summary.scan_rows_processed ?? null
+  const summary = job.result_summary
+  return summary.query_rows_scanned ?? summary.catalog_rows_scanned ?? summary.scan_rows_processed ?? null
 }
 
 /**
@@ -66,6 +67,11 @@ export type JobScannedUnit = 'rows' | 'combinations'
 export interface JobScanned {
   value: number
   unit: JobScannedUnit
+  /**
+   * A catalog run that reported both: the distinct combinations its GROUP BY
+   * returned, behind the warehouse rows in `value` (i9mt.16).
+   */
+  combinations?: number
 }
 
 /**
@@ -77,6 +83,15 @@ export function jobScanned(job: Pick<ScanJob, 'result_summary'> | null): JobScan
   const summary = job?.result_summary
   if (!summary) return null
   if (summary.query_rows_scanned != null) return { value: summary.query_rows_scanned, unit: 'rows' }
+  // A catalog run now also sums the `_cnt` of its breakdown rows: the warehouse
+  // rows the dry run reports, so the two finally print the same kind of number.
+  if (summary.catalog_rows_scanned != null) {
+    return {
+      value: summary.catalog_rows_scanned,
+      unit: 'rows',
+      ...(summary.scan_rows_processed != null ? { combinations: summary.scan_rows_processed } : {}),
+    }
+  }
   if (summary.scan_rows_processed != null) {
     return { value: summary.scan_rows_processed, unit: 'combinations' }
   }
@@ -152,10 +167,25 @@ export interface MetricsFreshness {
   job: ScanJob | null
   /** When the newest metrics run finished, or null when none has. */
   lastAt: string | null
-  /** When the schedule is next due (last point + interval), or null. */
+  /** When the schedule is next due, or null. */
   nextAt: number | null
   /** No point for more than two intervals: the schedule is not keeping up. */
   overdue: boolean
+}
+
+/**
+ * The server's answer for one scan (`GET /scans/{id}`, i9mt.16): the newest
+ * scheduled collection and the scheduler's own next due moment.
+ */
+export interface MetricsSchedule {
+  lastRunAt: string | null
+  nextRunAt: string | null
+}
+
+function parseMs(value: string | null | undefined): number | null {
+  if (!value) return null
+  const ms = Date.parse(value)
+  return Number.isNaN(ms) ? null : ms
 }
 
 /**
@@ -163,19 +193,37 @@ export interface MetricsFreshness {
  * The detail page's "Metric points" card read the newest run, which is usually
  * a catalog Run now with no points, so every monitoring scan showed "—" and
  * nothing said whether the series was up to date (#247 DA-5).
+ *
+ * With the server's `schedule`, the next run is the scheduler's due check
+ * (the next interval boundary, not "last run + interval"), and the last run
+ * survives a job page where catalog runs buried the newest collection.
  */
 export function metricsFreshness(
   jobs: ScanJob[],
   interval: string | null,
   now: number = Date.now(),
+  schedule: MetricsSchedule | null = null,
 ): MetricsFreshness {
   const last = jobs.find(isMetricsRun) ?? null
-  const lastAt = last ? (last.completed_at ?? last.started_at ?? last.created_at) : null
+  const jobLastAt = last ? (last.completed_at ?? last.started_at ?? last.created_at) : null
+  const serverLastAt = schedule?.lastRunAt ?? null
+  const serverLastMs = parseMs(serverLastAt)
+  const jobLastMs = parseMs(jobLastAt)
+  const lastAt = serverLastMs != null && (jobLastMs == null || serverLastMs > jobLastMs)
+    ? serverLastAt
+    : jobLastAt
+  const lastMs = parseMs(lastAt)
   const intervalMs = interval ? INTERVAL_MS[interval as IntervalCode] : undefined
-  if (!lastAt || !intervalMs) return { job: last, lastAt, nextAt: null, overdue: false }
-  const lastMs = Date.parse(lastAt)
-  if (Number.isNaN(lastMs)) return { job: last, lastAt, nextAt: null, overdue: false }
-  return { job: last, lastAt, nextAt: lastMs + intervalMs, overdue: now - lastMs > 2 * intervalMs }
+  const serverNextMs = parseMs(schedule?.nextRunAt)
+  if (lastMs == null || !intervalMs) {
+    return { job: last, lastAt, nextAt: serverNextMs, overdue: false }
+  }
+  return {
+    job: last,
+    lastAt,
+    nextAt: serverNextMs ?? lastMs + intervalMs,
+    overdue: now - lastMs > 2 * intervalMs,
+  }
 }
 
 /** "in 48m" / "in 3h" / "due now" — the future twin of `formatRelativeTime`. */

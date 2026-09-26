@@ -4,13 +4,18 @@ import { Button } from '@/components/ui/button'
 import { IconButton } from '@/components/ui/icon-button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect } from '@/components/settings/kit'
 import type { EventGroupRule, ScanConfigPreview } from '@/types'
 import type { UiEventGroupCondition, UiEventGroupRule } from './scanFormTypes'
 import { emptyGroupCondition, emptyGroupRule } from './scanFormTypes'
-import { SELECT_CLASS } from './scanUtils'
 
 /** Past this many rules the list gets a filter box. */
 const FILTER_FROM = 8
+
+const MATCH_OPTIONS = [
+  { value: 'all', label: 'All' },
+  { value: 'any', label: 'Any' },
+]
 
 /** `event_name ~ ^Home$ and screen ~ …` — a rule's conditions on one line. */
 function conditionSummary(rule: UiEventGroupRule): string {
@@ -113,12 +118,12 @@ export function EventGroupRulesEditor({
             {rules.length > 0 && (
               <>
                 {' '}
-                <span className="tnum font-normal" style={{ color: 'var(--fg-subtle)' }}>· {rules.length}</span>
+                <span className="tnum font-normal text-fg-tertiary">· {rules.length}</span>
               </>
             )}
           </div>
           {!columns?.length && (
-            <p className="text-body-sm text-muted-foreground">
+            <p className="text-body-sm text-fg-tertiary">
               Load a preview to pick real columns; only event_name is available otherwise.
             </p>
           )}
@@ -139,10 +144,10 @@ export function EventGroupRulesEditor({
         />
       )}
       {rules.length === 0 && (
-        <p className="text-body-sm text-muted-foreground">No grouping rules.</p>
+        <p className="text-body-sm text-fg-tertiary">No grouping rules.</p>
       )}
       {rules.length > 0 && visible.length === 0 && (
-        <p className="text-body-sm text-muted-foreground">No group rule matches “{filter}”.</p>
+        <p className="text-body-sm text-fg-tertiary">No group rule matches “{filter}”.</p>
       )}
       {visible.length > 0 && (
         <ul className="m-0 list-none divide-y overflow-hidden rounded-control border bg-background p-0">
@@ -163,17 +168,17 @@ export function EventGroupRulesEditor({
                   >
                     <Chevron className="size-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} aria-hidden="true" />
                     <span className="w-40 shrink-0 truncate font-medium">{label}</span>
-                    <span className="mono min-w-0 flex-1 truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                    <span className="mono min-w-0 flex-1 truncate text-caption text-fg-tertiary">
                       {conditionSummary(rule)}
                     </span>
                     {problem ? (
                       // Rules start closed, so a blank value the save rejects
                       // needs a marker on the line itself.
-                      <span className="shrink-0 text-caption" style={{ color: 'var(--danger)' }}>
+                      <span className="shrink-0 text-caption text-danger">
                         {problem}
                       </span>
                     ) : (
-                      <span className="hidden shrink-0 text-caption sm:inline" style={{ color: 'var(--fg-faint)' }}>
+                      <span className="hidden shrink-0 text-caption sm:inline text-fg-tertiary">
                         {rule.condition_logic === 'all' ? 'all match' : 'any matches'}
                       </span>
                     )}
@@ -182,7 +187,7 @@ export function EventGroupRulesEditor({
                     type="button"
                     variant="ghost"
                     size="icon-sm"
-                    className="text-muted-foreground hover:text-destructive"
+                    className="text-fg-tertiary hover:text-destructive"
                     label={`Remove group rule "${rule.name}"`}
                     onClick={() => onChange(rules.filter((_, index) => index !== ruleIndex))}
                   >
@@ -190,7 +195,7 @@ export function EventGroupRulesEditor({
                   </IconButton>
                 </div>
                 {open && (
-                  <div className="space-y-3 border-t px-3 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+                  <div className="space-y-3 border-t px-3 py-3 border-border-subtle">
                     <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_8rem]">
                       <div className="grid gap-1">
                         <Label htmlFor={`group-name-${rule._uid}`}>Group name</Label>
@@ -203,17 +208,15 @@ export function EventGroupRulesEditor({
                       </div>
                       <div className="grid gap-1">
                         <Label htmlFor={`match-${rule._uid}`}>Match</Label>
-                        <select
+                        <NativeSelect
                           id={`match-${rule._uid}`}
+                          width="fill"
                           value={rule.condition_logic}
-                          onChange={event => updateRule(ruleIndex, {
-                            condition_logic: event.target.value as EventGroupRule['condition_logic'],
+                          onChange={value => updateRule(ruleIndex, {
+                            condition_logic: value as EventGroupRule['condition_logic'],
                           })}
-                          className={SELECT_CLASS}
-                        >
-                          <option value="all">All</option>
-                          <option value="any">Any</option>
-                        </select>
+                          options={MATCH_OPTIONS}
+                        />
                       </div>
                     </div>
                     <div className="space-y-2">
@@ -221,18 +224,15 @@ export function EventGroupRulesEditor({
                         <div key={condition._uid} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                           <div className="grid gap-1">
                             <Label htmlFor={`field-${rule._uid}-${condition._uid}`}>Field</Label>
-                            <select
+                            <NativeSelect
                               id={`field-${rule._uid}-${condition._uid}`}
+                              width="fill"
                               value={condition.field}
-                              onChange={event => updateCondition(ruleIndex, conditionIndex, {
-                                field: event.target.value,
+                              onChange={value => updateCondition(ruleIndex, conditionIndex, {
+                                field: value,
                               })}
-                              className={SELECT_CLASS}
-                            >
-                              {fieldOptions.map(field => (
-                                <option key={field} value={field}>{field}</option>
-                              ))}
-                            </select>
+                              options={fieldOptions}
+                            />
                           </div>
                           <div className="grid gap-1">
                             <Label htmlFor={`regex-${rule._uid}-${condition._uid}`}>Regex</Label>
@@ -248,7 +248,7 @@ export function EventGroupRulesEditor({
                           <IconButton
                             type="button"
                             variant="ghost"
-                            className="self-end text-muted-foreground hover:text-destructive"
+                            className="self-end text-fg-tertiary hover:text-destructive"
                             label="Remove condition"
                             disabled={rule.conditions.length === 1}
                             onClick={() => updateRule(ruleIndex, {

@@ -123,7 +123,7 @@ describe('ProductTour', () => {
     )
     expect(screen.getByRole('link', { name: /^Plan branches$/i })).toHaveAttribute(
       'href',
-      '/p/acme/settings/branches',
+      '/p/acme/branches',
     )
 
     // Each building block deep-links to the surface that actually shows it —

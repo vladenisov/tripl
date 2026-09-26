@@ -345,7 +345,7 @@ export function SettingsLayout({
   }, [blocker, confirmLeave])
 
   return (
-    <div className="relative flex h-screen overflow-hidden" style={{ background: 'var(--bg)' }}>
+    <div className="relative flex h-screen overflow-hidden bg-background">
       {dialog}
       {/* Ctrl+K. The takeover mounts outside Layout, so the app palette's
           provider never reached these 14 routes (tripl-wd66) — and mounting it
@@ -428,7 +428,7 @@ export function SettingsLayout({
             <div key={group.label} className="mb-4">
               <div className="px-[9px] pb-1.5">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="shrink-0 text-caption font-semibold" style={{ color: 'var(--fg)' }}>
+                  <span className="shrink-0 text-caption font-semibold text-fg">
                     {group.label}
                   </span>
                   {group.label === 'Project' && projects.length > 0 ? (
@@ -440,7 +440,7 @@ export function SettingsLayout({
                     />
                   ) : (
                     sub && (
-                      <span className="min-w-0 truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                      <span className="min-w-0 truncate text-caption text-fg-tertiary">
                         {sub}
                       </span>
                     )
@@ -448,7 +448,7 @@ export function SettingsLayout({
                 </div>
                 {/* Phones get the labels alone: three lines of chrome per group
                     pushed the last items under the drawer's footer (ST-13). */}
-                <p className="mt-0.5 hidden text-micro leading-snug md:block" style={{ color: 'var(--fg-faint)' }}>
+                <p className="mt-0.5 hidden text-micro leading-snug md:block text-fg-tertiary">
                   {group.desc}
                 </p>
               </div>
@@ -502,8 +502,7 @@ export function SettingsLayout({
                         <span
                           aria-hidden="true"
                           title="Unsaved changes"
-                          className="h-[7px] w-[7px] shrink-0 rounded-full"
-                          style={{ background: 'var(--warning)' }}
+                          className="h-[7px] w-[7px] shrink-0 rounded-full bg-warning"
                         />
                       )}
                     </Link>
@@ -515,11 +514,11 @@ export function SettingsLayout({
                   // "Project operations" button on General as the only way
                   // there (#238 ST-5). The arrow marks it as leaving the area.
                   <Link
-                    to={`/p/${encodeURIComponent(projectSlug)}/settings/event-types`}
+                    to={`/p/${encodeURIComponent(projectSlug)}/event-types`}
                     onClick={guardLeave}
                     className="flex items-center gap-2 rounded-md px-[9px] py-2.5 md:py-[7px] text-left text-body-sm font-medium text-fg-muted no-underline transition-colors hover:bg-sidebar-hover focus-visible:bg-sidebar-hover"
                   >
-                    <ArrowUpRight className="size-4 shrink-0" style={{ color: 'var(--fg-subtle)' }} aria-hidden="true" />
+                    <ArrowUpRight className="size-4 shrink-0 text-fg-tertiary" aria-hidden="true" />
                     <span className="flex-1">Tracking plan &amp; alerting</span>
                   </Link>
                 )}
@@ -531,8 +530,7 @@ export function SettingsLayout({
 
         {/* Footer user */}
         <div
-          className="flex items-center gap-[9px] p-3"
-          style={{ borderTop: '1px solid var(--border-subtle)' }}
+          className="flex items-center gap-[9px] p-3 border-t border-border-subtle"
         >
           <UserAvatar name={auth.user?.name ?? auth.user?.email} />
           <div className="min-w-0 flex-1">
@@ -540,8 +538,7 @@ export function SettingsLayout({
               {auth.user?.name ?? auth.user?.email}
             </div>
             <div
-              className="mt-px truncate text-micro leading-[1.1]"
-              style={{ color: 'var(--fg-subtle)' }}
+              className="mt-px truncate text-micro leading-[1.1] text-fg-tertiary"
             >
               {auth.user?.role ? capitalize(auth.user.role) : 'Signed in'}
             </div>
@@ -582,8 +579,7 @@ export function SettingsLayout({
             below it instead of underneath it (ServiceSettingsPage's Save row
             uses `top-[52px] md:top-0`). */}
         <div
-          className="sticky top-0 z-(--z-sticky) flex h-[52px] items-center gap-2 px-4 md:hidden"
-          style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}
+          className="sticky top-0 z-(--z-sticky) flex h-[52px] items-center gap-2 px-4 md:hidden bg-background border-b border-border"
         >
           <button
             type="button"
@@ -591,8 +587,7 @@ export function SettingsLayout({
             aria-expanded={railOpen}
             aria-controls={RAIL_ID}
             onClick={openRail}
-            className="flex h-10 w-10 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
+            className="flex h-10 w-10 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] text-fg-secondary"
           >
             <Menu className="h-4 w-4" />
           </button>
@@ -602,10 +597,10 @@ export function SettingsLayout({
             <span className="shrink-0 font-semibold">Settings</span>
             {sectionTitle && (
               <>
-                <span aria-hidden="true" style={{ color: 'var(--fg-faint)' }}>
+                <span aria-hidden="true" className="text-fg-tertiary">
                   /
                 </span>
-                <span className="truncate" style={{ color: 'var(--fg-muted)' }}>
+                <span className="truncate text-fg-secondary">
                   {sectionTitle}
                 </span>
               </>
@@ -615,8 +610,7 @@ export function SettingsLayout({
             to={backHref}
             aria-label="Close settings"
             title={backLabel}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)] text-fg-secondary"
           >
             <X className="size-4" aria-hidden="true" />
           </Link>
@@ -667,7 +661,7 @@ function RailProjectSwitcher({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" sideOffset={4} className="w-[240px]">
-        <DropdownMenuLabel className="micro-label" style={{ color: 'var(--fg-faint)' }}>
+        <DropdownMenuLabel className="micro-label text-fg-tertiary">
           Project settings for
         </DropdownMenuLabel>
         <div className="max-h-[320px] overflow-y-auto">
@@ -679,7 +673,7 @@ function RailProjectSwitcher({
             >
               <span className="min-w-0 flex-1 truncate">{project.name}</span>
               {project.slug === currentSlug && (
-                <Check className="size-3.5 shrink-0" style={{ color: 'var(--accent)' }} aria-hidden="true" />
+                <Check className="size-3.5 shrink-0 text-accent" aria-hidden="true" />
               )}
             </DropdownMenuItem>
           ))}

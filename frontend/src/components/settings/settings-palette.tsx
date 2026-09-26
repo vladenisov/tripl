@@ -3,6 +3,7 @@ import { Command } from 'cmdk'
 import { ChevronLeft, Folder, LayoutDashboard, LogOut, Search, SlidersHorizontal } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Kbd } from '@/components/primitives/kbd'
+import { PALETTE_ITEM_CLASS } from '@/components/palette-item'
 import { SETTINGS_CONTENT_ID } from './landmarks'
 import { visibleGroupsAll } from './nav'
 import { projectHomePath } from '@/lib/navigation'
@@ -270,10 +271,9 @@ export function SettingsCommandPalette({
           className="flex max-h-[440px] w-full min-w-0 flex-col"
         >
           <div
-            className="flex items-center gap-2 border-b px-3.5 py-3"
-            style={{ borderColor: 'var(--border-subtle)' }}
+            className="flex items-center gap-2 border-b px-3.5 py-3 border-border-subtle"
           >
-            <Search className="h-3.5 w-3.5" style={{ color: 'var(--fg-subtle)' }} />
+            <Search className="h-3.5 w-3.5 text-fg-tertiary" />
             <Command.Input
               // eslint-disable-next-line jsx-a11y/no-autofocus -- command palette search: focus on explicit ⌘K invocation is expected UX
               autoFocus
@@ -287,8 +287,7 @@ export function SettingsCommandPalette({
           <Command.List className="flex-1 overflow-y-auto py-1.5">
             {groups.length === 0 && (
               <div
-                className="px-3.5 py-8 text-center text-body-sm"
-                style={{ color: 'var(--fg-subtle)' }}
+                className="px-3.5 py-8 text-center text-body-sm text-fg-tertiary"
               >
                 No matches.
               </div>
@@ -306,22 +305,19 @@ export function SettingsCommandPalette({
                       key={row.value}
                       value={row.value}
                       onSelect={row.onSelect}
-                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-body-sm aria-selected:bg-[var(--surface-hover)]"
-                      style={{ color: 'var(--fg)' }}
+                      className={PALETTE_ITEM_CLASS}
                     >
-                      <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+                      <Icon className="h-3.5 w-3.5 shrink-0 text-fg-tertiary" />
                       <span className="min-w-0 flex-1 truncate">{row.label}</span>
                       {row.active && (
                         <span
-                          className="shrink-0 micro-label"
-                          style={{ color: 'var(--fg-faint)' }}
+                          className="shrink-0 micro-label text-fg-tertiary"
                         >
                           current
                         </span>
                       )}
                       <span
-                        className="mono shrink-0 truncate text-micro"
-                        style={{ color: 'var(--fg-faint)' }}
+                        className="mono shrink-0 truncate text-micro text-fg-tertiary"
                       >
                         {row.hint}
                       </span>

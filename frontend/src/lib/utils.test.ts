@@ -4,7 +4,7 @@ import { cn } from './utils'
 describe('cn with the app type and radius scale (DS-20)', () => {
   it('keeps a scale size next to a colour class', () => {
     expect(cn('text-body-sm', 'text-fg-subtle')).toBe('text-body-sm text-fg-subtle')
-    expect(cn('text-micro', 'text-muted-foreground')).toBe('text-micro text-muted-foreground')
+    expect(cn('text-micro', 'text-fg-tertiary')).toBe('text-micro text-fg-tertiary')
     expect(cn('text-micro', 'text-fg-subtle')).toBe('text-micro text-fg-subtle')
     expect(cn('text-heading', 'text-fg')).toBe('text-heading text-fg')
     expect(cn('text-display', 'text-fg')).toBe('text-display text-fg')

@@ -199,9 +199,9 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
       <CardContent>
         <div className={`${isEmpty ? 'mb-2' : 'mb-4'} flex flex-wrap items-center justify-between gap-3`}>
           <div className="flex items-center gap-2">
-            <ImagePlus className="size-4 text-muted-foreground" aria-hidden="true" />
+            <ImagePlus className="size-4 text-fg-tertiary" aria-hidden="true" />
             <h2 className="text-body-sm font-semibold">Photos &amp; specs</h2>
-            <span className="tnum text-caption text-muted-foreground">({photos.length})</span>
+            <span className="tnum text-caption text-fg-tertiary">({photos.length})</span>
           </div>
           {canWrite && (
             <div className="flex items-center gap-2">
@@ -248,7 +248,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
             id="figma-attach"
             className="mb-4 flex flex-wrap items-center gap-2 rounded-card border bg-bg-sunken px-3 py-2"
           >
-            <Frame className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+            <Frame className="h-4 w-4 text-fg-tertiary" aria-hidden="true" />
             <label htmlFor="figma-url" className="sr-only">Figma URL</label>
             <Input
               id="figma-url"
@@ -307,7 +307,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
               ))}
             </div>
           ) : photos.length === 0 ? (
-            <div className="text-body-sm text-muted-foreground">
+            <div className="text-body-sm text-fg-tertiary">
               {canWrite ? (
                 <>
                   <p>No screenshots or Figma links yet. Drop images here, or use the buttons above.</p>
@@ -342,7 +342,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
               <li key={item.key} className="text-body-sm">
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate" title={item.name}>{item.name}</span>
-                  <span className={item.status === 'failed' ? 'shrink-0 text-destructive' : 'shrink-0 text-muted-foreground'}>
+                  <span className={item.status === 'failed' ? 'shrink-0 text-destructive' : 'shrink-0 text-fg-tertiary'}>
                     {item.status === 'failed' ? 'Failed' : `${Math.round(item.progress * 100)}%`}
                   </span>
                 </div>
@@ -362,7 +362,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
         )}
 
         {skipped.length > 0 && (
-          <div role="status" className="mt-3 rounded-md border px-3 py-2 text-body-sm text-muted-foreground">
+          <div role="status" className="mt-3 rounded-md border px-3 py-2 text-body-sm text-fg-tertiary">
             Not uploaded: {skipped.join(', ')}.
           </div>
         )}
@@ -492,7 +492,7 @@ function PhotoViewer({
         )}
         {/* No close button of its own: DialogContent already renders a labelled
             one, and a second, unlabelled X beside it read as "button" (EVT-51). */}
-        <div className="flex items-center justify-between gap-2 px-2 pt-2 text-body-sm text-muted-foreground">
+        <div className="flex items-center justify-between gap-2 px-2 pt-2 text-body-sm text-fg-tertiary">
           <span className="truncate">
             {photo.original_filename}
             {!isFigma && ` · ${formatSize(photo.size_bytes)}`}

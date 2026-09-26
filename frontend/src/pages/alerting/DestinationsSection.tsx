@@ -91,7 +91,7 @@ export function DestinationsSection({
     </Button>
   ))
   const demoChannelNotice = (
-    <p className="text-body-sm text-muted-foreground">
+    <p className="text-body-sm text-fg-tertiary">
       This demo is local-only: alerts render to a built-in sink and are never sent to Slack,
       Telegram, a webhook, email, Jira or Linear. Create a real project to connect a channel.
     </p>
@@ -146,7 +146,7 @@ export function DestinationsSection({
                 <div className="max-w-sm">{demoChannelNotice}</div>
               ) : !canWrite ? undefined : (
                 <div className="flex flex-col items-center gap-2">
-                  <span className="text-body-sm font-medium text-muted-foreground">Add a channel</span>
+                  <span className="text-body-sm font-medium text-fg-tertiary">Add a channel</span>
                   <div className="flex flex-wrap items-center justify-center gap-2">
                     {channelButtons}
                   </div>
@@ -191,7 +191,7 @@ export function DestinationsSection({
               demoChannelNotice
             ) : (
               <>
-                <span className="text-body-sm font-medium text-muted-foreground">Add another channel</span>
+                <span className="text-body-sm font-medium text-fg-tertiary">Add another channel</span>
                 {channelButtons}
               </>
             )}

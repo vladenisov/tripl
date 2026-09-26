@@ -39,7 +39,14 @@ import {
   MONITOR_STATUS_TONE as STATUS_TONE,
 } from '@/lib/statusLexicon'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
-import type { AlertDestination, AlertRule, EventType, MonitorSummaryItem, ScanConfig } from '@/types'
+import type {
+  AlertDestination,
+  AlertRule,
+  EventType,
+  MonitorStatus,
+  MonitorSummaryItem,
+  ScanConfig,
+} from '@/types'
 
 import { invalidateAlertingConfig } from './alertingCache'
 import { ChannelGlyph, channelLabel } from './channelMeta'
@@ -101,6 +108,13 @@ function ruleGridClass(canWrite: boolean): string {
 
 /** How long a just-created rule stays highlighted in the list (AL-10). */
 const NEW_RULE_HIGHLIGHT_MS = 1500
+
+/** The stat tiles that filter the rules table, by the state each one counts (AL-47). */
+const STATE_FILTER_LABEL: Record<MonitorStatus, string> = {
+  firing: 'Firing',
+  warning: 'Warning',
+  healthy: 'Healthy',
+}
 
 interface MonitorsSectionProps {
   slug: string
@@ -215,6 +229,15 @@ export function MonitorsSection({
   const stateByRule = new Map<string, MonitorSummaryItem>(
     (summary?.monitors ?? []).map(monitor => [monitor.rule_id, monitor]),
   )
+  // The stat tiles are toggles over the table below (AL-47): "Firing 1" is
+  // exactly the filter a reader wants, and the strip used to be a row of
+  // numbers nothing could be done with. Pressing the lit tile again clears it.
+  const [stateFilter, setStateFilter] = useState<MonitorStatus | null>(null)
+  const toggleStateFilter = (status: MonitorStatus) =>
+    setStateFilter(current => (current === status ? null : status))
+  const visibleRules = stateFilter
+    ? rules.filter(rule => stateByRule.get(rule.id)?.status === stateFilter)
+    : rules
 
   // Same latch the destination card used, and for the same reason: the prop
   // stays set until the page clears it, so without this it would re-open the
@@ -441,9 +464,11 @@ export function MonitorsSection({
   // "Alert rule", the one name for this object (JR-28): the tab, the button,
   // the dialog and this count used to say Monitors, rule, alert rule and
   // routing rule.
-  const rulesSubtitle = rules.length > 0
-    ? countOf(rules.length, 'alert rule', 'alert rules')
-    : undefined
+  const rulesSubtitle = rules.length === 0
+    ? undefined
+    : stateFilter
+      ? `${visibleRules.length} of ${countOf(rules.length, 'alert rule', 'alert rules')} · ${STATE_FILTER_LABEL[stateFilter].toLowerCase()}`
+      : countOf(rules.length, 'alert rule', 'alert rules')
   const destinationById = new Map(destinations.map(destination => [destination.id, destination]))
 
   return (
@@ -457,10 +482,9 @@ export function MonitorsSection({
       {detectionOff && (
         <p
           role="status"
-          className="m-0 flex flex-wrap items-start gap-2 rounded-card border px-3 py-2.5 text-body-sm"
-          style={{ borderColor: 'var(--warning)', background: 'var(--warning-soft)' }}
+          className="m-0 flex flex-wrap items-start gap-2 rounded-card border px-3 py-2.5 text-body-sm border-warning bg-warning-soft"
         >
-          <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" style={{ color: 'var(--warning)' }} />
+          <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-warning" />
           <span className="min-w-0 flex-1">{DETECTION_OFF_MESSAGE}</span>
           <Link to={`/p/${slug}/settings/monitoring`} className="underline underline-offset-2">
             Detection settings
@@ -475,17 +499,26 @@ export function MonitorsSection({
           {/* A skeleton, not "—" or a green "Healthy", until the summary
               answers: a count the query has not returned is not a count
               (DS-25), and a green tone on it is a false all-clear. */}
+          {/* Each state tile is a toggle once the summary has answered: a
+              filter over counts nobody has seen yet would hide rows on a
+              guess (AL-47). */}
           <MiniStat
             label="Firing"
             value={summary ? formatNumber(summary.firing_count) : <StatValueSkeleton />}
             tone={summary && summary.firing_count > 0 ? 'danger' : 'neutral'}
             pulse={!!summary && summary.firing_count > 0}
             delta={summary && summary.firing_count > 0 ? 'now' : undefined}
+            onPress={summary ? () => toggleStateFilter('firing') : undefined}
+            pressed={stateFilter === 'firing'}
+            title="Show only firing rules"
           />
           <MiniStat
             label="Warning"
             value={summary ? formatNumber(summary.warning_count) : <StatValueSkeleton />}
             tone={summary && summary.warning_count > 0 ? 'warning' : 'neutral'}
+            onPress={summary ? () => toggleStateFilter('warning') : undefined}
+            pressed={stateFilter === 'warning'}
+            title="Show only rules in warning"
           />
           {/* Neutral: a green figure beside two grey zeros made the one
               count that needs nothing the loudest tile on the strip (AL-47).
@@ -493,6 +526,9 @@ export function MonitorsSection({
           <MiniStat
             label="Healthy"
             value={summary ? formatNumber(summary.healthy_count) : <StatValueSkeleton />}
+            onPress={summary ? () => toggleStateFilter('healthy') : undefined}
+            pressed={stateFilter === 'healthy'}
+            title="Show only healthy rules"
           />
           <MiniStat label="Rules" value={formatNumber(rules.length)} />
         </MiniStatStrip>
@@ -510,7 +546,8 @@ export function MonitorsSection({
               step="alerting/create-rule"
               when={destinations.some(destination => destination.is_local)}
             >
-              <Button size="sm" variant="outline" onClick={openNewRule}>
+              {/* Marked for the `c` shortcut, which otherwise looks for "New …". */}
+              <Button size="sm" variant="outline" onClick={openNewRule} data-create-action="">
                 <Plus className="mr-2 h-4 w-4" />
                 Add rule
               </Button>
@@ -554,8 +591,7 @@ export function MonitorsSection({
               <div role="rowgroup" className="hidden md:block">
                 <div
                   role="row"
-                  className={`${ruleGridClass(canWrite)} border-b py-2 micro-label`}
-                  style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
+                  className={`${ruleGridClass(canWrite)} border-b py-2 micro-label border-border-subtle text-fg-tertiary`}
                 >
                   <span role="columnheader">Rule</span>
                   <span role="columnheader">Condition</span>
@@ -566,7 +602,17 @@ export function MonitorsSection({
                 </div>
               </div>
               <div role="rowgroup">
-                {rules.map(rule => (
+                {stateFilter && visibleRules.length === 0 && (
+                  <div role="row">
+                    <p role="cell" className="flex flex-wrap items-center gap-2 py-4 text-body-sm text-fg-tertiary">
+                      No rules are {STATE_FILTER_LABEL[stateFilter].toLowerCase()} right now.
+                      <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={() => setStateFilter(null)}>
+                        Show all rules
+                      </Button>
+                    </p>
+                  </div>
+                )}
+                {visibleRules.map(rule => (
                   <RuleRow
                     key={rule.id}
                     slug={slug}
@@ -719,8 +765,7 @@ function RuleRow({
     <div
       ref={rowRef}
       role="row"
-      className={`${ruleGridClass(canWrite)} flex min-h-(--row-h) flex-wrap items-center gap-x-3 gap-y-2 border-b py-3 transition-colors duration-700 last:border-0 md:py-2.5 ${highlighted ? 'bg-accent-soft' : ''}`}
-      style={{ borderColor: 'var(--border-subtle)' }}
+      className={`${ruleGridClass(canWrite)} flex min-h-(--row-h) flex-wrap items-center gap-x-3 gap-y-2 border-b py-3 transition-colors duration-700 last:border-0 md:py-2.5 ${highlighted ? 'bg-accent-soft' : ''} border-border-subtle`}
       data-highlighted={highlighted || undefined}
     >
       {/* Nothing in this table ellipsizes but the destination name. Every text
@@ -743,8 +788,7 @@ function RuleRow({
             // aria-controls pointing at nothing is a broken reference (ALR-46).
             aria-controls={expanded ? settingsId : undefined}
             aria-label={`${expanded ? 'Hide' : 'Show'} settings for ${rule.name}`}
-            className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-faint)' }}
+            className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-[var(--surface-hover)] text-fg-tertiary"
           >
             {expanded
               ? <ChevronDown aria-hidden="true" className="h-3.5 w-3.5" />
@@ -757,8 +801,7 @@ function RuleRow({
               neither this row nor its expansion can carry. */}
           <Link
             to={`/p/${slug}/monitors/${rule.id}`}
-            className="min-w-0 break-words text-body-sm font-medium no-underline hover:underline"
-            style={{ color: 'var(--fg)' }}
+            className="min-w-0 break-words text-body-sm font-medium no-underline hover:underline text-fg"
           >
             {rule.name}
           </Link>
@@ -784,7 +827,7 @@ function RuleRow({
         {/* Delivery health. `Never delivered` is a different fact from `last
             sent 3h ago`, and it followed the rule off the destination card
             rather than being dropped in the move (tripl-oxkt.17). */}
-        <span className="break-words pl-6 text-caption" style={{ color: 'var(--fg-faint)' }}>
+        <span className="break-words pl-6 text-caption text-fg-tertiary">
           {rule.total_deliveries === 0 ? (
             'Never delivered'
           ) : (
@@ -799,14 +842,14 @@ function RuleRow({
           )}
         </span>
         {/* Where it routes, until `lg` gives it a column of its own. */}
-        <span className="flex min-w-0 items-center gap-1 pl-6 text-caption lg:hidden" style={{ color: 'var(--fg-subtle)' }}>
+        <span className="flex min-w-0 items-center gap-1 pl-6 text-caption lg:hidden text-fg-tertiary">
           {destinationType && <ChannelGlyph type={destinationType} aria-hidden="true" className="size-3 shrink-0" />}
           <span className="truncate">{`Routes to ${rule.destination_name}${channel ? ` (${channel})` : ''}`}</span>
         </span>
       </span>
       <span role="cell" className="flex min-w-0 basis-full flex-col gap-0.5 pl-6 md:basis-auto md:pl-0">
-        <span className="tnum break-words text-body-sm" style={{ color: 'var(--fg)' }}>{condition}</span>
-        <span className="break-words text-caption" style={{ color: 'var(--fg-subtle)' }}>{watches}</span>
+        <span className="tnum break-words text-body-sm text-fg">{condition}</span>
+        <span className="break-words text-caption text-fg-tertiary">{watches}</span>
       </span>
       <span role="cell" className="hidden min-w-0 items-center gap-1.5 lg:flex">
         {/* The channel's icon rather than a raw `demo_sink` chip, and the
@@ -821,8 +864,7 @@ function RuleRow({
           />
         )}
         <span
-          className="truncate text-caption"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="truncate text-caption text-fg-tertiary"
           title={`Routes to the "${rule.destination_name}" destination`}
         >
           {rule.destination_name}
@@ -834,10 +876,10 @@ function RuleRow({
         {state ? (
           <Chip tone={tone} size="xs">{STATUS_LABEL[state.status]}</Chip>
         ) : (
-          <span className="text-caption" style={{ color: 'var(--fg-faint)' }}>—</span>
+          <span className="text-caption text-fg-tertiary">—</span>
         )}
       </span>
-      <span role="cell" className="tnum pl-6 text-caption md:pl-0" style={{ color: 'var(--fg-faint)' }}>
+      <span role="cell" className="tnum pl-6 text-caption md:pl-0 text-fg-tertiary">
         {state?.last_anomaly_at
           ? <><span className="md:hidden">Last fired </span>{formatRelativeTime(state.last_anomaly_at)}</>
           : '—'}
@@ -902,8 +944,7 @@ function RuleRow({
         role="row"
         id={settingsId}
         aria-label={`Settings for ${rule.name}`}
-        className="border-b px-4 py-3 last:border-0"
-        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
+        className="border-b px-4 py-3 last:border-0 border-border-subtle bg-bg-sunken"
       >
         {/* Every setting labelled, because the whole block used to be a single
             wrapped run of unlabelled spans in which no individual value could be
@@ -971,7 +1012,7 @@ function scanSettingLabel(
 function RuleSetting({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
-      <dt className="micro-label text-muted-foreground">{label}</dt>
+      <dt className="micro-label text-fg-tertiary">{label}</dt>
       <dd className="break-words text-body-sm text-foreground">{value}</dd>
     </div>
   )

@@ -315,7 +315,8 @@ found on — **view event volume** for an event, **view event type volume** for 
 event type — so this tab is one click from there, with the same caveat that it
 describes the newest rollout only.
 
-**An alert's own row** in Settings → Alerting → Delivery log shows a *past*
+**An alert's own row** in Observe → Alerting → Delivery log
+(`/p/<slug>/alerting`) shows a *past*
 regression exactly as it was reported: scope, actual, expected and percentage,
 frozen at delivery time. That is where a release-regression alert's `details:`
 link goes — deliberately, because the numbers it quotes cannot be reproduced
@@ -418,7 +419,15 @@ incident shows an **Incident · *status*** link to that incident's card on the
 Alerting page. Each row ends in a **⋯** menu (**Signal actions**): **Open
 detail**, **View alerts** (the Alerting page, on the signal's incident when it
 has one) and, for editors, **Annotate**, which opens the detail page's Volume tab
-with the annotation form prefilled on the signal's bucket. The *collapsed* view behind
+with the annotation form prefilled on the signal's bucket.
+
+From the `sm` breakpoint up, each row also draws a **Trend** sparkline: the 24
+buckets around the flagged one — the 19 before it, the bucket itself, and up to
+4 after — with the flagged bucket marked, so a one-off spike reads differently
+from a level that stayed put. A catalog-metric row has none, since its series
+does not live on a scan. The page fetches every row's sparkline in one request,
+`POST /projects/{slug}/anomalies/signals/series`, whose body lists up to 500
+`{scan_config_id, scope_type, scope_ref, bucket}` scopes. The *collapsed* view behind
 the sidebar and top-bar badge instead keeps the single project-total row and
 counts the incident once. Either way the underlying per-scope rows stay in the
 store for drilldown.
@@ -442,7 +451,14 @@ threshold when the page knows it; a drop to zero or a bucket with no baseline
 says so instead of quoting a σ). The signal banner offers **Annotate** (the
 Volume tab, with the annotation form prefilled on the flagged bucket),
 **Discuss** (the event's discussion thread) and **View alerts**, and the page
-header carries a **View alerts** link to the Alerting page too. An annotation
+header carries a **View alerts** link to the Alerting page too. On a
+project-total or event-type page, which has no discussion, the signal summary
+carries its own **Annotate**, and so does a metric's page. The **Volume**
+chart's caption says how fresh the series is — *Hourly · newest bucket 12m ago ·
+collected 8m ago · next Sep 26, 3:00 PM*, or *next collection due now* — from
+`last_collected_at` and `next_collection_at`, which the event, event-type and
+project-total metrics responses now carry. A metric's page leaves the caption
+out: its Definition already names the cadence and the next update. An annotation
 placed after the newest collected bucket is drawn on that newest bucket until
 the next collection catches up; the toast confirming the annotation says so.
 
@@ -468,6 +484,46 @@ fractional metric series that floor would be a category error, so it is
 `|actual − expected| / expected`. `null` means the path that produced the signal
 did not compute it — fall back to your own count-shaped estimate rather than
 treating the signal as having no magnitude.
+
+### Triaging a signal that is not an incident {#triaging-a-signal}
+
+A signal that an alert rule routed to an incident is triaged in the
+[Alerting Inbox](./alerting.md), and its Anomalies row keeps an **Open incident**
+action. Every other signal can be triaged from the **⋯** menu at the end of its
+row on the Anomalies page:
+
+- **Acknowledge** — you have seen it. The signal stays listed and counted, marked
+  *Acknowledged*. **Undo acknowledge** removes the mark.
+- **Mute this scope** — for **24 hours**, **7 days** or **until unmuted**. Every
+  signal on that scope (the same event, event type, project total or catalog
+  metric, on the same scan) is hidden while the mute lasts, including ones that
+  open later. A lapsed mute stops hiding anything on its own. Muting again
+  replaces the previous length; **Unmute scope** ends it.
+- **Mark as expected…** — the move has a known cause, such as a deploy or a
+  campaign. Add an optional note, and tripl writes a slate *Expected* annotation
+  on the chart at that bucket with the note as its text, then hides that one
+  signal. **Undo expected** removes both the mark and the annotation.
+
+Muted and expected signals are **hidden**: they leave the open list and every
+count built from it — the sidebar badge, the Overview **Open signals** headline
+and the notifications bell. On the Anomalies page, **Show hidden (n)** puts them
+back in the list, marked *Muted* or *Expected*, so a verdict can be reviewed or
+undone. Triage changes nothing about detection itself: the thresholds stay where
+they were, and an acknowledged, muted or expected signal is scored exactly as
+before. A verdict given before a rule routed the signal to an incident is
+ignored from then on; the inbox decides.
+
+Triage needs the editor role. Each action is recorded in the project's audit log
+(`signal.acknowledge`, `signal.mute`, `signal.mark_expected` and their undos).
+Through the API, the verdicts are `POST` / `DELETE` on
+`/projects/{slug}/anomalies/signals/acknowledge`, `…/mute` and `…/expected`,
+keyed like the signal (`scan_config_id` — `null` for a catalog metric —
+`scope_type`, `scope_ref` and `bucket`); a mute takes `duration` (`24h`, `7d` or
+`until_unmuted`) and an expected mark an optional `note`. A signal routed to an
+incident answers `409`. Expanded signals carry the result as
+`acknowledged_at`, `muted`, `muted_until` (`null` also when muted until
+unmuted), `expected`, `expected_note` and `hidden`; the collapsed list drops
+hidden signals outright.
 
 ### Alert rules are an additional gate
 

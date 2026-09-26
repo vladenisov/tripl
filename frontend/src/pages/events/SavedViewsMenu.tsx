@@ -29,7 +29,7 @@ export function SavedViewsMenu({
           <Bookmark />
           <span className="max-sm:sr-only">Views</span>
           {activeViewName && (
-            <span className="max-w-24 truncate text-micro text-muted-foreground max-sm:hidden">
+            <span className="max-w-24 truncate text-micro text-fg-tertiary max-sm:hidden">
               {activeViewName}
             </span>
           )}
@@ -37,8 +37,7 @@ export function SavedViewsMenu({
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 p-2">
         <div
-          className="px-1 pb-2 micro-label"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="px-1 pb-2 micro-label text-fg-tertiary"
         >
           Saved views
         </div>
@@ -91,12 +90,12 @@ export function SavedViewsMenu({
                       {isActive && <Check className="h-3 w-3" />}
                     </span>
                     <span className="min-w-0 flex-1 truncate">{view.name}</span>
-                    <span className="shrink-0 text-micro text-muted-foreground">{view.tab}</span>
+                    <span className="shrink-0 text-micro text-fg-tertiary">{view.tab}</span>
                   </button>
                   <IconButton
                     type="button"
                     variant="ghost"
-                    className="h-7 w-7 text-muted-foreground"
+                    className="h-7 w-7 text-fg-tertiary"
                     onClick={() => onDelete(view.name)}
                     label={`Delete saved view ${view.name}`}
                   >

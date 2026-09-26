@@ -38,6 +38,7 @@ from tripl.models.project_anomaly_settings import (
 )
 from tripl.models.release_regression import ReleaseComparability, ReleaseRegression
 from tripl.models.scan_config import ScanConfig
+from tripl.models.scan_job import ScanJob, ScanJobStatus
 from tripl.schemas.data_source import DataSourceStatsResponse, DataSourceThroughputPoint
 from tripl.schemas.event_metric import (
     AppVersionAdoptionResponse,
@@ -882,6 +883,61 @@ async def _get_scan_latest_bucket(
     return buckets.get(scan_config_id)
 
 
+async def _get_collection_timing(
+    session: AsyncSession,
+    scan_config_id: uuid.UUID,
+    *,
+    interval: str | None,
+    scan_latest_bucket: datetime | None,
+) -> tuple[datetime | None, datetime | None]:
+    """``(last_collected_at, next_collection_at)`` for a drilldown's scan config (L4).
+
+    Answered by the scheduler's own pure functions rather than a port of its
+    rule, so the header can never say "next run 14:00" for a config the
+    dispatcher considers due now. ``scan_latest_bucket`` is the liveness probe
+    the drilldown already read: it is bounded to ``scan_liveness_cutoff``, at
+    least three intervals back, and a newest bucket older than that leaves the
+    config due whatever its exact value — so no second ``event_metrics`` read.
+    The job read is the one ``_last_collected_window_to`` makes, capped the same
+    way. Imported lazily, like ``metric_definition_service``'s scheduler read,
+    to keep the request path out of the Celery import graph until it is used.
+    """
+    from tripl.worker.tasks.metrics.schedule import (
+        scan_config_collection_progress,
+        scan_config_collection_schedule,
+    )
+    from tripl.worker.tasks.metrics.tasks import _RECENT_JOB_SCAN_LIMIT
+
+    rows = await session.execute(
+        select(ScanJob.result_summary, ScanJob.completed_at)
+        .where(
+            ScanJob.scan_config_id == scan_config_id,
+            ScanJob.status == ScanJobStatus.completed.value,
+        )
+        .order_by(ScanJob.created_at.desc())
+        .limit(_RECENT_JOB_SCAN_LIMIT)
+    )
+    last_collected_at, watermark = scan_config_collection_progress(rows.tuples().all())
+    delta = scan_interval_to_timedelta(interval)
+    if delta is None:
+        return last_collected_at, None
+    # The dispatcher collects only a config with an interval AND a time column,
+    # as ``scan_config_service._metrics_schedule`` says on the scan page — so a
+    # config without one has no next collection here either.
+    time_column = await session.scalar(
+        select(ScanConfig.time_column).where(ScanConfig.id == scan_config_id)
+    )
+    if not time_column:
+        return last_collected_at, None
+    next_collection_at, _due = scan_config_collection_schedule(
+        last_bucket=scan_latest_bucket,
+        watermark=watermark,
+        delta=delta,
+        now=datetime.now(UTC),
+    )
+    return last_collected_at, next_collection_at
+
+
 async def _build_metrics_response(
     *,
     scope: str,
@@ -897,6 +953,7 @@ async def _build_metrics_response(
     recent_window: timedelta | None = None,
     scan_latest_bucket: datetime | None = None,
     with_forecast: bool = True,
+    collection_timing: tuple[datetime | None, datetime | None] = (None, None),
 ) -> EventMetricsResponse:
     """Shape one drilldown response. Async ONLY because of the forecast fit,
     which ``_forecast_off_event_loop`` hands to a worker thread; callers that
@@ -944,6 +1001,8 @@ async def _build_metrics_response(
         interval=interval,
         latest_signal=latest_signal,
         sigma_threshold=sigma_threshold,
+        last_collected_at=collection_timing[0],
+        next_collection_at=collection_timing[1],
         data=data,
         forecast=forecast,
     )
@@ -1003,6 +1062,9 @@ async def get_event_metrics(
         time_from=effective_time_from,
         time_to=time_to,
     )
+    collection_timing = await _get_collection_timing(
+        session, scan_config_id, interval=interval, scan_latest_bucket=scan_latest_bucket
+    )
     return await _build_metrics_response(
         scope=SCOPE_EVENT,
         scan_config_id=scan_config_id,
@@ -1014,6 +1076,7 @@ async def get_event_metrics(
         sigma_threshold=sigma_threshold,
         recent_window=recent_window,
         scan_latest_bucket=scan_latest_bucket,
+        collection_timing=collection_timing,
     )
 
 
@@ -1921,6 +1984,8 @@ async def get_events_metrics(
         if tag:
             tagged_event_ids = select(EventTag.event_id).where(EventTag.name == tag).correlate(None)
             conditions.append(Event.id.in_(tagged_event_ids))
+    # The rolling-week totals below read their own window, not the chart's.
+    scope_conditions = list(conditions)
     if time_from:
         conditions.append(EventMetric.bucket >= time_from)
     if time_to:
@@ -1941,6 +2006,12 @@ async def get_events_metrics(
     rows = [(bucket, int(count)) for bucket, count in result.all()]
 
     interval = await _get_scan_config_interval(session, scan_config_id) if rows else None
+    week_total, prior_week_total = await _events_week_totals(
+        session,
+        scope_conditions=scope_conditions,
+        scan_config_id=scan_config_id,
+        week_end=time_to or datetime.now(UTC),
+    )
 
     return EventMetricsResponse(
         scope="events_total",
@@ -1948,8 +2019,53 @@ async def get_events_metrics(
         scan_config_name=config.name,
         interval=interval,
         sigma_threshold=sigma_threshold,
+        week_total=week_total,
+        prior_week_total=prior_week_total,
         data=[EventMetricPoint(bucket=bucket, count=count) for bucket, count in rows],
     )
+
+
+_WEEK = timedelta(days=7)
+
+
+async def _events_week_totals(
+    session: AsyncSession,
+    *,
+    scope_conditions: list[ColumnElement[bool]],
+    scan_config_id: uuid.UUID,
+    week_end: datetime,
+) -> tuple[int, int]:
+    """``(last 7 days, the 7 before)`` of the Events tab's series, one query (EV-21).
+
+    The collapsed Dynamics strip reads "612K in 7d · +4% vs prior week" whatever
+    range the chart is set to, so these sum their own fixed windows ending at the
+    chart's upper bound rather than the chart's points — a 7d chart has no prior
+    week to compare against. Same rows, joins and scan as the series; the newest
+    bucket may still be filling, which only ever understates the current week.
+    """
+    week_start = week_end - _WEEK
+    row = (
+        await session.execute(
+            select(
+                func.coalesce(
+                    func.sum(case((EventMetric.bucket >= week_start, EventMetric.count), else_=0)),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(case((EventMetric.bucket < week_start, EventMetric.count), else_=0)),
+                    0,
+                ),
+            )
+            .join(Event, EventMetric.event_id == Event.id)
+            .where(
+                *scope_conditions,
+                EventMetric.scan_config_id == scan_config_id,
+                EventMetric.bucket >= week_start - _WEEK,
+                EventMetric.bucket < week_end,
+            )
+        )
+    ).one()
+    return int(row[0]), int(row[1])
 
 
 async def get_overview_kpi_series(
@@ -2378,6 +2494,9 @@ async def get_event_type_metrics(
         time_from=effective_time_from,
         time_to=time_to,
     )
+    collection_timing = await _get_collection_timing(
+        session, scan_config_id, interval=interval, scan_latest_bucket=scan_latest_bucket
+    )
     return await _build_metrics_response(
         scope=SCOPE_EVENT_TYPE,
         scan_config_id=scan_config_id,
@@ -2389,6 +2508,7 @@ async def get_event_type_metrics(
         sigma_threshold=sigma_threshold,
         recent_window=recent_window,
         scan_latest_bucket=scan_latest_bucket,
+        collection_timing=collection_timing,
     )
 
 
@@ -2436,6 +2556,12 @@ async def get_project_total_metrics(
         time_from=effective_time_from,
         time_to=time_to,
     )
+    collection_timing = await _get_collection_timing(
+        session,
+        resolved_scan_config_id,
+        interval=config.interval,
+        scan_latest_bucket=scan_latest_bucket,
+    )
     return await _build_metrics_response(
         scope=SCOPE_PROJECT_TOTAL,
         scan_config_id=resolved_scan_config_id,
@@ -2454,4 +2580,5 @@ async def get_project_total_metrics(
         ),
         recent_window=recent_window,
         scan_latest_bucket=scan_latest_bucket,
+        collection_timing=collection_timing,
     )

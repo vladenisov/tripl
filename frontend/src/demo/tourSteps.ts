@@ -169,7 +169,7 @@ function tourStepSpecs(base: string): [TourStepSpec, ...TourStepSpec[]] {
       // The section, not the standalone page: that page rendered these same
       // rules under a second noun and was merged in (tripl-89ps). `/monitors`
       // would still resolve, but only through a redirect.
-      to: `${base}/settings/alerting?section=monitors`,
+      to: `${base}/alerting?section=monitors`,
     },
     {
       id: 'anomalies',
@@ -195,13 +195,13 @@ function tourStepSpecs(base: string): [TourStepSpec, ...TourStepSpec[]] {
       id: 'branches',
       navId: 'branches',
       blurb: 'Propose and review changes to the tracking plan on a branch.',
-      to: `${base}/settings/branches`,
+      to: `${base}/branches`,
     },
     {
       id: 'alerting',
       navId: 'alerting',
       blurb: 'Route anomalies to destinations and preview a simulated firing.',
-      to: `${base}/settings/alerting`,
+      to: `${base}/alerting`,
     },
     {
       id: 'search',

@@ -4,11 +4,7 @@ import { toast } from 'sonner'
 import { onboardingStepHref, parseOnboardingReturn } from '@/components/onboarding-steps'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { dataSourcesApi } from '@/api/dataSources'
-import {
-  dataSourceDeleteMessage,
-  dataSourceDeleteRequireText,
-  dataSourceUsageLabel,
-} from './dataSourceDelete'
+import { dataSourceDeleteMessage, dataSourceDeleteRequireText } from './dataSourceDelete'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
 import {
@@ -32,8 +28,10 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect } from '@/components/settings/kit'
 import { ConnectionSettingsFields } from '@/components/data-sources/connection-settings-fields'
 import { ConnectionCoreFields } from '@/components/data-sources/connection-core-fields'
+import { UsedByScans } from '@/components/data-sources/used-by-scans'
 import {
   EMPTY_CONNECTION_CORE_FORM,
   buildCoreCreatePayload,
@@ -51,7 +49,6 @@ import { examplePlaceholder } from '@/components/forms/placeholders'
 import { REQUIRED_MESSAGE, focusFirstInvalid, invalidAria } from '@/components/forms/validation'
 import {
   EMPTY_CONNECTION_SETTINGS_FORM,
-  SELECT_CLASS,
   buildConnectionSettings,
   connectionSettingsErrors,
   connectionSettingsToForm,
@@ -593,7 +590,8 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
           />
         </MiniStatStrip>
         {canManageDataSources && (
-          <Button onClick={() => setShowForm(true)} size="sm">
+          // Marked for the `c` shortcut, which otherwise looks for "New …".
+          <Button onClick={() => setShowForm(true)} size="sm" data-create-action="">
             <Plus className="h-3.5 w-3.5" />
             Add connection
           </Button>
@@ -637,18 +635,13 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="ds-type">Type</Label>
-                  <select
+                  <NativeSelect
                     id="ds-type"
+                    width="fill"
                     value={dbType}
-                    onChange={(e) => handleDbTypeChange(e.target.value as DbType)}
-                    className={SELECT_CLASS}
-                  >
-                    {DB_TYPE_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(value) => handleDbTypeChange(value as DbType)}
+                    options={DB_TYPE_OPTIONS}
+                  />
                 </div>
               </div>
               <ConnectionCoreFields
@@ -732,7 +725,7 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
                 <>
                   {editingDs.is_synthetic ? (
                     <div className="grid gap-2">
-                      <p className="text-body text-muted-foreground">
+                      <p className="text-body text-fg-tertiary">
                         Demo sources have no warehouse connection to configure.
                       </p>
                       <Label htmlFor="edit-ds-timeout">Timeout (seconds)</Label>
@@ -892,8 +885,6 @@ function DataSourceCard({
     ? `${ds.host}/${ds.database_name}`
     : `${ds.host}:${ds.port}/${ds.database_name}`
   const secretLabel = isBigQuery ? 'Service account key set' : 'Password set'
-  // What reads this source, so the delete's reach shows before its confirm (DA-40).
-  const usageLabel = dataSourceUsageLabel(ds)
 
   return (
     // A card in the page, on the page's surface (DS-10): --bg-elevated is for
@@ -915,8 +906,7 @@ function DataSourceCard({
               "synthetic:0/synthetic". */}
           {!connectionRedacted && !ds.is_synthetic && (
             <div
-              className="mono mt-0.5 truncate text-caption"
-              style={{ color: 'var(--fg-subtle)' }}
+              className="mono mt-0.5 truncate text-caption text-fg-tertiary"
               title={connectionLabel}
             >
               {connectionLabel}
@@ -924,15 +914,14 @@ function DataSourceCard({
           )}
         </div>
         {ds.password_set && (
-          <span title={secretLabel} style={{ color: 'var(--fg-subtle)' }}>
+          <span title={secretLabel} className="text-fg-tertiary">
             <Lock className="h-3.5 w-3.5" />
           </span>
         )}
       </div>
 
       <div
-        className="flex flex-wrap items-center gap-1.5 border-t px-3.5 py-2.5"
-        style={{ borderColor: 'var(--border-subtle)' }}
+        className="flex flex-wrap items-center gap-1.5 border-t px-3.5 py-2.5 border-border-subtle"
       >
         {!hasTestRow && (
           <Chip tone={statusTone} size="xs">
@@ -942,16 +931,14 @@ function DataSourceCard({
         {ds.is_synthetic ? <SyntheticSourceBadge /> : <Chip size="xs">{ds.db_type}</Chip>}
         {ds.username && <Chip size="xs">{ds.username}</Chip>}
         {ds.timeout_seconds != null && <Chip size="xs">timeout {ds.timeout_seconds}s</Chip>}
-        {usageLabel && (
-          <span className="text-caption" style={{ color: 'var(--fg-muted)' }}>
-            {usageLabel}
-          </span>
-        )}
+        {/* What reads this source, each scan a link to its page, so the
+            delete's reach shows before its confirm (DA-40). */}
+        <UsedByScans ds={ds} />
         <div className="flex-1" />
         {/* A relative time is not code: sans + tabular digits (DS-17). */}
         {/* Labelled: two bare relative times on one card (this and the last
             test's) could not be told apart (DA-41). */}
-        <span className="tnum text-micro" style={{ color: 'var(--fg-faint)' }}>
+        <span className="tnum text-micro text-fg-tertiary">
           Edited {formatRelativeTime(ds.updated_at)}
         </span>
       </div>
@@ -988,8 +975,7 @@ function DataSourceCard({
             </span>
             {lastTestAt && (
               <span
-                className="tnum ml-auto shrink-0 text-micro"
-                style={{ color: 'var(--fg-faint)' }}
+                className="tnum ml-auto shrink-0 text-micro text-fg-tertiary"
               >
                 {stale ? 're-test to confirm' : `Tested ${formatRelativeTime(lastTestAt)}`}
               </span>
@@ -1013,8 +999,7 @@ function DataSourceCard({
       {deleteError && (
         <p
           role="alert"
-          className="border-t px-3.5 py-2 text-caption"
-          style={{ borderColor: 'var(--border-subtle)', color: 'var(--danger)', background: 'var(--danger-soft)' }}
+          className="border-t px-3.5 py-2 text-caption border-border-subtle text-danger bg-danger-soft"
         >
           Could not delete {ds.name}: {deleteError}
         </p>
@@ -1022,8 +1007,7 @@ function DataSourceCard({
 
       {canManage && (
         <div
-          className="flex items-center gap-1 border-t px-2.5 py-2"
-          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sunken)' }}
+          className="flex items-center gap-1 border-t px-2.5 py-2 border-border-subtle bg-bg-sunken"
         >
           <Button variant="ghost" size="sm" onClick={onTest} disabled={testing}>
             <Plug className="h-3 w-3" />
@@ -1036,7 +1020,7 @@ function DataSourceCard({
           <div className="flex-1" />
           <IconButton
             variant="ghost"
-            className="text-muted-foreground hover:text-destructive"
+            className="text-fg-tertiary hover:text-destructive"
             onClick={onDelete}
             label={`Delete data source ${ds.name}`}
           >

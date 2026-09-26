@@ -21,6 +21,10 @@ class ShadowEventCandidateResponse(BaseModel):
     last_seen_at: datetime
     status: ShadowEventStatus
     accepted_event_id: uuid.UUID | None
+    # Up to five column -> value dicts from the rows the latest collection saw
+    # for this identity, so a reviewer sees what the event looks like before
+    # accepting it (DA-32). Empty until a collection observes the candidate.
+    sample_properties: list[dict[str, str]] = Field(default_factory=list)
 
 
 class ShadowEventListResponse(BaseModel):

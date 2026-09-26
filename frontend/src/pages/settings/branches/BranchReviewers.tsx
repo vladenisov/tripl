@@ -1,15 +1,23 @@
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, X } from 'lucide-react'
 
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
 import { Button } from '@/components/ui/button'
+import { NativeSelect } from '@/components/settings/kit'
 import { displayUser } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { getErrorMessage } from '@/lib/utils'
 import type { PlanBranchApproval, PlanBranchDetail, PlanBranchSummary } from '@/types'
 import { planBranchDetailKey, usersKey } from '@/lib/queryKeys'
+
+/**
+ * Why the reviewer picker is open: `add` is the "+ Reviewer" button; `submit`
+ * is "Submit for review" clicked with nobody assigned, where the picker asks
+ * who should review before the branch is sent (JR-14).
+ */
+export type ReviewerPickerIntent = 'add' | 'submit' | null
 
 interface BranchReviewSummaryProps {
   slug: string
@@ -18,6 +26,11 @@ interface BranchReviewSummaryProps {
   usersById: Map<string, string>
   /** Assigning reviewers writes to the branch; a viewer only reads them. */
   canWrite: boolean
+  /** The picker's state, owned by the detail page so its Submit can open it. */
+  picker: ReviewerPickerIntent
+  onPickerChange: (next: ReviewerPickerIntent) => void
+  /** Sends the branch for review: after "Add and submit", or without a reviewer. */
+  onSubmitForReview: () => void
 }
 
 /**
@@ -34,13 +47,23 @@ export function BranchReviewSummary({
   detail,
   usersById,
   canWrite,
+  picker,
+  onPickerChange,
+  onSubmitForReview,
 }: BranchReviewSummaryProps) {
   const qc = useQueryClient()
   const pickerId = useId()
   const [picked, setPicked] = useState('')
   // The picker opens on request: the roster is long, and most visits to a
-  // branch are to read it, not to staff it.
-  const [picking, setPicking] = useState(false)
+  // branch are to read it, not to staff it. The detail page owns whether it is
+  // open, so "Submit for review" on an unstaffed branch can open it too.
+  const picking = picker !== null
+  const selectRef = useRef<HTMLSelectElement>(null)
+  // Opened from Submit, the picker sits above the button that was clicked, so
+  // focus follows it there rather than staying on a button that did not send.
+  useEffect(() => {
+    if (picker === 'submit') selectRef.current?.focus()
+  }, [picker])
   const open = branch.status !== 'merged' && branch.status !== 'closed'
   const reviewers = detail?.reviewers ?? []
   const approvals = (detail?.approvals ?? []).filter(
@@ -63,7 +86,8 @@ export function BranchReviewSummary({
     mutationFn: (userId: string) => planBranchesApi.addReviewer(slug, branch.id, userId),
     onSuccess: () => {
       setPicked('')
-      setPicking(false)
+      onPickerChange(null)
+      // Awaited, so a submit that follows toasts the reviewer just added.
       return refresh()
     },
   })
@@ -82,16 +106,15 @@ export function BranchReviewSummary({
 
   return (
     <div
-      className="flex flex-col gap-2 border-t px-4 py-3 text-caption"
-      style={{ borderColor: 'var(--border-subtle)' }}
+      className="flex flex-col gap-2 border-t px-4 py-3 text-caption border-border-subtle"
     >
       {description ? (
-        <p className="whitespace-pre-line" style={{ color: 'var(--fg)' }}>
+        <p className="whitespace-pre-line text-fg">
           {description}
         </p>
       ) : null}
       {approvals.length > 0 ? (
-        <p style={{ color: 'var(--fg-subtle)' }}>
+        <p className="text-fg-tertiary">
           Approved by{' '}
           {approvals.map((approval, index) => (
             <span key={approval.user_id}>
@@ -101,7 +124,7 @@ export function BranchReviewSummary({
               </span>
               {approval.stale ? (
                 <span
-                  style={{ color: 'var(--warning)' }}
+                  className="text-warning"
                   title="The branch changed after this approval, so it no longer counts."
                 >
                   {' '}
@@ -114,9 +137,9 @@ export function BranchReviewSummary({
       ) : null}
       {reviewers.length > 0 || showPicker ? (
         <div className="flex flex-wrap items-center gap-1.5">
-          <span style={{ color: 'var(--fg-subtle)' }}>Reviewers</span>
+          <span className="text-fg-tertiary">Reviewers</span>
           {reviewers.length === 0 ? (
-            <span style={{ color: 'var(--fg-faint)' }}>none assigned</span>
+            <span className="text-fg-tertiary">none assigned</span>
           ) : (
             <ul className="contents">
               {reviewers.map((reviewer) => {
@@ -124,8 +147,7 @@ export function BranchReviewSummary({
                 return (
                   <li
                     key={reviewer.id}
-                    className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5"
-                    style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg)' }}
+                    className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 border-border-subtle text-fg"
                   >
                     {name}
                     {canWrite && open ? (
@@ -152,7 +174,7 @@ export function BranchReviewSummary({
               size="xs"
               variant="outline"
               aria-label="Add reviewer"
-              onClick={() => setPicking(true)}
+              onClick={() => onPickerChange('add')}
             >
               <Plus aria-hidden="true" />
               Reviewer
@@ -160,33 +182,61 @@ export function BranchReviewSummary({
           ) : null}
           {showPicker && picking ? (
             <form
-              className="flex items-center gap-1.5"
+              className="flex flex-wrap items-center gap-1.5"
               onSubmit={(event) => {
                 event.preventDefault()
-                if (picked) addMut.mutate(picked)
+                if (!picked) return
+                const thenSubmit = picker === 'submit'
+                addMut.mutate(picked, {
+                  onSuccess: () => {
+                    if (thenSubmit) onSubmitForReview()
+                  },
+                })
               }}
             >
-              <label htmlFor={pickerId} className="sr-only">
-                Reviewer to add
-              </label>
-              <select
+              {picker === 'submit' ? (
+                <label htmlFor={pickerId} className="font-medium text-fg">
+                  Who should review this?
+                </label>
+              ) : (
+                <label htmlFor={pickerId} className="sr-only">
+                  Reviewer to add
+                </label>
+              )}
+              <NativeSelect
+                ref={selectRef}
                 id={pickerId}
+                size="sm"
                 value={picked}
-                onChange={(event) => setPicked(event.target.value)}
-                className="h-7 rounded-md border bg-transparent px-2 text-caption"
-                style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+                onChange={setPicked}
+                options={[
+                  { value: '', label: 'Choose a person…' },
+                  ...candidates.map((user) => ({ value: user.id, label: user.name ?? user.email })),
+                ]}
+              />
+              <Button
+                type="submit"
+                size="sm"
+                variant={picker === 'submit' ? 'default' : 'outline'}
+                disabled={!picked || pending}
               >
-                <option value="">Choose a person…</option>
-                {candidates.map((user) => (
-                  <option key={user.id} value={user.id}>
-                    {user.name ?? user.email}
-                  </option>
-                ))}
-              </select>
-              <Button type="submit" size="sm" variant="outline" disabled={!picked || pending}>
-                Add
+                {picker === 'submit' ? 'Add and submit' : 'Add'}
               </Button>
-              <Button type="button" size="sm" variant="ghost" onClick={() => setPicking(false)}>
+              {picker === 'submit' ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={pending}
+                  onClick={() => {
+                    onPickerChange(null)
+                    onSubmitForReview()
+                  }}
+                >
+                  Submit without a reviewer
+                </Button>
+              ) : null}
+              <Button type="button" size="sm" variant="ghost" onClick={() => onPickerChange(null)}>
                 Cancel
               </Button>
             </form>
@@ -194,7 +244,7 @@ export function BranchReviewSummary({
         </div>
       ) : null}
       {error ? (
-        <p role="alert" style={{ color: 'var(--danger)' }}>
+        <p role="alert" className="text-danger">
           {getErrorMessage(error)}
         </p>
       ) : null}

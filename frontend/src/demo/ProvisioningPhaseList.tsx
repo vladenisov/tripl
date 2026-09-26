@@ -74,12 +74,12 @@ export function ProvisioningPhaseList({
         })}
       </ol>
       {!complete && (
-        <p className="text-caption" style={{ color: 'var(--fg-faint)' }}>
+        <p className="text-caption text-fg-tertiary">
           Estimated steps — the server reports only the final result, not the stage it is on.
         </p>
       )}
       {slow && (
-        <p className="text-caption" style={{ color: 'var(--fg-muted)' }}>
+        <p className="text-caption text-fg-secondary">
           {slowMessage}
         </p>
       )}
@@ -92,8 +92,7 @@ function PhaseIcon({ state }: { state: PhaseState }) {
     return (
       <span
         aria-hidden="true"
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
-        style={{ background: 'var(--success-soft)', color: 'var(--success)' }}
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-success-soft text-success"
       >
         <Check className="h-3 w-3" />
       </span>
@@ -103,10 +102,9 @@ function PhaseIcon({ state }: { state: PhaseState }) {
     return (
       <span
         aria-hidden="true"
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
-        style={{ background: 'var(--surface-hover)' }}
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface-hover"
       >
-        <span className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--fg-faint)' }} />
+        <span className="h-1.5 w-1.5 rounded-full bg-fg-tertiary" />
       </span>
     )
   }
@@ -114,16 +112,14 @@ function PhaseIcon({ state }: { state: PhaseState }) {
     return (
       <Loader2
         aria-hidden="true"
-        className="h-5 w-5 shrink-0 animate-spin"
-        style={{ color: 'var(--accent)' }}
+        className="h-5 w-5 shrink-0 animate-spin text-accent"
       />
     )
   }
   return (
     <span
       aria-hidden="true"
-      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border"
-      style={{ borderColor: 'var(--border)' }}
+      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border"
     />
   )
 }

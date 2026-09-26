@@ -6,6 +6,7 @@
  */
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
+import { Check } from 'lucide-react'
 import type { FieldDefinition, MetaFieldDefinition, Variable } from '@/types'
 import { ChipListInput } from '@/components/chip-list-input'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
@@ -48,13 +49,13 @@ export function ScanMaintenanceNotice({
   if (stored.isAuthored) {
     if (current.trim() === '') {
       return (
-        <p className="mt-1 text-body-sm text-muted-foreground">
+        <p className="mt-1 text-body-sm text-fg-tertiary">
           Cleared. Save, and the next scan fills this in again.
         </p>
       )
     }
     return (
-      <p className="mt-1 text-body-sm text-muted-foreground">
+      <p className="mt-1 text-body-sm text-fg-tertiary">
         Edited by hand, so scans leave it alone.{' '}
         {onHandBack && (
           <button
@@ -80,46 +81,63 @@ export function ScanMaintenanceNotice({
  * question came up every time a scanned value looked wrong. The tab needed the
  * column in the breakdown set and a reader who knew the tab existed; this is
  * both, from where the question is asked.
+ *
+ * It does not toggle the column itself (AU-23): a second switch far from the
+ * Metric breakdowns row changed the set without the reader seeing why. It says
+ * whether the field is split, and takes the reader to the row's toggle.
  */
 export function FieldBreakdownLink({
   column,
   href,
   state,
-  onSelect,
+  onShowBreakdowns,
 }: {
   column: string
   href: { to: string; onClick: () => void }
   /** `collecting` = added in this session and not yet saved, so there is nothing to open. */
   state: 'collected' | 'collecting' | 'off'
-  onSelect: () => void
+  /** Brings the column's toggle in the Metric breakdowns row into view. */
+  onShowBreakdowns: () => void
 }) {
+  if (state === 'collected') {
+    return (
+      <p className="mt-1 text-body-sm">
+        <Link
+          to={href.to}
+          onClick={href.onClick}
+          className="text-fg-tertiary underline underline-offset-2 hover:text-foreground"
+        >
+          See every value this field takes
+        </Link>
+      </p>
+    )
+  }
   if (state === 'collecting') {
     return (
-      <p className="mt-1 text-body-sm text-muted-foreground">
-        Added to metric breakdowns. Save, and collection starts splitting by{' '}
-        <span className="mono">{column}</span>.
+      <p className="mt-1 flex flex-wrap items-center gap-x-1 text-body-sm text-fg-tertiary">
+        <button
+          type="button"
+          onClick={onShowBreakdowns}
+          className="inline-flex items-center gap-1 text-success underline underline-offset-2 hover:text-foreground"
+        >
+          <Check className="size-3.5" aria-hidden="true" />
+          Split by this field
+        </button>
+        <span>
+          · Save, and collection starts splitting by <span className="mono">{column}</span>.
+        </span>
       </p>
     )
   }
   return (
     <p className="mt-1 text-body-sm">
-      {state === 'collected' ? (
-        <Link
-          to={href.to}
-          onClick={href.onClick}
-          className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
-        >
-          See every value this field takes
-        </Link>
-      ) : (
-        <button
-          type="button"
-          onClick={onSelect}
-          className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
-        >
-          Split volume by this field
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={onShowBreakdowns}
+        className="text-fg-tertiary underline underline-offset-2 hover:text-foreground"
+      >
+        Split volume by this field
+      </button>
     </p>
   )
 }
@@ -352,7 +370,7 @@ export function MetaFieldControl({
           ariaLabel={`Add ${metaField.display_name}`}
         />
         {metaFieldLinkExample(template) && (
-          <p className="mt-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="mt-1 text-caption text-fg-tertiary">
             Enter the key, e.g. <span className="mono">{META_FIELD_LINK_EXAMPLE_KEY}</span> — each
             one opens on its own.
           </p>
@@ -406,7 +424,7 @@ export function MetaFieldControl({
           say about it here; the meta-field settings are where it gets fixed
           (AU-9). */}
       {example && (
-        <p className="mt-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="mt-1 text-caption text-fg-tertiary">
           Enter the key, e.g. <span className="mono">{META_FIELD_LINK_EXAMPLE_KEY}</span>
           {' — opens '}
           <span className="mono break-all">{example}</span>

@@ -32,11 +32,10 @@ export function PlanFieldChangeList({
       {changes.map((change) => (
         <div
           key={change.field}
-          className="rounded-md border px-2.5 py-2"
-          style={{ borderColor: 'var(--border-subtle)' }}
+          className="rounded-md border px-2.5 py-2 border-border-subtle"
         >
           <div className="mb-1 flex items-center justify-between gap-2">
-            <span className="mono text-caption font-medium" style={{ color: 'var(--fg)' }}>
+            <span className="mono text-caption font-medium text-fg">
               {change.field}
             </span>
             {renderAction?.(change)}
@@ -80,7 +79,7 @@ function PlanValueChangeRow({ item }: { item: PlanValueChange }) {
         {meta.sym}
       </span>
       <span className="sr-only">{MEMBER_KIND_WORD[item.kind]}:</span>
-      <span className="mono shrink-0" style={{ color: 'var(--fg)' }}>
+      <span className="mono shrink-0 text-fg">
         {item.key}
       </span>
       {item.kind === 'changed' ? (

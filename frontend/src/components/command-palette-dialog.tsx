@@ -44,6 +44,8 @@ import { searchApi } from '@/api/search'
 import { ActiveProjectContext } from '@/components/active-project-context'
 import { useAuth } from '@/components/auth-context'
 import { useCommandPalette } from '@/components/command-palette-context'
+import { PALETTE_ITEM_CLASS } from '@/components/palette-item'
+import { SearchVariantCount, SearchVariantRows } from '@/components/search-variants'
 import { PROJECT_GROUPS, WORKSPACE_GROUPS } from '@/components/settings/nav'
 import { useTheme } from '@/components/theme-provider'
 import { eventNameLabel } from '@/lib/eventName'
@@ -154,6 +156,7 @@ const paletteValue = {
   project: (projectId: string) => `project:${projectId}` as PaletteValue,
   eventType: (eventTypeId: string) => `event-type:${eventTypeId}` as PaletteValue,
   search: (documentId: string) => `search:${documentId}` as PaletteValue,
+  variants: (groupKey: string) => `variants:${groupKey}` as PaletteValue,
   account: (action: string) => `account:${action}` as PaletteValue,
   action: (action: string) => `action:${action}` as PaletteValue,
   branch: (branchId: string) => `branch:${branchId}` as PaletteValue,
@@ -403,7 +406,12 @@ export default function CommandPalette({
     // Every debounce boundary supersedes the previous key; the signal cancels
     // the superseded request instead of letting it queue on the backend.
     queryFn: ({ signal }) =>
-      searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12, semantic: false }, null, signal),
+      searchApi.search(
+        searchSlug!,
+        { q: debouncedQuery, limit: 12, semantic: false, group_variants: true },
+        null,
+        signal,
+      ),
     enabled: searchEnabled,
     staleTime: 30_000,
   })
@@ -411,7 +419,12 @@ export default function CommandPalette({
     meta: SILENT_ERROR_META,
     queryKey: commandPaletteSearchKey(searchSlug, debouncedQuery),
     queryFn: ({ signal }) =>
-      searchApi.search(searchSlug!, { q: debouncedQuery, limit: 12 }, null, signal),
+      searchApi.search(
+        searchSlug!,
+        { q: debouncedQuery, limit: 12, group_variants: true },
+        null,
+        signal,
+      ),
     enabled: searchEnabled,
     staleTime: 30_000,
     // The key carries the DEBOUNCED text, so every 200ms boundary mints a new
@@ -702,7 +715,7 @@ export default function CommandPalette({
           // nav:<branches path>, and cmdk selects by value, so a shared one
           // would highlight both rows at once.
           {
-            ...navRow(`/p/${activeProject.slug}/settings/branches`, 'Switch branch…', GitBranch, [
+            ...navRow(`/p/${activeProject.slug}/branches`, 'Switch branch…', GitBranch, [
               'branch',
               'checkout',
             ]),
@@ -719,7 +732,7 @@ export default function CommandPalette({
       ? [
           navRow(`/p/${activeProject.slug}/events/all/new`, 'New event', Plus, ['create', 'add']),
           navRow(`/p/${activeProject.slug}/metrics/new`, 'New metric', Plus, ['create', 'add']),
-          navRow(`/p/${activeProject.slug}/settings/branches?new=1`, 'New branch', GitBranch, [
+          navRow(`/p/${activeProject.slug}/branches?new=1`, 'New branch', GitBranch, [
             'create',
             'add',
           ]),
@@ -834,20 +847,18 @@ export default function CommandPalette({
           className="flex max-h-[480px] w-full min-w-0 flex-col"
         >
           <div
-            className="flex items-center gap-2 border-b px-3.5 py-3"
-            style={{ borderColor: 'var(--border-subtle)' }}
+            className="flex items-center gap-2 border-b px-3.5 py-3 border-border-subtle"
           >
             {aiQuestion ? (
               <>
-                <Sparkles className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
-                <span className="flex-1 truncate text-body" style={{ color: 'var(--fg)' }}>{aiQuestion}</span>
+                <Sparkles className="h-3.5 w-3.5 shrink-0 text-fg-tertiary" />
+                <span className="flex-1 truncate text-body text-fg">{aiQuestion}</span>
                 <button
                   ref={aiBackRef}
                   type="button"
                   onClick={handleBackFromAi}
                   aria-keyshortcuts="Escape"
-                  className="shrink-0 rounded-sm px-1.5 py-0.5 text-caption hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-                  style={{ color: 'var(--fg-subtle)' }}
+                  className="shrink-0 rounded-sm px-1.5 py-0.5 text-caption hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] text-fg-tertiary"
                 >
                   ← Back to search
                 </button>
@@ -855,7 +866,7 @@ export default function CommandPalette({
               </>
             ) : (
               <>
-                <Search className="h-3.5 w-3.5" style={{ color: 'var(--fg-subtle)' }} />
+                <Search className="h-3.5 w-3.5 text-fg-tertiary" />
                 <Command.Input
                   // eslint-disable-next-line jsx-a11y/no-autofocus -- command palette search: focus on explicit ⌘K invocation is expected UX
                   autoFocus
@@ -872,24 +883,24 @@ export default function CommandPalette({
           {aiQuestion ? (
             <div className="flex-1 overflow-y-auto py-2 px-3.5" aria-live="polite">
               {askMutation.isPending && (
-                <div className="flex items-center gap-2 py-2 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="flex items-center gap-2 py-2 text-body-sm text-fg-tertiary">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Asking AI…
                 </div>
               )}
               {askMutation.isError && (
-                <p className="py-2 text-body-sm" style={{ color: 'var(--destructive)' }}>
+                <p className="py-2 text-body-sm text-destructive">
                   Error: {askMutation.error instanceof Error ? askMutation.error.message : 'Something went wrong'}
                 </p>
               )}
               {aiResult && (
                 <div className="space-y-3">
-                  <p className="whitespace-pre-wrap text-body-sm leading-relaxed" style={{ color: 'var(--fg)' }}>
+                  <p className="whitespace-pre-wrap text-body-sm leading-relaxed text-fg">
                     {aiResult.answer}
                   </p>
                   {aiResult.sources.length > 0 && (
                     <div className="space-y-1">
-                      <p className="micro-label" style={{ color: 'var(--fg-faint)' }}>
+                      <p className="micro-label text-fg-tertiary">
                         Sources
                       </p>
                       {aiResult.sources.map((source, index) => (
@@ -897,14 +908,13 @@ export default function CommandPalette({
                           key={index}
                           type="button"
                           onClick={() => goToResult(source.route_path)}
-                          className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-body-sm hover:bg-[var(--surface-hover)]"
-                          style={{ color: 'var(--fg)' }}
+                          className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-body-sm hover:bg-[var(--surface-hover)] text-fg"
                         >
-                          <span className="shrink-0 text-micro tabular-nums" style={{ color: 'var(--fg-faint)' }}>
+                          <span className="shrink-0 text-micro tabular-nums text-fg-tertiary">
                             [{index + 1}]
                           </span>
                           <span className="flex-1 truncate">{source.title}</span>
-                          <span className="shrink-0 text-micro" style={{ color: 'var(--fg-faint)' }}>
+                          <span className="shrink-0 text-micro text-fg-tertiary">
                             {source.entity_type}
                           </span>
                         </button>
@@ -925,12 +935,12 @@ export default function CommandPalette({
                 stacked underneath the knowledge section's own empty line.
                 `showNoMatches` answers the question once, above. */}
             {showNoMatches && (
-              <div className="px-3.5 py-8 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+              <div className="px-3.5 py-8 text-center text-body-sm text-fg-tertiary">
                 No matches.
               </div>
             )}
             {showOpenProjectHint && (
-              <div className="px-3.5 py-2 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+              <div className="px-3.5 py-2 text-caption text-fg-tertiary">
                 Open a project to search its catalog and ask AI.
               </div>
             )}
@@ -953,8 +963,7 @@ export default function CommandPalette({
                   // palette reported an outage as a fact about the user's data.
                   <Group heading="Search results">
                     <div
-                      className="px-3.5 py-2 text-caption"
-                      style={{ color: 'var(--destructive)' }}
+                      className="px-3.5 py-2 text-caption text-destructive"
                     >
                       Search failed. Results may be missing — try again.
                     </div>
@@ -966,8 +975,7 @@ export default function CommandPalette({
                   // The query sits in the line, in its own case.
                   <Group heading="Search results">
                     <div
-                      className="px-3.5 py-2 text-caption"
-                      style={{ color: 'var(--fg-subtle)' }}
+                      className="px-3.5 py-2 text-caption text-fg-tertiary"
                     >
                       {menuGroups.length === 0 ? (
                         <>
@@ -987,8 +995,7 @@ export default function CommandPalette({
                   // of the round trip.
                   <Group heading="Searching…">
                     <div
-                      className="px-3.5 py-2 text-caption"
-                      style={{ color: 'var(--fg-subtle)' }}
+                      className="px-3.5 py-2 text-caption text-fg-tertiary"
                     >
                       Searching.
                     </div>
@@ -1029,7 +1036,8 @@ export default function CommandPalette({
                             // a scan-config name — non-empty by schema, so
                             // "(unnamed event)" on one of those would be a lie.
                             const label = isEvent ? eventNameLabel(result.title) : result.title
-                            return (
+                            const group = result.variant_group
+                            const row = (
                               <Item
                                 key={result.id}
                                 value={paletteValue.search(result.id)}
@@ -1037,9 +1045,33 @@ export default function CommandPalette({
                                 icon={meta.icon}
                                 iconColor={eventType?.color}
                                 label={label}
+                                variants={group?.variants.length}
                                 hint={result.subtitle || undefined}
                                 description={result.description || result.snippet || undefined}
                                 semantic={result.semantic_used}
+                              />
+                            )
+                            if (!group) return row
+                            // Folded server-side (#238 JR-20). Keyed by the
+                            // group, so an expanded group stays open when the
+                            // full answer replaces the keyword-only one.
+                            return (
+                              <SearchVariantRows
+                                key={group.key}
+                                group={group}
+                                representative={row}
+                                toggleValue={paletteValue.variants(group.key)}
+                                renderVariant={variant => (
+                                  <Item
+                                    key={variant.id}
+                                    value={paletteValue.search(variant.id)}
+                                    onSelect={() => goToResult(variant.route_path)}
+                                    icon={meta.icon}
+                                    iconColor={eventType?.color}
+                                    label={eventNameLabel(variant.title)}
+                                    hint={variant.value || undefined}
+                                  />
+                                )}
                               />
                             )
                           })}
@@ -1048,8 +1080,7 @@ export default function CommandPalette({
                     })}
                     {knowledgeState === 'searching' && (
                       <div
-                        className="flex items-center gap-2 px-3.5 py-2 text-caption"
-                        style={{ color: 'var(--fg-subtle)' }}
+                        className="flex items-center gap-2 px-3.5 py-2 text-caption text-fg-tertiary"
                       >
                         <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
                         Updating results…
@@ -1126,9 +1157,12 @@ function Item({
   description,
   semantic,
   active,
+  variants,
 }: PaletteRow & {
   description?: string
   semantic?: boolean
+  /** Folded variants behind this search row (#238 JR-20). */
+  variants?: number
 }) {
   // No "80%" badge (#238 JR-20): the exact event and eight scan variants all
   // read 80%, so the list looked like duplicates, and the figure meant nothing
@@ -1137,17 +1171,19 @@ function Item({
     <Command.Item
       value={value}
       onSelect={onSelect}
-      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-body-sm aria-selected:bg-[var(--surface-hover)]"
-      style={{ color: 'var(--fg)' }}
+      className={PALETTE_ITEM_CLASS}
     >
       <Icon
         className="h-3.5 w-3.5 shrink-0 self-start mt-0.5"
         style={{ color: iconColor ?? 'var(--fg-subtle)' }}
       />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate">{label}</span>
+        <span className="truncate">
+          {label}
+          {variants ? <SearchVariantCount count={variants} /> : null}
+        </span>
         {description && (
-          <span className="truncate text-micro" style={{ color: 'var(--fg-faint)' }}>
+          <span className="truncate text-micro text-fg-tertiary">
             {description}
           </span>
         )}
@@ -1168,14 +1204,13 @@ function Item({
         </Chip>
       )}
       {active && (
-        <span className="shrink-0 micro-label" style={{ color: 'var(--fg-faint)' }}>
+        <span className="shrink-0 micro-label text-fg-tertiary">
           current
         </span>
       )}
       {hint && (
         <span
-          className="mono hidden max-w-[40%] shrink-0 truncate text-micro sm:block"
-          style={{ color: 'var(--fg-faint)' }}
+          className="mono hidden max-w-[40%] shrink-0 truncate text-micro sm:block text-fg-tertiary"
         >
           {hint}
         </span>

@@ -170,8 +170,7 @@ export function OnboardingChecklist({
   if (isMostlyDone && !expanded && nextStep) {
     return (
       <div
-        className="flex items-center gap-3 rounded-lg border px-4 py-2.5"
-        style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
+        className="flex items-center gap-3 rounded-lg border px-4 py-2.5 bg-bg-sunken border-border-subtle"
       >
         <Chip tone="info" size="sm">{`${completed} of ${total}`}</Chip>
         <span className="min-w-0 flex-1 truncate text-body-sm font-medium">
@@ -182,8 +181,7 @@ export function OnboardingChecklist({
           onClick={() => setExpanded(true)}
           aria-expanded={expanded}
           aria-controls={stepsId}
-          className="flex shrink-0 items-center gap-1 rounded-sm px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
-          style={{ color: 'var(--accent)' }}
+          className="flex shrink-0 items-center gap-1 rounded-sm px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)] text-accent"
         >
           Show steps
           <ChevronDown className="h-3 w-3" />
@@ -192,8 +190,7 @@ export function OnboardingChecklist({
           type="button"
           onClick={handleDismiss}
           aria-label="Dismiss getting-started checklist"
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)]"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)] text-fg-tertiary"
         >
           <X className="h-3.5 w-3.5" />
         </button>
@@ -232,8 +229,7 @@ export function OnboardingChecklist({
               onClick={() => setExpanded(false)}
               aria-expanded={expanded}
               aria-controls={stepsId}
-              className="flex items-center gap-1 rounded-sm px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
-              style={{ color: 'var(--accent)' }}
+              className="flex items-center gap-1 rounded-sm px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)] text-accent"
             >
               Hide steps
               <ChevronUp className="h-3 w-3" aria-hidden="true" />
@@ -243,15 +239,14 @@ export function OnboardingChecklist({
             type="button"
             onClick={handleDismiss}
             aria-label="Dismiss getting-started checklist"
-            className="flex h-6 w-6 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-subtle)' }}
+            className="flex h-6 w-6 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)] text-fg-tertiary"
           >
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
       }
     >
-      <ol id={stepsId} aria-label="Setup steps" className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+      <ol id={stepsId} aria-label="Setup steps" className="divide-y border-border-subtle">
         {steps.map((step, index) => (
           <StepRow
             key={step.id}
@@ -286,8 +281,7 @@ function StepRow({ step, number, state }: { step: OnboardingStep; number: number
       <Link
         to={step.href}
         aria-current={state === 'active' ? 'step' : undefined}
-        className="flex items-center gap-3 px-4 py-2.5 no-underline transition-colors hover:bg-[var(--surface-hover)]"
-        style={{ color: 'inherit' }}
+        className="flex items-center gap-3 px-4 py-2.5 no-underline transition-colors hover:bg-[var(--surface-hover)] text-inherit"
       >
         <StepIndicator state={state} number={number} />
         <div className="min-w-0 flex-1">
@@ -300,9 +294,8 @@ function StepRow({ step, number, state }: { step: OnboardingStep; number: number
             {step.title}
           </div>
           <div
-            className="line-clamp-2 text-caption sm:truncate"
+            className="line-clamp-2 text-caption sm:truncate text-fg-tertiary"
             title={hint}
-            style={{ color: 'var(--fg-faint)' }}
           >
             {hint}
           </div>
@@ -320,7 +313,7 @@ function StepRow({ step, number, state }: { step: OnboardingStep; number: number
             Owner only
           </Chip>
         ) : (
-          <ArrowRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-faint)' }} />
+          <ArrowRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-fg-tertiary" />
         )}
       </Link>
       {/* A second way through the step, outside the row link so the two
@@ -341,8 +334,7 @@ function StepIndicator({ state, number }: { state: StepState; number: number }) 
     return (
       <span
         aria-hidden="true"
-        className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full"
-        style={{ background: 'var(--success-soft)', color: 'var(--success)' }}
+        className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-success-soft text-success"
       >
         <Check className="h-3.5 w-3.5" />
       </span>

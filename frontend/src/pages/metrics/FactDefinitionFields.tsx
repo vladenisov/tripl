@@ -266,8 +266,7 @@ export function FactDefinitionFields({
     return (
       <SCard title="Fact table">
         <div
-          className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-[15px] text-body-sm"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-[15px] text-body-sm text-fg-tertiary"
         >
           <span>No fact tables yet. A fact metric aggregates one, so create it first.</span>
           <Button asChild size="sm" variant="outline">

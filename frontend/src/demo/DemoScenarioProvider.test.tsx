@@ -279,7 +279,7 @@ describe('DemoScenarioProvider — completing on the chart', () => {
 describe('DemoScenarioProvider — notify- and visit-driven chapters', () => {
   it('completes a deep-link step by arriving on its surface', () => {
     writeScenarioState(SLUG, chapterState('variables', 'variables/open-variables'))
-    renderProvider(demoProject(), `/p/${SLUG}/settings/variables`)
+    renderProvider(demoProject(), `/p/${SLUG}/variables`)
 
     expect(step()).toBe('variables/inspect-values')
     expect(readScenarioState(SLUG).chapters.variables?.step).toBe('variables/inspect-values')
@@ -291,7 +291,7 @@ describe('DemoScenarioProvider — notify- and visit-driven chapters', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const tree = (project: Project) => (
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={[`/p/${OTHER}/settings/variables`]}>
+        <MemoryRouter initialEntries={[`/p/${OTHER}/variables`]}>
           <DemoScenarioProvider project={project} pollIntervalMs={POLL_MS}>
             <Probe />
           </DemoScenarioProvider>

@@ -105,9 +105,9 @@ export function EventSpecCard({
 
   return (
     <section className={CARD} style={CARD_STYLE} aria-label="Spec" data-testid="event-spec-card">
-      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3 border-border-subtle">
         <span className="text-body-sm font-semibold">Spec</span>
-        <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        <span className="text-caption text-fg-tertiary">
           what to send, and where it must land
         </span>
         <div className="flex-1" />
@@ -134,21 +134,21 @@ export function EventSpecCard({
             <Copy className="h-3.5 w-3.5" />
           </Button>
           {eventType && (
-            <span className="text-caption" style={{ color: 'var(--fg-muted)' }}>{eventType.display_name}</span>
+            <span className="text-caption text-fg-secondary">{eventType.display_name}</span>
           )}
         </div>
         {event.title && <p className="text-body">{event.title}</p>}
         {rule && (
-          <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="text-caption text-fg-tertiary">
             Named by scan rule <span className="mono">{rule}</span>. The scan matches this event on the
             identity above, so the row must carry exactly these values.
           </p>
         )}
         {event.description && (
-          <p className="whitespace-pre-wrap text-body-sm" style={{ color: 'var(--fg-muted)' }}>{event.description}</p>
+          <p className="whitespace-pre-wrap text-body-sm text-fg-secondary">{event.description}</p>
         )}
         {(event.tags.length > 0 || event.meta_values.length > 0) && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption" style={{ color: 'var(--fg-muted)' }}>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-fg-secondary">
             {event.tags.map(tag => (
               <span key={tag.id} className="mono">#{tag.name}</span>
             ))}
@@ -160,7 +160,7 @@ export function EventSpecCard({
                 <span key={mv.id}>
                   {def.display_name}:{' '}
                   {href ? (
-                    <a href={href} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: 'var(--accent)' }}>
+                    <a href={href} target="_blank" rel="noopener noreferrer" className="underline text-accent">
                       {mv.value}
                     </a>
                   ) : (
@@ -202,7 +202,7 @@ export function EventSpecCard({
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="mono text-body-sm">{row.field.name}</span>
                       {(row.field.is_required || row.namesTheEvent) && (
-                        <span className="text-micro" style={{ color: 'var(--danger)' }}>required</span>
+                        <span className="text-micro text-danger">required</span>
                       )}
                       {/* A kind tag, so the outline pill (DS-6). */}
                       {row.namesTheEvent && (
@@ -212,7 +212,7 @@ export function EventSpecCard({
                       )}
                     </div>
                     {row.field.description && (
-                      <div className="mt-[2px] text-caption" style={{ color: 'var(--fg-subtle)' }}>{row.field.description}</div>
+                      <div className="mt-[2px] text-caption text-fg-tertiary">{row.field.description}</div>
                     )}
                   </TableCell>
                   <TableCell className={`${TD} mono hidden text-caption md:table-cell`}>
@@ -226,23 +226,23 @@ export function EventSpecCard({
                   </TableCell>
                   <TableCell className={`${TD} text-caption`}>
                     {row.contexts.length === 0 ? (
-                      <span style={{ color: 'var(--fg-subtle)' }}>—</span>
+                      <span className="text-fg-tertiary">—</span>
                     ) : (
                       <ul className="space-y-1">
                         {row.contexts.map(context => {
-                          const link = branchLink(`/p/${slug}/settings/variables/${context.variable_id}`, branchId)
+                          const link = branchLink(`/p/${slug}/variables/${context.variable_id}`, branchId)
                           return (
                             <li key={context.id}>
                               <Link to={link.to} onClick={link.onClick} className="mono underline underline-offset-2">
                                 ${'{'}{context.variable_name}{'}'}
                               </Link>
                               {context.values.length > 0 ? (
-                                <span className="mono" style={{ color: 'var(--fg-muted)' }}>
+                                <span className="mono text-fg-secondary">
                                   {' '}= {context.values.slice(0, 10).join(', ')}
                                   {context.values.length > 10 ? ` … +${context.values.length - 10}` : ''}
                                 </span>
                               ) : (
-                                <span style={{ color: 'var(--fg-subtle)' }}> — no documented values yet</span>
+                                <span className="text-fg-tertiary"> — no documented values yet</span>
                               )}
                             </li>
                           )
@@ -257,7 +257,7 @@ export function EventSpecCard({
         </div>
       )}
       {unsetRows.length > 0 && (
-        <div className="border-t px-4 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="border-t px-4 py-2 border-border-subtle">
           <Button
             variant="ghost"
             size="sm"
@@ -272,11 +272,11 @@ export function EventSpecCard({
         </div>
       )}
 
-      <div className="border-t px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-        <div className="mb-1 micro-label" style={{ color: 'var(--fg-subtle)' }}>
+      <div className="border-t px-4 py-3 border-border-subtle">
+        <div className="mb-1 micro-label text-fg-tertiary">
           Example payload
         </div>
-        <pre className="mono overflow-x-auto rounded-md p-3 text-caption" style={{ background: 'var(--bg-sunken)' }} data-testid="spec-payload">
+        <pre className="mono overflow-x-auto rounded-md p-3 text-caption bg-bg-sunken" data-testid="spec-payload">
           {payloadJson}
         </pre>
       </div>

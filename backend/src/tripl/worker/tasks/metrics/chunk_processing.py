@@ -21,12 +21,13 @@ from sqlalchemy.orm import Session
 from tripl.core.adapters.base import BaseAdapter
 from tripl.core.analyzers._event_generator_variables import VariableIndex
 from tripl.core.analyzers.event_generator import GenerationResult
+from tripl.core.analyzers.event_plan import raw_values_from_row
 from tripl.core.bucketing import stored_bucket
 from tripl.models.distribution_drift import DistributionDrift
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
 from tripl.models.scan_config import ScanConfig
-from tripl.models.shadow_event_candidate import SHADOW_STATUS_NEW
+from tripl.models.shadow_event_candidate import SHADOW_SAMPLE_LIMIT, SHADOW_STATUS_NEW
 from tripl.worker.tasks._errors import ScanError
 from tripl.worker.tasks.metrics.collect import _bump_event_last_seen
 from tripl.worker.tasks.metrics.generation import (
@@ -113,6 +114,62 @@ def _delete_chunk_window(
     )
 
 
+# One sample value is display text, not a payload: a JSON blob or a long URL is
+# cut so five samples of a wide row stay a few KB.
+_SHADOW_SAMPLE_VALUE_MAX = 200
+# ...and a sample is a glimpse of the row, not the row: a replay-widened JSON
+# path map reaches hundreds of entries, which at 200 characters each would put
+# hundreds of KB per candidate into a table every reader lists. The first
+# columns in row order are kept, up to a count and a character budget.
+_SHADOW_SAMPLE_KEYS_MAX = 40
+_SHADOW_SAMPLE_CHARS_MAX = 4000
+
+
+def _shadow_sample(
+    data_row: Sequence[object],
+    *,
+    reg_index: Mapping[str, int],
+    json_index: Mapping[str, int],
+    n_reg: int,
+    json_value_names: Sequence[str],
+    event_type_column: str | None,
+    time_column: str | None,
+) -> dict[str, str]:
+    """The row's properties as the shadow inbox shows them (DA-32).
+
+    Read through ``raw_values_from_row`` — the same column -> value view group
+    rules match on — minus empty values and JSON nulls, which say nothing about
+    what the event looks like. Capped at ``_SHADOW_SAMPLE_KEYS_MAX`` keys and
+    ``_SHADOW_SAMPLE_CHARS_MAX`` characters of names and values.
+    """
+    values = raw_values_from_row(
+        data_row,
+        reg_index=reg_index,
+        json_index=json_index,
+        n_reg=n_reg,
+        json_value_names=json_value_names,
+        event_type_column=event_type_column,
+        time_column=time_column,
+    )
+    sample: dict[str, str] = {}
+    chars = 0
+    for name, value in values.items():
+        if value in ("", "null"):
+            continue
+        shown = value[:_SHADOW_SAMPLE_VALUE_MAX]
+        chars += len(name) + len(shown)
+        if len(sample) >= _SHADOW_SAMPLE_KEYS_MAX or chars > _SHADOW_SAMPLE_CHARS_MAX:
+            break
+        sample[name] = shown
+    return sample
+
+
+def _add_shadow_sample(samples: list[dict[str, str]], sample: dict[str, str]) -> None:
+    """Keep up to ``SHADOW_SAMPLE_LIMIT`` distinct samples, first seen first."""
+    if sample and len(samples) < SHADOW_SAMPLE_LIMIT and sample not in samples:
+        samples.append(sample)
+
+
 def _build_shadow_candidate_rows(
     shadow_agg: Mapping[tuple[uuid.UUID | None, str], Sequence[object]],
     *,
@@ -120,6 +177,10 @@ def _build_shadow_candidate_rows(
     scan_config_id: uuid.UUID,
 ) -> list[dict[str, object]]:
     """Fold the per-(event type, identity) totals onto the grain of the table.
+
+    ``shadow_agg`` entries are ``[count, first_bucket, last_bucket]`` with an
+    optional fourth item, the row samples (DA-32); folded identities pool their
+    samples up to ``SHADOW_SAMPLE_LIMIT``.
 
     ``shadow_agg`` is keyed per event type because the collector has to know
     which type contributed what, but ``shadow_event_candidates`` is unique on
@@ -144,10 +205,14 @@ def _build_shadow_candidate_rows(
     """
     # event_name -> (count, first_seen, last_seen, event_type_id, dominance rank)
     folded: dict[str, tuple[int, datetime, datetime, uuid.UUID | None, tuple[int, str]]] = {}
+    samples_by_name: dict[str, list[dict[str, str]]] = {}
     for (event_type_id, event_name), entry in shadow_agg.items():
         count = cast(int, entry[0])
         first_seen = cast(datetime, entry[1])
         last_seen = cast(datetime, entry[2])
+        pooled = samples_by_name.setdefault(event_name, [])
+        for sample in cast(list[dict[str, str]], entry[3] if len(entry) > 3 else []):
+            _add_shadow_sample(pooled, sample)
         # A single-event-type config takes config.event_type_id, which is
         # nullable, so the unbound scope has to rank as something.
         rank = (count, "" if event_type_id is None else str(event_type_id))
@@ -178,6 +243,7 @@ def _build_shadow_candidate_rows(
             "first_seen_at": first_seen,
             "last_seen_at": last_seen,
             "status": SHADOW_STATUS_NEW,
+            "sample_properties": samples_by_name.get(event_name, []),
         }
         for event_name, (
             count,
@@ -280,7 +346,7 @@ def process_chunk(
     type_agg: dict[tuple[uuid.UUID, uuid.UUID, datetime], int] = {}
     # Reconciliation: bucket -> [total_count, matched_count]
     coverage_agg: dict[datetime, list[int]] = {}
-    # (event_type_id | None, event_name) -> [count, first_bucket, last_bucket]
+    # (event_type_id | None, event_name) -> [count, first_bucket, last_bucket, samples]
     shadow_agg: dict[tuple[uuid.UUID | None, str], list[object]] = {}
 
     for row in rows:
@@ -370,11 +436,27 @@ def process_chunk(
                 shadow_key = (event_type_id, event_name)
                 shadow_entry = shadow_agg.get(shadow_key)
                 if shadow_entry is None:
-                    shadow_agg[shadow_key] = [cnt, bucket, bucket]
+                    shadow_entry = [cnt, bucket, bucket, []]
+                    shadow_agg[shadow_key] = shadow_entry
                 else:
                     shadow_entry[0] = cast(int, shadow_entry[0]) + cnt
                     shadow_entry[1] = min(cast(datetime, shadow_entry[1]), bucket)
                     shadow_entry[2] = max(cast(datetime, shadow_entry[2]), bucket)
+                # Samples stop costing anything once the identity holds its five.
+                shadow_samples = cast(list[dict[str, str]], shadow_entry[3])
+                if len(shadow_samples) < SHADOW_SAMPLE_LIMIT:
+                    _add_shadow_sample(
+                        shadow_samples,
+                        _shadow_sample(
+                            data_row,
+                            reg_index=reg_index,
+                            json_index=json_index,
+                            n_reg=n_reg,
+                            json_value_names=json_value_names,
+                            event_type_column=config.event_type_column,
+                            time_column=config.time_column,
+                        ),
+                    )
 
         if event_type_id:
             key = (config.id, event_type_id, bucket)

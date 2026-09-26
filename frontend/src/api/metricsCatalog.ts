@@ -1,5 +1,7 @@
 import { api } from './client'
 import type {
+  EventCompositionMetricDefinition,
+  FactMetricDefinition,
   FactOperandPreviewRequest,
   FactOperandPreviewResponse,
   MetricBreakdownsResponse,
@@ -28,6 +30,8 @@ export interface MetricListParams {
   /** true: reviewed metrics only; false: not yet reviewed. */
   reviewed?: boolean
   owner_id?: string
+  /** Only metrics that read this fact table, as either ratio operand. */
+  fact_table_id?: string
   offset?: number
   limit?: number
 }
@@ -59,6 +63,7 @@ export const metricsCatalogApi = {
     if (params?.search) sp.set('search', params.search)
     if (params?.reviewed !== undefined) sp.set('reviewed', String(params.reviewed))
     if (params?.owner_id) sp.set('owner_id', params.owner_id)
+    if (params?.fact_table_id) sp.set('fact_table_id', params.fact_table_id)
     if (params?.offset !== undefined) sp.set('offset', String(params.offset))
     if (params?.limit !== undefined) sp.set('limit', String(params.limit))
     const qs = sp.toString()
@@ -107,6 +112,13 @@ export const metricsCatalogApi = {
    */
   previewFactOperand: (slug: string, data: FactOperandPreviewRequest) =>
     api.post<FactOperandPreviewResponse>(`/projects/${slug}/metrics/fact-preview`, data),
+
+  /**
+   * Dry-run a draft fact or event-composition metric's series (MT-9); nothing
+   * is saved. SQL metrics keep `preview`, which takes the query instead.
+   */
+  previewSeries: (slug: string, data: FactMetricDefinition | EventCompositionMetricDefinition) =>
+    api.post<MetricPreviewResponse>(`/projects/${slug}/metrics/series-preview`, data),
 
   bulkUpdate: (slug: string, data: MetricDefinitionBulkUpdate) =>
     api.post<void>(`/projects/${slug}/metrics/bulk-update`, data),

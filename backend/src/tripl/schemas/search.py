@@ -38,6 +38,51 @@ class SearchEventVariableValue(BaseModel):
     values: list[str] = []
 
 
+class SearchVariant(BaseModel):
+    """One folded member of a :class:`SearchVariantGroup` (JR-20).
+
+    Deliberately slim — enough to render and open the event, not a second full
+    :class:`SearchResult`: a group of 40 scan variants would otherwise carry 40
+    copies of snippets, highlights and variable bindings nobody reads until the
+    group is expanded, and then only the name.
+    """
+
+    id: uuid.UUID
+    entity_id: uuid.UUID
+    event_id: uuid.UUID | None = None
+    title: str
+    # The value this member substituted for the group's placeholder.
+    value: str
+    route_path: str
+    score: float
+    confidence: float = 0.0
+
+
+class SearchVariantGroup(BaseModel):
+    """Event hits folded under their best-ranked member (JR-20).
+
+    Events of ONE event type whose names differ only in the value substituted
+    for ONE naming-rule placeholder — the scan's ``event_name_format``, or the
+    default ``column=value | column=value`` name a scan without one writes.
+    ``search_service.group_event_variants`` owns the rule.
+    """
+
+    # Stable for the same group across two searches: the event type plus the
+    # name with the varying placeholder left in, e.g.
+    # ``<type id>:event_name=Home Screen View | screen={screen}``.
+    key: str
+    # The name with the varying value replaced by ``{placeholder}``.
+    pattern: str
+    placeholder: str
+    # Every member INCLUDING the representative the group is attached to, so
+    # ``count - 1 == len(variants)``. Members are folded from the retrieval
+    # window only: when the response is ``truncated`` the count is a lower
+    # bound, since more variants may rank past the window.
+    count: int = Field(ge=2)
+    # The other members, best-ranked first.
+    variants: list[SearchVariant]
+
+
 class SearchResult(BaseModel):
     id: uuid.UUID
     entity_type: SearchEntityType
@@ -92,6 +137,9 @@ class SearchResult(BaseModel):
     # identity match be painted as certain. Confidence and provenance disagreeing
     # on one row is the intended shape, not a bug.
     semantic_used: bool = False
+    # Set on the representative of a folded variant group, and only when the
+    # caller asked for grouping (``group_variants=true``); None everywhere else.
+    variant_group: SearchVariantGroup | None = None
 
     # Cosine similarity of the semantic leg for this result in [0, 1], or None
     # when that leg did not contribute to it.
@@ -150,6 +198,9 @@ class SearchResponse(BaseModel):
     # leg's cosine floor, and that second half is a kNN tail that fills its
     # window for any query — a ``count(*)`` over the union would report roughly
     # every embedded document as a "match". To see more hits, raise ``limit``.
+    #
+    # With ``group_variants=true`` it counts ROWS — a folded group is one — and
+    # ``limit`` pages rows too, so folded members never eat into the page (JR-20).
     total: int
     # True when ranked hits exist that this response does not carry.
     #

@@ -14,7 +14,7 @@ import { MetricBreakdownPicker } from './MetricBreakdownPicker'
 import { ScanCausalNote } from './ScanCausalNote'
 import { ScanPreviewPanel } from './ScanPreviewPanel'
 import { LazySqlEditor } from '@/components/sql-editor-lazy'
-import { Field, SCard } from '@/components/settings/kit'
+import { Field, NativeSelect, SCard } from '@/components/settings/kit'
 import { FieldError } from '@/components/forms/FieldError'
 import { sqlPlaceholder } from '@/components/forms/placeholders'
 import { invalidAria } from '@/components/forms/validation'
@@ -22,7 +22,7 @@ import type { ScanFormMode } from './scanMode'
 import { rowCapHint, useRowLimitDefaults } from './rowCapHints'
 import type { NamingFixTarget } from './scanDryRunWarnings'
 import { LIMITS_SECTION_ID } from './scanErrorNextStep'
-import { CHUNK_LABELS, SELECT_CLASS, eligibleChunkIntervals } from './scanUtils'
+import { CHUNK_LABELS, eligibleChunkIntervals } from './scanUtils'
 import {
   MONITORING_INCOMPLETE_TITLE,
   type UseScanFormResult,
@@ -133,8 +133,7 @@ function CollapsibleSection({
     <section
       ref={sectionRef}
       id={sectionId}
-      className="mb-5 overflow-hidden rounded-card border"
-      style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+      className="mb-5 overflow-hidden rounded-card border border-border bg-surface"
     >
       <button
         ref={toggleRef}
@@ -145,17 +144,17 @@ function CollapsibleSection({
         className="flex w-full items-start gap-3 px-4 py-4 text-left transition-colors hover:bg-[var(--surface-hover)]"
       >
         <div className="min-w-0 flex-1">
-          <h3 className="m-0 text-body-sm font-semibold" style={{ color: 'var(--fg)' }}>
+          <h3 className="m-0 text-body-sm font-semibold text-fg">
             {title}
           </h3>
-          <p className="mt-1 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="mt-1 text-body-sm leading-relaxed text-fg-tertiary">
             {explanation}
           </p>
         </div>
         <Chevron className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--fg-subtle)' }} aria-hidden="true" />
       </button>
       {open && (
-        <div className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="border-t border-border-subtle">
           {/* `disabled` on a fieldset reaches every native control inside it;
               `contents` keeps it out of the layout. */}
           <fieldset disabled={readOnly} className="contents">
@@ -194,7 +193,7 @@ function openNamingControl(target: NamingFixTarget) {
 
 function PreviewGate() {
   return (
-    <p className="text-body-sm" style={{ color: 'var(--fg-faint)' }}>
+    <p className="text-body-sm text-fg-tertiary">
       {PREVIEW_GATE_TEXT}
     </p>
   )
@@ -264,10 +263,9 @@ export function ScanEssentialsSection({
     <SCard title="Source and schedule">
       <fieldset
         data-testid="scan-mode"
-        className="border-b px-4 py-4"
-        style={{ borderColor: 'var(--border-subtle)' }}
+        className="border-b px-4 py-4 border-border-subtle"
       >
-        <legend className="float-left mb-2 w-full text-body font-medium" style={{ color: 'var(--fg)' }}>
+        <legend className="float-left mb-2 w-full text-body font-medium text-fg">
           What this scan does
         </legend>
         <div className="clear-both flex flex-col gap-2">
@@ -292,15 +290,13 @@ export function ScanEssentialsSection({
               <div className="min-w-0">
                 <label
                   htmlFor={`scan-mode-${option.value}`}
-                  className="block text-body font-medium"
-                  style={{ color: 'var(--fg)' }}
+                  className="block text-body font-medium text-fg"
                 >
                   {option.label}
                 </label>
                 <p
                   id={`scan-mode-${option.value}-description`}
-                  className="mt-0.5 text-body-sm leading-snug"
-                  style={{ color: 'var(--fg-subtle)' }}
+                  className="mt-0.5 text-body-sm leading-snug text-fg-tertiary"
                 >
                   {option.description}
                 </p>
@@ -313,7 +309,7 @@ export function ScanEssentialsSection({
       {/* Next sibling of the mode radio: only what its description lacks,
           so Catalog only has none (tripl-3y7z.2, #247 DA-13). */}
       {monitoring && (
-        <div className="border-b px-4 pb-4" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="border-b px-4 pb-4 border-border-subtle">
           <ScanCausalNote variant="form" mode={state.mode} />
         </div>
       )}
@@ -330,17 +326,15 @@ export function ScanEssentialsSection({
         {sourceLocked ? (
           <Input id="scan-data-source" value={sourceName} disabled className="max-w-[280px]" />
         ) : (
-          <select
+          <NativeSelect
             id="scan-data-source"
             value={state.dataSourceId}
-            onChange={e => setDataSourceId(e.target.value)}
-            className={`${SELECT_CLASS} max-w-[280px]`}
-          >
-            <option value="">Select…</option>
-            {dataSources.map(ds => (
-              <option key={ds.id} value={ds.id}>{ds.name}</option>
-            ))}
-          </select>
+            onChange={setDataSourceId}
+            options={[
+              { value: '', label: 'Select…' },
+              ...dataSources.map(ds => ({ value: ds.id, label: ds.name })),
+            ]}
+          />
         )}
       </Field>
       {/* id={false}: SqlEditor is a CodeMirror contenteditable, not a labelable
@@ -392,15 +386,15 @@ export function ScanEssentialsSection({
         htmlFor="scan-event-type"
         hint="Give every row the same event type, or read each event's name from a column."
       >
-        <select
+        <NativeSelect
           id="scan-event-type"
           value={state.eventTypeId}
-          onChange={e => set('eventTypeId', e.target.value)}
-          className={`${SELECT_CLASS} max-w-[280px]`}
-        >
-          <option value="">Name events from a column</option>
-          {eventTypes.map(et => <option key={et.id} value={et.id}>{et.display_name}</option>)}
-        </select>
+          onChange={value => set('eventTypeId', value)}
+          options={[
+            { value: '', label: 'Name events from a column' },
+            ...eventTypes.map(et => ({ value: et.id, label: et.display_name })),
+          ]}
+        />
       </Field>
       {namesEventsFromColumn && (
         <Field
@@ -412,31 +406,28 @@ export function ScanEssentialsSection({
               : "The column each row's event name is in. Every distinct value becomes its own event type."
           }
         >
-          <select
+          {/* The empty option is selectable only when an Event type carries
+              the naming instead — otherwise clearing it would leave the scan
+              unable to name a thing, which is the state this field exists
+              to prevent. */}
+          <NativeSelect
             id="scan-event-type-column"
             value={state.eventTypeColumn}
-            onChange={e => setEventTypeColumn(e.target.value)}
-            className={`${SELECT_CLASS} max-w-[280px]`}
+            onChange={setEventTypeColumn}
             disabled={!preview}
             {...invalidAria(
               'scan-event-type-column',
               preview && !state.eventTypeColumn && !state.eventTypeId,
             )}
-          >
-            {/* Selectable only when an Event type carries the naming instead —
-                otherwise clearing it would leave the scan unable to name a
-                thing, which is the state this field exists to prevent. */}
-            <option value="" disabled={!state.eventTypeId}>
-              {preview
-                ? state.eventTypeId
-                  ? 'None'
-                  : 'Choose a column'
-                : 'Load preview first'}
-            </option>
-            {eventTypeColumnChoices.map(name => (
-              <option key={name} value={name}>{name}</option>
-            ))}
-          </select>
+            options={[
+              {
+                value: '',
+                label: preview ? (state.eventTypeId ? 'None' : 'Choose a column') : 'Load preview first',
+                disabled: !state.eventTypeId,
+              },
+              ...eventTypeColumnChoices,
+            ]}
+          />
           {/* Only once the column list exists: before that the select is
               disabled and the user is being flagged for not doing something the
               form has not let them do yet. The disabled Create button carries
@@ -472,35 +463,34 @@ export function ScanEssentialsSection({
         }
         last={!monitoring && !preview}
       >
-        <select
+        {/* Monitoring cannot proceed on the empty option, so it stays a
+            disabled placeholder there; Catalog only needs it selectable, or a
+            time column could be set and never removed again. */}
+        <NativeSelect
           id="scan-time-column"
           value={state.timeColumn}
-          onChange={e => setTimeColumn(e.target.value)}
-          className={`${SELECT_CLASS} max-w-[280px]`}
+          onChange={setTimeColumn}
           disabled={!preview}
           {...invalidAria('scan-time-column', monitoringPairIsNext && !state.timeColumn)}
-        >
-          {/* Monitoring cannot proceed on the empty option, so it stays a
-              disabled placeholder there; Catalog only needs it selectable, or a
-              time column could be set and never removed again. */}
-          <option value="" disabled={monitoring}>
-            {preview
-              ? monitoring
-                ? 'Choose a time column'
-                : 'No time column — read the whole query'
-              : 'Load preview first'}
-          </option>
-          {timeColumnChoices.map(name => (
-            <option key={name} value={name}>{name}</option>
-          ))}
-        </select>
+          options={[
+            {
+              value: '',
+              label: preview
+                ? monitoring
+                  ? 'Choose a time column'
+                  : 'No time column — read the whole query'
+                : 'Load preview first',
+              disabled: monitoring,
+            },
+            ...timeColumnChoices,
+          ]}
+        />
         {monitoringPairIsNext && !state.timeColumn && (
           <p
             id="scan-time-column-error"
             role="alert"
             data-slot="field-error"
-            className="mt-1.5 text-body-sm leading-[1.45]"
-            style={{ color: 'var(--danger)' }}
+            className="mt-1.5 text-body-sm leading-[1.45] text-danger"
           >
             {/* The select above is `disabled={!preview}` and reads "Load preview
                 first", so "Pick a time column" pointed at a control the reader
@@ -517,18 +507,13 @@ export function ScanEssentialsSection({
       </Field>
       {monitoring && (
         <Field label="Schedule" htmlFor="scan-interval" hint="How often this scan runs." last={!preview}>
-          <select
+          <NativeSelect
             id="scan-interval"
             value={state.interval}
-            onChange={e => setInterval(e.target.value)}
-            className={`${SELECT_CLASS} max-w-[280px]`}
+            onChange={setInterval}
             {...invalidAria('scan-interval', monitoringPairIsNext && !state.interval)}
-          >
-            <option value="" disabled>Choose a schedule</option>
-            {INTERVAL_OPTIONS.map(option => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
+            options={[{ value: '', label: 'Choose a schedule', disabled: true }, ...INTERVAL_OPTIONS]}
+          />
           <FieldError
             inputId="scan-interval"
             announce
@@ -639,7 +624,7 @@ export function EventNamingSection({ form, readOnly }: SectionProps) {
         />
         <FieldError id="cardinality-threshold-error" message={fieldErrors.cardinalityThreshold} />
       </Field>
-      <div className="space-y-4 border-t px-4 py-4" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="space-y-4 border-t px-4 py-4 border-border-subtle">
         <EventGroupRulesEditor
           rules={state.eventGroupRules}
           columns={preview?.columns}
@@ -679,20 +664,18 @@ export function AppVersionSection({ form, readOnly }: SectionProps) {
       explanation="Attach an app release and platform to every event. Leave this alone if you do not ship versioned apps."
       defaultOpen={defaultOpen}
     >
-      <div className="px-4 py-4">
-        <AppVersionFields
-          activeShareMinError={fieldErrors.appVersionActiveShareMin}
-          columns={preview?.columns ?? null}
-          appVersionColumn={state.appVersionColumn}
-          prereleasePattern={state.appVersionPrereleasePattern}
-          activeShareMin={state.appVersionActiveShareMin}
-          platformColumn={state.platformColumn}
-          onAppVersionColumnChange={setAppVersionColumn}
-          onPrereleasePatternChange={value => set('appVersionPrereleasePattern', value)}
-          onActiveShareMinChange={value => set('appVersionActiveShareMin', value)}
-          onPlatformColumnChange={setPlatformColumn}
-        />
-      </div>
+      <AppVersionFields
+        activeShareMinError={fieldErrors.appVersionActiveShareMin}
+        columns={preview?.columns ?? null}
+        appVersionColumn={state.appVersionColumn}
+        prereleasePattern={state.appVersionPrereleasePattern}
+        activeShareMin={state.appVersionActiveShareMin}
+        platformColumn={state.platformColumn}
+        onAppVersionColumnChange={setAppVersionColumn}
+        onPrereleasePatternChange={value => set('appVersionPrereleasePattern', value)}
+        onActiveShareMinChange={value => set('appVersionActiveShareMin', value)}
+        onPlatformColumnChange={setPlatformColumn}
+      />
     </CollapsibleSection>
   )
 }
@@ -795,17 +778,18 @@ export function LimitsSection({ form, readOnly }: SectionProps) {
           htmlFor="scan-chunk-interval"
           hint="Splits long replays into smaller warehouse queries. Must be at least as long as the schedule."
         >
-          <select
+          <NativeSelect
             id="scan-chunk-interval"
             value={state.chunkInterval}
-            onChange={e => set('chunkInterval', e.target.value)}
-            className={`${SELECT_CLASS} max-w-[280px]`}
-          >
-            <option value="">Whole window (no split)</option>
-            {eligibleChunkIntervals(state.interval as IntervalCode).map(code => (
-              <option key={code} value={code}>{CHUNK_LABELS[code]}</option>
-            ))}
-          </select>
+            onChange={value => set('chunkInterval', value)}
+            options={[
+              { value: '', label: 'Whole window (no split)' },
+              ...eligibleChunkIntervals(state.interval as IntervalCode).map(code => ({
+                value: code,
+                label: CHUNK_LABELS[code],
+              })),
+            ]}
+          />
         </Field>
       )}
       {/* A lookback is the predicate `<time column> >= now() - N hours`, so with
@@ -836,7 +820,7 @@ export function LimitsSection({ form, readOnly }: SectionProps) {
         /* id={false}: this branch replaces the input with a sentence, so there is
            nothing here for a `<label htmlFor>` to point at (tripl-6h2b). */
         <Field label="Lookback (hours)" htmlFor={false}>
-          <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="text-body-sm text-fg-tertiary">
             {NO_LOOKBACK_WITHOUT_TIME_COLUMN}
           </p>
         </Field>

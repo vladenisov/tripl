@@ -405,7 +405,7 @@ async def _alert_delivery_items(
                     error_message=row.error_message,
                 ),
                 occurred_at=row.occurred_at,
-                target_path=f"/p/{row.slug}/settings/alerting",
+                target_path=f"/p/{row.slug}/alerting",
             )
         )
     return items

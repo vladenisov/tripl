@@ -102,11 +102,17 @@ function renderCreatePage() {
   )
 }
 
-function renderConfigurationTab(scanConfig: ScanConfig) {
+/**
+ * The edit form is an owner's (DATA-6); anyone else gets the read view
+ * (i9mt.12), so the form's own tests render as an owner.
+ */
+function renderConfigurationTab(scanConfig: ScanConfig, role: 'owner' | 'editor' | 'viewer' = 'owner') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <ScanConfigurationTab slug="demo" scanConfig={scanConfig} onDeleted={() => {}} />
+      <AuthContext.Provider value={authAs(role)}>
+        <ScanConfigurationTab slug="demo" scanConfig={scanConfig} onDeleted={() => {}} />
+      </AuthContext.Provider>
     </QueryClientProvider>,
   )
 }
@@ -682,12 +688,52 @@ describe('ScanFormSections — batch 4', () => {
       expect(toggle).toHaveAttribute('aria-expanded', 'true')
       expect(toggle).toHaveFocus()
       expect(toggle.closest('section')).toHaveAttribute('id', 'scan-limits')
-      // No auth here, so the tab is read-only: the toggle stays usable (a
-      // viewer opens a section to read it), the fields behind it do not.
-      expect(toggle).toBeEnabled()
-      expect(document.getElementById('scan-row-limit')).toBeDisabled()
+      expect(document.getElementById('scan-row-limit')).toBeEnabled()
     } finally {
       window.location.hash = ''
     }
+  })
+
+  it('shows a non-owner the configuration as a definition, not a disabled form (i9mt.12)', async () => {
+    setupFetch()
+    renderConfigurationTab({
+      id: 'sc-1',
+      data_source_id: 'ds-1',
+      name: 'Nightly',
+      base_query: 'SELECT * FROM analytics.events',
+      event_type_id: null,
+      event_type_column: 'event_name',
+      event_name_format: null,
+      time_column: 'event_ts',
+      interval: '1h',
+      replay_chunk_interval: null,
+      scan_lookback_hours: 24,
+      scan_row_limit: 5000,
+      metrics_row_limit: null,
+      json_value_paths: [],
+      event_group_rules: [
+        { name: 'Home', condition_logic: 'all', conditions: [{ field: 'event_name', pattern: '^Home' }] },
+      ],
+      metric_breakdown_columns: ['platform'],
+      metric_breakdown_values_limit: null,
+      distribution_drift_fields: [],
+      app_version_column: null,
+      platform_column: null,
+      cardinality_threshold: 100,
+    } as unknown as ScanConfig, 'editor')
+
+    expect(await screen.findByRole('note')).toHaveTextContent('Only an owner can change, replay or delete a scan.')
+    expect(screen.getByLabelText('Scan query')).toHaveTextContent('SELECT * FROM analytics.events')
+    expect(screen.getByText('Catalog + monitoring')).toBeInTheDocument()
+    expect(screen.getByText('event_ts')).toBeInTheDocument()
+    expect(screen.getByText('Last 24 hours')).toBeInTheDocument()
+    expect(screen.getByText((5000).toLocaleString())).toBeInTheDocument()
+    expect(screen.getByText('Instance default')).toBeInTheDocument()
+    expect(screen.getByText('Home')).toBeInTheDocument()
+    expect(screen.getByText('platform')).toBeInTheDocument()
+    // No form chrome at all: no inputs, radios, Save or Delete.
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Save|Delete/ })).not.toBeInTheDocument()
   })
 })

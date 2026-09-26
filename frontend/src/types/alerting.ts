@@ -163,6 +163,35 @@ export interface AlertDestinationTestResponse {
   http_status?: number | null
 }
 
+/**
+ * `POST /projects/{slug}/alert-destinations/test` (AL-30): the destination
+ * dialog's settings, tested before they are saved. `destination_id` names the
+ * saved destination an edit dialog is open on; a secret left blank then means
+ * the stored one. Mirrors `AlertDestinationDraftTestRequest`.
+ */
+export interface AlertDestinationDraftTestRequest {
+  destination_id: string | null
+  type: AlertDestinationType
+  name?: string | null
+  webhook_url?: string | null
+  bot_token?: string | null
+  chat_id?: string | null
+  target_url?: string | null
+  webhook_header_name?: string | null
+  webhook_header_value?: string | null
+  email_recipients?: string | null
+  email_from_address?: string | null
+  jira_base_url?: string | null
+  jira_auth_email?: string | null
+  jira_api_token?: string | null
+  jira_project_key?: string | null
+  jira_issue_type?: string | null
+  linear_api_key?: string | null
+  linear_team_id?: string | null
+  linear_state_id?: string | null
+  linear_label_ids?: string | null
+}
+
 export interface SimulatedRuleFiring {
   anomaly_id: string
   // Distinguishes otherwise identical firings of one scope in different scans.

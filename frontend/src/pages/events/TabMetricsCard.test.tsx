@@ -14,12 +14,13 @@ vi.mock('@/components/ui/chart-lazy', () => ({
   ),
 }))
 
-function installFetch() {
+function installFetch(extra: Record<string, unknown> = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
     const url = String(input)
     if (url.includes('/api/v1/projects/demo/events-metrics')) {
       return new Response(
         JSON.stringify({
+          ...extra,
           scope: 'events_total',
           scan_config_id: 'scan-1',
           event_id: null,
@@ -139,6 +140,21 @@ describe('TabMetricsCard', () => {
 
     expect(await screen.findByRole('button', { name: /Show chart/ })).toBeInTheDocument()
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('sums the last 7 days against the week before in the subtitle (EV-21)', async () => {
+    installFetch({ week_total: 612_000, prior_week_total: 588_000 })
+    renderCard(null)
+
+    expect(await screen.findByText(/612k in 7d · \+4% vs prior week/)).toBeInTheDocument()
+  })
+
+  it('leaves the weekly line out when the response has no weekly totals', async () => {
+    installFetch()
+    renderCard(null)
+
+    expect(await screen.findByText(/Last 7 days, grouped by hour/)).toBeInTheDocument()
+    expect(screen.queryByText(/in 7d/)).not.toBeInTheDocument()
   })
 
   it('shows no range or bucket controls while collapsed (EV-22)', async () => {

@@ -35,13 +35,13 @@ export function NotFoundState({
 }: NotFoundStateProps) {
   return (
     <div className="flex min-h-[60vh] flex-col items-center justify-center px-6 text-center">
-      <p className="tnum text-body-sm font-semibold tracking-wide" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="tnum text-body-sm font-semibold tracking-wide text-fg-tertiary">
         404
       </p>
-      <h1 className="mt-2 text-title font-semibold" style={{ color: 'var(--fg)' }}>
+      <h1 className="mt-2 text-title font-semibold text-fg">
         {title}
       </h1>
-      <p className="mt-2 max-w-sm text-body" style={{ color: 'var(--fg-muted)' }}>
+      <p className="mt-2 max-w-sm text-body text-fg-secondary">
         {description}
       </p>
       {/* A project-scoped 404 keeps that project's sidebar and breadcrumb, so

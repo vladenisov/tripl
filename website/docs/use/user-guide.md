@@ -556,8 +556,11 @@ see, across tabs:
   **Change**, **Actual**, **Expected**, **Deviation**) and **top movers** showing
   which slice of the data moved. The chart has a legend, a partial first or last
   bucket of a rolled-up range is drawn dashed, and the caption under it says
-  what one point is. The signal banner offers **Annotate** to mark the flagged
-  bucket. A metric's **Delete** is in the page's **…** menu, and the project
+  what one point is and how fresh the series is: *Hourly · newest bucket 12m
+  ago · collected 8m ago · next Sep 26, 3:00 PM* (or *next collection due now*),
+  the last two from the scan's own collection record. The signal banner offers
+  **Annotate** to mark the flagged bucket, and so does the signal summary on a
+  project-total or event-type page and on a metric's page. A metric's **Delete** is in the page's **…** menu, and the project
   total's page is titled **Total volume**. Other rollups omit the forecast because one
   native bucket is not a forecast for the whole aggregate bucket. You can also
   add **annotations** to mark deploys, releases, or incidents directly on the

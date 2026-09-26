@@ -56,6 +56,7 @@ from tripl.models.scan_preview_job import ScanPreviewJob
 from tripl.models.schema_drift import SchemaDrift
 from tripl.models.search_document import SearchDocument
 from tripl.models.shadow_event_candidate import ShadowEventCandidate
+from tripl.models.signal_triage import SignalTriage
 from tripl.models.user import User
 from tripl.models.user_session import UserSession
 from tripl.models.variable import Variable
@@ -124,6 +125,7 @@ __all__ = [
     "SchemaDrift",
     "SearchDocument",
     "ShadowEventCandidate",
+    "SignalTriage",
     "User",
     "UserSession",
     "VariableEventValueOverride",

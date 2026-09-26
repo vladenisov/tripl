@@ -28,7 +28,7 @@ const TARGET_LINK: Record<
     title: 'View anomalies from this scan',
   },
   alerts: {
-    href: (slug, scanConfigId) => `/p/${slug}/settings/alerting?scan=${scanConfigId}`,
+    href: (slug, scanConfigId) => `/p/${slug}/alerting?scan=${scanConfigId}`,
     title: 'View alerts from this scan',
   },
 }
@@ -86,7 +86,7 @@ function RunReportSentence({
         <span title={line.title}>{line.text}</span>
       )}
       {line.hint && (
-        <span className="mt-0.5 block text-caption leading-snug text-muted-foreground">
+        <span className="mt-0.5 block text-caption leading-snug text-fg-tertiary">
           {line.hint}
         </span>
       )}
@@ -136,7 +136,8 @@ export function JobDetails({
   const signalsAdded = summary?.signals_added ?? 0
   const openSignalsQuery = useExpandedSignals(slug, { enabled: signalsAdded > 0 })
   const openSignals = openSignalsQuery.data
-    ? openSignalsQuery.data.filter(signal => signal.scan_config_id === scanConfigId).length
+    // Muted and expected signals are out of every open count (MO-4 / JR-5).
+    ? openSignalsQuery.data.filter(signal => signal.scan_config_id === scanConfigId && !signal.hidden).length
     : null
 
   const report = buildRunReport(job, mode, openSignals)
@@ -145,7 +146,7 @@ export function JobDetails({
 
   return (
     <div className="space-y-3 bg-muted/30 p-4">
-      <h4 className="text-body-sm font-semibold uppercase tracking-wide text-muted-foreground">Run details</h4>
+      <h4 className="text-body-sm font-semibold uppercase tracking-wide text-fg-tertiary">Run details</h4>
       {error && (
         <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-body-sm text-destructive">
           {error.message}
@@ -170,7 +171,7 @@ export function JobDetails({
       {summary && (
         <>
           {(summary.time_from || summary.time_to) && (
-            <div className="rounded-md border bg-background p-3 text-body-sm text-muted-foreground">
+            <div className="rounded-md border bg-background p-3 text-body-sm text-fg-tertiary">
               <span className="font-medium text-foreground">
                 {summary.mode === 'metrics_replay' ? 'Replay period' : 'Collection period'}
               </span>
@@ -195,7 +196,7 @@ export function JobDetails({
               type="button"
               onClick={() => setCountersOpen(open => !open)}
               aria-expanded={countersOpen}
-              className="text-body-sm font-medium text-muted-foreground hover:underline"
+              className="text-body-sm font-medium text-fg-tertiary hover:underline"
             >
               {countersOpen ? 'Hide raw counters' : 'Show raw counters'}
             </button>
@@ -267,10 +268,10 @@ export function JobDetails({
           )}
           {summary.details && summary.details.length > 0 && (
             <div>
-              <h5 className="mb-1 text-body-sm font-semibold text-muted-foreground">Log</h5>
+              <h5 className="mb-1 text-body-sm font-semibold text-fg-tertiary">Log</h5>
               <div className="max-h-48 overflow-y-auto rounded-lg border bg-background p-2">
                 {summary.details.map((detail, i) => (
-                  <div key={i} className="mono border-b border-border/50 py-0.5 text-body-sm text-muted-foreground last:border-0">{detail}</div>
+                  <div key={i} className="mono border-b border-border/50 py-0.5 text-body-sm text-fg-tertiary last:border-0">{detail}</div>
                 ))}
               </div>
             </div>

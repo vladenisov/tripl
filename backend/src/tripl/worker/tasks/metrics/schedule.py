@@ -9,8 +9,10 @@ Tests monkey-patch the session/helper globals of THIS module.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func as sa_func
@@ -39,6 +41,7 @@ from tripl.worker.tasks.metrics._helpers import (
     _get_active_scan_jobs,
     _get_sync_session,
     _normalize_job_timestamp,
+    _parse_task_datetime,
 )
 from tripl.worker.tasks.metrics.metric_collect import (
     COLLECTION_STATUS_ERROR,
@@ -217,6 +220,61 @@ def _failure_backoff_delay(streak: int, interval_delta: timedelta) -> timedelta 
     return min(interval_delta * multiplier, ceiling)
 
 
+def scan_config_collection_schedule(
+    *,
+    last_bucket: datetime | None,
+    watermark: datetime | None,
+    delta: timedelta,
+    now: datetime,
+) -> tuple[datetime, bool]:
+    """``(next_collection_at, due)`` for a scan config — the bucket half of the due check.
+
+    Pure, so the async read path (``metrics_service``'s drilldown responses) can
+    report the same answer the dispatcher acts on without porting the rule. When
+    the collected grid lags the current interval boundary the config is due now
+    and ``next_collection_at`` is ``now``; otherwise the next dispatch becomes
+    due at the next boundary. Celery beat ticks every 300 s, so the value is the
+    earliest due moment, not a second-exact promise.
+
+    Deliberately only the bucket half: the dispatcher can still hold a due config
+    back (a live job, the failure backoff, a demo's pause or cooldown). Those read
+    job history and project state, so they stay in ``check_metrics_due``.
+    """
+    current_boundary = _floor_to_interval(now, delta)
+    progress_to = collection_progress_to(last_bucket=last_bucket, watermark=watermark, delta=delta)
+    if progress_to is None or progress_to < current_boundary:
+        return now, True
+    return current_boundary + delta, False
+
+
+def scan_config_collection_progress(
+    jobs: Iterable[tuple[object, datetime | None]],
+) -> tuple[datetime | None, datetime | None]:
+    """``(last_collected_at, watermark)`` from completed jobs, newest first.
+
+    ``jobs`` are ``(result_summary, completed_at)`` pairs of a config's COMPLETED
+    ``scan_jobs`` ordered by ``created_at`` descending — the rows
+    ``_last_collected_window_to`` reads. Only dispatcher collection jobs count
+    (``_is_dispatcher_collection_job``); ``last_collected_at`` is the newest such
+    job's completion and ``watermark`` the newest parseable ``time_to``, so the
+    read path and the worker agree on what "collected up to" means.
+    """
+    last_collected_at: datetime | None = None
+    watermark: datetime | None = None
+    for summary, completed_at in jobs:
+        if not isinstance(summary, dict) or not _is_dispatcher_collection_job(summary):
+            continue
+        if last_collected_at is None and completed_at is not None:
+            last_collected_at = _normalize_job_timestamp(completed_at)
+        raw_to = summary.get("time_to")
+        if watermark is None and isinstance(raw_to, str):
+            with contextlib.suppress(ValueError):
+                watermark = _parse_task_datetime(raw_to)
+        if last_collected_at is not None and watermark is not None:
+            break
+    return last_collected_at, watermark
+
+
 def _scan_config_collection_due(
     session: Session,
     scan_config_id: uuid.UUID,
@@ -233,13 +291,12 @@ def _scan_config_collection_due(
     stored bucket's exclusive end and the last completed collection's window end,
     never the stored buckets alone.
     """
-    current_boundary = _floor_to_interval(now, delta)
 
     def _due(watermark: datetime | None) -> bool:
-        progress_to = collection_progress_to(
-            last_bucket=last_bucket, watermark=watermark, delta=delta
+        _next_at, due = scan_config_collection_schedule(
+            last_bucket=last_bucket, watermark=watermark, delta=delta, now=now
         )
-        return progress_to is None or progress_to < current_boundary
+        return due
 
     # Short-circuited on purpose: the job watermark can only ever push progress
     # FORWARD, so a config that is already not due by its stored buckets cannot

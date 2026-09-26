@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FilterBar, FilterSearch, FilterSelect } from './filter-bar'
 
 const STATUS_OPTIONS = [
@@ -64,5 +64,74 @@ describe('FilterBar (DS-15)', () => {
     )
     expect(document.querySelector('[data-slot="filter-bar"] [aria-live="polite"]')).toBe(region)
     expect(region).toHaveTextContent('3 events')
+  })
+})
+
+describe('FilterBar below 640px (DS-15)', () => {
+  const realMatchMedia = window.matchMedia
+
+  function installNarrow() {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: (query: string) => ({
+        matches: query.includes('max-width: 639'),
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }),
+    })
+  }
+
+  afterEach(() => {
+    Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: realMatchMedia })
+  })
+
+  it('folds the chips into a "Filters (n)" sheet and keeps the search in the row', () => {
+    installNarrow()
+    const onClear = vi.fn()
+    render(
+      <FilterBar count="42 events" active onClear={onClear}>
+        <FilterSearch things="events" value="" onValueChange={() => {}} />
+        <FilterSelect label="Status" value="live" onValueChange={() => {}} options={STATUS_OPTIONS} />
+        <FilterSelect label="Kind" value="any" onValueChange={() => {}} options={STATUS_OPTIONS} />
+      </FilterBar>,
+    )
+
+    expect(screen.getByRole('searchbox', { name: 'Search events' })).toBeInTheDocument()
+    expect(screen.queryByRole('combobox')).toBeNull()
+    // Only the set chip counts.
+    const trigger = screen.getByRole('button', { name: 'Filters (1)' })
+
+    fireEvent.click(trigger)
+    const sheet = screen.getByRole('dialog', { name: 'Filters' })
+    expect(within(sheet).getByRole('combobox', { name: 'Status filter: live' })).toBeInTheDocument()
+    expect(within(sheet).getByRole('combobox', { name: 'Kind filter: any' })).toBeInTheDocument()
+    expect(within(sheet).getByText('42 events')).toBeInTheDocument()
+
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Clear filters' }))
+    expect(onClear).toHaveBeenCalledTimes(1)
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Done' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('shows no Filters button when there is nothing to fold', () => {
+    installNarrow()
+    render(
+      <FilterBar>
+        <FilterSearch things="events" value="" onValueChange={() => {}} />
+      </FilterBar>,
+    )
+    expect(screen.queryByRole('button', { name: /^Filters/ })).toBeNull()
+  })
+
+  it('renders the chips in place on a wide screen', () => {
+    renderBar({ status: 'live' })
+    expect(screen.getByRole('combobox', { name: 'Status filter: live' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Filters/ })).toBeNull()
   })
 })

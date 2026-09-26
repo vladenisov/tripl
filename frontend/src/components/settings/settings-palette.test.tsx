@@ -121,6 +121,26 @@ describe('Settings command palette search (#238 JR-19)', () => {
   })
 })
 
+describe('Settings command palette active row', () => {
+  it('rings the keyboard-active row with the focus ring, as the app palette does', async () => {
+    renderPalette()
+
+    const palette = await openPalette()
+    fireEvent.change(within(palette).getByRole('combobox'), { target: { value: 'storage' } })
+
+    // cmdk keeps DOM focus in the input, so the row never matches
+    // :focus-visible; the ring rides on aria-selected instead.
+    const row = await waitFor(() => {
+      const selected = within(palette)
+        .getAllByRole('option')
+        .find(option => option.getAttribute('aria-selected') === 'true')
+      expect(selected).toBeDefined()
+      return selected as HTMLElement
+    })
+    expect(row).toHaveClass('aria-selected:ring-2', 'aria-selected:ring-inset', 'aria-selected:ring-ring')
+  })
+})
+
 describe('Settings command palette focus restore', () => {
   it('hands focus to the settings content instead of dropping it on <body>', async () => {
     renderPalette()

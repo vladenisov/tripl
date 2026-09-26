@@ -91,6 +91,40 @@ export interface MonitoringSignal {
   // rule delivered it; filled on the expanded list only.
   incident_id?: string | null
   incident_status?: AlertInboxStatus | null
+  // Triage of a signal NO rule routed to an incident (MO-4 / JR-5); a signal
+  // with `incident_id` is triaged in the inbox and never carries these. Read
+  // `muted_until` together with `muted`: null means both "not muted" and
+  // "muted until someone unmutes". `hidden` (muted or expected) is what every
+  // open-signal count gates on; the collapsed list drops hidden signals, the
+  // expanded list keeps them so the Anomalies page can offer "Show hidden".
+  // Optional: locally-synthesised signals need not carry them.
+  acknowledged_at?: string | null
+  muted?: boolean
+  muted_until?: string | null
+  expected?: boolean
+  expected_note?: string | null
+  hidden?: boolean
+}
+
+/** The scope a triage verdict is about, keyed like the signal (MO-4 / JR-5). */
+export interface SignalTriageScope {
+  // Null for a catalog `metric` scope; required for every other one.
+  scan_config_id: string | null
+  scope_type: MetricScopeType
+  scope_ref: string
+  bucket: string
+}
+
+export type SignalMuteDuration = '24h' | '7d' | 'until_unmuted'
+
+/** A signal's triage fields after a write, as the lists will show them. */
+export interface SignalTriageState {
+  acknowledged_at: string | null
+  muted: boolean
+  muted_until: string | null
+  expected: boolean
+  expected_note: string | null
+  hidden: boolean
 }
 
 export interface TopMoverItem {
@@ -204,8 +238,35 @@ export interface EventMetricsResponse {
   interval: string | null
   latest_signal: MonitoringSignal | null
   sigma_threshold?: number
+  // When the scan's newest completed collection finished, and the earliest
+  // moment the scheduler dispatches the next one (equal to the response time
+  // when collection is due now). Null without a scan config or interval (L4).
+  last_collected_at?: string | null
+  next_collection_at?: string | null
+  // The Events tab's series only: volume over the 7 days ending at the request's
+  // upper bound and the 7 before, whatever the chart's range (EV-21).
+  week_total?: number | null
+  prior_week_total?: number | null
   data: EventMetricPoint[]
   forecast: ForecastPoint[]
+}
+
+/** One signal a row sparkline asks `POST /anomalies/signals/series` for (MO-19). */
+export interface SignalSeriesScope {
+  scan_config_id: string
+  scope_type: 'project_total' | 'event_type' | 'event'
+  scope_ref: string
+  bucket: string
+}
+
+/**
+ * Up to 24 buckets around one signal's flagged bucket: 19 before it, the
+ * bucket, and up to 4 after. Interior gaps are zero-filled; buckets past the
+ * newest stored one are absent.
+ */
+export interface SignalSeries extends SignalSeriesScope {
+  interval: string | null
+  data: { bucket: string; count: number }[]
 }
 
 export interface EventMetricBreakdownSeries {

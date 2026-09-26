@@ -76,7 +76,7 @@ export default function ConfirmDialogGuardedContent({
           </div>
         )}
         {error != null && !pending && (
-          <p role="alert" className="m-0 text-body-sm" style={{ color: 'var(--danger)' }}>
+          <p role="alert" className="m-0 text-body-sm text-danger">
             {errorPrefix}: {getErrorMessage(error)}
           </p>
         )}

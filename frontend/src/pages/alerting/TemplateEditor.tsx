@@ -203,7 +203,7 @@ export function TemplateEditor({
                   onClick={() => insertVariable(option.name)}
                 >
                   <span className="font-mono text-body-sm">{`\${${option.name}}`}</span>
-                  <span className="text-body-sm text-muted-foreground">{option.description}</span>
+                  <span className="text-body-sm text-fg-tertiary">{option.description}</span>
                 </button>
               ))}
             </div>
@@ -282,7 +282,7 @@ export function TemplateEditor({
                   onClick={() => insertVariable(option.name)}
                 >
                   <span className="font-mono text-body-sm">{`\${${option.name}}`}</span>
-                  <span className="text-body-sm text-muted-foreground">{option.description}</span>
+                  <span className="text-body-sm text-fg-tertiary">{option.description}</span>
                 </button>
               ))}
           </AnchoredListbox>

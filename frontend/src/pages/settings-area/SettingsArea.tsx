@@ -303,7 +303,7 @@ function NoProjectSelected({
         title="No project selected"
         description="Project settings change one specific project's tracking plan, and there is no project on this workspace yet."
       >
-        <p className="m-0 px-4 py-[15px] text-body" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="m-0 px-4 py-[15px] text-body text-fg-tertiary">
           <Link to="/workspace" className="underline">
             Create one in the workspace
           </Link>{' '}
@@ -330,7 +330,7 @@ function NoProjectSelected({
           }}
         >
           <span className="min-w-0 flex-1 truncate text-body font-medium">{project.name}</span>
-          <span className="mono shrink-0 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="mono shrink-0 text-caption text-fg-tertiary">
             {project.slug}
           </span>
         </button>

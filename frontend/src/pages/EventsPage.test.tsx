@@ -1381,10 +1381,10 @@ describe('EventsPage current view', () => {
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <TooltipProvider>
-        <MemoryRouter initialEntries={['/p/demo/settings/event-types/type-1']}>
+        <MemoryRouter initialEntries={['/p/demo/event-types/type-1']}>
           <Routes>
             <Route
-              path="/p/:slug/settings/event-types/:id"
+              path="/p/:slug/event-types/:id"
               element={<EventsPage lockType="page" embedded />}
             />
           </Routes>

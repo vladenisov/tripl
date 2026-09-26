@@ -20,6 +20,7 @@ import {
   MetaFieldControl,
   ScanMaintenanceNotice,
 } from './eventFormFields'
+import { breakdownChipId, focusBreakdownChip } from './eventFormValues'
 
 export function TagsBreakdownsCard({
   tags,
@@ -62,8 +63,7 @@ export function TagsBreakdownsCard({
               // 22px chip could not be hit with a finger (AU-39).
               <span
                 key={t}
-                className="inline-flex h-[22px] items-center gap-[5px] rounded-full pl-[9px] pr-[6px] text-caption max-sm:h-8"
-                style={{ background: 'var(--surface-hover)' }}
+                className="inline-flex h-[22px] items-center gap-[5px] rounded-full pl-[9px] pr-[6px] text-caption max-sm:h-8 bg-surface-hover"
               >
                 {t}
                 <button
@@ -111,6 +111,7 @@ export function TagsBreakdownsCard({
             return (
               <button
                 key={c}
+                id={breakdownChipId(c)}
                 type="button"
                 aria-pressed={on}
                 onClick={() => onToggleBreakdown(c)}
@@ -165,7 +166,6 @@ export function FieldValuesCard({
   storedFieldValues,
   collectedBreakdownColumns,
   breakdownColumns,
-  onToggleBreakdown,
   coachStep,
   coachActive,
   errors = {},
@@ -184,7 +184,6 @@ export function FieldValuesCard({
   storedFieldValues: ReadonlyMap<string, { value: string; isAuthored: boolean }>
   collectedBreakdownColumns: ReadonlySet<string>
   breakdownColumns: string[]
-  onToggleBreakdown: (column: string) => void
   coachStep: ScenarioStepId
   coachActive: boolean
   /** Messages the form shows under a row after a refused Save, keyed by the
@@ -204,7 +203,7 @@ export function FieldValuesCard({
         <>
           Columns defined by the{' '}
           {eventTypeId ? (
-            <SubtitleLink to={`/p/${slug}/settings/event-types/${eventTypeId}`}>{typeLabel}</SubtitleLink>
+            <SubtitleLink to={`/p/${slug}/event-types/${eventTypeId}`}>{typeLabel}</SubtitleLink>
           ) : (
             typeLabel
           )}{' '}
@@ -235,7 +234,7 @@ export function FieldValuesCard({
               <>
                 <span className="mono">{f.name} · {f.field_type}</span>
                 {namesEvent && (
-                  <span className="mt-[2px] block" style={{ color: 'var(--accent)' }}>
+                  <span className="mt-[2px] block text-accent">
                     names the event
                   </span>
                 )}
@@ -268,7 +267,7 @@ export function FieldValuesCard({
                           ? 'collecting'
                           : 'off'
                     }
-                    onSelect={() => onToggleBreakdown(f.name)}
+                    onShowBreakdowns={() => focusBreakdownChip(f.name)}
                   />
                 )}
               </>
@@ -330,7 +329,7 @@ export function MetaFieldsCard({
           {slug && (
             <>
               {' '}
-              <SubtitleLink to={`/p/${slug}/settings/meta-fields`}>Manage meta fields</SubtitleLink>
+              <SubtitleLink to={`/p/${slug}/meta-fields`}>Manage meta fields</SubtitleLink>
             </>
           )}
         </>

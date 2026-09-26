@@ -1,4 +1,6 @@
 import type { ReactNode } from 'react'
+import { CalendarPlus } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { formatTimestamp } from '@/lib/datetime'
 import { NO_BASELINE_LABEL, ratioDelta } from '@/lib/percentDelta'
 import { signalDirectionTone } from '@/lib/statusLexicon'
@@ -15,6 +17,7 @@ export function SignalSummary({
   formatActual,
   formatExpected,
   sigmaThreshold,
+  onAnnotate,
 }: {
   signal: MonitoringSignal
   /** The flagged value with its noun, e.g. "5,767 events" or "$1,234". */
@@ -23,6 +26,12 @@ export function SignalSummary({
   formatExpected: (value: number) => string
   /** The scope's detection threshold, when the payload names one. */
   sigmaThreshold?: number | null
+  /**
+   * Start an annotation on the flagged bucket. Given on the scopes without the
+   * event hero, whose signal banner already carries one (JR-5); omitted for a
+   * viewer, who cannot annotate.
+   */
+  onAnnotate?: (bucket: string) => void
 }) {
   const tone = signalDirectionTone(signal.direction)
   const when = formatTimestamp(signal.bucket)
@@ -58,12 +67,24 @@ export function SignalSummary({
 
   return (
     <div data-testid="signal-summary" className="rounded-card border px-4 py-3">
-      <p className="text-body" style={{ color: 'var(--fg)' }}>
+      <p className="text-body text-fg">
         <span className="whitespace-nowrap">{when}</span>: {change}
       </p>
-      <p className="mt-1 text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+      <p className="mt-1 text-body-sm text-fg-secondary">
         Why flagged: {why}
       </p>
+      {onAnnotate && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-2"
+          onClick={() => onAnnotate(signal.bucket)}
+        >
+          <CalendarPlus aria-hidden="true" />
+          Annotate
+        </Button>
+      )}
     </div>
   )
 }

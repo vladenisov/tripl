@@ -66,7 +66,7 @@ function linkTemplateError(enabled: boolean, template: string): string | null {
 function LinkTemplateHint({ id, template }: { id: string; template: string }) {
   const example = metaFieldLinkExample(normalizeLinkTemplate(template))
   return (
-    <p id={id} className="min-w-0 break-words text-body-sm text-muted-foreground">
+    <p id={id} className="min-w-0 break-words text-body-sm text-fg-tertiary">
       {example ? (
         <>
           Opens <span className="font-mono">{example}</span> for a stored value like{' '}
@@ -269,7 +269,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
           <>
             Extra attributes every event carries whatever its type: owner team, Jira ticket,
             review date. Per-type fields live on each{' '}
-            <Link to={`/p/${slug}/settings/event-types`} className="text-accent no-underline hover:underline">
+            <Link to={`/p/${slug}/event-types`} className="text-accent no-underline hover:underline">
               event type
             </Link>
             .
@@ -542,9 +542,9 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   <TableCell className="font-mono text-body-sm">{mf.name}</TableCell>
                   <TableCell className="text-body-sm">
                     <div className="space-y-1">
-                      <div className="text-muted-foreground">{mf.display_name}</div>
+                      <div className="text-fg-tertiary">{mf.display_name}</div>
                       {mf.link_template && (
-                        <div className="font-mono text-caption text-muted-foreground/80">
+                        <div className="font-mono text-caption text-fg-tertiary/80">
                           Link: {mf.link_template}
                         </div>
                       )}
@@ -552,19 +552,19 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                   </TableCell>
                   <TableCell>
                     <Chip variant="outline" size="xs">{mf.field_type}</Chip>
-                    {mf.field_type === 'enum' && mf.enum_options && <span className="text-muted-foreground text-micro ml-1">({mf.enum_options.length})</span>}
-                    {mf.allow_multiple && <span className="text-muted-foreground text-micro ml-1" title="Holds several values on one event">multi</span>}
+                    {mf.field_type === 'enum' && mf.enum_options && <span className="text-fg-tertiary text-micro ml-1">({mf.enum_options.length})</span>}
+                    {mf.allow_multiple && <span className="text-fg-tertiary text-micro ml-1" title="Holds several values on one event">multi</span>}
                   </TableCell>
                   <TableCell>
                     <SensitivityChip value={mf.sensitivity} />
                   </TableCell>
-                  <TableCell>{mf.is_required ? <span className="text-success font-medium text-body-sm">✓</span> : <span className="text-muted-foreground">—</span>}</TableCell>
-                  <TableCell className="text-body-sm text-muted-foreground">{mf.default_value ?? '—'}</TableCell>
+                  <TableCell>{mf.is_required ? <span className="text-success font-medium text-body-sm">✓</span> : <span className="text-fg-tertiary">—</span>}</TableCell>
+                  <TableCell className="text-body-sm text-fg-tertiary">{mf.default_value ?? '—'}</TableCell>
                   <TableCell className="sticky right-0 bg-surface">
                     {canWrite && (
                       <div className="flex gap-1 justify-end">
                         <IconButton variant="ghost" className="h-7 w-7" label={`Edit ${mf.display_name}`} onClick={() => startEdit(mf)}><Pencil className="h-3 w-3" aria-hidden="true" /></IconButton>
-                        <IconButton variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" label={`Delete ${mf.display_name}`} disabled={deleteMut.isPending} onClick={() => handleDelete(mf)}><Trash2 className="h-3 w-3" aria-hidden="true" /></IconButton>
+                        <IconButton variant="ghost" className="h-7 w-7 text-fg-tertiary hover:text-destructive" label={`Delete ${mf.display_name}`} disabled={deleteMut.isPending} onClick={() => handleDelete(mf)}><Trash2 className="h-3 w-3" aria-hidden="true" /></IconButton>
                       </div>
                     )}
                   </TableCell>

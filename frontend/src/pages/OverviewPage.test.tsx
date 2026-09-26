@@ -851,7 +851,7 @@ describe('OverviewPage — design review batches (MO-15, MO-17, MO-24, MO-26, JR
     expect(anomalies).toHaveAttribute('href', '/p/demo/anomalies')
     expect(screen.getByRole('link', { name: '2 open incidents' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting',
+      '/p/demo/alerting',
     )
     expect(screen.getByRole('link', { name: '1 failing scan' })).toHaveAttribute(
       'href',
@@ -860,7 +860,7 @@ describe('OverviewPage — design review batches (MO-15, MO-17, MO-24, MO-26, JR
     // A broken channel is named beside the failing scans, linking to Alerting.
     expect(screen.getByRole('link', { name: '1 broken alert channel' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting',
+      '/p/demo/alerting',
     )
   })
 

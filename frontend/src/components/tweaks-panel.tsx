@@ -13,28 +13,33 @@ const TweaksPanel = lazyWithReload(() =>
 
 export function TweaksPanelProvider({ children }: { children: ReactNode }) {
   const [open, setOpenState] = useState(false)
-  // Whoever opened the panel, so closing it hands focus straight back.
-  const openerRef = useRef<HTMLElement | null>(null)
-  const setOpen = useCallback((next: boolean) => {
+  // The control the panel hangs from (SH-24). Closing hands focus straight
+  // back to it.
+  const anchorRef = useRef<HTMLElement | null>(null)
+  const setOpen = useCallback((next: boolean, anchor?: HTMLElement | null) => {
     if (next) {
       const active = document.activeElement
-      openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null
+      anchorRef.current =
+        anchor ?? (active instanceof HTMLElement && active !== document.body ? active : null)
     }
     setOpenState(next)
   }, [])
   const close = useCallback(() => {
     setOpenState(false)
-    const opener = openerRef.current
-    if (opener?.isConnected) opener.focus()
+    const anchor = anchorRef.current
+    if (anchor?.isConnected) anchor.focus()
   }, [])
-  const value = useMemo<TweaksPanelContextValue>(() => ({ open, setOpen }), [open, setOpen])
+  const value = useMemo<TweaksPanelContextValue>(
+    () => ({ open, setOpen, anchorRef }),
+    [open, setOpen],
+  )
   return (
     <TweaksPanelContext.Provider value={value}>
       {children}
       {open && (
         <ErrorBoundary fallback={() => null}>
           <Suspense fallback={null}>
-            <TweaksPanel onClose={close} />
+            <TweaksPanel anchorRef={anchorRef} onClose={close} />
           </Suspense>
         </ErrorBoundary>
       )}

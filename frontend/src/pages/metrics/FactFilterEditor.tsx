@@ -158,15 +158,14 @@ export function FactFilterEditor({
                     points at a row the reader can find (MT-13). The controls
                     carry the same number in their names. */}
                 {index > 0 && (
-                  <span aria-hidden="true" className="micro-label" style={{ color: 'var(--fg-faint)' }}>
+                  <span aria-hidden="true" className="micro-label text-fg-tertiary">
                     and
                   </span>
                 )}
                 <div className="flex items-start gap-2">
                   <span
                     aria-hidden="true"
-                    className="flex h-8 w-[52px] shrink-0 items-center gap-1 text-caption"
-                    style={{ color: 'var(--fg-subtle)' }}
+                    className="flex h-8 w-[52px] shrink-0 items-center gap-1 text-caption text-fg-tertiary"
                   >
                     <span className="tnum">{index + 1}</span>
                     <span>{FILTER_KIND_LABEL[filter.kind]}</span>
@@ -219,8 +218,7 @@ export function FactFilterEditor({
                     type="button"
                     onClick={() => remove(filter.id)}
                     aria-label={`Remove filter ${index + 1}`}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)]"
-                    style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-control border transition-colors hover:bg-[var(--surface-hover)] border-border text-fg-secondary"
                   >
                     <Trash2 size={14} />
                   </button>
@@ -228,8 +226,7 @@ export function FactFilterEditor({
                 {error && rowId && (
                   <p
                     id={fieldErrorId(rowId)}
-                    className="text-body-sm leading-[1.45]"
-                    style={{ color: 'var(--danger)' }}
+                    className="text-body-sm leading-[1.45] text-danger"
                   >
                     {error}
                   </p>
@@ -246,8 +243,7 @@ export function FactFilterEditor({
             <button
               type="button"
               disabled={disabled}
-              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
-              style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+              className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60 border-border text-fg"
             >
               <Plus size={12} /> Add filter
             </button>
@@ -272,8 +268,7 @@ export function FactFilterEditor({
             disabled={disabled || checkPending || !!checkBlockedReason}
             onClick={onCheck}
             aria-describedby={checkBlockedReason ? checkHintId : undefined}
-            className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60"
-            style={{ borderColor: 'var(--border)', color: 'var(--fg)' }}
+            className="inline-flex h-8 items-center gap-[6px] rounded-control border px-3 text-body-sm font-medium transition-colors hover:bg-[var(--surface-hover)] disabled:opacity-60 border-border text-fg"
           >
             {checkPending ? (
               <Loader2 size={12} className="animate-spin" />
@@ -285,7 +280,7 @@ export function FactFilterEditor({
         )}
       </div>
       {onCheck && checkBlockedReason && !disabled && (
-        <p id={checkHintId} className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        <p id={checkHintId} className="text-caption text-fg-tertiary">
           {checkBlockedReason}
         </p>
       )}
@@ -396,11 +391,9 @@ function FilterCheckPanel({ result, transportError }: FilterCheckPanelProps) {
     return (
       <div
         role="alert"
-        className="rounded-card border px-4 py-3 text-body-sm"
+        className="rounded-card border px-4 py-3 text-body-sm bg-danger-soft text-danger"
         style={{
-          background: 'var(--danger-soft)',
           borderColor: 'color-mix(in oklab, var(--danger) 35%, var(--border))',
-          color: 'var(--danger)',
         }}
       >
         {message}
@@ -411,8 +404,7 @@ function FilterCheckPanel({ result, transportError }: FilterCheckPanelProps) {
   return (
     <div
       role="status"
-      className="flex items-center gap-[6px] rounded-card border px-4 py-3 text-body-sm"
-      style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
+      className="flex items-center gap-[6px] rounded-card border px-4 py-3 text-body-sm border-border text-fg-secondary"
     >
       <CheckCircle2 size={14} style={{ color: 'var(--success, var(--fg-muted))' }} />
       {result.row_count > 0

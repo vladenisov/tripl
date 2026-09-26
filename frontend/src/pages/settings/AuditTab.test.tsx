@@ -559,11 +559,11 @@ describe('AuditTab — rows read as sentences (PL-23 / PL-24)', () => {
     expect(screen.getByText('Raw JSON')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Open branch$/ })).toHaveAttribute(
       'href',
-      '/p/demo/settings/branches/b-9',
+      '/p/demo/branches/b-9',
     )
     expect(screen.getByRole('link', { name: /Open branch redesign-checkout/ })).toHaveAttribute(
       'href',
-      '/p/demo/settings/branches/branch-0',
+      '/p/demo/branches/branch-0',
     )
   })
 

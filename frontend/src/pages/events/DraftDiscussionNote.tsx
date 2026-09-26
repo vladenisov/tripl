@@ -41,7 +41,7 @@ export function DraftDiscussionNote({ value, onChange }: DraftDiscussionNoteProp
           onChange={event => onChange(event.target.value)}
           placeholder="Should this fire on cancel too?"
         />
-        <p className="mt-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        <p className="mt-1 text-caption text-fg-tertiary">
           Posted as the first comment the moment the event is created.
         </p>
       </div>

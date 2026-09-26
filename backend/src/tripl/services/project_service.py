@@ -1,3 +1,4 @@
+import math
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Sequence
@@ -12,6 +13,7 @@ from tripl import cache
 from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT,
     SCOPE_EVENT_TYPE,
+    SCOPE_METRIC,
     SCOPE_PROJECT_TOTAL,
 )
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
@@ -39,10 +41,10 @@ from tripl.schemas.project import (
     ProjectSummary,
     ProjectUpdate,
 )
-from tripl.services import alerting_service, plan_branch_service
+from tripl.services import alerting_service, plan_branch_service, signal_triage_service
 from tripl.services._monitor_state_intervals import load_monitor_state_intervals
 from tripl.services.metrics_insights_service import (
-    _count_active_metric_signals_by_project,
+    _active_metric_signals_by_project,
     is_significant_signal,
 )
 from tripl.services.metrics_service import _get_project_recent_signal_windows
@@ -488,9 +490,29 @@ async def _populate_monitoring_signals(
     # (a ProjectLatestSignal requires one); they contribute to
     # ``monitoring_signal_count`` only. This runs before the ``anomaly_rows``
     # early-return so a project with only metric-scope anomalies is still counted.
-    metric_signal_counts = await _count_active_metric_signals_by_project(session, project_ids)
-    for project_id, count in metric_signal_counts.items():
-        summaries[project_id].monitoring_signal_count += count
+    #
+    # Both halves drop signals a triage verdict hides (muted scope or marked
+    # expected, MO-4 / JR-5), the same predicate the expanded list flags
+    # ``hidden`` and the Anomalies page's default view leaves out, so the badge
+    # keeps counting what the page shows.
+    metric_signals = await _active_metric_signals_by_project(session, project_ids)
+    metric_hidden = await signal_triage_service.hidden_signal_keys(
+        session,
+        {
+            project_id: [
+                signal_triage_service.signal_key(None, SCOPE_METRIC, scope_ref, bucket)
+                for scope_ref, bucket in keys
+            ]
+            for project_id, keys in metric_signals.items()
+        },
+    )
+    for project_id, keys in metric_signals.items():
+        hidden = metric_hidden.get(project_id, set())
+        summaries[project_id].monitoring_signal_count += sum(
+            1
+            for scope_ref, bucket in keys
+            if signal_triage_service.signal_key(None, SCOPE_METRIC, scope_ref, bucket) not in hidden
+        )
 
     latest_anomaly_keys = (
         select(
@@ -633,6 +655,7 @@ async def _populate_monitoring_signals(
     # AnomaliesPage already honour; without it the two halves of this badge
     # would classify against different horizons.
     recent_windows = await _get_project_recent_signal_windows(session, project_ids)
+    open_rows: list[tuple[uuid.UUID, str, str, MetricAnomaly]] = []
     for project_id, scan_name, scan_interval, anomaly in anomaly_rows:
         latest_metric_bucket = latest_metric_buckets.get(
             (project_id, anomaly.scan_config_id, anomaly.scope_type, anomaly.scope_ref)
@@ -663,6 +686,28 @@ async def _populate_monitoring_signals(
         # them). No incident dedup here, so the badge equals the page's headline
         # open count (tripl-yfsj.1).
         if not is_significant_signal(anomaly.actual_count, anomaly.expected_count):
+            continue
+        open_rows.append((project_id, scan_name, state, anomaly))
+
+    # Triage runs over the open, significant rows only: one verdict query for
+    # every project, and an incident lookup only where something is hidden.
+    hidden_keys = await signal_triage_service.hidden_signal_keys(
+        session,
+        {
+            project_id: [
+                signal_triage_service.signal_key(
+                    anomaly.scan_config_id, anomaly.scope_type, anomaly.scope_ref, anomaly.bucket
+                )
+                for row_project_id, _scan_name, _state, anomaly in open_rows
+                if row_project_id == project_id
+            ]
+            for project_id in {row[0] for row in open_rows}
+        },
+    )
+    for project_id, scan_name, state, anomaly in open_rows:
+        if signal_triage_service.signal_key(
+            anomaly.scan_config_id, anomaly.scope_type, anomaly.scope_ref, anomaly.bucket
+        ) in hidden_keys.get(project_id, set()):
             continue
 
         summary = summaries[project_id]
@@ -733,9 +778,28 @@ async def list_projects(session: AsyncSession) -> list[ProjectResponse]:
     await cache.set_json(
         cache.key_projects_list(),
         [response.model_dump(mode="json") for response in responses],
-        ttl_seconds=60,
+        ttl_seconds=await _projects_list_ttl(session, [project.id for project in projects]),
     )
     return responses
+
+
+_PROJECTS_LIST_TTL_SECONDS = 60
+
+
+async def _projects_list_ttl(session: AsyncSession, project_ids: list[uuid.UUID]) -> int:
+    """The list's cache lifetime, cut short by the first timed mute to lapse.
+
+    ``monitoring_signal_count`` leaves muted signals out, and nothing
+    invalidates the cache when a mute runs out, so the cached count must expire
+    with it; the signal lists apply triage after their own cache and need no
+    such cap.
+    """
+    now = datetime.now(UTC)
+    expiry = await signal_triage_service.earliest_mute_expiry(session, project_ids, now=now)
+    if expiry is None:
+        return _PROJECTS_LIST_TTL_SECONDS
+    remaining = math.ceil((expiry - now).total_seconds())
+    return max(1, min(_PROJECTS_LIST_TTL_SECONDS, remaining))
 
 
 async def get_project_by_slug(session: AsyncSession, slug: str) -> Project:

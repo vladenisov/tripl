@@ -16,12 +16,11 @@ export function ComingLaterCard({
   return (
     <SCard title="Coming later" description={description}>
       <ul
-        className="m-0 list-disc space-y-1.5 py-[15px] pl-[38px] pr-[18px] text-body-sm leading-[1.5]"
-        style={{ color: 'var(--fg-subtle)' }}
+        className="m-0 list-disc space-y-1.5 py-[15px] pl-[38px] pr-[18px] text-body-sm leading-[1.5] text-fg-tertiary"
       >
         {items.map((item) => (
           <li key={item.title}>
-            <span className="font-medium" style={{ color: 'var(--fg)' }}>
+            <span className="font-medium text-fg">
               {item.title}
             </span>{' '}
             — {item.detail}

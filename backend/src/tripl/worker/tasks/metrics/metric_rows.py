@@ -424,10 +424,11 @@ def _upsert_shadow_event_candidates(
 ) -> None:
     """Insert-or-refresh shadow candidates.
 
-    On conflict only the observation columns move: ``observed_count`` is the
-    latest window's count, ``last_seen_at`` never rewinds. ``status`` and the
-    resolution columns are user-owned and left untouched so an accepted or
-    dismissed candidate is not resurrected by the collector.
+    On conflict only the observation columns move: ``observed_count`` and
+    ``sample_properties`` are the latest window's, ``last_seen_at`` never
+    rewinds. ``status`` and the resolution columns are user-owned and left
+    untouched so an accepted or dismissed candidate is not resurrected by the
+    collector.
     """
     if not rows:
         return
@@ -441,6 +442,7 @@ def _upsert_shadow_event_candidates(
                 set_={
                     "observed_count": sqlite_stmt.excluded.observed_count,
                     "event_type_id": sqlite_stmt.excluded.event_type_id,
+                    "sample_properties": sqlite_stmt.excluded.sample_properties,
                     "last_seen_at": sa_func.max(
                         ShadowEventCandidate.last_seen_at,
                         sqlite_stmt.excluded.last_seen_at,
@@ -456,6 +458,7 @@ def _upsert_shadow_event_candidates(
             set_={
                 "observed_count": pg_stmt.excluded.observed_count,
                 "event_type_id": pg_stmt.excluded.event_type_id,
+                "sample_properties": pg_stmt.excluded.sample_properties,
                 "last_seen_at": sa_func.greatest(
                     ShadowEventCandidate.last_seen_at,
                     pg_stmt.excluded.last_seen_at,

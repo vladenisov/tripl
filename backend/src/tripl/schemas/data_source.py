@@ -421,6 +421,19 @@ class DataSourceUpdate(BaseModel):
         return _validate_host_format(value)
 
 
+# "Used by" links listed per source; past this the card says "and N more".
+DATA_SOURCE_SCAN_REFS_LIMIT = 20
+
+
+class DataSourceScanRef(BaseModel):
+    """One scan reading a data source, enough to link to it (DA-40)."""
+
+    id: uuid.UUID
+    name: str
+    project_slug: str
+    project_name: str
+
+
 class DataSourceResponse(BaseModel):
     id: uuid.UUID
     # Ownership scope: None = workspace-global source (shared across projects); a
@@ -447,12 +460,16 @@ class DataSourceResponse(BaseModel):
     updated_at: datetime
 
     # What depends on this source, workspace-wide (DA-40): the scans reading it
-    # and the runs they logged — both deleted with the source. Counts, not
-    # names: a scan can sit in a project the caller does not work in. Merged in
-    # per request, never served from the list cache, so a scan created a
-    # moment ago is counted.
+    # and the runs they logged — both deleted with the source. Merged in per
+    # request, never served from the list cache, so a scan created a moment ago
+    # is counted.
     scan_count: int = 0
     scan_run_count: int = 0
+    # The scans behind ``scan_count``, for the card's "Used by" links: ids and
+    # names only, capped at ``DATA_SOURCE_SCAN_REFS_LIMIT`` (``scan_count``
+    # keeps the total). Only scans in projects the caller can read — which on
+    # this route is every project: a project-bound API key never reaches it.
+    scans: list[DataSourceScanRef] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

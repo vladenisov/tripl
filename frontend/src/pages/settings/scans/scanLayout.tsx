@@ -40,15 +40,13 @@ export function KV({
 }) {
   return (
     <div
-      className="flex items-start gap-3.5 border-t px-4 py-2.5 first:border-t-0"
-      style={{ borderColor: 'var(--border-subtle)' }}
+      className="flex items-start gap-3.5 border-t px-4 py-2.5 first:border-t-0 border-border-subtle"
     >
-      <span className="w-[150px] shrink-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="w-[150px] shrink-0 text-body-sm text-fg-tertiary">
         {label}
       </span>
       <span
-        className={cn('min-w-0 flex-1 text-body-sm', mono && 'mono')}
-        style={{ color: 'var(--fg)' }}
+        className={cn('min-w-0 flex-1 text-body-sm text-fg', mono && 'mono')}
       >
         {value}
       </span>
@@ -58,7 +56,7 @@ export function KV({
 
 // Placeholder for an empty value (the mockup's NONE token).
 export function NoneTag() {
-  return <span style={{ color: 'var(--fg-faint)' }}>none</span>
+  return <span className="text-fg-tertiary">none</span>
 }
 
 // Back link used on detail / create surfaces.
@@ -67,8 +65,7 @@ export function BackLink({ onClick, label = 'Scans' }: { onClick: () => void; la
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex items-center gap-1 text-caption transition-colors"
-      style={{ color: 'var(--fg-muted)' }}
+      className="inline-flex items-center gap-1 text-caption transition-colors text-fg-secondary"
     >
       <span aria-hidden>←</span> {label}
     </button>

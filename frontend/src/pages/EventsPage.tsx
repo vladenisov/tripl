@@ -56,6 +56,7 @@ import { useEventsSelection } from './events/useEventsSelection'
 import { useEventRowSignals, useEventsSignals } from './events/useEventsSignals'
 import { useEventsTableOverflow } from './events/useEventsTableOverflow'
 import { useEventsTableVirtualization } from './events/useEventsTableVirtualization'
+import { useCreatedEventsHighlight } from './events/useCreatedEventsHighlight'
 import { useEventsViewState } from './events/useEventsViewState'
 import { useSavedViews } from './events/useSavedViews'
 import { unappliedChartFilters } from './events/utils'
@@ -352,6 +353,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     virtualItems,
     totalVirtualSize,
     measureRow,
+    scrollToIndex,
     isScanningForMatches,
   } = useEventsTableVirtualization({
     events,
@@ -359,6 +361,16 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     eventsQuery,
     isClientFiltered,
     reportFirstPageInView,
+  })
+
+  // What the form the reader just left created: scrolled to and marked, so a
+  // new row is not lost in a long catalog (AU-20, AU-21, JR-13).
+  const createdIds = useCreatedEventsHighlight({
+    slug,
+    events,
+    virtualize,
+    scrollToIndex,
+    scrollRef: tableScrollRef,
   })
 
   const onToggleExpandedCell = useCallback((cellKey: string | null) => {
@@ -829,8 +841,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
 
           {!hasNoEvents && (
           <div
-            className="rounded-card border overflow-hidden"
-            style={{ borderColor: 'var(--border)' }}
+            className="rounded-card border overflow-hidden border-border"
           >
             <EventsTable
               tableScrollRef={tableScrollRef}
@@ -901,6 +912,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
               sortOrder={sort}
               onSortOrderChange={setSort}
               rowMetricsSettled={rowMetricsSettled}
+              createdIds={createdIds}
             />
           </div>
           )}

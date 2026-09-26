@@ -68,7 +68,7 @@ export function BranchList({
     >
       <div className="py-1">
         {shown.length === 0 && (
-          <p className="px-4 py-3 text-body text-muted-foreground">
+          <p className="px-4 py-3 text-body text-fg-tertiary">
             {tab === 'merged' ? 'No merged or closed branches yet.' : 'No open branches.'}
           </p>
         )}
@@ -107,23 +107,21 @@ export function BranchList({
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span
-                    className="mono truncate text-body-sm font-medium"
-                    style={{ color: 'var(--fg)' }}
+                    className="mono truncate text-body-sm font-medium text-fg"
                     title={branch.name}
                   >
                     {branch.name}
                   </span>
                   {branch.id === workingOnId ? (
                     <span
-                      className="inline-flex shrink-0 items-center gap-0.5 text-micro"
-                      style={{ color: 'var(--accent)' }}
+                      className="inline-flex shrink-0 items-center gap-0.5 text-micro text-accent"
                     >
                       <Check className="size-3" aria-hidden="true" />
                       You’re here
                     </span>
                   ) : null}
                 </div>
-                <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-micro" style={{ color: 'var(--fg-subtle)' }}>
+                <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-micro text-fg-tertiary">
                   {/* Which branch waits for review, which is approved (PL-15). */}
                   {!isMain ? (
                     <Chip tone={STATUS_TONE[branch.status]} size="xs" className="shrink-0">
@@ -138,8 +136,7 @@ export function BranchList({
                   distance, so it is a dot and not a number (PLAN-14). */}
               {!isMain && counts && (
                 <span
-                  className="flex shrink-0 items-center gap-1 text-micro tnum"
-                  style={{ color: 'var(--fg-faint)' }}
+                  className="flex shrink-0 items-center gap-1 text-micro tnum text-fg-tertiary"
                   title={`${countOf(counts.ahead, 'change', 'changes')} compared with main${
                     counts.behind ? '; main has newer changes since this branch was created' : ''
                   }`}
@@ -152,8 +149,7 @@ export function BranchList({
                     <>
                       <span
                         aria-hidden="true"
-                        className="inline-block size-1.5 rounded-full"
-                        style={{ background: 'var(--info)' }}
+                        className="inline-block size-1.5 rounded-full bg-info"
                       />
                       <span className="sr-only">, main has moved on since</span>
                     </>

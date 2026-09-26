@@ -164,6 +164,18 @@ class AnomalyDirection(enum.StrEnum):
     drop = "drop"
 
 
+class SignalTriageAction(enum.StrEnum):
+    """What a user did about an open signal that no rule routed to an incident.
+
+    ``acknowledged`` and ``expected`` pin ONE bucket (one signal); ``muted``
+    covers the whole scope until ``muted_until`` (NULL = until unmuted).
+    """
+
+    acknowledged = "acknowledged"
+    muted = "muted"
+    expected = "expected"
+
+
 class MetricBreakdownAnomalyKind(enum.StrEnum):
     volume = "volume"
     parity = "parity"

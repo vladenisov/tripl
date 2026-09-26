@@ -690,6 +690,30 @@ async def count_active_metric_definitions(
     return int((await session.execute(query)).scalar() or 0)
 
 
+async def _fact_table_reader_ids(
+    session: AsyncSession, project_id: uuid.UUID, fact_table_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """Ids of this project's fact metrics that read ``fact_table_id``, either operand.
+
+    One query for the project's fact metrics and the membership test in Python,
+    bounded by the project's metric count — the same trade
+    ``fact_table_service.list_fact_table_items`` makes for ``metric_count``.
+    """
+    fact_metrics = (
+        (
+            await session.execute(
+                select(MetricDefinition).where(
+                    MetricDefinition.project_id == project_id,
+                    MetricDefinition.kind == MetricKind.fact,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [metric.id for metric in fact_metrics if fact_table_id in _metric_fact_table_ids(metric)]
+
+
 async def list_metric_definitions(
     session: AsyncSession,
     slug: str,
@@ -699,6 +723,7 @@ async def list_metric_definitions(
     search: str | None = None,
     reviewed: bool | None = None,
     owner_id: uuid.UUID | None = None,
+    fact_table_id: uuid.UUID | None = None,
     offset: int = 0,
     limit: int = 200,
 ) -> tuple[list[MetricDefinition], int]:
@@ -727,6 +752,16 @@ async def list_metric_definitions(
     if owner_id is not None:
         query = query.where(MetricDefinition.owner_id == owner_id)
         count_query = count_query.where(MetricDefinition.owner_id == owner_id)
+    # "Used by" on the fact tables list opens the catalog narrowed to the
+    # metrics that read one table (F7). A ratio's denominator table lives only
+    # in ``config`` JSON, so the reader set is decided the way the list's own
+    # ``metric_count`` decides it — ``_metric_fact_table_ids`` over the
+    # project's fact metrics — and then narrows both queries by id, so the
+    # count and the Used-by number always agree.
+    if fact_table_id is not None:
+        reader_ids = await _fact_table_reader_ids(session, project_id, fact_table_id)
+        query = query.where(MetricDefinition.id.in_(reader_ids))
+        count_query = count_query.where(MetricDefinition.id.in_(reader_ids))
 
     total = (await session.execute(count_query)).scalar() or 0
     result = await session.execute(
@@ -908,6 +943,7 @@ async def list_metric_definitions_enriched(
     search: str | None = None,
     reviewed: bool | None = None,
     owner_id: uuid.UUID | None = None,
+    fact_table_id: uuid.UUID | None = None,
     offset: int = 0,
     limit: int = 200,
 ) -> tuple[list[MetricDefinitionListItem], int]:
@@ -924,6 +960,7 @@ async def list_metric_definitions_enriched(
         search=search,
         reviewed=reviewed,
         owner_id=owner_id,
+        fact_table_id=fact_table_id,
         offset=offset,
         limit=limit,
     )

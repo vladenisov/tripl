@@ -10,7 +10,7 @@ export type { VariableSuggestion }
 export function SuggestionRow({ suggestion }: { suggestion: VariableSuggestion }) {
   const bindings = suggestion.bindings ?? []
   const values = suggestion.allowed_values ?? []
-  const detailClassName = 'text-muted-foreground/80'
+  const detailClassName = 'text-fg-tertiary/80'
   return (
     <>
       <code className="shrink-0 font-mono text-primary">
@@ -20,7 +20,7 @@ export function SuggestionRow({ suggestion }: { suggestion: VariableSuggestion }
         {suggestion.description && (
           <span
             title={suggestion.description}
-            className="w-full truncate text-muted-foreground"
+            className="w-full truncate text-fg-tertiary"
           >
             {suggestion.description}
           </span>

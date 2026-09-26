@@ -101,7 +101,7 @@ function FullScreenFallback({ label }: { label: string }) {
     <div
       role="status"
       aria-live="polite"
-      className="flex min-h-screen items-center justify-center bg-background px-6 text-body text-muted-foreground"
+      className="flex min-h-screen items-center justify-center bg-background px-6 text-body text-fg-tertiary"
     >
       {label}
     </div>
@@ -257,7 +257,7 @@ function EventDetailRedirect() {
  */
 function MonitorsRedirect() {
   const { slug } = useParams<{ slug: string }>()
-  return <Navigate to={`/p/${slug}/settings/alerting?section=monitors`} replace />
+  return <Navigate to={`/p/${slug}/alerting?section=monitors`} replace />
 }
 
 /**
@@ -279,16 +279,6 @@ function FactTablesRedirect() {
 function ScansRedirect() {
   const { slug, itemId } = useParams<{ slug: string; itemId?: string }>()
   return <Navigate to={itemId ? `/p/${slug}/scans/${itemId}` : `/p/${slug}/scans`} replace />
-}
-
-/**
- * Legacy `/p/:slug/variables/:variableId` → the Variables surface with that
- * variable focused. Event spec cards linked here before variables moved under
- * `/settings/variables`, so old links and copied URLs still land (#245 JR-10).
- */
-function VariableRedirect() {
-  const { slug, variableId } = useParams<{ slug: string; variableId: string }>()
-  return <Navigate to={`/p/${slug}/settings/variables/${variableId}`} replace />
 }
 
 /**
@@ -490,7 +480,6 @@ export default function App() {
               <Route path="/users" element={<Navigate to="/settings/members" replace />} />
               <Route path="/account" element={<Navigate to="/settings/profile" replace />} />
               <Route path="/p/:slug/monitoring" element={<ProjectSettingsRedirect tab="monitoring" />} />
-              <Route path="/p/:slug/alerting" element={<ProjectSettingsRedirect tab="alerting" />} />
               <Route path="/p/:slug/events/detail/:eventId" element={<EventDetailRedirect />} />
               {/* Keyed per entity: the page is reached from itself (successor links, the
                   bell, Back), and a reused instance kept the previous entity's chart,
@@ -540,10 +529,29 @@ export default function App() {
                   /p/:slug/events (App.test.tsx pins this). */}
               <Route path="/p/:slug/settings/scans/:itemId" element={<ScansRedirect />} />
               <Route path="/p/:slug/settings/scans" element={<ScansRedirect />} />
+              {/* Plan, Observe and Govern surfaces at their own addresses (#238
+                  JR-25 / AL-42 / ST-5). One page renders them all, so they share
+                  a Suspense key and moving between them never remounts the page. */}
+              <Route path="/p/:slug/event-types/:itemId" element={withSuspense('project-settings', <ProjectSettingsPage surface="event-types" />, 'detail')} />
+              <Route path="/p/:slug/event-types" element={withSuspense('project-settings', <ProjectSettingsPage surface="event-types" />)} />
+              <Route path="/p/:slug/meta-fields" element={withSuspense('project-settings', <ProjectSettingsPage surface="meta-fields" />)} />
+              <Route path="/p/:slug/variables/:itemId" element={withSuspense('project-settings', <ProjectSettingsPage surface="variables" />, 'detail')} />
+              <Route path="/p/:slug/variables" element={withSuspense('project-settings', <ProjectSettingsPage surface="variables" />)} />
+              <Route path="/p/:slug/relations" element={withSuspense('project-settings', <ProjectSettingsPage surface="relations" />)} />
+              <Route path="/p/:slug/branches/:itemId" element={withSuspense('project-settings', <ProjectSettingsPage surface="branches" />, 'detail')} />
+              <Route path="/p/:slug/branches" element={withSuspense('project-settings', <ProjectSettingsPage surface="branches" />, 'detail')} />
+              <Route path="/p/:slug/history" element={withSuspense('project-settings', <ProjectSettingsPage surface="history" />)} />
+              {/* `:itemId` is the delivery an alert message links to. */}
+              <Route path="/p/:slug/alerting/:itemId" element={withSuspense('project-settings', <ProjectSettingsPage surface="alerting" />)} />
+              <Route path="/p/:slug/alerting" element={withSuspense('project-settings', <ProjectSettingsPage surface="alerting" />)} />
+              <Route path="/p/:slug/audit" element={withSuspense('project-settings', <ProjectSettingsPage surface="audit" />)} />
+              {/* Project settings proper: detection renders here, general and
+                  plan rules hand off to the takeover, and every old
+                  /settings/<surface>[/:itemId] address redirects (with its query
+                  string) to the route above. */}
               <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense('project-settings', <ProjectSettingsPage />, 'settings')} />
               <Route path="/p/:slug/settings/:tab" element={withSuspense('project-settings', <ProjectSettingsPage />, 'settings')} />
               <Route path="/p/:slug/settings" element={withSuspense('project-settings', <ProjectSettingsPage />, 'settings')} />
-              <Route path="/p/:slug/variables/:variableId" element={<VariableRedirect />} />
               <Route path="/p/:slug" element={<ProjectHomeRedirect />} />
               {/* Project-scoped catch-all. It has to exist separately from the
                   global one below: only a route that declares `:slug` puts the

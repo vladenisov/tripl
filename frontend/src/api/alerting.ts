@@ -10,6 +10,7 @@ import type {
   AlertInboxStatus,
   AlertDeliveryListResponse,
   AlertDestination,
+  AlertDestinationDraftTestRequest,
   AlertDestinationTestResponse,
   AlertRule,
   AlertRuleFilterPayload,
@@ -173,6 +174,14 @@ export const alertingApi = {
       `/projects/${slug}/alert-destinations/${destinationId}/test`,
       undefined,
     ),
+
+  /**
+   * Send the test message through settings the destination dialog has not
+   * saved (AL-30). Same contract as `testDestination`: resolves 200 even when
+   * the channel refuses, so read `ok`/`error` rather than catching.
+   */
+  testDestinationDraft: (slug: string, body: AlertDestinationDraftTestRequest) =>
+    api.post<AlertDestinationTestResponse>(`/projects/${slug}/alert-destinations/test`, body),
 
   createRule: (
     slug: string,

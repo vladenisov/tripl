@@ -177,7 +177,7 @@ describe('OnboardingChecklist', () => {
       [/Run a catalog \+ monitoring scan/, '/p/demo/scans?onboarding=scan&step=2-of-5'],
       [/Review imported events/, '/p/demo/events/review?onboarding=review&step=3-of-5'],
       [/Define a key metric/, '/p/demo/metrics/new?onboarding=metric&step=4-of-5'],
-      [/Set up alerting/, '/p/demo/settings/alerting?onboarding=alert&step=5-of-5'],
+      [/Set up alerting/, '/p/demo/alerting?onboarding=alert&step=5-of-5'],
     ]
     for (const [name, href] of expected) {
       expect(screen.getByRole('link', { name })).toHaveAttribute('href', href)
@@ -204,7 +204,7 @@ describe('OnboardingChecklist', () => {
     expect(screen.getByText('0 of 4')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Set up alerting/ })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting?onboarding=alert&step=4-of-4',
+      '/p/demo/alerting?onboarding=alert&step=4-of-4',
     )
   })
 

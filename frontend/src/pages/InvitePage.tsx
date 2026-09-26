@@ -123,13 +123,12 @@ export default function InvitePage() {
           </span>
         </div>
         <div
-          className="space-y-4 rounded-card border p-6 shadow-lg"
-          style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)' }}
+          className="space-y-4 rounded-card border p-6 shadow-lg border-border bg-bg-elevated"
         >
           <PageHeader title={title} />
 
           {previewQuery.isLoading && (
-            <p className="text-body" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="text-body text-fg-tertiary">
               Checking your invitation…
             </p>
           )}
@@ -140,7 +139,7 @@ export default function InvitePage() {
                 <p role="alert" className="text-body text-destructive">
                   {getErrorMessage(previewQuery.error)}
                 </p>
-                <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                <p className="text-body-sm text-fg-tertiary">
                   Ask whoever invited you to send a new link.
                 </p>
               </div>
@@ -162,7 +161,7 @@ export default function InvitePage() {
                 <p role="alert" className="text-body text-destructive">
                   {getErrorMessage(previewQuery.error)}
                 </p>
-                <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                <p className="text-body-sm text-fg-tertiary">
                   Your link may still be fine. Try again in a moment.
                 </p>
               </div>
@@ -181,14 +180,14 @@ export default function InvitePage() {
           {preview && (
             <>
               <div className="space-y-1">
-                <p className="text-body" style={{ color: 'var(--fg-subtle)' }}>
+                <p className="text-body text-fg-tertiary">
                   You were invited as <strong>{preview.email}</strong>, joining as{' '}
                   <strong>{roleLabel}</strong>. Set a password to finish.
                 </p>
                 {/* What the role means, since "Editor" alone does not say
                     (SH-32; website/docs/use/concepts.md, Roles). */}
                 {roleBlurb && (
-                  <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                  <p className="text-body-sm text-fg-tertiary">
                     {`${roleLabel} ${roleBlurb}`}
                   </p>
                 )}
@@ -236,7 +235,7 @@ export default function InvitePage() {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                   />
-                  <p id="invite-password-hint" className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                  <p id="invite-password-hint" className="text-body-sm text-fg-tertiary">
                     {PASSWORD_POLICY_HINT}
                   </p>
                   <FieldError inputId="invite-password" message={passwordError} className="mt-0" />

@@ -118,7 +118,7 @@ export default function MonitorDetailPage() {
   const muteError = muteMut.error ?? unmuteMut.error
 
   // The list this rule lives in: Alerting, on its Rules section.
-  const rulesListPath = `/p/${slug}/settings/alerting?section=monitors`
+  const rulesListPath = `/p/${slug}/alerting?section=monitors`
 
   if (monitorQuery.isError) {
     // A rule that does not exist is not a failure to retry (#237 SH-33): a
@@ -210,7 +210,7 @@ export default function MonitorDetailPage() {
       />
 
       {muteError instanceof Error && (
-        <p role="alert" className="m-0 text-caption" style={{ color: 'var(--danger)' }}>
+        <p role="alert" className="m-0 text-caption text-danger">
           {muteError.message}
         </p>
       )}
@@ -445,16 +445,15 @@ function FiringScopeRow({ slug, scope }: { slug?: string; scope: MonitorFiringSc
   // held the first message back), so there is no delivery to borrow it from.
   const name = (
     <>
-      <span style={{ color: 'var(--fg-subtle)' }}>{scopeKindLabel(scope.scope_type)}</span>{' '}
+      <span className="text-fg-tertiary">{scopeKindLabel(scope.scope_type)}</span>{' '}
       {scope.scope_name ?? (
-        <span style={{ color: 'var(--fg-faint)' }}>not notified yet</span>
+        <span className="text-fg-tertiary">not notified yet</span>
       )}
     </>
   )
   return (
     <li
-      className="flex min-h-(--row-h) flex-wrap items-center gap-2 border-b px-4 py-2 text-body-sm last:border-0"
-      style={{ borderColor: 'var(--border-subtle)' }}
+      className="flex min-h-(--row-h) flex-wrap items-center gap-2 border-b px-4 py-2 text-body-sm last:border-0 border-border-subtle"
     >
       {scope.direction === 'spike' && (
         <ArrowUp aria-label="Spike" role="img" className="size-3.5 shrink-0" style={{ color: signalDirectionColor('spike') }} />
@@ -463,15 +462,14 @@ function FiringScopeRow({ slug, scope }: { slug?: string; scope: MonitorFiringSc
         <ArrowDown aria-label="Drop" role="img" className="size-3.5 shrink-0" style={{ color: signalDirectionColor('drop') }} />
       )}
       {path ? (
-        <Link to={path} className="min-w-0 truncate no-underline hover:underline" style={{ color: 'var(--fg)' }}>
+        <Link to={path} className="min-w-0 truncate no-underline hover:underline text-fg">
           {name}
         </Link>
       ) : (
         <span className="min-w-0 truncate">{name}</span>
       )}
       <span
-        className="tnum ml-auto text-caption"
-        style={{ color: 'var(--fg-subtle)' }}
+        className="tnum ml-auto text-caption text-fg-tertiary"
         title={formatDateTime(scope.last_anomaly_bucket)}
       >
         {formatRelativeTime(scope.last_anomaly_bucket)}
@@ -585,7 +583,7 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
         className="gap-1 px-4 py-[11px] @min-[560px]:gap-4"
         style={{ borderTop: '1px solid var(--border-subtle)' }}
         caption={
-          <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="text-body-sm text-fg-tertiary">
             Watching
           </span>
         }
@@ -594,7 +592,7 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
           {groups.length > 0 ? (
             groups.map((group) => (
               <div key={group.id} className="flex min-w-0 flex-wrap items-center gap-1.5">
-                <span className="w-14 shrink-0 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                <span className="w-14 shrink-0 text-caption text-fg-tertiary">
                   {group.label}
                 </span>
                 {group.scopes.map((scope) => (
@@ -613,7 +611,7 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
               </div>
             ))
           ) : (
-            <span className="text-body-sm" style={{ color: 'var(--fg-faint)' }}>
+            <span className="text-body-sm text-fg-tertiary">
               No scopes selected
             </span>
           )}
@@ -643,7 +641,7 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
         className="gap-1 px-4 py-[11px] @min-[560px]:items-center @min-[560px]:gap-4"
         style={{ borderBottom: '1px solid var(--border-subtle)' }}
         caption={
-          <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="text-body-sm text-fg-tertiary">
             Destination
           </span>
         }
@@ -656,15 +654,14 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
           </Chip>
           {slug ? (
             <Link
-              to={`/p/${slug}/settings/alerting?section=destinations`}
-              className="min-w-0 truncate text-body-sm no-underline hover:underline"
-              style={{ color: 'var(--fg)' }}
+              to={`/p/${slug}/alerting?section=destinations`}
+              className="min-w-0 truncate text-body-sm no-underline hover:underline text-fg"
               title={monitor.destination_name}
             >
               {monitor.destination_name}
             </Link>
           ) : (
-            <span className="min-w-0 truncate text-body-sm" style={{ color: 'var(--fg)' }} title={monitor.destination_name}>
+            <span className="min-w-0 truncate text-body-sm text-fg" title={monitor.destination_name}>
               {monitor.destination_name}
             </span>
           )}
@@ -682,10 +679,9 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
       />
       {!monitor.destination_enabled && (
         <div
-          className="flex items-center gap-2 px-4 py-3 text-body-sm"
-          style={{ background: 'var(--danger-soft)', color: 'var(--fg-muted)' }}
+          className="flex items-center gap-2 px-4 py-3 text-body-sm bg-danger-soft text-fg-secondary"
         >
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--danger)' }} />
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-danger" />
           This destination is disabled — alerts for this rule will not be delivered.
         </div>
       )}
@@ -719,11 +715,11 @@ function FiredHistoryTimeline({
       {isLoading ? (
         <LoadingState className="px-4 py-6 text-body-sm" />
       ) : isError ? (
-        <div className="px-4 py-6 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="px-4 py-6 text-body-sm text-fg-tertiary">
           Could not load delivery history.
         </div>
       ) : items.length === 0 ? (
-        <div className="px-4 py-6 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+        <div className="px-4 py-6 text-body-sm text-fg-tertiary">
           This rule has not fired yet.
         </div>
       ) : (
@@ -764,7 +760,7 @@ function DeliveryRow({
   const [expanded, setExpanded] = useState(false)
   const scopesId = `delivery-scopes-${delivery.id}`
   return (
-    <li className="min-h-(--row-h) border-b px-4 py-3 last:border-0" style={{ borderColor: 'var(--border-subtle)' }}>
+    <li className="min-h-(--row-h) border-b px-4 py-3 last:border-0 border-border-subtle">
       <div className="flex flex-wrap items-center gap-2">
         <Chip tone={DELIVERY_TONE[delivery.status]} size="xs">
           {delivery.status}
@@ -777,8 +773,7 @@ function DeliveryRow({
         {delivery.matched_count > 0 ? (
           <button
             type="button"
-            className="tnum inline-flex items-center gap-0.5 rounded-sm text-caption hover:underline"
-            style={{ color: 'var(--fg-subtle)' }}
+            className="tnum inline-flex items-center gap-0.5 rounded-sm text-caption hover:underline text-fg-tertiary"
             aria-expanded={expanded}
             aria-controls={expanded ? scopesId : undefined}
             onClick={() => setExpanded((current) => !current)}
@@ -789,13 +784,12 @@ function DeliveryRow({
             {formatNumber(delivery.matched_count)} matched
           </button>
         ) : (
-          <span className="tnum text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="tnum text-caption text-fg-tertiary">
             0 matched
           </span>
         )}
         <span
-          className="tnum text-micro"
-          style={{ color: 'var(--fg-faint)' }}
+          className="tnum text-micro text-fg-tertiary"
           title={formatDateTime(delivery.created_at)}
         >
           {formatRelativeTime(delivery.created_at)}
@@ -810,14 +804,14 @@ function DeliveryRow({
         )}
       </div>
       {delivery.status === 'failed' && delivery.error_message && (
-        <p className="mt-1.5 text-caption" style={{ color: 'var(--danger)' }}>
+        <p className="mt-1.5 text-caption text-danger">
           {delivery.error_message}
         </p>
       )}
       {/* A failed retry used to hand the button back as "Retry" with no word
           about what happened (MON-31). */}
       {retryError && !retrying && (
-        <p role="alert" className="mt-1.5 text-caption" style={{ color: 'var(--danger)' }}>
+        <p role="alert" className="mt-1.5 text-caption text-danger">
           Retry failed: {retryError}
         </p>
       )}
@@ -840,7 +834,7 @@ function DeliveryScopes({ id, slug, deliveryId }: { id: string; slug: string; de
   }
   if (detailQuery.isError) {
     return (
-      <p id={id} className="mt-2 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <p id={id} className="mt-2 text-caption text-fg-tertiary">
         Could not load the matched scopes.
       </p>
     )
@@ -848,7 +842,7 @@ function DeliveryScopes({ id, slug, deliveryId }: { id: string; slug: string; de
   const items = detailQuery.data.items
   if (items.length === 0) {
     return (
-      <p id={id} className="mt-2 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <p id={id} className="mt-2 text-caption text-fg-tertiary">
         No per-scope rows were stored for this delivery.
       </p>
     )
@@ -859,7 +853,7 @@ function DeliveryScopes({ id, slug, deliveryId }: { id: string; slug: string; de
         const path = getScopeMonitoringPath(slug, item)
         const name = (
           <>
-            <span style={{ color: 'var(--fg-subtle)' }}>{scopeKindLabel(item.scope_type)}</span>{' '}
+            <span className="text-fg-tertiary">{scopeKindLabel(item.scope_type)}</span>{' '}
             {item.scope_name}
           </>
         )
@@ -869,13 +863,13 @@ function DeliveryScopes({ id, slug, deliveryId }: { id: string; slug: string; de
               ? <ArrowUp aria-label="Spike" role="img" className="size-3" style={{ color: signalDirectionColor('spike') }} />
               : <ArrowDown aria-label="Drop" role="img" className="size-3" style={{ color: signalDirectionColor('drop') }} />}
             {path ? (
-              <Link to={path} className="min-w-0 no-underline hover:underline" style={{ color: 'var(--fg)' }}>
+              <Link to={path} className="min-w-0 no-underline hover:underline text-fg">
                 {name}
               </Link>
             ) : (
               <span className="min-w-0">{name}</span>
             )}
-            <span className="tnum" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="tnum text-fg-tertiary">
               {formatIncidentCount(item.actual_count)} vs {formatIncidentCount(item.expected_count)}
               {' · '}
               {formatPercentDelta(item.percent_delta, item.expected_count)}

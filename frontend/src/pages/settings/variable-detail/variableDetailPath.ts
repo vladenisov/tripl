@@ -1,0 +1,25 @@
+/** The sections of the variable page, in tab order (AU-26). */
+export const VARIABLE_DETAIL_TABS = [
+  { id: 'definition', label: 'Definition' },
+  { id: 'drift', label: 'Drift' },
+  { id: 'overrides', label: 'Overrides' },
+  { id: 'observed', label: 'Observed' },
+] as const
+
+export type VariableDetailTab = (typeof VARIABLE_DETAIL_TABS)[number]['id']
+
+export function isVariableDetailTab(value: string | null): value is VariableDetailTab {
+  return VARIABLE_DETAIL_TABS.some((tab) => tab.id === value)
+}
+
+/** `/p/:slug/variables/:id`, optionally on one tab. */
+export function variableDetailPath(slug: string, variableId: string, tab?: VariableDetailTab): string {
+  const base = `/p/${slug}/variables/${variableId}`
+  return tab && tab !== 'definition' ? `${base}?tab=${tab}` : base
+}
+
+/** The list with the variable's row focused: where the page's back link goes. */
+export function variableListPath(slug: string, focusId?: string): string {
+  const base = `/p/${slug}/variables`
+  return focusId ? `${base}?focus=${encodeURIComponent(focusId)}` : base
+}

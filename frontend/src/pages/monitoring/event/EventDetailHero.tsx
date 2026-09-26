@@ -178,11 +178,11 @@ function EventDetailHeader({
               <span className="h-[7px] w-[7px] rounded-sm" style={{ background: typeColor }} />
               {typeLabel}
             </span>
-            <span style={{ color: 'var(--fg-faint)' }}>·</span>
+            <span className="text-fg-tertiary">·</span>
             <span>updated {formatRelativeTime(event.updated_at)}</span>
           </span>
           {event.description && (
-            <span className="mt-[7px] block max-w-[62ch] text-body leading-snug" style={{ color: 'var(--fg-muted)' }}>
+            <span className="mt-[7px] block max-w-[62ch] text-body leading-snug text-fg-secondary">
               {event.description}
             </span>
           )}
@@ -243,18 +243,18 @@ function EventActionOverflow({
           className="text-body-sm"
           onSelect={() => void copyToClipboard(window.location.href, 'Link copied')}
         >
-          <Link2 className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Copy link
+          <Link2 className="h-3.5 w-3.5 shrink-0 text-fg-tertiary" /> Copy link
         </DropdownMenuItem>
         <DropdownMenuItem
           className="text-body-sm"
           onSelect={() => void copyToClipboard(eventName, 'Event name copied')}
         >
-          <Copy className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Copy event name
+          <Copy className="h-3.5 w-3.5 shrink-0 text-fg-tertiary" /> Copy event name
         </DropdownMenuItem>
         {/* The Events list's bulk "Mark as verified", for this one event. */}
         {onMarkVerified && (
           <DropdownMenuItem className="text-body-sm" onSelect={onMarkVerified}>
-            <CheckCheck className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Mark as verified
+            <CheckCheck className="h-3.5 w-3.5 shrink-0 text-fg-tertiary" /> Mark as verified
           </DropdownMenuItem>
         )}
       </DropdownMenuContent>
@@ -297,8 +297,7 @@ function EventSignalBanner({
           it no longer asks a PM to read statistics (MO-2 / JR-31). A drop that
           bottomed out says so: "−100%" is right but reads as a rounding. */}
       <span
-        className="text-body-sm"
-        style={{ color: 'var(--fg-muted)' }}
+        className="text-body-sm text-fg-secondary"
         title={formatSignalEffectDetail(signal)}
       >
         {signal.direction === 'drop' ? 'Volume drop' : 'Volume spike'} detected
@@ -309,7 +308,7 @@ function EventSignalBanner({
             : ` — ${formatRatioDelta(delta)} vs. baseline.`}
       </span>
       <div className="flex-1" />
-      <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="text-caption text-fg-tertiary">
         {formatTimestamp(signal.bucket)}
       </span>
       {/* A signal is not a dead end (MO-4 / JR-5): record a verdict on the
@@ -383,7 +382,7 @@ function EventSignalMiniChart({
       style={SURFACE_STYLE}
     >
       <div className="mb-[6px] flex flex-wrap items-baseline gap-x-3 gap-y-1 text-caption">
-        <span className="font-medium" style={{ color: 'var(--fg-subtle)' }}>Volume</span>
+        <span className="font-medium text-fg-tertiary">Volume</span>
         {/* Same `expected > 0` gate the banner uses, so the two cannot disagree
             about whether this signal had a baseline at all — and the SAME
             value-aware formatter the signal card 1200 lines up already uses, so
@@ -391,7 +390,7 @@ function EventSignalMiniChart({
             prior buckets, so a rare event's baseline is legitimately sub-unit
             (0.4/hour); `Math.round` wrote that as "baseline 0", contradicting
             the gate that had just decided a baseline existed. */}
-        <span className="ml-auto" style={{ color: 'var(--fg-faint)' }}>
+        <span className="ml-auto text-fg-tertiary">
           {signal.expected_count > 0
             ? `baseline ${formatIncidentCount(signal.expected_count)} at the flagged bucket`
             : `${NO_BASELINE_LABEL} at the flagged bucket`}
@@ -440,7 +439,7 @@ function EventStat({
     <div title={hint}>
       <MiniStat
         label={label}
-        value={empty ? <span style={{ color: 'var(--fg-faint)' }}>{value}</span> : value}
+        value={empty ? <span className="text-fg-tertiary">{value}</span> : value}
         valueTone={tone}
       />
     </div>
@@ -489,7 +488,7 @@ function EventStatStrip({
             ? (
               <span className="inline-flex flex-col">
                 <span>{deltaText}</span>
-                <span className="text-caption font-normal" style={{ color: 'var(--fg-faint)' }}>
+                <span className="text-caption font-normal text-fg-tertiary">
                   partial window
                 </span>
               </span>

@@ -14,6 +14,11 @@ export interface ShadowEvent {
   last_seen_at: string
   status: ShadowEventStatus
   accepted_event_id: string | null
+  /**
+   * A few rows the collector saw for this identity (DA-32). Optional so a
+   * response from an older server still renders.
+   */
+  sample_properties?: Record<string, string>[]
 }
 
 export interface ShadowEventsResponse {

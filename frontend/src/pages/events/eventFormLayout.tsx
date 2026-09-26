@@ -55,13 +55,12 @@ export function SurfCard({
   // 11.5px subtitle — not a 12px-radius card with its own 14px title.
   return (
     <div
-      className="mb-[18px] overflow-hidden rounded-card border"
-      style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+      className="mb-[18px] overflow-hidden rounded-card border bg-surface border-border"
     >
-      <div className="border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+      <div className="border-b px-4 py-3 border-border-subtle">
         <h2 className="m-0 text-body-sm font-semibold">{title}</h2>
         {subtitle && (
-          <div className="mt-0.5 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="mt-0.5 text-caption text-fg-tertiary">
             {subtitle}
           </div>
         )}
@@ -186,8 +185,7 @@ export function SelectControl({
         {children}
       </select>
       <ChevronDown
-        className="pointer-events-none absolute right-[10px] top-1/2 -translate-y-1/2"
-        style={{ color: 'var(--fg-subtle)' }}
+        className="pointer-events-none absolute right-[10px] top-1/2 -translate-y-1/2 text-fg-tertiary"
         size={14}
         aria-hidden="true"
       />

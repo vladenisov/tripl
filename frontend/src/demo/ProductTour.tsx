@@ -198,7 +198,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
       >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Compass className="h-4 w-4" style={{ color: 'var(--accent)' }} />
+            <Compass className="h-4 w-4 text-accent" />
             Product tour
           </DialogTitle>
           <DialogDescription>
@@ -219,12 +219,11 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
             it and land on its first surface. */}
         {scenarioAvailable && (
           <div
-            className="min-w-0 rounded-lg border p-3"
-            style={{ background: 'var(--accent-soft)', borderColor: 'var(--border-subtle)' }}
+            className="min-w-0 rounded-lg border p-3 bg-accent-soft border-border-subtle"
           >
             <p className="mb-2 text-body-sm font-medium">
               Hands-on chapters{' '}
-              <span className="font-normal" style={{ color: 'var(--fg-muted)' }}>
+              <span className="font-normal text-fg-secondary">
                 — pick one, and the demo bar coaches you through it.
               </span>
             </p>
@@ -233,12 +232,11 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
         )}
 
         <div
-          className="rounded-lg border p-4"
-          style={{ background: 'var(--bg-sunken)', borderColor: 'var(--border-subtle)' }}
+          className="rounded-lg border p-4 bg-bg-sunken border-border-subtle"
         >
           {/* Named apart from the chapters above, so "tour" and "chapter" are
               not two words for one thing (#251 JR-23). */}
-          <p className="mb-2 micro-label" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="mb-2 micro-label text-fg-tertiary">
             Quick overview
           </p>
           <div className="flex items-center gap-2">
@@ -251,7 +249,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
             )}
             <span className="text-body font-semibold">{step.title}</span>
           </div>
-          <p className="mt-2 text-body-sm leading-[1.5]" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="mt-2 text-body-sm leading-[1.5] text-fg-tertiary">
             {step.blurb}
           </p>
           {step.action === 'open-command-palette' ? (
@@ -293,8 +291,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
           <button
             type="button"
             onClick={showWelcome}
-            className="self-start rounded-sm px-1 text-body-sm font-medium underline-offset-2 hover:underline"
-            style={{ color: 'var(--accent)' }}
+            className="self-start rounded-sm px-1 text-body-sm font-medium underline-offset-2 hover:underline text-accent"
           >
             Show the welcome panel on Overview
           </button>
@@ -303,14 +300,13 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
         {/* Direct index — every surface + the metric building blocks are one
             click away, regardless of the stepper position. Behind a
             disclosure, so it costs one Tab stop until it is wanted. */}
-        <div className="min-w-0 border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
+        <div className="min-w-0 border-t pt-3 border-border-subtle">
           <button
             type="button"
             onClick={() => setIndexOpen((value) => !value)}
             aria-expanded={indexOpen}
             aria-controls={indexId}
-            className="flex items-center gap-1 rounded-sm px-1 py-0.5 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)]"
-            style={{ color: 'var(--fg-muted)' }}
+            className="flex items-center gap-1 rounded-sm px-1 py-0.5 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)] text-fg-secondary"
           >
             All surfaces
             <ChevronDown
@@ -320,7 +316,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
           </button>
           {indexOpen && (
             <div id={indexId} className="mt-2">
-              <p className="mb-2 micro-label" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="mb-2 micro-label text-fg-tertiary">
                 Jump to any surface
               </p>
               <ul className="flex flex-wrap gap-1.5">
@@ -343,7 +339,7 @@ export function ProductTour({ slug, open, onOpenChange }: ProductTourProps) {
                   </li>
                 ))}
               </ul>
-              <p className="mb-2 mt-3 micro-label" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="mb-2 mt-3 micro-label text-fg-tertiary">
                 Metric building blocks
               </p>
               <ul className="flex flex-wrap gap-1.5">
@@ -410,17 +406,15 @@ export function TourDock({ slug, onOpenTour }: { slug: string; onOpenTour: () =>
     <section
       aria-label="Product tour"
       data-tour-dock=""
-      className="fixed bottom-[68px] left-3 right-3 z-40 rounded-lg border p-3 shadow-lg sm:left-auto sm:right-4 sm:w-72"
-      style={{ background: 'var(--bg-elevated)', borderColor: 'var(--accent)' }}
+      className="fixed bottom-[68px] left-3 right-3 z-40 rounded-lg border p-3 shadow-lg sm:left-auto sm:right-4 sm:w-72 bg-bg-elevated border-accent"
     >
       <div className="flex items-start gap-2">
         <Compass
-          className="mt-0.5 h-3.5 w-3.5 shrink-0"
-          style={{ color: 'var(--accent)' }}
+          className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent"
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1">
-          <p className="micro-label" style={{ color: 'var(--fg-subtle)' }}>
+          <p className="micro-label text-fg-tertiary">
             Tour · step {docked + 1} of {steps.length}
           </p>
           <p className="mt-0.5 truncate text-body-sm font-medium">{step.title}</p>
@@ -430,8 +424,7 @@ export function TourDock({ slug, onOpenTour }: { slug: string; onOpenTour: () =>
           onClick={() => setTourDock(slug, null)}
           aria-label="Close the tour"
           title="Close the tour"
-          className="-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)]"
-          style={{ color: 'var(--fg-muted)' }}
+          className="-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)] text-fg-secondary"
         >
           <X className="h-3.5 w-3.5" aria-hidden="true" />
         </button>

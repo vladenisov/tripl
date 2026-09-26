@@ -98,7 +98,7 @@ export function buildVersionChartSeries(
           : isPreRelease
             ? 'var(--warning)'
             : item.is_other
-              ? 'var(--muted-foreground)'
+              ? 'var(--fg-tertiary)'
               : slot.color,
         dash: isActiveLatest || isPreRelease || item.is_other ? undefined : slot.dash,
         isHighlighted: isActiveLatest,

@@ -126,7 +126,7 @@ function DropdownMenuSeparator({ className, ...props }: React.ComponentProps<typ
 }
 
 function DropdownMenuShortcut({ className, ...props }: React.ComponentProps<"span">) {
-  return <span data-slot="dropdown-menu-shortcut" className={cn("text-muted-foreground ml-auto text-body-sm tracking-widest", className)} {...props} />
+  return <span data-slot="dropdown-menu-shortcut" className={cn("text-fg-tertiary ml-auto text-body-sm tracking-widest", className)} {...props} />
 }
 
 export {

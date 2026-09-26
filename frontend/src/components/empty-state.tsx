@@ -51,11 +51,11 @@ export function EmptyState({
           // A sunken well in the panel form too, so an empty panel reads as
           // intentional rather than as a stray icon (DS-21).
           <div className="mb-2.5 flex size-10 items-center justify-center rounded-full bg-bg-sunken">
-            <Icon className="size-5 text-muted-foreground" aria-hidden="true" />
+            <Icon className="size-5 text-fg-tertiary" aria-hidden="true" />
           </div>
         ) : (
           <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-            <Icon className="size-5 text-muted-foreground" aria-hidden="true" />
+            <Icon className="size-5 text-fg-tertiary" aria-hidden="true" />
           </div>
         ))}
       {/* On the type scale (DS-21): the page form titles at 15px over 13px
@@ -69,7 +69,7 @@ export function EmptyState({
       {description && (
         <p
           className={cn(
-            'mt-1 max-w-sm text-muted-foreground',
+            'mt-1 max-w-sm text-fg-secondary',
             compact ? 'text-caption' : 'text-body',
           )}
         >

@@ -104,8 +104,8 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           id: 'event-types',
           label: 'Event types',
           icon: Tag,
-          href: `${base}/settings/event-types`,
-          match: (p) => p.startsWith(`${base}/settings/event-types`),
+          href: `${base}/event-types`,
+          match: (p) => p.startsWith(`${base}/event-types`),
           count: summary ? formatCount(summary.event_type_count) : undefined,
         },
         {
@@ -116,36 +116,36 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           // palette keyword.
           label: 'Meta fields',
           icon: Braces,
-          href: `${base}/settings/meta-fields`,
-          match: (p) => p.startsWith(`${base}/settings/meta-fields`),
+          href: `${base}/meta-fields`,
+          match: (p) => p.startsWith(`${base}/meta-fields`),
         },
         {
           id: 'variables',
           label: 'Variables',
           icon: Variable,
-          href: `${base}/settings/variables`,
-          match: (p) => p.startsWith(`${base}/settings/variables`),
+          href: `${base}/variables`,
+          match: (p) => p.startsWith(`${base}/variables`),
           count: summary ? formatCount(summary.variable_count) : undefined,
         },
         {
           id: 'relations',
           label: 'Relations',
           icon: Link2,
-          href: `${base}/settings/relations`,
-          match: (p) => p.startsWith(`${base}/settings/relations`),
+          href: `${base}/relations`,
+          match: (p) => p.startsWith(`${base}/relations`),
         },
         {
           id: 'branches',
           label: 'Plan branches',
           icon: GitBranch,
-          href: `${base}/settings/branches`,
-          match: (p) => p.startsWith(`${base}/settings/branches`),
+          href: `${base}/branches`,
+          match: (p) => p.startsWith(`${base}/branches`),
         },
         {
           id: 'history',
           label: 'Plan history',
           icon: History,
-          href: `${base}/settings/history`,
+          href: `${base}/history`,
           // The immutable snapshot trail of the merges made on Plan branches
           // directly above. It is the one settings tab the IA redesign never
           // gave a sidebar home, so deleting the old tab strip left a fully
@@ -153,7 +153,7 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           // production project — with zero inbound links anywhere in the
           // product and no nav item to highlight while you stood on it
           // (tripl-ebib).
-          match: (p) => p.startsWith(`${base}/settings/history`),
+          match: (p) => p.startsWith(`${base}/history`),
         },
       ],
     },
@@ -219,13 +219,13 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           id: 'alerting',
           label: 'Alerting',
           icon: Bell,
-          href: `${base}/settings/alerting`,
+          href: `${base}/alerting`,
           // `/monitors/:id` is the per-rule fired history, and a rule is an
           // Alerting object — the standalone Monitors list that used to own
           // this prefix rendered the same AlertRule rows under a second noun,
           // and is now the Monitors SECTION of this page (tripl-89ps).
           match: (p) =>
-            p.startsWith(`${base}/settings/alerting`)
+            p.startsWith(`${base}/alerting`)
             || p.startsWith(`${base}/monitors`),
           // Badges the OPEN INCIDENT population (open_incident_count) — the
           // backlog the inbox on that page owes an answer on — in a danger tone
@@ -276,8 +276,8 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           id: 'audit',
           label: 'Audit log',
           icon: ScrollText,
-          href: `${base}/settings/audit`,
-          match: (p) => p.startsWith(`${base}/settings/audit`),
+          href: `${base}/audit`,
+          match: (p) => p.startsWith(`${base}/audit`),
           // THIS project's changes: the page asks /audit with project_slug
           // (AuditTab), so "who changed my plan?" is answered for this plan
           // alone. Actions that belong to no project (members, API keys, a
@@ -319,9 +319,64 @@ export function projectHomePath(slug: string): string {
   return `/p/${slug}/overview`
 }
 
+/**
+ * The Plan, Observe and Govern pages that used to be routed as
+ * `/p/:slug/settings/<surface>` and are `/p/:slug/<surface>` now
+ * (#238 JR-25 / AL-42 / ST-5). The sidebar presents them as first-class pages,
+ * and the `settings/` in their address — echoed by the palette and the
+ * breadcrumb — framed them as configuration. `/p/:slug/settings` keeps only
+ * project settings: general, plan rules and detection (`settings/monitoring`).
+ */
+export const PROJECT_SURFACES_MOVED_FROM_SETTINGS = [
+  'event-types',
+  'meta-fields',
+  'variables',
+  'relations',
+  'branches',
+  'history',
+  'alerting',
+  'audit',
+] as const
+
+export type ProjectSurfaceMovedFromSettings = (typeof PROJECT_SURFACES_MOVED_FROM_SETTINGS)[number]
+
+export function isSurfaceMovedFromSettings(tab: string): tab is ProjectSurfaceMovedFromSettings {
+  return (PROJECT_SURFACES_MOVED_FROM_SETTINGS as readonly string[]).includes(tab)
+}
+
+// The moved surfaces App.tsx registers a `/p/:slug/<surface>/:itemId` route for.
+const SURFACES_WITH_ITEM_ROUTES: ReadonlySet<ProjectSurfaceMovedFromSettings> = new Set([
+  'event-types',
+  'variables',
+  'branches',
+  'alerting',
+])
+
+/**
+ * Where an old `/p/:slug/settings/<tab>[/:itemId]` address lives now, keeping
+ * the item id, query string and hash — an alert message sent before the move
+ * carries `?item=` and `?incident=` anchors that must survive the hop. Null for
+ * a tab that did not move (detection settings, general).
+ */
+export function legacySettingsRedirectPath(
+  slug: string,
+  tab: string,
+  itemId?: string,
+  search = '',
+  hash = '',
+): string | null {
+  if (!isSurfaceMovedFromSettings(tab)) return null
+  // Only surfaces with a `/:itemId` route keep the id; the rest ignored it under
+  // `/settings/<tab>/<id>` too, and appending it now would land on NotFound.
+  const path = itemId && SURFACES_WITH_ITEM_ROUTES.has(tab)
+    ? `/p/${slug}/${tab}/${itemId}`
+    : `/p/${slug}/${tab}`
+  return `${path}${search}${hash}`
+}
+
 // Surfaces that exist in every project under the same address, so switching
 // project can keep the reader on the one they are comparing.
-const PORTABLE_SURFACES: ReadonlySet<string> = new Set([
+const PORTABLE_SURFACES: ReadonlySet<string> = new Set<string>([
   'overview',
   'events',
   'metrics',
@@ -330,6 +385,7 @@ const PORTABLE_SURFACES: ReadonlySet<string> = new Set([
   'coverage',
   'scans',
   'concepts',
+  ...PROJECT_SURFACES_MOVED_FROM_SETTINGS,
 ])
 
 /**
@@ -352,7 +408,9 @@ export function switchProjectPath(
   if (currentPath !== base && !currentPath.startsWith(`${base}/`)) return home
   const [surface, sub] = currentPath.slice(base.length).split('/').filter(Boolean)
   if (!surface) return home
-  if (surface === 'settings' && sub) return `/p/${toSlug}/settings/${sub}`
+  if (surface === 'settings' && sub) {
+    return isSurfaceMovedFromSettings(sub) ? `/p/${toSlug}/${sub}` : `/p/${toSlug}/settings/${sub}`
+  }
   if (surface === 'metrics' && sub === 'fact-tables') return `/p/${toSlug}/metrics/fact-tables`
   return PORTABLE_SURFACES.has(surface) ? `/p/${toSlug}/${surface}` : home
 }
@@ -395,7 +453,7 @@ export const ALERT_ITEM_PARAM = 'item'
 export const ALERT_INCIDENT_PARAM = 'incident'
 
 export interface AlertingPathAnchors {
-  /** Delivery to open: the second segment of /p/:slug/settings/:tab/:itemId. */
+  /** Delivery to open: the `:itemId` segment of /p/:slug/alerting/:itemId. */
   deliveryId?: string | null
   /** `${scope_type}:${scope_ref}` — the one item inside that delivery. */
   itemAnchor?: string | null
@@ -413,7 +471,7 @@ export interface AlertingPathAnchors {
  * page: it reads both through `useSearchParams`, which decodes.
  */
 export function getAlertingPath(slug: string, anchors: AlertingPathAnchors = {}): string {
-  const base = `/p/${slug}/settings/alerting`
+  const base = `/p/${slug}/alerting`
   const path = anchors.deliveryId ? `${base}/${anchors.deliveryId}` : base
   const params = new URLSearchParams()
   if (anchors.itemAnchor) params.set(ALERT_ITEM_PARAM, anchors.itemAnchor)
@@ -440,7 +498,7 @@ export interface ActivityTargetInput {
  * Where an activity row should actually go.
  *
  * The feed's alert rows arrive with `target_path` = the bare
- * `/p/:slug/settings/alerting`, which drops the reader at the top of a page
+ * `/p/:slug/alerting`, which drops the reader at the top of a page
  * holding every delivery and every incident. That makes the in-app notification
  * strictly worse than the telegram message the same delivery sent, which links
  * to the exact row (tripl-oxkt.21). The delivery id was never lost — it is

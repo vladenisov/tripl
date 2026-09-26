@@ -470,7 +470,7 @@ def _field_document(field: FieldDefinition, event_type: EventType, slug: str) ->
                 _spaced_identifiers([field.name, event_type.name]),
             ]
         ),
-        route_path=f"/p/{slug}/settings/event-types",
+        route_path=f"/p/{slug}/event-types",
     )
 
 
@@ -497,7 +497,7 @@ def _meta_field_document(meta_field: MetaFieldDefinition, slug: str) -> BuiltDoc
                 _spaced_identifiers([meta_field.name]),
             ]
         ),
-        route_path=f"/p/{slug}/settings/meta-fields",
+        route_path=f"/p/{slug}/meta-fields",
     )
 
 
@@ -774,7 +774,7 @@ def _variable_document(
                 _spaced_identifiers([variable.name, variable.source_name]),
             ]
         ),
-        route_path=f"/p/{slug}/settings/variables",
+        route_path=f"/p/{slug}/variables",
     )
 
 
@@ -859,7 +859,7 @@ def _relation_document(relation: EventTypeRelation, slug: str) -> BuiltDocument:
                 _spaced_identifiers([source_field.name, target_field.name]),
             ]
         ),
-        route_path=f"/p/{slug}/settings/relations",
+        route_path=f"/p/{slug}/relations",
     )
 
 

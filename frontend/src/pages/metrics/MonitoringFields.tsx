@@ -67,19 +67,18 @@ export function MonitoringFields({ draft, patch, columnChoices, columnSource }: 
           <CollapsibleTrigger asChild>
             <button
               type="button"
-              className="flex w-full items-center gap-2 px-4 py-[13px] text-left transition-colors hover:bg-[var(--surface-hover)]"
-              style={{ borderTop: '1px solid var(--border-subtle)' }}
+              className="flex w-full items-center gap-2 px-4 py-[13px] text-left transition-colors hover:bg-[var(--surface-hover)] border-t border-border-subtle"
             >
               <ChevronRight
                 size={14}
                 aria-hidden="true"
-                className="shrink-0 transition-transform"
-                style={{ color: 'var(--fg-subtle)', transform: open ? 'rotate(90deg)' : undefined }}
+                className="shrink-0 transition-transform text-fg-tertiary"
+                style={{ transform: open ? 'rotate(90deg)' : undefined }}
               />
-              <span className="text-body font-medium" style={{ color: 'var(--fg)' }}>
+              <span className="text-body font-medium text-fg">
                 Breakdowns and dimensions
               </span>
-              <span className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+              <span className="text-body-sm text-fg-tertiary">
                 (optional)
               </span>
               <span

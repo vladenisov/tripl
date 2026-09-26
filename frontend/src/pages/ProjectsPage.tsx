@@ -219,8 +219,7 @@ export default function MainPage() {
               {demoBlockedReason && (
                 <p
                   id="demo-generation-blocked"
-                  className="m-0 max-w-[320px] text-right text-caption"
-                  style={{ color: 'var(--fg-subtle)' }}
+                  className="m-0 max-w-[320px] text-right text-caption text-fg-tertiary"
                 >
                   {demoBlockedReason}
                 </p>
@@ -268,8 +267,7 @@ export default function MainPage() {
               calm row stops being centred in a 200px-tall box with ~160px of
               void around it (tripl-oqig). */}
           <div
-            className="flex flex-col gap-3 rounded-card border p-3"
-            style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+            className="flex flex-col gap-3 rounded-card border p-3 bg-surface border-border"
           >
             <MiniStatStrip phoneGrid className="px-1">
               <MiniStat label="Projects" value={String(portfolio.projectCount)} />
@@ -311,7 +309,7 @@ export default function MainPage() {
               />
             </MiniStatStrip>
 
-            <div className="h-px w-full" style={{ background: 'var(--border)' }} />
+            <div className="h-px w-full bg-border" />
 
             {/* A fixed three-column grid, not wrapping flex: these three always
                 mean "one row of the same kind of thing", and equal columns are
@@ -384,7 +382,7 @@ export default function MainPage() {
             <div className="flex items-end justify-between gap-3">
               <div>
                 <h2 className="text-heading font-semibold tracking-tight">Project portfolio</h2>
-                <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                <p className="text-caption text-fg-tertiary">
                   Recently updated projects with planning, review, scan, and alerting coverage.
                 </p>
               </div>

@@ -189,7 +189,7 @@ export function formatSeriesValue(value: number, noun: SeriesNoun): string {
  * follows the `color-scheme` the theme sets on the root), never a neutral,
  * accent or status token: the By version chart draws the latest release in
  * `--primary` (the accent), a pre-release in `--warning` and "Other" in
- * `--muted-foreground` (grey), and anomaly dots in `--danger`, so a slot built
+ * `--fg-tertiary` (grey), and anomaly dots in `--danger`, so a slot built
  * from any of those drew two series in one colour, and under the rose accent
  * the first slot was the anomaly red. The hues skip the red / amber band
  * (danger, warning, the rose and amber accents) and the default teal accent.

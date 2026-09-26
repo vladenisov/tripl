@@ -62,8 +62,7 @@ export function PageHeader({
           {eyebrow && (
             <div
               data-slot="page-eyebrow"
-              className="micro-label"
-              style={{ color: 'var(--fg-subtle)' }}
+              className="micro-label text-fg-tertiary"
             >
               {eyebrow}
             </div>
@@ -74,7 +73,7 @@ export function PageHeader({
               {count != null && (
                 <>
                   {' '}
-                  <span className="tnum font-normal" style={{ color: 'var(--fg-subtle)' }}>
+                  <span className="tnum font-normal text-fg-tertiary">
                     {count}
                   </span>
                 </>
@@ -84,8 +83,7 @@ export function PageHeader({
           </div>
           {description && (
             <div
-              className="mt-1.5 max-w-[640px] text-body-sm leading-[1.5]"
-              style={{ color: 'var(--fg-subtle)' }}
+              className="mt-1.5 max-w-[640px] text-body-sm leading-[1.5] text-fg-tertiary"
             >
               {description}
             </div>

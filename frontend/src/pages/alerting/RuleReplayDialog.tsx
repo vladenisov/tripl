@@ -164,10 +164,10 @@ function ThresholdRow({
   const changed = used !== saved
   return (
     <div className="min-w-0">
-      <dt className="micro-label text-muted-foreground">{label}</dt>
-      <dd className={changed ? 'text-body-sm font-medium text-foreground' : 'text-body-sm text-muted-foreground'}>
+      <dt className="micro-label text-fg-tertiary">{label}</dt>
+      <dd className={changed ? 'text-body-sm font-medium text-foreground' : 'text-body-sm text-fg-tertiary'}>
         {used}
-        {changed && <span className="text-muted-foreground"> (saved {saved})</span>}
+        {changed && <span className="text-fg-tertiary"> (saved {saved})</span>}
       </dd>
     </div>
   )
@@ -184,10 +184,10 @@ function FiringsCountBadge({
 }) {
   return (
     <div className="flex flex-col items-start rounded-md border bg-muted/30 px-3 py-2">
-      <div className="micro-label text-muted-foreground">{label}</div>
+      <div className="micro-label text-fg-tertiary">{label}</div>
       <div className="flex items-center gap-2">
         <span className="text-heading font-semibold tnum">{count}</span>
-        <span className="text-body-sm text-muted-foreground">{count === 1 ? 'firing' : 'firings'}</span>
+        <span className="text-body-sm text-fg-tertiary">{count === 1 ? 'firing' : 'firings'}</span>
         {noisy && (
           <Chip tone="danger" icon={<AlertTriangle aria-hidden="true" />}>
             Noisy
@@ -479,7 +479,7 @@ export function RuleReplayDialog({
               {simulateMut.isPending ? 'Replaying…' : 'Replay'}
             </Button>
             {displayResult && (
-              <div className={`ml-auto text-right text-body-sm text-muted-foreground ${resultIsStale ? 'opacity-50' : ''}`}>
+              <div className={`ml-auto text-right text-body-sm text-fg-tertiary ${resultIsStale ? 'opacity-50' : ''}`}>
                 <div>
                   Considered{' '}
                   <span className="font-medium text-foreground">
@@ -505,7 +505,7 @@ export function RuleReplayDialog({
           )}
 
           {resultIsStale && (
-            <p role="status" className="rounded-md border border-dashed p-2 text-body-sm text-muted-foreground">
+            <p role="status" className="rounded-md border border-dashed p-2 text-body-sm text-fg-tertiary">
               Settings changed since this replay — press Replay to see results for them.
             </p>
           )}
@@ -520,7 +520,7 @@ export function RuleReplayDialog({
                 />
                 {result.override && (
                   <>
-                    <span className="text-muted-foreground">→</span>
+                    <span className="text-fg-tertiary">→</span>
                     <FiringsCountBadge
                       label="With your overrides"
                       count={result.override.firings.length}
@@ -568,14 +568,14 @@ export function RuleReplayDialog({
                         : String(displayResult.sigma_threshold_saved)}
                     />
                   </dl>
-                  <p className="text-caption text-muted-foreground">
+                  <p className="text-caption text-fg-tertiary">
                     Nothing here is saved to the rule — it keeps routing on its stored thresholds.
                   </p>
                 </div>
               )}
 
               {displayResult && displayResult.firings.length === 0 ? (
-                <div className="rounded-md border border-dashed p-4 text-center text-body text-muted-foreground">
+                <div className="rounded-md border border-dashed p-4 text-center text-body text-fg-tertiary">
                   No firings in this window. Try widening the range or relaxing thresholds.
                 </div>
               ) : (
@@ -630,12 +630,12 @@ export function RuleReplayDialog({
                               className="truncate py-1.5"
                               title={firing.rendered_item ?? firing.scope_name}
                             >
-                              <span className="text-muted-foreground">
+                              <span className="text-fg-tertiary">
                                 {scopeKindLabel(firing.scope_type)}
                               </span>{' '}
                               {firing.scope_name}
                               {firing.drift_field && (
-                                <div className="truncate text-caption text-muted-foreground">
+                                <div className="truncate text-caption text-fg-tertiary">
                                   {firing.drift_type}: {firing.drift_field}
                                 </div>
                               )}
@@ -660,7 +660,7 @@ export function RuleReplayDialog({
                             <TableCell className="py-1.5 text-right tnum">
                               {formatIncidentCount(firing.actual_count)}
                             </TableCell>
-                            <TableCell className="hidden py-1.5 text-right tnum text-muted-foreground md:table-cell">
+                            <TableCell className="hidden py-1.5 text-right tnum text-fg-tertiary md:table-cell">
                               {formatIncidentCount(firing.expected_count)}
                             </TableCell>
                             <TableCell className="whitespace-nowrap py-1.5 pr-3 text-right tnum">
@@ -676,7 +676,7 @@ export function RuleReplayDialog({
 
               {displayResult?.rendered_message && (
                 <div className="min-w-0 space-y-1">
-                  <div className="text-caption uppercase tracking-wide text-muted-foreground">
+                  <div className="text-caption uppercase tracking-wide text-fg-tertiary">
                     Preview — the message this run would have sent, as{' '}
                     {MESSAGE_FORMAT_LABEL[base.message_format]}
                   </div>

@@ -57,6 +57,7 @@ dev = [
     "ruff>=0.16.3",
     "mypy>=2.3.0",
     "pytest-xdist>=3.8.0",
+    "pytest-cov>=7.0.0",
 ]
 
 [build-system]
@@ -145,3 +146,21 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = ["celery.*", "statsmodels.*", "google.cloud.*", "opentelemetry.*"]
 ignore_missing_imports = true
+
+# Coverage for `pytest --cov=tripl` (CI runs it; see CONTRIBUTING.md, "Coverage").
+# Measured over the installed package, so the test modules under
+# src/tripl/tests are omitted explicitly; alembic/ sits outside the package and
+# is listed only so a future `--cov=.` cannot pull the migrations in.
+[tool.coverage.run]
+source = ["tripl"]
+omit = ["*/tripl/tests/*", "*/alembic/*"]
+# The async request path runs ORM calls inside SQLAlchemy's greenlet bridge;
+# without "greenlet" the lines executed there are reported as missed.
+concurrency = ["greenlet", "thread"]
+
+[tool.coverage.report]
+# A ratchet: raise it when coverage rises, never lower it to get a red run
+# through. pytest-cov reads it, so CI passes no --cov-fail-under of its own.
+# Measured on CI on 2026-09-26: 92.4% (35934 statements, 2713 missed), rounded down.
+fail_under = 92
+skip_empty = true

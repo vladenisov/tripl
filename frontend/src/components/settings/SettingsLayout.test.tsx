@@ -126,7 +126,7 @@ describe('SettingsLayout signposting', () => {
 
     expect(screen.getByRole('link', { name: 'Tracking plan & alerting' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/event-types',
+      '/p/demo/event-types',
     )
   })
 

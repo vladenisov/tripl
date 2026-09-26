@@ -33,12 +33,12 @@ describe('buildTourSteps', () => {
     // rules under a second noun and was merged in (tripl-89ps). `/monitors`
     // still resolves, but only through a redirect, and a tour step should land
     // on the real surface rather than bounce through one.
-    expect(byId.get('monitors')).toBe('/p/acme/settings/alerting?section=monitors')
+    expect(byId.get('monitors')).toBe('/p/acme/alerting?section=monitors')
     expect(byId.get('anomalies')).toBe('/p/acme/anomalies')
     expect(byId.get('coverage')).toBe('/p/acme/coverage')
     expect(byId.get('reconciliation')).toBe('/p/acme/reconciliation')
-    expect(byId.get('branches')).toBe('/p/acme/settings/branches')
-    expect(byId.get('alerting')).toBe('/p/acme/settings/alerting')
+    expect(byId.get('branches')).toBe('/p/acme/branches')
+    expect(byId.get('alerting')).toBe('/p/acme/alerting')
   })
 
   it('tags every step with the group its sidebar item is in (tripl-3y7z, #251 JR-22)', () => {

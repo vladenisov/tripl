@@ -127,5 +127,50 @@ export default defineConfig({
     // looks capped while executing at full concurrency (tripl-jfm3.87). Set
     // here, it cannot be bypassed by how the suite happens to be invoked.
     maxWorkers: process.env.CI ? undefined : 2,
+    // `pnpm test:coverage` (CI runs it in place of `pnpm test`, same test set).
+    // `include` is what makes a source file no test imports count as 0% rather
+    // than vanish from the report. The thresholds are a ratchet: raise them to
+    // the new measured value when coverage rises, never lower them to get a
+    // red run through — write the missing test instead (CONTRIBUTING.md,
+    // "Coverage").
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: [
+        'src/**/*.test.{ts,tsx}',
+        'src/**/*.d.ts',
+        'src/test/**',
+        'src/test-setup.ts',
+        // Generated from backend/openapi.json: types only, nothing to execute.
+        'src/types/api.gen.ts',
+        // The entry point mounts the app into the real document; no test runs it.
+        'src/main.tsx',
+      ],
+      // text-summary for the job log, json-summary for the CI artifact.
+      reporter: ['text-summary', 'json-summary'],
+      thresholds: {
+        // Measured on the full suite on 2026-09-26, rounded down. A ratchet:
+        // raise a floor when coverage rises, never lower one to pass a PR.
+        lines: 91,
+        statements: 89,
+        functions: 84,
+        branches: 85,
+        // Per-directory floors (tripl-fj5g.2), so a coverage drop in these
+        // directories cannot hide behind the app-wide average. src/lib is pure
+        // logic with no DOM to excuse a gap.
+        'src/lib/**': {
+          lines: 97,
+          statements: 97,
+          functions: 98,
+          branches: 92,
+        },
+        'src/demo/**': {
+          lines: 96,
+          statements: 93,
+          functions: 93,
+          branches: 89,
+        },
+      },
+    },
   },
 })

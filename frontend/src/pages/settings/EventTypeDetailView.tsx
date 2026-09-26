@@ -13,7 +13,7 @@ import { requestPageLeave } from '@/hooks/useUnsavedChangesGuard'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
 import { usePageTitle } from '@/components/shell-chrome-context'
-import { EntityNotFound, PageSkeleton, ReadOnlyNotice } from '@/components/states'
+import { EntityNotFound, PageSkeleton, ReadOnlyDefinition, ReadOnlyNotice } from '@/components/states'
 import { ErrorState } from '@/components/error-state'
 import type { EventType, EventTypeOwner } from '@/types'
 import { Button } from '@/components/ui/button'
@@ -110,13 +110,13 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
       ? eventTypes.find((e) => e.name === lastSeenName)
       : undefined
   const redirectTo = sameNameOnThisBranch
-    ? `/p/${slug}/settings/event-types/${sameNameOnThisBranch.id}${searchParams.toString() ? `?${searchParams.toString()}` : ''}`
+    ? `/p/${slug}/event-types/${sameNameOnThisBranch.id}${searchParams.toString() ? `?${searchParams.toString()}` : ''}`
     : null
   useEffect(() => {
     if (redirectTo) navigate(redirectTo, { replace: true })
   }, [navigate, redirectTo])
 
-  const goBack = () => navigate(`/p/${slug}/settings/event-types`)
+  const goBack = () => navigate(`/p/${slug}/event-types`)
   const goEvents = () => navigate(`/p/${slug}/events/${et?.name ?? 'all'}`)
 
   // Only a load that never answered replaces the page. A failed refetch keeps
@@ -148,7 +148,7 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
             ? 'This event type does not exist on main. It may have been deleted or renamed.'
             : 'This event type does not exist on the selected branch. It may have been deleted, renamed, or only exist on another branch.'
         }
-        back={{ to: `/p/${slug}/settings/event-types`, label: 'Back to event types' }}
+        back={{ to: `/p/${slug}/event-types`, label: 'Back to event types' }}
       />
     )
   }
@@ -176,7 +176,7 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
         }
         titleAddon={
           <>
-            <span className="mono text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+            <span className="mono text-body-sm text-fg-tertiary">
               {et.name}
             </span>
             <MergeGateChip slug={slug} eventType={et} />
@@ -290,7 +290,7 @@ function SummaryTab({ et }: { et: EventType }) {
 
         <Panel title="Sensitive fields" subtitle="Fields carrying a sensitivity label">
           {sensitiveFields.length === 0 ? (
-            <p className="px-4 py-6 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="px-4 py-6 text-center text-body-sm text-fg-tertiary">
               No sensitive fields.
             </p>
           ) : (
@@ -298,8 +298,7 @@ function SummaryTab({ et }: { et: EventType }) {
               {sensitiveFields.map((f) => (
                 <div
                   key={f.id}
-                  className="flex items-center gap-2.5 border-t px-4 py-1.5"
-                  style={{ borderColor: 'var(--border-subtle)' }}
+                  className="flex items-center gap-2.5 border-t px-4 py-1.5 border-border-subtle"
                 >
                   <span className="mono flex-1 truncate text-caption">{f.name}</span>
                   <Chip tone="warning" size="xs">
@@ -318,10 +317,10 @@ function SummaryTab({ et }: { et: EventType }) {
 function KeyValue({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex gap-3.5 text-body-sm">
-      <span className="w-[90px] shrink-0" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="w-[90px] shrink-0 text-fg-tertiary">
         {label}
       </span>
-      <span className="flex-1 leading-snug" style={{ color: 'var(--fg)' }}>
+      <span className="flex-1 leading-snug text-fg">
         {value}
       </span>
     </div>
@@ -403,6 +402,38 @@ function GeneralCard({
     onSuccess: () => qc.invalidateQueries({ queryKey: projectEventTypesKey(slug) }),
   })
 
+  // A viewer reads the definition; a disabled form kept live borders, a
+  // colour picker and editing hints on controls that did nothing (#237 rule 4,
+  // tripl-i9mt.12).
+  if (!canWrite) {
+    return (
+      <Panel className="mb-3" title="General">
+        <div className="p-4">
+          <ReadOnlyDefinition
+            items={[
+              { label: 'Type name', value: <span className="mono">{eventType.name}</span> },
+              { label: 'Display name', value: eventType.display_name },
+              { label: 'Description', value: eventType.description },
+              {
+                label: 'Color',
+                value: (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span
+                      aria-hidden="true"
+                      className="inline-block size-3 rounded-full border"
+                      style={{ background: savedColor, borderColor: 'var(--border-subtle)' }}
+                    />
+                    <span className="mono">{savedColor}</span>
+                  </span>
+                ),
+              },
+            ]}
+          />
+        </div>
+      </Panel>
+    )
+  }
+
   return (
     <form
       onSubmit={(e) => {
@@ -410,41 +441,37 @@ function GeneralCard({
         if (dirty) updateMut.mutate()
       }}
     >
-      <fieldset disabled={!canWrite} className="contents">
-        <Panel
-          className="mb-3"
-          title="General"
-          footer={
-            canWrite ? (
-              <SaveFooter
-                pending={updateMut.isPending}
-                disabled={!dirty}
-                // Says why Save is off, so the disabled button is not read
-                // as a stray text link (AU-35).
-                status={!dirty ? (updateMut.isSuccess ? 'Saved' : 'No changes') : undefined}
-              />
-            ) : undefined
-          }
-        >
-          {/* "Type name", not "Name": the field subpage below renders on the same
-              screen with its own Name input, and two controls sharing one
-              accessible name cannot be told apart by a screen reader. */}
-          <SField label="Type name" hint="Used in queries and ingestion — can't be changed.">
-            <SInput value={eventType.name} onChange={() => undefined} mono disabled />
-          </SField>
-          <SField label="Display name">
-            <SInput value={displayName} onChange={setDisplayName} />
-          </SField>
-          <SField label="Description">
-            <STextarea value={description} onChange={setDescription} />
-          </SField>
-          <SField label="Color" last>
-            <ColorPicker value={color} onChange={setColor} />
-          </SField>
-        </Panel>
-      </fieldset>
+      <Panel
+        className="mb-3"
+        title="General"
+        footer={
+          <SaveFooter
+            pending={updateMut.isPending}
+            disabled={!dirty}
+            // Says why Save is off, so the disabled button is not read
+            // as a stray text link (AU-35).
+            status={!dirty ? (updateMut.isSuccess ? 'Saved' : 'No changes') : undefined}
+          />
+        }
+      >
+        {/* "Type name", not "Name": the field subpage below renders on the same
+            screen with its own Name input, and two controls sharing one
+            accessible name cannot be told apart by a screen reader. */}
+        <SField label="Type name" hint="Used in queries and ingestion — can't be changed.">
+          <SInput value={eventType.name} onChange={() => undefined} mono disabled />
+        </SField>
+        <SField label="Display name">
+          <SInput value={displayName} onChange={setDisplayName} />
+        </SField>
+        <SField label="Description">
+          <STextarea value={description} onChange={setDescription} />
+        </SField>
+        <SField label="Color" last>
+          <ColorPicker value={color} onChange={setColor} />
+        </SField>
+      </Panel>
       {updateMut.isError && (
-        <p role="alert" className="mb-3 text-body" style={{ color: 'var(--danger)' }}>
+        <p role="alert" className="mb-3 text-body text-danger">
           {getErrorMessage(updateMut.error)}
         </p>
       )}
@@ -525,7 +552,7 @@ function DangerZoneCard({
       <div className="flex items-center gap-[18px] px-4 py-3.5">
         <div className="flex-1">
           <div className="text-body font-medium">Delete event type</div>
-          <div className="mt-0.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="mt-0.5 text-body-sm text-fg-tertiary">
             {impact}
           </div>
         </div>

@@ -1,6 +1,6 @@
 import { Panel } from '@/components/settings/kit'
 import { Button } from '@/components/ui/button'
-import { FilterBar, FilterSelect } from '@/components/ui/filter-bar'
+import { FilterBar, FilterBarItem, FilterSelect } from '@/components/ui/filter-bar'
 import { formatIsoDate } from '@/lib/datetime'
 import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
 import { ReadOnlyNotice, SectionSkeleton } from '@/components/states'
@@ -150,7 +150,7 @@ export function AlertAuditPanel({
     }
     if (strandedPastEnd && !pinnedDelivery) {
       return (
-        <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
+        <div className="rounded-lg border border-dashed p-4 text-body text-fg-tertiary">
           This page is now empty — the log changed while you were reading it. Use Newer to go back
           to the last page with deliveries.
         </div>
@@ -158,7 +158,7 @@ export function AlertAuditPanel({
     }
     if (items.length === 0 && !pinnedDelivery) {
       return (
-        <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
+        <div className="rounded-lg border border-dashed p-4 text-body text-fg-tertiary">
           {/* "No deliveries yet." on a filtered view asserted that the project
               had never delivered — on a project that had delivered 115 times,
               because Status=Failed matched none of them (tripl-oxkt.10). Say
@@ -208,7 +208,7 @@ export function AlertAuditPanel({
         subtitle={deliveries ? countOf(total, 'delivery', 'deliveries') : undefined}
       >
         <div className="min-w-0 space-y-4 p-4">
-          <p className="text-body-sm text-muted-foreground">
+          <p className="text-body-sm text-fg-tertiary">
             Every alert this project actually sent — the deliveries behind the incidents in the Inbox.
             A destination on a delivery schedule sends its rules together, so several rows here can
             share one message.
@@ -261,22 +261,24 @@ export function AlertAuditPanel({
               options={scans.map(scan => ({ value: scan.id, label: scan.name }))}
             />
             {/* One chip for the range, as on the Inbox beside it (AL-19). No
-                format hint on the inputs inside: they are native
-                <input type="date"> controls, which render and parse in the
-                browser's own locale, so a hard-coded "(YYYY-MM-DD)" would
+                format hint on the pickers inside: they show the day in the
+                app's own date format, so a hard-coded "(YYYY-MM-DD)" would
                 contradict what the control shows (tripl-jfm3.37). Only the
-                end that changed is rewritten, so the other keeps its bound. */}
-            <DateRangeFilter
-              label="Sent"
-              from={dateFrom}
-              to={dateTo}
-              onRangeChange={({ from, to }) =>
-                updateFilters({
-                  ...(from !== dateFrom ? { date_from: toDayBoundary(from, false) } : {}),
-                  ...(to !== dateTo ? { date_to: toDayBoundary(to, true) } : {}),
-                })
-              }
-            />
+                end that changed is rewritten, so the other keeps its bound.
+                Folds into the phone "Filters (n)" sheet with the chips. */}
+            <FilterBarItem active={!!(dateFrom || dateTo)}>
+              <DateRangeFilter
+                label="Sent"
+                from={dateFrom}
+                to={dateTo}
+                onRangeChange={({ from, to }) =>
+                  updateFilters({
+                    ...(from !== dateFrom ? { date_from: toDayBoundary(from, false) } : {}),
+                    ...(to !== dateTo ? { date_to: toDayBoundary(to, true) } : {}),
+                  })
+                }
+              />
+            </FilterBarItem>
           </FilterBar>
 
           {renderDeliveries()}
@@ -288,7 +290,7 @@ export function AlertAuditPanel({
                   back, so a reader who scrolled to the bottom concluded their
                   alert had never been sent (tripl-oxkt.12). Wording follows the
                   sibling page, settings/AuditTab.tsx. */}
-              <p className="text-body-sm text-muted-foreground">
+              <p className="text-body-sm text-fg-tertiary">
                 {strandedPastEnd
                   ? `Past the end of ${countOf(total, 'delivery', 'deliveries')}.`
                   : hasNewer

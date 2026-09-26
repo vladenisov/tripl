@@ -503,8 +503,7 @@ function DockedCoachCard({ anchor, children }: { anchor: HTMLElement; children: 
         onClick={() => setCollapsed((value) => !value)}
         aria-expanded={!collapsed}
         aria-label={collapsed ? 'Expand demo hint' : 'Collapse demo hint'}
-        className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)]"
-        style={{ color: 'var(--fg-muted)' }}
+        className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)] text-fg-secondary"
       >
         {/* The chevron points the way the card will move: a bottom card
             collapses downwards and expands upwards, a top card the reverse. */}
@@ -539,8 +538,7 @@ function CoachCard({
   return (
     <>
       <p
-        className="micro-label"
-        style={{ color: 'var(--fg-subtle)' }}
+        className="micro-label text-fg-tertiary"
       >
         Step {position} of {total}
       </p>
@@ -553,8 +551,7 @@ function CoachCard({
       <button
         type="button"
         onClick={onMute}
-        className="mt-2 rounded-sm px-1.5 py-0.5 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)] group-data-[collapsed=true]/coach:hidden"
-        style={{ color: 'var(--fg-muted)' }}
+        className="mt-2 rounded-sm px-1.5 py-0.5 text-caption font-medium transition-colors hover:bg-[var(--surface-hover)] group-data-[collapsed=true]/coach:hidden text-fg-secondary"
       >
         Hide hints
       </button>

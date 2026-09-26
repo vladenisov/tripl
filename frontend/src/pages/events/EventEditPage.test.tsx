@@ -14,6 +14,7 @@ import { BranchContext } from '@/components/branch-context-internal'
 import type { EventType } from '@/types'
 
 import EventEditPage from './EventForm'
+import { readCreatedEvents } from './createdEventsHandoff'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 
@@ -194,6 +195,15 @@ describe('EventEditPage layout and exits', () => {
         expect.objectContaining({ action: expect.objectContaining({ label: 'Open' }) }),
       ),
     )
+  })
+
+  it('hands the new event to the list, which scrolls to and marks it (AU-21)', async () => {
+    renderAtNew()
+    await screen.findByLabelText(/posted as the first comment/i)
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'checkout:completed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create event' }))
+
+    await waitFor(() => expect(readCreatedEvents('demo')).toEqual([CREATED.id]))
   })
 
   it('shows the form taking shape while it loads, not a sentence (AU-43)', async () => {

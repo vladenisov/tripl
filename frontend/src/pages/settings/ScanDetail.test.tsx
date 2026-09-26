@@ -478,7 +478,7 @@ describe('ScanDetail', () => {
     // ...and the same for the alert that actually reached Telegram.
     const alertsCard = screen.getByText('Alerts queued').parentElement!
     const alertsLink = within(alertsCard).getByRole('link')
-    expect(alertsLink).toHaveAttribute('href', '/p/demo/settings/alerting?scan=scan-1')
+    expect(alertsLink).toHaveAttribute('href', '/p/demo/alerting?scan=scan-1')
     expect(alertsLink).toHaveAttribute('title', 'View alerts from this scan')
     expect(alertsLink).toHaveTextContent('2')
   })

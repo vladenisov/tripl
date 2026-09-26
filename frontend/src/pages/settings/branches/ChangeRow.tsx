@@ -149,13 +149,13 @@ export function ChangeRow({
         >
           {meta.sym}
         </span>
-        <span className="mono min-w-0 truncate text-body-sm" style={{ color: 'var(--fg)' }}>
+        <span className="mono min-w-0 truncate text-body-sm text-fg">
           {entry.name}
         </span>
         {title ? (
           // Muted and after the scan name, not instead of it: the name is what
           // the merge pairs on and what the scanner reports (tripl-kjhi.3).
-          <span className="min-w-0 truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="min-w-0 truncate text-caption text-fg-tertiary">
             · {title}
           </span>
         ) : null}
@@ -168,14 +168,13 @@ export function ChangeRow({
             difference, not inside a long quote (PL-9). Below `sm` only the
             count of changed fields fits. */}
         <span
-          className="hidden min-w-0 flex-1 truncate text-right text-caption sm:inline"
-          style={{ color: 'var(--fg-subtle)' }}
+          className="hidden min-w-0 flex-1 truncate text-right text-caption sm:inline text-fg-tertiary"
         >
           {renamedTo ? `→ ${renamedTo}` : changeSummary(entry)}
         </span>
         <span className="flex-1 sm:hidden" aria-hidden="true" />
         {!renamedTo && hasFieldChanges ? (
-          <span className="shrink-0 text-caption tnum sm:hidden" style={{ color: 'var(--fg-subtle)' }}>
+          <span className="shrink-0 text-caption tnum sm:hidden text-fg-tertiary">
             {fieldChanges.length === 1 ? '1 field' : `${fieldChanges.length} fields`}
           </span>
         ) : null}
@@ -188,8 +187,7 @@ export function ChangeRow({
         <Link
           {...editLink}
           aria-label={`Edit ${renamedTo ?? entry.name}`}
-          className="flex shrink-0 items-center gap-1 pl-1 pr-4 text-caption transition-colors hover:underline pointer-coarse:min-w-10"
-          style={{ color: 'var(--accent)' }}
+          className="flex shrink-0 items-center gap-1 pl-1 pr-4 text-caption transition-colors hover:underline pointer-coarse:min-w-10 text-accent"
         >
           <Pencil className="size-3" aria-hidden="true" />
           Edit
@@ -205,8 +203,7 @@ export function ChangeRow({
             <p
               key={warning}
               role="note"
-              className="flex items-start gap-1.5 text-caption leading-snug"
-              style={{ color: 'var(--warning)' }}
+              className="flex items-start gap-1.5 text-caption leading-snug text-warning"
             >
               <AlertTriangle className="mt-[1px] size-3 shrink-0" aria-hidden="true" />
               <span>{warning}</span>
@@ -217,16 +214,15 @@ export function ChangeRow({
       {open ? (
         <div
           id={detailId}
-          className="flex flex-col gap-3 border-t px-4 py-3"
-          style={{ borderColor: 'var(--border-subtle)', background: 'var(--surface)' }}
+          className="flex flex-col gap-3 border-t px-4 py-3 border-border-subtle bg-surface"
         >
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="text-caption text-fg-tertiary">
               {meta.label} {ENTITY_LABEL[entry.entity_type]}
               {entry.parent ? (
                 <>
                   {' in '}
-                  <span className="mono" style={{ color: 'var(--fg)' }}>
+                  <span className="mono text-fg">
                     {entry.parent}
                   </span>
                 </>
@@ -238,8 +234,7 @@ export function ChangeRow({
                   type="button"
                   disabled={reverting}
                   onClick={() => onRevert(entry)}
-                  className={`flex items-center gap-1 text-caption hover:underline disabled:opacity-50 ${ROW_ACTION_TOUCH}`}
-                  style={{ color: 'var(--fg-muted)' }}
+                  className={`flex items-center gap-1 text-caption hover:underline disabled:opacity-50 ${ROW_ACTION_TOUCH} text-fg-secondary`}
                 >
                   <Undo2 className="size-3" aria-hidden="true" />
                   {renamedTo ? 'Undo this rename' : REVERT_LABEL[entry.kind]}
@@ -248,8 +243,7 @@ export function ChangeRow({
               {link ? (
                 <Link
                   {...link}
-                  className={`flex items-center gap-1 text-caption hover:underline ${ROW_ACTION_TOUCH}`}
-                  style={{ color: 'var(--accent)' }}
+                  className={`flex items-center gap-1 text-caption hover:underline ${ROW_ACTION_TOUCH} text-accent`}
                 >
                   {entry.kind === 'removed'
                     ? 'Open on main'
@@ -280,8 +274,7 @@ export function ChangeRow({
                           disabled={reverting}
                           onClick={() => onRevert(entry, change.field)}
                           aria-label={`Revert ${change.field}`}
-                          className={`flex items-center gap-1 text-caption hover:underline disabled:opacity-50 ${ROW_ACTION_TOUCH}`}
-                          style={{ color: 'var(--fg-muted)' }}
+                          className={`flex items-center gap-1 text-caption hover:underline disabled:opacity-50 ${ROW_ACTION_TOUCH} text-fg-secondary`}
                         >
                           <Undo2 className="size-3" aria-hidden="true" />
                           Revert
@@ -300,8 +293,7 @@ export function ChangeRow({
               onClick={() => setStateOpen((open) => !open)}
               aria-expanded={stateOpen}
               aria-controls={stateOpen ? stateId : undefined}
-              className={`flex w-fit items-center gap-1 text-caption hover:underline ${ROW_ACTION_TOUCH}`}
-              style={{ color: 'var(--fg-muted)' }}
+              className={`flex w-fit items-center gap-1 text-caption hover:underline ${ROW_ACTION_TOUCH} text-fg-secondary`}
             >
               <ChevronRight
                 className={`size-3 transition-transform ${stateOpen ? 'rotate-90' : ''}`}
@@ -326,7 +318,7 @@ export function ChangeRow({
             </DetailSection>
           ) : null}
           {!hasFieldChanges && !hasState ? (
-            <p className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <p className="text-caption text-fg-tertiary">
               No further detail for this change.
             </p>
           ) : null}
@@ -354,7 +346,7 @@ function RevertBlockedNote({
 }) {
   const branchLink = useBranchLinkProps()
   return (
-    <div role="note" className="text-caption" style={{ color: 'var(--warning)' }}>
+    <div role="note" className="text-caption text-warning">
       <p className="flex items-start gap-1.5">
         <AlertTriangle className="mt-[2px] size-3 shrink-0" aria-hidden="true" />
         <span>
@@ -372,14 +364,13 @@ function RevertBlockedNote({
               {path ? (
                 <Link
                   {...branchLink(path, branchId)}
-                  className="hover:underline"
-                  style={{ color: 'var(--accent)' }}
+                  className="hover:underline text-accent"
                   aria-label={`Edit ${row.name}`}
                 >
                   {row.name}
                 </Link>
               ) : (
-                <span style={{ color: 'var(--fg)' }}>{row.name}</span>
+                <span className="text-fg">{row.name}</span>
               )}
             </li>
           )
@@ -393,8 +384,7 @@ function DetailSection({ id, title, children }: { id?: string; title: string; ch
   return (
     <div id={id}>
       <div
-        className="mb-1.5 micro-label"
-        style={{ color: 'var(--fg-subtle)' }}
+        className="mb-1.5 micro-label text-fg-tertiary"
       >
         {title}
       </div>
@@ -420,8 +410,7 @@ function StateView({ state }: { state: Record<string, unknown> }) {
         <Fragment key={key}>
           <dt
             id={`${uid}-${key}`}
-            className="truncate text-caption"
-            style={{ color: 'var(--fg-subtle)' }}
+            className="truncate text-caption text-fg-tertiary"
             title={key}
           >
             {stateKeyLabel(key)}
@@ -442,8 +431,7 @@ function StateView({ state }: { state: Record<string, unknown> }) {
       <button
         type="button"
         onClick={() => setShowEmpty((v) => !v)}
-        className={`mt-1.5 text-caption hover:underline ${ROW_ACTION_TOUCH}`}
-        style={{ color: 'var(--fg-faint)' }}
+        className={`mt-1.5 text-caption hover:underline ${ROW_ACTION_TOUCH} text-fg-tertiary`}
       >
         {showEmpty
           ? 'Hide empty properties'
@@ -459,7 +447,7 @@ export function HousekeepingFold({ entries }: { entries: PlanDiffEntry[] }) {
   const [expanded, setExpanded] = useState(false)
   const listId = useId()
   return (
-    <div className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+    <div className="border-t border-border-subtle">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -467,8 +455,7 @@ export function HousekeepingFold({ entries }: { entries: PlanDiffEntry[] }) {
         // Only while the list exists: an idref to a missing element is an
         // a11y error, which ChangeRow's toggle already avoids (PLAN-20).
         aria-controls={expanded ? listId : undefined}
-        className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-caption"
-        style={{ color: 'var(--fg-subtle)' }}
+        className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-caption text-fg-tertiary"
       >
         <ChevronRight
           className="size-3 shrink-0 transition-transform"
@@ -476,7 +463,7 @@ export function HousekeepingFold({ entries }: { entries: PlanDiffEntry[] }) {
           aria-hidden
         />
         <span>{housekeepingLine(entries)}</span>
-        <span className="ml-auto" style={{ color: 'var(--fg-faint)' }}>
+        <span className="ml-auto text-fg-tertiary">
           not counted
         </span>
       </button>
@@ -487,10 +474,10 @@ export function HousekeepingFold({ entries }: { entries: PlanDiffEntry[] }) {
               key={`${entry.entity_type}-${entry.parent ?? ''}-${entry.name}`}
               className="flex items-baseline gap-2 py-0.5 text-caption"
             >
-              <span className="mono truncate" style={{ color: 'var(--fg-muted)' }}>
+              <span className="mono truncate text-fg-secondary">
                 {entry.name}
               </span>
-              <span className="shrink-0" style={{ color: 'var(--fg-faint)' }}>
+              <span className="shrink-0 text-fg-tertiary">
                 {ENTITY_LABEL[entry.entity_type] ?? entry.entity_type} · {entry.housekeeping}
               </span>
             </li>

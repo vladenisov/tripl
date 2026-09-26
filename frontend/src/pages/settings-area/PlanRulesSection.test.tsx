@@ -56,7 +56,7 @@ describe('Project · Plan rules points at what exists today (PL-26)', () => {
 
     expect(screen.getByRole('link', { name: 'Plan branches › Merge policy' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/branches',
+      '/p/demo/branches',
     )
   })
 })

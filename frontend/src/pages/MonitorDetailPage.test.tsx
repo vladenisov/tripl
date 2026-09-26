@@ -262,7 +262,7 @@ describe('MonitorDetailPage', () => {
 
     expect(await screen.findByRole('link', { name: /Edit rule/ })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting?section=monitors',
+      '/p/demo/alerting?section=monitors',
     )
   })
 
@@ -670,7 +670,7 @@ describe('MonitorDetailPage', () => {
     expect(await screen.findByText('Alert rule not found')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Back to alert rules' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting?section=monitors',
+      '/p/demo/alerting?section=monitors',
     )
     expect(screen.queryByRole('button', { name: /Try again|Retry/ })).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
@@ -726,7 +726,7 @@ describe('MonitorDetailPage inert scopes', () => {
     expect(await screen.findByText(VALUE_DRIFT_SENTENCE)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Variables' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/variables',
+      '/p/demo/variables',
     )
     // The chip carries the same sentence, so hovering the marked scope answers
     // the question the marking raises.

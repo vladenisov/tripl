@@ -79,6 +79,7 @@ function renderDetails(
   summary: ScanJobResultSummary | null,
   mode: ScanMode = 'monitoring',
   openNow: number | null = null,
+  hiddenNow = 0,
 ) {
   // The signals request hangs rather than answering, so an unseeded render is
   // pinned to "the answer has not arrived". Anything else is a bug in the test.
@@ -93,6 +94,8 @@ function renderDetails(
       ...Array.from({ length: openNow }, () => signal('scan-1')),
       // Another scan's open signal must not be counted into this scan's total.
       signal('scan-2'),
+      // Nor may this scan's muted or expected ones (MO-4 / JR-5).
+      ...Array.from({ length: hiddenNow }, () => ({ ...signal('scan-1'), hidden: true })),
     ])
   }
   return render(
@@ -151,7 +154,7 @@ describe('JobDetails', () => {
     expect(signals).toHaveAttribute('title', 'View anomalies from this scan')
 
     const alerts = screen.getByText('Queued 1 alert.')
-    expect(alerts).toHaveAttribute('href', '/p/demo/settings/alerting?scan=scan-1')
+    expect(alerts).toHaveAttribute('href', '/p/demo/alerting?scan=scan-1')
   })
 
   it('names the scan\'s open count beside the run delta when they differ', () => {
@@ -162,6 +165,15 @@ describe('JobDetails', () => {
 
     expect(screen.getByText('Raised 1 anomaly signal.')).toBeInTheDocument()
     expect(screen.getByText('4 signals from this scan are open now.')).toBeInTheDocument()
+  })
+
+  it('leaves muted and expected signals out of the scan\'s open count', () => {
+    // Four listed for the scan, three of them hidden: one is open, which is
+    // what the run raised, so there is nothing to put beside it.
+    renderDetails(FULL_SUMMARY, 'monitoring', 1, 3)
+
+    expect(screen.getByText('Raised 1 anomaly signal.')).toBeInTheDocument()
+    expect(screen.queryByText(/open now/)).toBeNull()
   })
 
   it('says nothing about open signals when the run delta is the whole story', () => {

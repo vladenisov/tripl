@@ -66,7 +66,7 @@ export function IncidentDeliveries({
   const total = data?.pages[0]?.total ?? 0
 
   if (isLoading) {
-    return <p className="mt-2 text-micro text-muted-foreground">Loading deliveries…</p>
+    return <p className="mt-2 text-micro text-fg-tertiary">Loading deliveries…</p>
   }
 
   // A failed request must not read as "nothing was sent". They are opposite
@@ -82,7 +82,7 @@ export function IncidentDeliveries({
 
   if (items.length === 0) {
     return (
-      <p className="mt-2 text-micro text-muted-foreground">
+      <p className="mt-2 text-micro text-fg-tertiary">
         No delivery recorded for this incident.
       </p>
     )
@@ -105,7 +105,7 @@ export function IncidentDeliveries({
     </div>
     {total > items.length && (
       <div className="flex flex-wrap items-center gap-2">
-        <p className="text-micro text-muted-foreground">
+        <p className="text-micro text-fg-tertiary">
           Showing {items.length} of {countOf(total, 'delivery', 'deliveries')}.
         </p>
         {query.hasNextPage && (

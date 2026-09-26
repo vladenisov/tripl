@@ -83,6 +83,7 @@ from tripl.services._alerting_monitors import (
 )
 from tripl.services._alerting_test_send import (
     send_destination_test,
+    send_draft_destination_test,
 )
 from tripl.services.alerting_rendering import (
     SCOPE_SCHEMA_DRIFT,
@@ -147,6 +148,7 @@ __all__ = [
     "retry_delivery",
     "rule_to_response",
     "send_destination_test",
+    "send_draft_destination_test",
     "simulate_rule",
     "unmute_monitor",
     "update_destination",

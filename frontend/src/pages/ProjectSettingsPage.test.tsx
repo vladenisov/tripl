@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
+import { PROJECT_SURFACES_MOVED_FROM_SETTINGS } from '@/lib/navigation'
 import ProjectSettingsPage from './ProjectSettingsPage'
 import ProjectScansPage from './ProjectScansPage'
 import { at } from '@/test/at'
@@ -70,6 +71,31 @@ async function clickFirstScanNewScan() {
   await waitFor(() => expect(screen.queryByText('Loading editor…')).toBeNull())
 }
 
+/**
+ * The routes App.tsx mounts this page on: every Plan, Observe and Govern
+ * surface at `/p/:slug/<surface>[/:itemId]` (#238 JR-25), then the
+ * `/settings/:tab` family that keeps detection and redirects the rest.
+ */
+function projectSettingsRoutes() {
+  return [
+    ...PROJECT_SURFACES_MOVED_FROM_SETTINGS.flatMap((surface) => [
+      <Route
+        key={`${surface}-item`}
+        path={`/p/:slug/${surface}/:itemId`}
+        element={<ProjectSettingsPage surface={surface} />}
+      />,
+      <Route
+        key={surface}
+        path={`/p/:slug/${surface}`}
+        element={<ProjectSettingsPage surface={surface} />}
+      />,
+    ]),
+    <Route key="tab-item" path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />,
+    <Route key="tab" path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />,
+    <Route key="index" path="/p/:slug/settings" element={<ProjectSettingsPage />} />,
+  ]
+}
+
 describe('ProjectSettingsPage', () => {
   it('redirects the legacy general tab to the takeover settings area', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJsonResponse({}))
@@ -82,9 +108,7 @@ describe('ProjectSettingsPage', () => {
         <AuthContext.Provider value={ownerAuthValue()}>
           <MemoryRouter initialEntries={['/p/demo/settings/general']}>
             <Routes>
-              <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-              <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-              <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+              {projectSettingsRoutes()}
               <Route path="/settings/project/general" element={<div>Takeover general</div>} />
             </Routes>
           </MemoryRouter>
@@ -93,6 +117,30 @@ describe('ProjectSettingsPage', () => {
     )
 
     expect(await screen.findByText('Takeover general')).toBeInTheDocument()
+  })
+
+  it('redirects an old /settings/<surface> link to the top-level route, keeping its anchors (JR-25)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJsonResponse({}))
+
+    function Probe() {
+      const location = useLocation()
+      return <div>{`at ${location.pathname}${location.search}${location.hash}`}</div>
+    }
+
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/p/demo/settings/alerting/dlv-1?item=event%3Ae1&incident=g1#row']}>
+          <Routes>
+            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
+            <Route path="/p/:slug/alerting/:itemId" element={<Probe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(
+      await screen.findByText('at /p/demo/alerting/dlv-1?item=event%3Ae1&incident=g1#row'),
+    ).toBeInTheDocument()
   })
 
   it('shows a page skeleton while the surface loads and no "settings" signpost (#238 JR-25)', async () => {
@@ -104,11 +152,9 @@ describe('ProjectSettingsPage', () => {
     render(
       <QueryClientProvider client={queryClient}>
         <AuthContext.Provider value={ownerAuthValue()}>
-          <MemoryRouter initialEntries={['/p/demo/settings/branches']}>
+          <MemoryRouter initialEntries={['/p/demo/branches']}>
             <Routes>
-              <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-              <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-              <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+              {projectSettingsRoutes()}
             </Routes>
           </MemoryRouter>
         </AuthContext.Provider>
@@ -164,9 +210,7 @@ describe('ProjectSettingsPage', () => {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={['/p/demo/settings/monitoring']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            {projectSettingsRoutes()}
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -693,11 +737,9 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=destinations']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting?section=destinations']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            {projectSettingsRoutes()}
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -745,11 +787,9 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=monitors']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting?section=monitors']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            {projectSettingsRoutes()}
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -816,10 +856,10 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=monitors']}>
-          <Link to="/p/other/settings/alerting?section=monitors">Switch project</Link>
+        <MemoryRouter initialEntries={['/p/demo/alerting?section=monitors']}>
+          <Link to="/p/other/alerting?section=monitors">Switch project</Link>
           <Routes>
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
+            {projectSettingsRoutes()}
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -900,11 +940,9 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=monitors']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting?section=monitors']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            {projectSettingsRoutes()}
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -950,11 +988,9 @@ describe('ProjectSettingsPage', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=audit&status=failed']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting?section=audit&status=failed']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            {projectSettingsRoutes()}
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -997,13 +1033,11 @@ describe('ProjectSettingsPage', () => {
             because the backend does not emit one — the page has to infer it. */}
         <MemoryRouter
           initialEntries={[
-            '/p/demo/settings/alerting/delivery-1?item=event%3Aevent-1&incident=group-1',
+            '/p/demo/alerting/delivery-1?item=event%3Aevent-1&incident=group-1',
           ]}
         >
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            {projectSettingsRoutes()}
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1099,11 +1133,9 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=audit']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting?section=audit']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            {projectSettingsRoutes()}
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1154,11 +1186,9 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/meta-fields']}>
+        <MemoryRouter initialEntries={['/p/demo/meta-fields']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            {projectSettingsRoutes()}
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1205,11 +1235,9 @@ describe('ProjectSettingsPage', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/meta-fields']}>
+        <MemoryRouter initialEntries={['/p/demo/meta-fields']}>
           <Routes>
-            <Route path="/p/:slug/settings/:tab/:itemId" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings/:tab" element={<ProjectSettingsPage />} />
-            <Route path="/p/:slug/settings" element={<ProjectSettingsPage />} />
+            {projectSettingsRoutes()}
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,

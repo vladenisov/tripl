@@ -451,7 +451,7 @@ export function AlertingInbox({
                   aria-label={`Select all ${selectableIds.length} shown incidents`}
                   title="Shift-click two incident checkboxes to select everything between them."
                 />
-                <span className="whitespace-nowrap text-caption text-muted-foreground">
+                <span className="whitespace-nowrap text-caption text-fg-tertiary">
                   Select all {selectableIds.length} shown
                 </span>
               </div>
@@ -488,7 +488,7 @@ export function AlertingInbox({
           {windowTruncatedAt && (
             <p
               role="status"
-              className="rounded-md border border-dashed p-3 text-body-sm text-muted-foreground"
+              className="rounded-md border border-dashed p-3 text-body-sm text-fg-tertiary"
             >
               This project sent more alerts in the last 30 days than the Inbox reads at
               once, so the list starts at {formatDateTime(windowTruncatedAt)}. An incident
@@ -504,7 +504,7 @@ export function AlertingInbox({
               Could not load the inbox: {getErrorMessage(loadError)}
             </p>
           ) : items.length === 0 && !pinnedGroup ? (
-            <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
+            <div className="rounded-lg border border-dashed p-4 text-body text-fg-tertiary">
               {statusFilter || hasActiveInboxFilters(filters) ? (
                 <>
                   {/* Naming the filter is the difference between "nothing has
@@ -549,14 +549,14 @@ export function AlertingInbox({
                   number that looks project-wide while describing one page is
                   how "52 open" turns into a decision nobody can retrace. */}
               {!statusFilter && items.length > 0 && (
-                <p className="text-body-sm text-muted-foreground">
+                <p className="text-body-sm text-fg-tertiary">
                   Of the {countOf(items.length, 'incident', 'incidents')} loaded: {openCount} open ·{' '}
                   {handledCount} handled
                 </p>
               )}
               {pinnedGroup && (
                 <div className="space-y-1">
-                  <p className="text-body-sm text-muted-foreground">
+                  <p className="text-body-sm text-fg-tertiary">
                     Linked from an alert. This incident is outside the list below.
                   </p>
                   {renderCard(pinnedGroup, true)}
@@ -833,7 +833,7 @@ const IncidentCard = memo(function IncidentCard({
               <>
                 {' '}
                 <span
-                  className="whitespace-nowrap text-body-sm font-normal text-muted-foreground"
+                  className="whitespace-nowrap text-body-sm font-normal text-fg-tertiary"
                   title={group.scope_names.join(', ')}
                 >
                   +{headline.more} more
@@ -858,7 +858,7 @@ const IncidentCard = memo(function IncidentCard({
             {!scopePath && navLink && (
               <>
                 {' '}
-                <span className="text-body-sm font-normal text-muted-foreground">
+                <span className="text-body-sm font-normal text-fg-tertiary">
                   {'· '}
                   <Link
                     to={navLink.path}
@@ -884,7 +884,7 @@ const IncidentCard = memo(function IncidentCard({
           )}
         </div>
         <div
-          className="mt-1 text-body-sm text-muted-foreground"
+          className="mt-1 text-body-sm text-fg-tertiary"
           title={incidentMagnitudeTitle(group)}
         >
           {incidentMagnitudeLabel(group)}
@@ -892,7 +892,7 @@ const IncidentCard = memo(function IncidentCard({
         </div>
         {/* The meta row: what kind of signal, how many items, when, and which
             rule on which scan — at 12.5px, not the 10px it was (AL-13). */}
-        <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-body-sm text-muted-foreground">
+        <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-body-sm text-fg-tertiary">
           {/* Allowed to wrap: a multi-kind incident's reason reads "↑ spike ·
               volume + event-type volume + metric + project volume", which as
               one nowrap line ran past the card at 375px (LIVE-19). */}
@@ -941,7 +941,7 @@ const IncidentCard = memo(function IncidentCard({
           </span>
         </div>
         {siblings.length > 0 && (
-          <div className="mt-1 text-body-sm text-muted-foreground">
+          <div className="mt-1 text-body-sm text-fg-tertiary">
             {siblings.map(sibling => (
               <a
                 key={sibling.correlation_group_id}
@@ -955,7 +955,7 @@ const IncidentCard = memo(function IncidentCard({
           </div>
         )}
         {decision && (
-          <div className="mt-1 text-body-sm text-muted-foreground">{decision}</div>
+          <div className="mt-1 text-body-sm text-fg-tertiary">{decision}</div>
         )}
       </div>
       </div>
@@ -979,14 +979,14 @@ const IncidentCard = memo(function IncidentCard({
           and it never lapses, so it sinks out of the 30-day window for good and
           that filter is the only route back to its Unmute (tripl-oxkt.2). */}
       {group.muted && (
-        <div className="mt-2 text-body-sm text-muted-foreground">
+        <div className="mt-2 text-body-sm text-fg-tertiary">
           {group.muted_until
             ? `muted until ${formatDateTime(group.muted_until)}`
             : 'muted — no end date, until you unmute it'}
         </div>
       )}
       {group.note && (
-        <p className="mt-2 rounded-sm border-l-2 border-muted-foreground/30 bg-muted/40 px-2 py-1 text-body-sm">
+        <p className="mt-2 rounded-sm border-l-2 border-fg-tertiary/30 bg-muted/40 px-2 py-1 text-body-sm">
           {group.note}
         </p>
       )}
@@ -1053,7 +1053,7 @@ const IncidentCard = memo(function IncidentCard({
                 {noteBudget && (
                   // `role="status"`: it appears mid-sentence, while the reader is
                   // looking at their own typing rather than at the row below it.
-                  <span role="status" className="text-caption text-muted-foreground">
+                  <span role="status" className="text-caption text-fg-tertiary">
                     {noteBudget}
                   </span>
                 )}
@@ -1063,7 +1063,7 @@ const IncidentCard = memo(function IncidentCard({
             <button
               type="button"
               onClick={openNote}
-              className="inline-flex min-h-9 items-center text-body-sm text-muted-foreground underline underline-offset-2 hover:text-foreground sm:min-h-0"
+              className="inline-flex min-h-9 items-center text-body-sm text-fg-tertiary underline underline-offset-2 hover:text-foreground sm:min-h-0"
             >
               {group.note ? 'Edit note' : 'Add note'}
             </button>
@@ -1162,8 +1162,7 @@ const IncidentCard = memo(function IncidentCard({
               Reopen put a permanent action one mis-tap from a reversible one
               (ALR-30). From `sm` up it sits inline behind its divider. */}
           <span
-            className="mt-1 basis-full border-t pt-2 sm:ml-1 sm:mt-0 sm:basis-auto sm:border-l sm:border-t-0 sm:pl-2 sm:pt-0"
-            style={{ borderColor: 'var(--border-subtle)' }}
+            className="mt-1 basis-full border-t pt-2 sm:ml-1 sm:mt-0 sm:basis-auto sm:border-l sm:border-t-0 sm:pl-2 sm:pt-0 border-border-subtle"
           >
             <Button
               size="sm"
@@ -1181,7 +1180,7 @@ const IncidentCard = memo(function IncidentCard({
       </div>
 
       {muteOpen && (
-        <div className="mt-2 flex flex-wrap items-center gap-1 text-body-sm text-muted-foreground">
+        <div className="mt-2 flex flex-wrap items-center gap-1 text-body-sm text-fg-tertiary">
           {/* Durations on the buttons, not a silent constant in the mutation:
               every mute was 7 days and nothing said so (tripl-oxkt.7).
 
@@ -1233,7 +1232,7 @@ const IncidentCard = memo(function IncidentCard({
         type="button"
         aria-expanded={isExpanded}
         onClick={() => toggleIncident(id)}
-        className="mt-2 inline-flex min-h-9 items-center text-body-sm underline underline-offset-2 text-muted-foreground hover:text-foreground sm:min-h-0"
+        className="mt-2 inline-flex min-h-9 items-center text-body-sm underline underline-offset-2 text-fg-tertiary hover:text-foreground sm:min-h-0"
       >
         {isExpanded ? 'Hide' : 'Show'} what was sent (
         {countOf(group.delivery_count, 'delivery', 'deliveries')})

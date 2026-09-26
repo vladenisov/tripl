@@ -104,7 +104,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
                 {chunkFailed ? 'The app needs a reload' : 'Something went wrong'}
               </h1>
             )}
-            <p className="mt-1 text-body text-muted-foreground">
+            <p className="mt-1 text-body text-fg-secondary">
               {chunkFailed
                 ? 'A newer version of tripl was deployed since this tab opened, and part of the page could not be loaded. Reload to get the current version.'
                 : 'Something unexpected stopped this from rendering. Try again, and if it keeps happening, reload the page.'}

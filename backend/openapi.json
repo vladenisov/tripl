@@ -1286,6 +1286,240 @@
         "title": "AlertDestinationCreate",
         "type": "object"
       },
+      "AlertDestinationDraftTestRequest": {
+        "description": "A destination's settings as the dialog holds them, to test before saving (AL-30).\n\nSetting up Slack used to take Create, close, find the card, then Test \u2014 and\na wrong webhook was a stored destination by the time anyone learned it.\n\n``destination_id`` names the saved destination an EDIT dialog is open on.\nThe dialog never holds that row's secrets (they are write-only), so a\nsecret left blank here means \"the one on file\", exactly as the PATCH reads\nit; every other field is taken as sent. Without it this is an unsaved\ndestination and nothing is borrowed from anywhere.\n\nDeliberately lenient about what is MISSING: a half-filled form is the\nnormal state of a draft, and the answer to testing one is the same\n``ok: false`` / ``config`` result a stored destination with a bad value gets\n\u2014 not a 422 the dialog would render as \"the request was wrong\". What is\nchecked here is only what a send must never carry at all: header names and\nvalues that could inject, and ids that could reach another endpoint's path.\nFields the form sends that a test does not use (``enabled``, the cadence,\nthe subject template) are ignored.",
+        "properties": {
+          "bot_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bot Token"
+          },
+          "chat_id": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Id"
+          },
+          "destination_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Id"
+          },
+          "email_from_address": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email From Address"
+          },
+          "email_recipients": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email Recipients"
+          },
+          "jira_api_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jira Api Token"
+          },
+          "jira_auth_email": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jira Auth Email"
+          },
+          "jira_base_url": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jira Base Url"
+          },
+          "jira_issue_type": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jira Issue Type"
+          },
+          "jira_project_key": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jira Project Key"
+          },
+          "linear_api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linear Api Key"
+          },
+          "linear_label_ids": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linear Label Ids"
+          },
+          "linear_state_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linear State Id"
+          },
+          "linear_team_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linear Team Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "target_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Url"
+          },
+          "type": {
+            "$ref": "#/components/schemas/AlertDestinationType"
+          },
+          "webhook_header_name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Header Name"
+          },
+          "webhook_header_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Header Value"
+          },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "AlertDestinationDraftTestRequest",
+        "type": "object"
+      },
       "AlertDestinationResponse": {
         "properties": {
           "bot_token_set": {
@@ -4046,7 +4280,7 @@
         "type": "object"
       },
       "AuditEntryResponse": {
-        "description": "One row of the audit list \u2014 everything the row itself renders.\n\nDeliberately WITHOUT ``payload``. The tab renders a payload only for the\nrows the reader expanded (AuditTab.tsx), so shipping one per row sent a page\nof JSON blobs across the wire to be displayed nowhere: on the only project\nwith real audit history, ``/p/*/settings/audit`` had the slowest first\ncontent of the 75 routes in the 2026-08-17 walk. The payload now travels one\nrow at a time, as ``AuditEntryDetailResponse`` (tripl-5ydt).\n\n``branch_id`` / ``branch_name`` are the plan branch the write was scoped to.\nNull and empty mean the write was not made through a branch-scoped request \u2014\nmain, or an action with no plan-branch dimension (alerting, scans, users) \u2014\nso a reader must not render them as \"main\" (tripl-wkwv.6).",
+        "description": "One row of the audit list \u2014 everything the row itself renders.\n\nDeliberately WITHOUT ``payload``. The tab renders a payload only for the\nrows the reader expanded (AuditTab.tsx), so shipping one per row sent a page\nof JSON blobs across the wire to be displayed nowhere: on the only project\nwith real audit history, ``/p/*/audit`` had the slowest first\ncontent of the 75 routes in the 2026-08-17 walk. The payload now travels one\nrow at a time, as ``AuditEntryDetailResponse`` (tripl-5ydt).\n\n``branch_id`` / ``branch_name`` are the plan branch the write was scoped to.\nNull and empty mean the write was not made through a branch-scoped request \u2014\nmain, or an action with no plan-branch dimension (alerting, scans, users) \u2014\nso a reader must not render them as \"main\" (tripl-wkwv.6).",
         "properties": {
           "action": {
             "title": "Action",
@@ -5438,6 +5672,13 @@
             "title": "Scan Run Count",
             "type": "integer"
           },
+          "scans": {
+            "items": {
+              "$ref": "#/components/schemas/DataSourceScanRef"
+            },
+            "title": "Scans",
+            "type": "array"
+          },
           "timeout_seconds": {
             "anyOf": [
               {
@@ -5477,6 +5718,36 @@
           "updated_at"
         ],
         "title": "DataSourceResponse",
+        "type": "object"
+      },
+      "DataSourceScanRef": {
+        "description": "One scan reading a data source, enough to link to it (DA-40).",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "project_name": {
+            "title": "Project Name",
+            "type": "string"
+          },
+          "project_slug": {
+            "title": "Project Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "project_slug",
+          "project_name"
+        ],
+        "title": "DataSourceScanRef",
         "type": "object"
       },
       "DataSourceSchemaResponse": {
@@ -7507,6 +7778,18 @@
               }
             ]
           },
+          "last_collected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Collected At"
+          },
           "latest_signal": {
             "anyOf": [
               {
@@ -7516,6 +7799,29 @@
                 "type": "null"
               }
             ]
+          },
+          "next_collection_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Collection At"
+          },
+          "prior_week_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prior Week Total"
           },
           "scan_config_id": {
             "anyOf": [
@@ -7548,6 +7854,17 @@
             "default": 4.0,
             "title": "Sigma Threshold",
             "type": "number"
+          },
+          "week_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Week Total"
           }
         },
         "required": [
@@ -12796,6 +13113,18 @@
       },
       "MetricSignalResponse": {
         "properties": {
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged At"
+          },
           "actual_count": {
             "title": "Actual Count",
             "type": "number"
@@ -12844,9 +13173,30 @@
             ],
             "title": "Event Type Id"
           },
+          "expected": {
+            "default": false,
+            "title": "Expected",
+            "type": "boolean"
+          },
           "expected_count": {
             "title": "Expected Count",
             "type": "number"
+          },
+          "expected_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Note"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
           },
           "incident_child": {
             "default": false,
@@ -12874,6 +13224,23 @@
                 "type": "null"
               }
             ]
+          },
+          "muted": {
+            "default": false,
+            "title": "Muted",
+            "type": "boolean"
+          },
+          "muted_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Until"
           },
           "relative_effect": {
             "anyOf": [
@@ -16684,6 +17051,304 @@
         "title": "ScanConfigCreate",
         "type": "object"
       },
+      "ScanConfigDetailResponse": {
+        "description": "One scan config with its metrics schedule (DA-5).\n\nOnly ``GET /scans/{id}`` computes these, so they are not on the list rows.\n``last_metrics_run_at`` is when the newest scheduled metrics collection\nfinished; ``next_metrics_run_at`` the earliest moment the scheduler\nconsiders the config due again (``now`` when it is due already). Both are\nnull for a scan the scheduler never collects (no interval or no time\ncolumn), and ``last_metrics_run_at`` also before its first collection.",
+        "properties": {
+          "app_version_active_share_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Active Share Min"
+          },
+          "app_version_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Column"
+          },
+          "app_version_keep_releases": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "deprecated": true,
+            "description": "Deprecated compatibility mirror of Project.app_version_keep_releases.",
+            "title": "App Version Keep Releases"
+          },
+          "app_version_prerelease_pattern": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version Prerelease Pattern"
+          },
+          "base_query": {
+            "title": "Base Query",
+            "type": "string"
+          },
+          "cardinality_threshold": {
+            "title": "Cardinality Threshold",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "data_source_id": {
+            "format": "uuid",
+            "title": "Data Source Id",
+            "type": "string"
+          },
+          "distribution_drift_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Distribution Drift Fields",
+            "type": "array"
+          },
+          "event_group_rules": {
+            "items": {
+              "$ref": "#/components/schemas/EventGroupRule"
+            },
+            "title": "Event Group Rules",
+            "type": "array"
+          },
+          "event_name_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Name Format"
+          },
+          "event_type_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type Column"
+          },
+          "event_type_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "json_value_paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Json Value Paths",
+            "type": "array"
+          },
+          "last_metrics_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Metrics Run At"
+          },
+          "metric_breakdown_columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Metric Breakdown Columns",
+            "type": "array"
+          },
+          "metric_breakdown_values_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric Breakdown Values Limit"
+          },
+          "metrics_row_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics Row Limit"
+          },
+          "monitoring_enabled": {
+            "description": "Whether the scheduler collects metrics for this scan (MO-23).\n\nDerived, never stored: the beat schedule and every monitoring read path\nselect on ``interval IS NOT NULL``, so this is that test said out loud\nrather than a second switch that could disagree with it.",
+            "readOnly": true,
+            "title": "Monitoring Enabled",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "next_metrics_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Metrics Run At"
+          },
+          "platform_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Column"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "replay_chunk_interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scan_lookback_hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Lookback Hours"
+          },
+          "scan_row_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Row Limit"
+          },
+          "time_column": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Column"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "data_source_id",
+          "project_id",
+          "event_type_id",
+          "name",
+          "base_query",
+          "event_type_column",
+          "time_column",
+          "event_name_format",
+          "json_value_paths",
+          "event_group_rules",
+          "metric_breakdown_columns",
+          "metric_breakdown_values_limit",
+          "distribution_drift_fields",
+          "cardinality_threshold",
+          "interval",
+          "replay_chunk_interval",
+          "scan_lookback_hours",
+          "scan_row_limit",
+          "metrics_row_limit",
+          "app_version_column",
+          "app_version_keep_releases",
+          "app_version_prerelease_pattern",
+          "app_version_active_share_min",
+          "platform_column",
+          "created_at",
+          "updated_at",
+          "monitoring_enabled"
+        ],
+        "title": "ScanConfigDetailResponse",
+        "type": "object"
+      },
       "ScanConfigPreviewRequest": {
         "properties": {
           "base_query": {
@@ -18442,6 +19107,16 @@
             },
             "title": "Variable Values",
             "type": "array"
+          },
+          "variant_group": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SearchVariantGroup"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -18453,6 +19128,102 @@
           "score"
         ],
         "title": "SearchResult",
+        "type": "object"
+      },
+      "SearchVariant": {
+        "description": "One folded member of a :class:`SearchVariantGroup` (JR-20).\n\nDeliberately slim \u2014 enough to render and open the event, not a second full\n:class:`SearchResult`: a group of 40 scan variants would otherwise carry 40\ncopies of snippets, highlights and variable bindings nobody reads until the\ngroup is expanded, and then only the name.",
+        "properties": {
+          "confidence": {
+            "default": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "entity_id": {
+            "format": "uuid",
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "route_path": {
+            "title": "Route Path",
+            "type": "string"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "entity_id",
+          "title",
+          "value",
+          "route_path",
+          "score"
+        ],
+        "title": "SearchVariant",
+        "type": "object"
+      },
+      "SearchVariantGroup": {
+        "description": "Event hits folded under their best-ranked member (JR-20).\n\nEvents of ONE event type whose names differ only in the value substituted\nfor ONE naming-rule placeholder \u2014 the scan's ``event_name_format``, or the\ndefault ``column=value | column=value`` name a scan without one writes.\n``search_service.group_event_variants`` owns the rule.",
+        "properties": {
+          "count": {
+            "minimum": 2.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "pattern": {
+            "title": "Pattern",
+            "type": "string"
+          },
+          "placeholder": {
+            "title": "Placeholder",
+            "type": "string"
+          },
+          "variants": {
+            "items": {
+              "$ref": "#/components/schemas/SearchVariant"
+            },
+            "title": "Variants",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "pattern",
+          "placeholder",
+          "count",
+          "variants"
+        ],
+        "title": "SearchVariantGroup",
         "type": "object"
       },
       "SeasonalityCell": {
@@ -19195,6 +19966,16 @@
             "title": "Observed Count",
             "type": "integer"
           },
+          "sample_properties": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Sample Properties",
+            "type": "array"
+          },
           "scan_config_id": {
             "format": "uuid",
             "title": "Scan Config Id",
@@ -19276,6 +20057,292 @@
         ],
         "title": "ShadowEventStatus",
         "type": "string"
+      },
+      "SignalExpectedRequest": {
+        "properties": {
+          "bucket": {
+            "format": "date-time",
+            "title": "Bucket",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "scope_ref": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Scope Ref",
+            "type": "string"
+          },
+          "scope_type": {
+            "$ref": "#/components/schemas/MetricScopeType"
+          }
+        },
+        "required": [
+          "scope_type",
+          "scope_ref",
+          "bucket"
+        ],
+        "title": "SignalExpectedRequest",
+        "type": "object"
+      },
+      "SignalMuteRequest": {
+        "properties": {
+          "bucket": {
+            "format": "date-time",
+            "title": "Bucket",
+            "type": "string"
+          },
+          "duration": {
+            "enum": [
+              "24h",
+              "7d",
+              "until_unmuted"
+            ],
+            "title": "Duration",
+            "type": "string"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "scope_ref": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Scope Ref",
+            "type": "string"
+          },
+          "scope_type": {
+            "$ref": "#/components/schemas/MetricScopeType"
+          }
+        },
+        "required": [
+          "scope_type",
+          "scope_ref",
+          "bucket",
+          "duration"
+        ],
+        "title": "SignalMuteRequest",
+        "type": "object"
+      },
+      "SignalSeriesQuery": {
+        "properties": {
+          "scopes": {
+            "items": {
+              "$ref": "#/components/schemas/SignalSeriesScope"
+            },
+            "maxItems": 500,
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scopes"
+        ],
+        "title": "SignalSeriesQuery",
+        "type": "object"
+      },
+      "SignalSeriesResponse": {
+        "description": "Up to ``SIGNAL_SERIES_BUCKETS`` buckets around one signal's flagged bucket.\n\nThe window opens 20 buckets before ``bucket`` and closes 4 after it, so the\nrow shows the run-up and whether the move held. Gaps inside the stored range\nare zero-filled (an absent row is a zero count); buckets past the newest\nstored one are simply absent.",
+        "properties": {
+          "bucket": {
+            "format": "date-time",
+            "title": "Bucket",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/BreakdownTimelinePoint"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScanInterval"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scan_config_id": {
+            "format": "uuid",
+            "title": "Scan Config Id",
+            "type": "string"
+          },
+          "scope_ref": {
+            "title": "Scope Ref",
+            "type": "string"
+          },
+          "scope_type": {
+            "$ref": "#/components/schemas/MetricScopeType"
+          }
+        },
+        "required": [
+          "scan_config_id",
+          "scope_type",
+          "scope_ref",
+          "bucket",
+          "data"
+        ],
+        "title": "SignalSeriesResponse",
+        "type": "object"
+      },
+      "SignalSeriesScope": {
+        "description": "One open signal whose recent series a row sparkline draws (MO-19).",
+        "properties": {
+          "bucket": {
+            "format": "date-time",
+            "title": "Bucket",
+            "type": "string"
+          },
+          "scan_config_id": {
+            "format": "uuid",
+            "title": "Scan Config Id",
+            "type": "string"
+          },
+          "scope_ref": {
+            "title": "Scope Ref",
+            "type": "string"
+          },
+          "scope_type": {
+            "$ref": "#/components/schemas/MetricScopeType"
+          }
+        },
+        "required": [
+          "scan_config_id",
+          "scope_type",
+          "scope_ref",
+          "bucket"
+        ],
+        "title": "SignalSeriesScope",
+        "type": "object"
+      },
+      "SignalTriageScope": {
+        "description": "The scope a triage verdict is about, keyed like the signal itself.\n\n``scan_config_id`` is NULL for a catalog ``metric`` scope and required for\nevery other one. ``bucket`` names the signal the user acted on: the\nper-signal verdicts pin it, and a mute uses it to refuse a signal that was\nrouted to an incident (that one is triaged in the inbox).",
+        "properties": {
+          "bucket": {
+            "format": "date-time",
+            "title": "Bucket",
+            "type": "string"
+          },
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "scope_ref": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Scope Ref",
+            "type": "string"
+          },
+          "scope_type": {
+            "$ref": "#/components/schemas/MetricScopeType"
+          }
+        },
+        "required": [
+          "scope_type",
+          "scope_ref",
+          "bucket"
+        ],
+        "title": "SignalTriageScope",
+        "type": "object"
+      },
+      "SignalTriageState": {
+        "description": "The triage fields of one signal after a write, as the list would show them.",
+        "properties": {
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged At"
+          },
+          "expected": {
+            "default": false,
+            "title": "Expected",
+            "type": "boolean"
+          },
+          "expected_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Note"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "muted": {
+            "default": false,
+            "title": "Muted",
+            "type": "boolean"
+          },
+          "muted_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Until"
+          }
+        },
+        "title": "SignalTriageState",
+        "type": "object"
       },
       "SimulatedRuleFiring": {
         "description": "One virtual delivery the rule would have triggered during the window.",
@@ -23029,6 +24096,59 @@
         ]
       }
     },
+    "/api/v1/projects/{slug}/alert-destinations/test": {
+      "post": {
+        "description": "Send the test message through settings that are not saved yet (AL-30).\n\nThe destination dialog's \"Send test\": an unsaved destination, or an edit\nin progress, where ``destination_id`` lends the stored secrets the form\nleft blank. Same contract as the saved destination's Test \u2014 editor-only,\nalways 200 with ``ok``/``error`` \u2014 and the same audit action, so \"who\npressed Test\" has one place to look whichever button it was.",
+        "operationId": "test_alert_destination_draft_api_v1_projects__slug__alert_destinations_test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertDestinationDraftTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertDestinationTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Alert Destination Draft",
+        "tags": [
+          "alerting"
+        ]
+      }
+    },
     "/api/v1/projects/{slug}/alert-destinations/{destination_id}": {
       "delete": {
         "operationId": "delete_alert_destination_api_v1_projects__slug__alert_destinations__destination_id__delete",
@@ -24218,6 +25338,391 @@
         ]
       }
     },
+    "/api/v1/projects/{slug}/anomalies/signals/acknowledge": {
+      "delete": {
+        "operationId": "unacknowledge_signal_api_v1_projects__slug__anomalies_signals_acknowledge_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope_type",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MetricScopeType"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope_ref",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Scope Ref",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "format": "date-time",
+              "title": "Bucket",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scan_config_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scan Config Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unacknowledge Signal",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "post": {
+        "operationId": "acknowledge_signal_api_v1_projects__slug__anomalies_signals_acknowledge_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignalTriageScope"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignalTriageState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge Signal",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/anomalies/signals/expected": {
+      "delete": {
+        "operationId": "unmark_signal_expected_api_v1_projects__slug__anomalies_signals_expected_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope_type",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MetricScopeType"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope_ref",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Scope Ref",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bucket",
+            "required": true,
+            "schema": {
+              "format": "date-time",
+              "title": "Bucket",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scan_config_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scan Config Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unmark Signal Expected",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "post": {
+        "description": "Record a known cause: annotate the signal's bucket and hide the signal.",
+        "operationId": "mark_signal_expected_api_v1_projects__slug__anomalies_signals_expected_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignalExpectedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignalTriageState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Signal Expected",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/anomalies/signals/mute": {
+      "delete": {
+        "operationId": "unmute_signal_scope_api_v1_projects__slug__anomalies_signals_mute_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope_type",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MetricScopeType"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope_ref",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Scope Ref",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scan_config_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scan Config Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unmute Signal Scope",
+        "tags": [
+          "metrics"
+        ]
+      },
+      "post": {
+        "description": "Hide every signal on the scope for 24 h, 7 d or until unmuted.",
+        "operationId": "mute_signal_scope_api_v1_projects__slug__anomalies_signals_mute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignalMuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignalTriageState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mute Signal Scope",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
     "/api/v1/projects/{slug}/anomalies/signals/query": {
       "post": {
         "operationId": "query_active_signals_api_v1_projects__slug__anomalies_signals_query_post",
@@ -24269,6 +25774,63 @@
           }
         },
         "summary": "Query Active Signals",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/anomalies/signals/series": {
+      "post": {
+        "description": "Row sparklines for many open signals in one request (MO-19). POST for\nthe same reason as ``/signals/query``: the batch outgrows a query string.",
+        "operationId": "query_signal_series_api_v1_projects__slug__anomalies_signals_series_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignalSeriesQuery"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SignalSeriesResponse"
+                  },
+                  "title": "Response Query Signal Series Api V1 Projects  Slug  Anomalies Signals Series Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Query Signal Series",
         "tags": [
           "metrics"
         ]
@@ -30186,6 +31748,23 @@
           },
           {
             "in": "query",
+            "name": "fact_table_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fact Table Id"
+            }
+          },
+          {
+            "in": "query",
             "name": "offset",
             "required": false,
             "schema": {
@@ -30507,6 +32086,74 @@
           }
         },
         "summary": "Reorder Metric Definitions",
+        "tags": [
+          "metrics-catalog"
+        ]
+      }
+    },
+    "/api/v1/projects/{slug}/metrics/series-preview": {
+      "post": {
+        "description": "Stateless dry-run of a fact or event-composition metric's series (editor-gated).\n\nThe body is the definition a save would send. A fact metric is aggregated by\nthe collector's own code over its last closed buckets (up to 50, capped at\na month of wall clock); an event\ncomposition is composed from already-collected event counts on its newest\nscan grid. Nothing is persisted. Expected mistakes and warehouse errors\nreturn 200 with ``error`` set; an unknown fact table or data source is a\n404, an event outside the project a 422.",
+        "operationId": "preview_metric_series_api_v1_projects__slug__metrics_series_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "discriminator": {
+                  "mapping": {
+                    "event_composition": "#/components/schemas/EventCompositionMetricDefinition",
+                    "fact": "#/components/schemas/FactMetricDefinition"
+                  },
+                  "propertyName": "kind"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/FactMetricDefinition"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EventCompositionMetricDefinition"
+                  }
+                ],
+                "title": "Data"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricPreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Metric Series",
         "tags": [
           "metrics-catalog"
         ]
@@ -33533,7 +35180,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ScanConfigResponse"
+                  "$ref": "#/components/schemas/ScanConfigDetailResponse"
                 }
               }
             },
@@ -34115,6 +35762,18 @@
               "default": true,
               "description": "Run the embedding leg as well as the lexical one. Pass false for a keyword-only answer that skips the provider round trip; ``semantic_used`` in the response is then always false.",
               "title": "Semantic",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Fold events of one event type whose names differ only in one naming-rule placeholder into their best-ranked member, which then carries ``variant_group``. ``limit`` and ``total`` count the folded rows.",
+            "in": "query",
+            "name": "group_variants",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Fold events of one event type whose names differ only in one naming-rule placeholder into their best-ranked member, which then carries ``variant_group``. ``limit`` and ``total`` count the folded rows.",
+              "title": "Group Variants",
               "type": "boolean"
             }
           },

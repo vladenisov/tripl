@@ -77,7 +77,7 @@ export const TEXTAREA_CLASS =
   `flex w-full rounded-control border border-input bg-background px-2.5 py-1.5 font-mono ${INPUT_TEXT_CLASS} shadow-sm ` +
   `focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${INPUT_INVALID_CLASS} ${INPUT_PLACEHOLDER_CLASS}`
 
-export const HELP_CLASS = 'text-body-sm text-muted-foreground'
+export const HELP_CLASS = 'text-body-sm text-fg-tertiary'
 
 export const ERROR_CLASS = 'text-body-sm text-destructive'
 

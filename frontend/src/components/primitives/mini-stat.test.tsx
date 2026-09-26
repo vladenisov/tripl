@@ -137,6 +137,31 @@ describe('MiniStatStrip phoneGrid', () => {
     expect(divider).toHaveClass('max-sm:hidden')
   })
 
+  // The pressable pair sat 8px right of the plain pair on the Metrics catalog
+  // at 375px: its hover padding pushed the caption off the grid line.
+  // A class guard only: jsdom lays nothing out, so this pins the padding /
+  // margin pair that cancels out, not the alignment, which is checked in a
+  // browser at 375px.
+  it('puts a pressable stat on the same grid line as a plain one', () => {
+    const { container } = render(
+      <MiniStatStrip phoneGrid>
+        <MiniStat label="A" value="1" />
+        <MiniStat label="B" value="2" />
+        <MiniStat label="C" value="3" onPress={() => {}} />
+        <MiniStat label="D" value="4" onPress={() => {}} />
+      </MiniStatStrip>,
+    )
+    const toggles = container.querySelectorAll('[data-slot="mini-stat-pressable"]')
+    expect(toggles).toHaveLength(2)
+    for (const toggle of toggles) {
+      // The horizontal padding is cancelled by an equal negative margin.
+      expect(toggle).toHaveClass('px-2', '-mx-2')
+    }
+    // The clip box leaves room for that 8px overhang plus a 2px focus ring,
+    // and still stops short of the dividers 12px out.
+    expect(container.querySelector('[data-slot="mini-stat-clip"]')).toHaveClass('-m-2.5', 'p-2.5')
+  })
+
   it('keeps the wrapping row by default', () => {
     const { container } = render(
       <MiniStatStrip>

@@ -175,7 +175,7 @@ export function CreateProjectDialog({
               <div className="grid gap-2">
                 <Label htmlFor="project-slug">Project URL</Label>
                 <div className="flex items-center gap-1.5">
-                  <span aria-hidden="true" className="mono text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                  <span aria-hidden="true" className="mono text-body-sm text-fg-tertiary">
                     /p/
                   </span>
                   <Input
@@ -196,16 +196,16 @@ export function CreateProjectDialog({
                 {slugMessage ? (
                   <FieldError id="project-slug-hint" message={slugMessage} className="mt-0" />
                 ) : (
-                  <p id="project-slug-hint" className="m-0 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+                  <p id="project-slug-hint" className="m-0 text-body-sm text-fg-tertiary">
                     {SLUG_HINT}
                   </p>
                 )}
               </div>
             ) : (
-              <p className="m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+              <p className="m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-body-sm text-fg-tertiary">
                 <span>
                   Project URL:{' '}
-                  <span className="mono" style={{ color: 'var(--fg)' }}>
+                  <span className="mono text-fg">
                     /p/{slug || 'your-project'}
                   </span>
                 </span>

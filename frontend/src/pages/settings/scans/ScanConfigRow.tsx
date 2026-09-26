@@ -11,7 +11,7 @@ import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { SrcIcon } from './scanLayout'
 import { type RunPillStatus } from './scanRunStatus'
 import { SCAN_MODE_BADGE, scanModeOf } from './scanMode'
-import type { ScanRunInfo } from './scanUtils'
+import { formatDueIn, type ScanRunInfo } from './scanUtils'
 
 // Icon + spin are presentation; the word + colour come from the status lexicon.
 const RUN_PILL_ICON: Record<RunPillStatus, { icon: LucideIcon; spin?: boolean }> = {
@@ -62,9 +62,15 @@ function ScanModeBadge({ sc }: { sc: ScanConfig }) {
 export function ScanBadges({
   sc,
   intervalLabel,
+  nextRunAt = null,
 }: {
   sc: ScanConfig
   intervalLabel: Record<string, string>
+  /**
+   * When the scheduler next collects metrics (`next_metrics_run_at`, i9mt.16
+   * DA-5). Shown beside the interval; omitted where the server has not said.
+   */
+  nextRunAt?: string | null
 }) {
   // Three of the badges below describe `collect_metrics` and nothing else, and
   // only a monitoring scan is ever dispatched to it — the scheduler selects on
@@ -77,6 +83,13 @@ export function ScanBadges({
   const monitoring = scanModeOf(sc) === 'monitoring'
   const items: string[] = []
   if (sc.interval) items.push(`⏱ ${intervalLabel[sc.interval] ?? sc.interval}`)
+  // Only a scan the scheduler collects has a next run; the server sends null
+  // for any other, and a stale value must not outlive a mode switch.
+  const nextRunMs = monitoring && nextRunAt ? Date.parse(nextRunAt) : Number.NaN
+  if (!Number.isNaN(nextRunMs)) {
+    const due = formatDueIn(nextRunMs)
+    items.push(due === 'due now' ? 'Next run due now' : `Next run ${due}`)
+  }
   // A lookback is the predicate `<time column> >= now() - N`, so with no time
   // column it bounds nothing. Showing it anyway put "Lookback 24h" on the header
   // of a scan whose Source & query panel reads "Time column: None" — leaving the
@@ -198,8 +211,7 @@ export function ScanListRow({
     // cells, only their display changes, so nothing is rendered twice.
     // `sm:h-(--row-h)`: the Density setting reaches this list too (DS-9).
     <tr
-      className="flex cursor-pointer flex-wrap items-center border-t transition-colors hover:bg-[var(--surface-hover)] sm:table-row sm:h-(--row-h)"
-      style={{ borderColor: 'var(--border-subtle)' }}
+      className="flex cursor-pointer flex-wrap items-center border-t transition-colors hover:bg-[var(--surface-hover)] sm:table-row sm:h-(--row-h) border-border-subtle"
       onClick={onNavigate}
     >
       {/* Lead with a human summary — name over "source · cadence". The raw SQL is
@@ -216,8 +228,7 @@ export function ScanListRow({
               <Link
                 to={detailHref}
                 onClick={e => e.stopPropagation()}
-                className="truncate text-body font-semibold no-underline hover:underline"
-                style={{ color: 'inherit' }}
+                className="truncate text-body font-semibold no-underline hover:underline text-inherit"
               >
                 {sc.name}
               </Link>
@@ -226,13 +237,12 @@ export function ScanListRow({
                   like a healthy monitoring scan. */}
               <ScanModeBadge sc={sc} />
             </div>
-            <div className="truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            <div className="truncate text-caption text-fg-tertiary">
               {dataSource?.name ?? 'Unknown source'} · {cadenceLabel}
             </div>
             {/* Secondary: dropped on phones, where it pushed the name to a few letters. */}
             <div
-              className="mono hidden max-w-[280px] truncate text-micro sm:block"
-              style={{ color: 'var(--fg-faint)' }}
+              className="mono hidden max-w-[280px] truncate text-micro sm:block text-fg-tertiary"
               title={sc.base_query}
             >
               {firstQueryLine}
@@ -249,13 +259,13 @@ export function ScanListRow({
             <RunStatusPill status={pillStatus} title={failedMessage ?? undefined} />
             {runInfo.status !== 'idle' && runInfo.status !== 'running' && (
               // A relative time, not code: sans with tabular digits (DS-17).
-              <span className="tnum text-caption" style={{ color: 'var(--fg-subtle)' }}>
+              <span className="tnum text-caption text-fg-tertiary">
                 {runInfo.lastRunLabel}
               </span>
             )}
           </span>
           {failedMessage && (
-            <span className="text-caption leading-tight" style={{ color: 'var(--danger)' }}>
+            <span className="text-caption leading-tight text-danger">
               {failedMessage}
             </span>
           )}

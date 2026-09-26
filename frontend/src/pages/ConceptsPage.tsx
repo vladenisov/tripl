@@ -72,7 +72,7 @@ const AREAS: readonly Area[] = [
         term: 'Event types',
         definition:
           'Categories that group related events (for example lifecycle or commerce) so they can be organised and colour-coded together.',
-        path: '/settings/event-types',
+        path: '/event-types',
       },
       {
         // Named as the sidebar names it (#238 AU-10). Not "Schema & fields":
@@ -80,31 +80,31 @@ const AREAS: readonly Area[] = [
         term: 'Meta fields',
         definition:
           'Extra attributes every event carries whatever its type — owner team, Jira ticket, review date. The payload fields an event sends are defined per event type.',
-        path: '/settings/meta-fields',
+        path: '/meta-fields',
       },
       {
         term: 'Variables',
         definition:
           'Reusable named values (thresholds, identifiers, constants) referenced across the plan so a value is defined once and used everywhere.',
-        path: '/settings/variables',
+        path: '/variables',
       },
       {
         term: 'Relations',
         definition:
           'Declared links between events — one event follows, depends on, or belongs with another — describing how the plan fits together.',
-        path: '/settings/relations',
+        path: '/relations',
       },
       {
         term: 'Plan branches',
         definition:
           'Isolated copies of the plan you can edit and review before merging, like version-control branches for your tracking plan.',
-        path: '/settings/branches',
+        path: '/branches',
       },
       {
         term: 'Plan history',
         definition:
           'The snapshots of the plan taken at each merge (and on demand), so you can see what the plan looked like at any point and what changed.',
-        path: '/settings/history',
+        path: '/history',
       },
       {
         term: 'In review',
@@ -175,21 +175,21 @@ const AREAS: readonly Area[] = [
         term: 'Alert rules',
         definition:
           'Rules layered on top of detection: an alert rule decides which signals matter for a scope and where they are sent, and carries its own live state — firing, warning or healthy. A project with no alert rules still raises signals — it just does not notify anyone about them.',
-        path: '/settings/alerting?section=monitors',
+        path: '/alerting?section=monitors',
         surface: 'Alerting',
       },
       {
         term: 'Incidents',
         definition:
           'A group of signals an alert rule routed to your team, with a triage state: open, acknowledged, resolved or false positive. Signals are what detection found; incidents are the ones somebody owes an answer on.',
-        path: '/settings/alerting',
+        path: '/alerting',
         surface: 'Alerting',
       },
       {
         term: 'Alerting',
         definition:
           'Everything that turns a signal into a notification somebody owes an answer on: the incident Inbox, the rules that route, the destinations (Slack, Telegram, webhooks, email, Jira, Linear) they route to, and the delivery log behind them.',
-        path: '/settings/alerting',
+        path: '/alerting',
       },
     ],
   },
@@ -255,7 +255,7 @@ const AREAS: readonly Area[] = [
         term: 'Audit log',
         definition:
           "A chronological record of who changed what in this project's plan, so every adoption, edit, and archive is traceable. Workspace-level changes (members, API keys) are in the instance audit log.",
-        path: '/settings/audit',
+        path: '/audit',
       },
     ],
   },
@@ -265,24 +265,22 @@ function MapCard({ area }: { area: Area }) {
   const Icon = area.icon
   return (
     <div
-      className="flex flex-col rounded-card border p-4"
-      style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+      className="flex flex-col rounded-card border p-4 bg-surface border-border"
     >
       <div className="flex items-center gap-2">
         <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
-          style={{ background: 'var(--surface-hover)' }}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-surface-hover"
         >
           <Icon className="size-4" style={{ color: area.accent }} aria-hidden="true" />
         </span>
         <div className="min-w-0">
           <div className="text-body font-semibold leading-tight">{area.label}</div>
-          <div className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          <div className="text-caption text-fg-tertiary">
             {area.tagline}
           </div>
         </div>
       </div>
-      <p className="mt-2.5 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="mt-2.5 text-body-sm leading-relaxed text-fg-tertiary">
         {area.blurb}
       </p>
       {/* Each chip jumps to its glossary row: chips that looked like links
@@ -326,8 +324,7 @@ function TermRow({ term, slug }: { term: Term; slug: string | undefined }) {
           // one's.
           <Link
             to={href}
-            className="flex shrink-0 items-center gap-0.5 text-caption font-medium no-underline"
-            style={{ color: 'var(--accent)' }}
+            className="flex shrink-0 items-center gap-0.5 text-caption font-medium no-underline text-accent"
             aria-label={term.surface ? `${label}, for ${term.term}` : `${label} in the app`}
           >
             {label}
@@ -335,7 +332,7 @@ function TermRow({ term, slug }: { term: Term; slug: string | undefined }) {
           </Link>
         )}
       </div>
-      <p className="mt-1 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
+      <p className="mt-1 text-body-sm leading-relaxed text-fg-tertiary">
         {term.definition}
       </p>
     </div>
@@ -361,8 +358,7 @@ export default function ConceptsPage() {
             How tripl models your plan
           </h2>
           <div
-            className="flex items-center gap-1.5 text-caption font-medium"
-            style={{ color: 'var(--fg-faint)' }}
+            className="flex items-center gap-1.5 text-caption font-medium text-fg-tertiary"
           >
             {AREAS.map((area, i) => (
               <span key={area.key} className="flex items-center gap-1.5">
@@ -389,7 +385,7 @@ export default function ConceptsPage() {
           // h2 Glossary → h3 area → h4 term: the panels sit under the page's own
           // h2, so they must not flatten the outline back to level 2.
           <Panel key={area.key} title={area.label} subtitle={area.tagline} headingLevel={3}>
-            <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div className="divide-y border-border-subtle">
               {area.terms.map((term) => (
                 <TermRow key={term.term} term={term} slug={slug} />
               ))}

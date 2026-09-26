@@ -557,12 +557,16 @@ describe('AlertDeliveryRow items table', () => {
     expect(screen.queryByRole('link', { name: /^Open / })).toBeNull()
   })
 
-  it('does not offer a link back to the page the reader is already on', async () => {
+  it.each([
+    'https://tripl.example.com/p/demo/alerting/delivery-1?item=event:x',
+    // Stored before the page moved out of /settings (#238 JR-25).
+    'https://tripl.example.com/p/demo/settings/alerting/delivery-1?item=event:x',
+  ])('does not offer a link back to the page the reader is already on (%s)', async (detailsPath) => {
     expandRow({
       ...mockDelivery({ status: 'sent', error_message: null }),
       items: [
         mockItem({
-          details_path: 'https://tripl.example.com/p/demo/settings/alerting/delivery-1?item=event:x',
+          details_path: detailsPath,
         }),
       ],
     })

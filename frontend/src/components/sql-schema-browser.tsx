@@ -76,8 +76,7 @@ export function SqlSchemaBrowser({
         type="button"
         onClick={() => setOpen(value => !value)}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-caption font-medium"
-        style={{ color: 'var(--fg-muted)' }}
+        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-caption font-medium text-fg-secondary"
       >
         <ChevronRight
           size={12}
@@ -85,16 +84,15 @@ export function SqlSchemaBrowser({
         />
         <Database size={12} />
         Tables
-        <span style={{ color: 'var(--fg-faint)' }}>· {tables.length}</span>
+        <span className="text-fg-tertiary">· {tables.length}</span>
       </button>
 
       {open && (
-        <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
+        <div className="border-t border-border-subtle">
           <div className="relative px-2 pt-2">
             <Search
               size={12}
-              className="pointer-events-none absolute left-[14px] top-1/2 -translate-y-1/2"
-              style={{ color: 'var(--fg-faint)', marginTop: 4 }}
+              className="pointer-events-none absolute left-[14px] top-1/2 -translate-y-1/2 text-fg-tertiary mt-1"
             />
             <input
               value={query}
@@ -116,7 +114,7 @@ export function SqlSchemaBrowser({
 
           <ul className="max-h-[220px] overflow-y-auto px-1 py-1.5" aria-label="Schema tables">
             {entries.length === 0 ? (
-              <li className="px-2 py-1.5 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+              <li className="px-2 py-1.5 text-body-sm text-fg-tertiary">
                 No matching tables.
               </li>
             ) : (
@@ -128,8 +126,7 @@ export function SqlSchemaBrowser({
                       onClick={() => toggle(table.name)}
                       aria-expanded={isOpen(table.name)}
                       aria-label={`Toggle columns for ${table.name}`}
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)]"
-                      style={{ color: 'var(--fg-faint)' }}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-[var(--surface-hover)] text-fg-tertiary"
                     >
                       <ChevronRight
                         size={12}
@@ -143,14 +140,13 @@ export function SqlSchemaBrowser({
                       type="button"
                       onClick={() => onInsert(table.name)}
                       title={`Insert ${table.name}`}
-                      className="mono min-w-0 flex-1 truncate rounded-sm px-1.5 py-1 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)]"
-                      style={{ color: 'var(--fg)' }}
+                      className="mono min-w-0 flex-1 truncate rounded-sm px-1.5 py-1 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)] text-fg"
                     >
                       {table.name}
                     </button>
                   </div>
                   {isOpen(table.name) && (
-                    <ul className="mb-1 ml-6 border-l pl-1.5" style={{ borderColor: 'var(--border-subtle)' }}>
+                    <ul className="mb-1 ml-6 border-l pl-1.5 border-border-subtle">
                       {columns.map(column => (
                         <li key={column.name}>
                           <button
@@ -159,17 +155,17 @@ export function SqlSchemaBrowser({
                             title={`Insert ${column.name}`}
                             className="flex w-full items-center justify-between gap-2 rounded-sm px-1.5 py-[3px] text-left transition-colors hover:bg-[var(--surface-hover)]"
                           >
-                            <span className="mono truncate text-caption" style={{ color: 'var(--fg-muted)' }}>
+                            <span className="mono truncate text-caption text-fg-secondary">
                               {column.name}
                             </span>
-                            <span className="mono shrink-0 text-micro" style={{ color: 'var(--fg-faint)' }}>
+                            <span className="mono shrink-0 text-micro text-fg-tertiary">
                               {column.data_type}
                             </span>
                           </button>
                         </li>
                       ))}
                       {hiddenColumns > 0 && (
-                        <li className="px-1.5 py-[3px] text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                        <li className="px-1.5 py-[3px] text-caption text-fg-tertiary">
                           {formatNumber(hiddenColumns)} more {hiddenColumns === 1 ? 'column' : 'columns'} —
                           refine the filter to see them.
                         </li>
@@ -180,7 +176,7 @@ export function SqlSchemaBrowser({
               ))
             )}
             {hiddenMatches > 0 && (
-              <li className="px-2 py-1.5 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+              <li className="px-2 py-1.5 text-caption text-fg-tertiary">
                 {formatNumber(hiddenMatches)} more matching{' '}
                 {hiddenMatches === 1 ? 'table' : 'tables'} — refine the filter to see them.
               </li>

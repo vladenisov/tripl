@@ -27,7 +27,7 @@ import {
   type ScenarioState,
 } from '@/demo/scenarioModel'
 import { liveLoopState } from '@/demo/scenarioTestState'
-import { ApiError } from '@/api/client'
+import { ApiError, api } from '@/api/client'
 import { stopAllMetricCollectionWatches } from '@/hooks/useMetricCollectionWatcher'
 import { MetricsCatalog } from './MetricsCatalog'
 
@@ -375,7 +375,7 @@ describe('MetricsCatalog — filters live in the URL (MET-24)', () => {
     )
     expect(screen.getByLabelText('Search metrics')).toHaveValue('sign')
     expect(screen.getByRole('combobox', { name: /^Status filter/ })).toHaveTextContent(/Status:\s*Active/)
-    expect(screen.getByRole('button', { name: 'Filter by active anomalies' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /^With anomalies\b/ })).toHaveAttribute(
       'aria-pressed',
       'true',
     )
@@ -438,12 +438,27 @@ describe('MetricsCatalog — filters live in the URL (MET-24)', () => {
     )
   })
 
+  it('renders the stat filters as MiniStat toggles, not a padded wrapper', async () => {
+    // A padded role=button div around the stat shifted the phone grid's
+    // second row sideways; the primitive's own button cancels its padding.
+    renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?signal=stale`)
+
+    const stale = await screen.findByRole('button', { name: /^Stale\b/ })
+    expect(stale.tagName).toBe('BUTTON')
+    expect(stale).toHaveAttribute('data-slot', 'mini-stat-pressable')
+    expect(stale).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /^With anomalies\b/ })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+  })
+
   it('ignores values that are not filters', async () => {
     renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?status=bogus&signal=bogus&review=bogus`)
 
     await screen.findByText('Signups')
     expect(listCallParams(0)).toMatchObject({ status: undefined, reviewed: undefined })
-    expect(screen.getByRole('button', { name: 'Filter by active anomalies' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /^With anomalies\b/ })).toHaveAttribute(
       'aria-pressed',
       'false',
     )
@@ -659,5 +674,43 @@ describe('MetricsCatalog — review state and archive toast (MT-25, MT-38)', () 
         expect.objectContaining({ duration: 10_000 }),
       ),
     )
+  })
+})
+
+describe('MetricsCatalog — narrowed to one fact table (F7)', () => {
+  it('lists the metrics that read the table and clears back to the whole catalog', async () => {
+    // The table names come through the shared client.
+    vi.spyOn(api, 'get').mockImplementation((async (path: string) => {
+      if (path.endsWith('/fact-tables')) {
+        return { items: [{ id: 'ft-1', display_name: 'Orders' }], total: 1 }
+      }
+      return { items: [], total: 0, active_total: 0 }
+    }) as never)
+    vi.mocked(metricsCatalogApi.list).mockImplementation(async (_slug, params) =>
+      params?.fact_table_id === 'ft-1'
+        ? {
+            items: [makeItem({ id: 'm-1', name: 'order_count', display_name: 'Order count' })],
+            total: 1,
+            active_total: 1,
+          } as never
+        : TWO_METRICS,
+    )
+    renderCatalog(NOT_A_DEMO, `/p/${SLUG}/metrics?fact_table=ft-1`)
+
+    expect(await screen.findByText('Order count')).toBeInTheDocument()
+    expect(metricsCatalogApi.list).toHaveBeenCalledWith(
+      SLUG,
+      expect.objectContaining({ fact_table_id: 'ft-1' }),
+    )
+    const chip = await screen.findByRole('button', {
+      name: 'Stop showing only metrics that read Orders',
+    })
+
+    fireEvent.click(chip)
+    // Back on the shared client's unfiltered list.
+    expect(await screen.findByText('Signups')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /Stop showing only metrics that read/ }),
+    ).toBeNull()
   })
 })

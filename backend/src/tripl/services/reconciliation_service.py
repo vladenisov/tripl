@@ -184,6 +184,7 @@ async def list_shadow_events(
             last_seen_at=candidate.last_seen_at,
             status=candidate.status,
             accepted_event_id=candidate.accepted_event_id,
+            sample_properties=candidate.sample_properties or [],
         )
         for candidate, scan_name, event_type_name in rows
     ]

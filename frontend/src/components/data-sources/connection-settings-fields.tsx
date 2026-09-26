@@ -199,7 +199,7 @@ export function ConnectionSettingsFields({
             PEM content, stored encrypted and never shown again — like the password.
           </p>
           {sslkeySet && (
-            <label className="flex items-center gap-2 text-body-sm text-muted-foreground">
+            <label className="flex items-center gap-2 text-body-sm text-fg-tertiary">
               <input
                 type="checkbox"
                 checked={value.clearSslkey}

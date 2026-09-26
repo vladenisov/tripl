@@ -123,8 +123,10 @@ function renderRow(
     metaFields = [] as MetaFieldDefinition[],
     metaValueMap,
     reorderable,
+    justCreated,
   }: {
     reorderable?: boolean
+    justCreated?: boolean
     variables?: Variable[]
     fieldColumns?: FieldDefinition[]
     metaFields?: MetaFieldDefinition[]
@@ -175,6 +177,7 @@ function renderRow(
                   onToggleExpanded={() => {}}
                   onRowAction={() => {}}
                   reorderable={reorderable}
+                  justCreated={justCreated}
                 />
               </tbody>
             </table>
@@ -379,6 +382,18 @@ describe('EventRow name and type cells', () => {
     renderRow(makeEvent({ title: '' }), windowSeries(10, 20))
     expect(screen.queryByTitle('')).not.toBeInTheDocument()
     expect(screen.queryByText('Purchase finished')).not.toBeInTheDocument()
+  })
+
+  it('marks a row the reader has just created, in words as well as colour (AU-21)', () => {
+    const { unmount } = renderRow(makeEvent(), windowSeries(10, 20), undefined, { justCreated: true })
+
+    expect(screen.getByText('New')).toBeInTheDocument()
+    expect(document.querySelector('tr')).toHaveAttribute('data-created', 'true')
+    unmount()
+
+    renderRow(makeEvent(), windowSeries(10, 20))
+    expect(screen.queryByText('New')).not.toBeInTheDocument()
+    expect(document.querySelector('tr')).not.toHaveAttribute('data-created')
   })
 })
 
@@ -678,5 +693,41 @@ describe('EventRow row click (EV-27)', () => {
     // through the React tree but is not in the row's DOM.
     fireEvent.click(dialog)
     expect(screen.getByTestId('row-location').textContent).toBe(before)
+  })
+})
+
+// On a phone every row is a card (eventsPhoneCard.ts). A lone "—" opened each
+// card's chip line and the name sat 24px right of its checkbox, as if a column
+// were still between them.
+describe('EventRow phone card', () => {
+  it('drops the quiet Signal cell on a phone and keeps it on desktop', () => {
+    renderRow(makeEvent({ monitored: false }), windowSeries(10, 20))
+    const dash = screen.getByTitle('No open signal, and no monitor (alert rule) covers this event')
+    // Hidden below md only: the desktop column still reads "quiet".
+    expect(dash.closest('td')).toHaveClass('max-md:hidden')
+    expect(dash.closest('td')?.className).not.toMatch(/(^|\s)hidden(\s|$)/)
+  })
+
+  it('keeps the Signal cell on a phone when there is a signal to show', () => {
+    renderRow(makeEvent({ monitored: true }), windowSeries(10, 20), makeSignal())
+    expect(screen.getByText('Open').closest('td')).not.toHaveClass('max-md:hidden')
+  })
+
+  it('sizes the checkbox cell to the checkbox, so the name follows it', () => {
+    renderRow(makeEvent({ name: 'Home Screen View' }), [])
+    const cell = screen.getByRole('checkbox', { name: 'Select Home Screen View' }).closest('td')!
+    expect(cell).toHaveClass('w-10', 'max-md:w-auto')
+  })
+
+  it('leaves the handle cell empty when the list cannot be reordered, so the card hides it', () => {
+    const { container } = renderRow(makeEvent(), [], undefined, { reorderable: false })
+    const row = container.querySelector('tr')!
+    expect(row.className).toContain('max-md:[&>td:empty]:hidden')
+    expect(row.querySelector('td')!.childNodes).toHaveLength(0)
+  })
+
+  it('keeps the drag handle in its cell when the list can be reordered', () => {
+    renderRow(makeEvent({ name: 'Home Screen View' }), [], undefined, { reorderable: true })
+    expect(screen.getByRole('button', { name: 'Drag to reorder Home Screen View' })).toBeInTheDocument()
   })
 })

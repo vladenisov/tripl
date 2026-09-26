@@ -1,8 +1,18 @@
 import { useMemo, useState } from 'react'
-import { Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Activity, AlertTriangle, ChevronLeft, Code2, Loader2, Plus, Save, Table2 } from 'lucide-react'
+import {
+  Activity,
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  Code2,
+  Loader2,
+  Plus,
+  Save,
+  Table2,
+} from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
 import { usersApi } from '@/api/users'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
@@ -55,10 +65,12 @@ import { FactDefinitionFields } from './FactDefinitionFields'
 import { MonitoringFields } from './MonitoringFields'
 import { SqlDefinitionFields } from './SqlDefinitionFields'
 import { TemplateGallery } from './TemplateGallery'
+import { ColorSwatches } from './ColorSwatches'
+import { SeriesPreviewCard } from './SeriesPreviewCard'
 import { eventRosterQuery } from './eventRoster'
 import { errorAria, focusField } from '@/lib/fieldErrors'
 import {
-  METRIC_COLOR_SWATCHES,
+  NEW_METRIC_KIND,
   columnsOfReferencedTables,
   draftFromMetric,
   nextMetricColor,
@@ -103,7 +115,8 @@ function kindOptions({
       description: noEvents
         ? 'Count an event, or divide one event by another. No events are tracked in this project yet.'
         : 'Count an event, or divide one event by another (e.g. checkout conversion). No SQL needed.',
-      icon: <Activity size={14} aria-hidden="true" style={{ color: 'var(--fg-muted)' }} />,
+      dimmed: noEvents,
+      icon: <Activity size={14} aria-hidden="true" className="text-fg-secondary" />,
     },
     {
       value: 'fact',
@@ -111,13 +124,14 @@ function kindOptions({
       description: noFactTables
         ? 'Sum, average or count rows of a reusable warehouse table. This project has no fact tables yet.'
         : 'Sum, average or count rows of a reusable warehouse table (e.g. revenue). Needs a fact table.',
-      icon: <Table2 size={14} aria-hidden="true" style={{ color: 'var(--fg-muted)' }} />,
+      dimmed: noFactTables,
+      icon: <Table2 size={14} aria-hidden="true" className="text-fg-secondary" />,
     },
     {
       value: 'sql',
       label: 'Custom SQL',
       description: 'Write a query that returns a time column and a value. For analysts.',
-      icon: <Code2 size={14} aria-hidden="true" style={{ color: 'var(--fg-muted)' }} />,
+      icon: <Code2 size={14} aria-hidden="true" className="text-fg-secondary" />,
     },
   ]
 }
@@ -151,11 +165,10 @@ function DefinitionChangeNotice() {
   return (
     <div
       role="status"
-      className="mb-[18px] flex items-start gap-2 rounded-card border px-4 py-3 text-body-sm"
+      className="mb-[18px] flex items-start gap-2 rounded-card border px-4 py-3 text-body-sm text-fg"
       style={{
         background: 'var(--warning-soft, var(--bg-sunken))',
         borderColor: 'color-mix(in oklab, var(--warning, var(--border)) 40%, var(--border))',
-        color: 'var(--fg)',
       }}
     >
       <AlertTriangle size={14} className="mt-px shrink-0" aria-hidden="true" style={{ color: 'var(--warning, var(--fg-muted))' }} />
@@ -253,6 +266,14 @@ export function MetricForm({
   // new metric's kind step says when the project has no events (MT-3).
   const eventRoster = useQuery({ ...eventRosterQuery(slug, ''), enabled: isNew })
   const noEvents = eventRoster.isSuccess && eventRoster.data.total === 0
+
+  const [kindChosen, setKindChosen] = useState(!isNew)
+
+  // Description, colour and — on create — the internal name sit behind "More
+  // options" (MT-2): the display name derives the internal name, which stays
+  // visible as a line under it. An edit whose metric has a description opens
+  // with it shown.
+  const [moreOpen, setMoreOpen] = useState(!!metric?.description)
   // The top bar names the edited metric after "Metrics", as the heading
   // does (MT-31).
   usePageTitle(metric ? editPageTitle(metric.display_name) : null)
@@ -310,18 +331,53 @@ export function MetricForm({
     () => (submitAttempted ? validateDraft(draft, isNew) : {}),
     [submitAttempted, draft, isNew],
   )
+  // A problem inside the fold opens it: a hidden field can be neither read
+  // nor focused.
+  const moreShown = moreOpen || (isNew && !!fieldErrors['metric-name'])
+  // Every "go to this field" — the submit, the error list, the Save bar —
+  // goes through here, so a folded field is revealed before focus moves.
+  const goToField = (key: string) => {
+    if (key === 'metric-name' && !moreShown) {
+      setMoreOpen(true)
+      window.setTimeout(() => focusField(key), 0)
+      return
+    }
+    focusField(key)
+  }
 
   // The definition this form would send, against the one stored: the backend
   // deletes the metric's history when they differ (MET-1). Compared with the
   // real payload rather than a draft hydrated from the same metric, so a stored
   // shape the form cannot reproduce warns instead of wiping silently.
-  const definitionChanged =
-    metric !== null && definitionDiffersFromStored(metric, buildDefinitionPayload(draft, operandColumns))
+  const definitionPayload = buildDefinitionPayload(draft, operandColumns)
+  const definitionChanged = metric !== null && definitionDiffersFromStored(metric, definitionPayload)
+  // What the series preview dry-runs: the same definition a save sends (MT-9).
+  const seriesRequest = definitionPayload.kind === 'sql' ? null : definitionPayload
 
   // Every input the author can change, as one comparable string; the first
   // render's value is the baseline (MET-5).
   const draftSnapshot = JSON.stringify(draft)
-  const [initialSnapshot] = useState(draftSnapshot)
+  const [initialSnapshot, setInitialSnapshot] = useState(draftSnapshot)
+
+  // The events kind is the default only where it can be completed (MT-3): a
+  // project with no events starts on a fact table if it has one, else on SQL.
+  // Only an untouched form moves, and it stays untouched: the switch is the
+  // form's starting point, not an edit the leave guard should ask about. Once
+  // the author picks a kind or a template, their choice stands.
+  const factTablesKnown = facts.noFactTables || facts.factTableOptions.length > 1
+  if (
+    isNew
+    && !kindChosen
+    && noEvents
+    && factTablesKnown
+    && draft.kind === NEW_METRIC_KIND
+    && draftSnapshot === initialSnapshot
+  ) {
+    const startingDraft: MetricDraft = { ...draft, kind: facts.noFactTables ? 'sql' : 'fact' }
+    setKindChosen(true)
+    setDraft(startingDraft)
+    setInitialSnapshot(JSON.stringify(startingDraft))
+  }
   // A viewer's form is disabled and so never dirty.
   const unsaved = useUnsavedChangesGuard(canWrite && draftSnapshot !== initialSnapshot)
 
@@ -439,6 +495,7 @@ export function MetricForm({
   // The history-loss confirm moved to submit, where it covers every change of
   // meaning, not only this one (MET-1).
   const changeKind = (next: MetricKind) => {
+    setKindChosen(true)
     if (next !== draft.kind) applyKind(next)
   }
 
@@ -478,7 +535,7 @@ export function MetricForm({
     const errs = validateDraft(draft, isNew)
     const firstKey = Object.keys(errs)[0]
     if (firstKey) {
-      focusField(firstKey)
+      goToField(firstKey)
       return
     }
     if (definitionChanged) {
@@ -514,6 +571,7 @@ export function MetricForm({
   // so the user still points the metric at their own data.
   const applyTemplate = (template: MetricTemplate) => {
     const { seed } = template
+    setKindChosen(true)
     applyKind(seed.kind)
     // A template's generic name ("Conversion") may already be taken: suffix it
     // the way Duplicate does, so the seeded internal name does not 409 (MT-32).
@@ -592,13 +650,12 @@ export function MetricForm({
               template was picked or the author started from scratch (MT-32). */}
           {isNew && !showTemplates && (
             <div
-              className="mb-[18px] flex flex-wrap items-center gap-x-2 gap-y-1 rounded-card border px-4 py-2 text-body-sm"
-              style={{ borderColor: 'var(--border)', background: 'var(--bg-sunken)', color: 'var(--fg-muted)' }}
+              className="mb-[18px] flex flex-wrap items-center gap-x-2 gap-y-1 rounded-card border px-4 py-2 text-body-sm border-border bg-bg-sunken text-fg-secondary"
             >
               {pickedTemplate ? (
                 <span role="status">
                   Started from{' '}
-                  <strong className="font-semibold" style={{ color: 'var(--fg)' }}>
+                  <strong className="font-semibold text-fg">
                     {pickedTemplate.label}
                   </strong>
                 </span>
@@ -624,6 +681,32 @@ export function MetricForm({
                 onChange={value => changeKind(value as MetricKind)}
                 options={kindOptions({ noEvents, noFactTables: facts.noFactTables })}
               />
+              {/* The way to the missing prerequisite, under the cards that
+                  need it: a link cannot sit inside a radio card (MT-3). */}
+              {isNew && (noEvents || facts.noFactTables) && (
+                <p className="mt-[8px] text-caption text-fg-tertiary">
+                  {noEvents && (
+                    <>
+                      No events yet.{' '}
+                      <Link to={`/p/${slug}/events`} className="underline underline-offset-2 text-fg">
+                        Add events
+                      </Link>
+                      {facts.noFactTables ? ' · ' : null}
+                    </>
+                  )}
+                  {facts.noFactTables && (
+                    <>
+                      No fact tables yet.{' '}
+                      <Link
+                        to={`/p/${slug}/metrics/fact-tables/new`}
+                        className="underline underline-offset-2 text-fg"
+                      >
+                        Create one
+                      </Link>
+                    </>
+                  )}
+                </p>
+              )}
             </Field>
           </SCard>
 
@@ -669,6 +752,16 @@ export function MetricForm({
               disabled={!canWrite}
             />
           )}
+          {/* The chart SQL metrics get from their Query card, for the two
+              kinds with no query of their own (MT-9). */}
+          {seriesRequest && (
+            <SeriesPreviewCard
+              slug={slug}
+              draft={draft}
+              request={seriesRequest}
+              canWrite={canWrite}
+            />
+          )}
 
           <SCard title="Name and display">
             <Field
@@ -686,45 +779,29 @@ export function MetricForm({
                 aria-required
                 {...errorAria(fieldErrors, 'metric-display-name')}
               />
-            </Field>
-            <Field
-              label="Internal name"
-              // After creation this row holds the name as text, not a control:
-              // `false` names it as a group.
-              htmlFor={isNew ? 'metric-name' : false}
-              required={isNew}
-              hint={isNew ? 'Stable identifier used in queries.' : "Can't be changed after creation."}
-              error={isNew ? fieldErrors['metric-name'] : undefined}
-              announceError={false}
-            >
-              {isNew ? (
-                <TextInput
-                  id="metric-name"
-                  value={draft.name}
-                  onChange={value => {
-                    setNameEdited(true)
-                    patch({ name: value })
-                  }}
-                  mono
-                  placeholder={examplePlaceholder('checkout_conversion')}
-                  aria-required
-                  {...errorAria(fieldErrors, 'metric-name')}
-                />
-              ) : (
-                <div className="mono text-body" style={{ color: 'var(--fg)' }}>
-                  {draft.name}
-                </div>
+              {/* The derived internal name stays in sight while its input
+                  sits in the fold (MT-2). */}
+              {isNew && (
+                <p className="mt-[6px] flex flex-wrap items-center gap-x-1.5 text-caption text-fg-tertiary">
+                  <span>Internal name</span>
+                  <span className="mono" style={{ color: draft.name ? 'var(--fg-muted)' : 'var(--fg-faint)' }}>
+                    {draft.name || 'derived from the display name'}
+                  </span>
+                  <Button type="button" variant="ghost" size="xs" onClick={() => goToField('metric-name')}>
+                    Change
+                  </Button>
+                </p>
               )}
             </Field>
-            <Field label="Description" htmlFor="metric-description">
-              <TextArea
-                id="metric-description"
-                value={draft.description}
-                onChange={value => patch({ description: value })}
-                rows={2}
-                placeholder="What does this metric measure?"
-              />
-            </Field>
+            {!isNew && (
+              // After creation this row holds the name as text, not a
+              // control: `false` names it as a group.
+              <Field label="Internal name" htmlFor={false} hint="Can't be changed after creation.">
+                <div className="mono text-body text-fg">
+                  {draft.name}
+                </div>
+              </Field>
+            )}
             <Field
               label="Unit"
               htmlFor="metric-unit"
@@ -764,46 +841,6 @@ export function MetricForm({
                 ))}
               </div>
             </Field>
-            {/* Swatches plus a custom picker: the OS colour dialog was the only
-                way to choose, and every new metric got the same indigo (MT-35).
-                No single control for a <label>, so the row names the group. */}
-            <Field label="Color" htmlFor={false}>
-              <div className="flex flex-wrap items-center gap-1.5">
-                {METRIC_COLOR_SWATCHES.map(swatch => {
-                  const selected = draft.color.toLowerCase() === swatch.value.toLowerCase()
-                  return (
-                    <button
-                      key={swatch.value}
-                      type="button"
-                      aria-label={swatch.label}
-                      aria-pressed={selected}
-                      title={swatch.label}
-                      onClick={() => patch({ color: swatch.value })}
-                      className="size-6 rounded-full border-2 transition-transform hover:scale-110"
-                      style={{
-                        background: swatch.value,
-                        borderColor: selected ? 'var(--fg)' : 'transparent',
-                        boxShadow: selected ? '0 0 0 2px var(--bg) inset' : undefined,
-                      }}
-                    />
-                  )
-                })}
-                <label
-                  className="ml-1 inline-flex cursor-pointer items-center gap-1.5 text-caption"
-                  style={{ color: 'var(--fg-muted)' }}
-                >
-                  <input
-                    id="metric-color"
-                    type="color"
-                    value={draft.color}
-                    onChange={e => patch({ color: e.target.value })}
-                    className="h-6 w-8 cursor-pointer rounded-sm border bg-transparent"
-                    style={{ borderColor: 'var(--border)' }}
-                  />
-                  Custom…
-                </label>
-              </div>
-            </Field>
             {/* Who answers for the numbers, shown as an avatar in the catalog
                 (MT-25). */}
             <Field label="Owner" htmlFor="metric-owner" last={isNew}>
@@ -826,6 +863,74 @@ export function MetricForm({
                 />
               </Field>
             )}
+            {/* Less-used fields, folded (MT-2). The content stays mounted,
+                only hidden: the fields keep their values and labels, and the
+                fold opens itself for a field with a problem. */}
+            <button
+              type="button"
+              aria-expanded={moreShown}
+              aria-controls="metric-more-options"
+              onClick={() => setMoreOpen(!moreShown)}
+              className="flex w-full items-center gap-2 px-4 py-[13px] text-left transition-colors hover:bg-[var(--surface-hover)] border-t border-border-subtle"
+            >
+              <ChevronRight
+                size={14}
+                aria-hidden="true"
+                className="shrink-0 transition-transform text-fg-tertiary"
+                style={{ transform: moreShown ? 'rotate(90deg)' : undefined }}
+              />
+              <span className="text-body font-medium text-fg">
+                More options
+              </span>
+              <span className="ml-auto text-caption text-fg-tertiary">
+                {isNew ? 'Internal name, description, color' : 'Description, color'}
+              </span>
+            </button>
+            <div
+              id="metric-more-options"
+              hidden={!moreShown}
+              className="border-t border-border-subtle"
+            >
+              {isNew && (
+                <Field
+                  label="Internal name"
+                  htmlFor="metric-name"
+                  required
+                  hint="Stable identifier used in queries."
+                  error={fieldErrors['metric-name']}
+                  announceError={false}
+                >
+                  <TextInput
+                    id="metric-name"
+                    value={draft.name}
+                    onChange={value => {
+                      setNameEdited(true)
+                      patch({ name: value })
+                    }}
+                    mono
+                    placeholder={examplePlaceholder('checkout_conversion')}
+                    aria-required
+                    {...errorAria(fieldErrors, 'metric-name')}
+                  />
+                </Field>
+              )}
+              <Field label="Description" htmlFor="metric-description">
+                <TextArea
+                  id="metric-description"
+                  value={draft.description}
+                  onChange={value => patch({ description: value })}
+                  rows={2}
+                  placeholder="What does this metric measure?"
+                />
+              </Field>
+              <Field label="Color" htmlFor={false} last>
+                <ColorSwatches
+                  value={draft.color}
+                  onChange={value => patch({ color: value })}
+                  inputId="metric-color"
+                />
+              </Field>
+            </div>
           </SCard>
 
           <MonitoringFields
@@ -839,11 +944,9 @@ export function MetricForm({
         {errorEntries.length > 0 && (
           <div
             role="alert"
-            className="mb-[18px] rounded-card border px-4 py-3 text-body-sm"
+            className="mb-[18px] rounded-card border px-4 py-3 text-body-sm bg-danger-soft text-danger"
             style={{
-              background: 'var(--danger-soft)',
               borderColor: 'color-mix(in oklab, var(--danger) 35%, var(--border))',
-              color: 'var(--danger)',
             }}
           >
             {/* Each message is a link to its field: a keyboard or screen-reader
@@ -853,7 +956,7 @@ export function MetricForm({
                 <li key={key}>
                   <button
                     type="button"
-                    onClick={() => focusField(key)}
+                    onClick={() => goToField(key)}
                     className="text-left underline decoration-transparent underline-offset-2 hover:decoration-current focus-visible:decoration-current"
                   >
                     {error}
@@ -880,7 +983,7 @@ export function MetricForm({
             ?? (isNew && canWrite ? 'Drafts are saved but not collected or monitored.' : null)
           }
           statusTone={errorEntries.length > 0 ? 'danger' : 'muted'}
-          onStatusClick={errorEntries[0] ? () => focusField(errorEntries[0]![0]) : undefined}
+          onStatusClick={errorEntries[0] ? () => goToField(errorEntries[0]![0]) : undefined}
         >
           <Button type="button" variant="outline" onClick={onClose}>
             {canWrite ? 'Cancel' : 'Close'}

@@ -25,7 +25,7 @@ export function ProjectNotFound({ slug, projects }: { slug: string; projects: Pr
         className="flex items-center gap-2 rounded-control px-1 py-1 no-underline"
       >
         <TrifoldMark size={24} />
-        <span className="text-heading font-bold tracking-tight" style={{ color: 'var(--fg)' }}>
+        <span className="text-heading font-bold tracking-tight text-fg">
           tripl
         </span>
       </Link>
@@ -41,8 +41,7 @@ export function ProjectNotFound({ slug, projects }: { slug: string; projects: Pr
               <li key={project.id} className="border-b border-border-subtle last:border-b-0">
                 <Link
                   to={projectHomePath(project.slug)}
-                  className="flex items-center gap-2.5 px-3 py-2 text-body-sm no-underline transition-colors hover:bg-surface-hover"
-                  style={{ color: 'var(--fg)' }}
+                  className="flex items-center gap-2.5 px-3 py-2 text-body-sm no-underline transition-colors hover:bg-surface-hover text-fg"
                 >
                   <span
                     aria-hidden="true"

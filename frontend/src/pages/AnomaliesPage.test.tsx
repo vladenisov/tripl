@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,7 +7,7 @@ import AnomaliesPage from './AnomaliesPage'
 import { PageHeader } from '@/components/primitives/page-header'
 
 vi.mock('@/api/eventMetrics', () => ({
-  eventMetricsApi: { getActiveSignals: vi.fn() },
+  eventMetricsApi: { getActiveSignals: vi.fn(), getSignalSeries: vi.fn() },
 }))
 // Kept mocked although the page no longer imports it: the point of tripl-y4wt is
 // that this catalog download (limit 10_000 — 2641 rows / 1.7s on windy-ios) must
@@ -125,6 +125,8 @@ beforeEach(() => {
   vi.mocked(eventsApi.list).mockReset()
   vi.mocked(scansApi.list).mockReset()
   vi.mocked(scansApi.list).mockResolvedValue(makeScans([]))
+  vi.mocked(eventMetricsApi.getSignalSeries).mockReset()
+  vi.mocked(eventMetricsApi.getSignalSeries).mockResolvedValue([])
 })
 
 afterEach(() => {
@@ -336,6 +338,7 @@ describe('AnomaliesPage — severity label (tripl-yfsj.9)', () => {
     await screen.findByRole('link', { name: 'Spike on Metric · Checkout conversion' })
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Anomaly',
+      'Trend',
       'Change',
       'Actual / expected',
       'When',
@@ -367,7 +370,7 @@ describe('AnomaliesPage — row actions (MO-4, JR-6)', () => {
     )
     expect(screen.getByRole('menuitem', { name: 'View alerts' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting',
+      '/p/demo/alerting',
     )
   })
 
@@ -386,7 +389,7 @@ describe('AnomaliesPage — row actions (MO-4, JR-6)', () => {
 
     expect(await screen.findByRole('link', { name: 'Incident · acknowledged' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting?incident=inc-1',
+      '/p/demo/alerting?incident=inc-1',
     )
   })
 })
@@ -978,7 +981,57 @@ describe('AnomaliesPage — page states (MO-17, MO-23, JR-6, DS-25)', () => {
     expect(screen.getByText(/Signals are what detection found/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Alerting' })).toHaveAttribute(
       'href',
-      '/p/demo/settings/alerting',
+      '/p/demo/alerting',
     )
+  })
+})
+
+describe('AnomaliesPage — row sparklines (MO-19)', () => {
+  it('asks for every scan-backed signal in one request and marks the flagged bucket', async () => {
+    const flagged = '2026-07-01T20:00:00Z'
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({
+        scope_type: 'event',
+        scope_ref: 'ev-1',
+        scope_name: 'Checkout tapped',
+        bucket: flagged,
+      }),
+      // A catalog metric has no scan series: it is never sent.
+      makeSignal({ scope_name: 'Checkout conversion', scan_config_id: null }),
+    ])
+    vi.mocked(eventMetricsApi.getSignalSeries).mockResolvedValue([
+      {
+        scan_config_id: 'scan-1',
+        scope_type: 'event',
+        scope_ref: 'ev-1',
+        // Re-spelled by the server: matched as an instant, not as a string.
+        bucket: '2026-07-01T20:00:00+00:00',
+        interval: '1h',
+        data: [
+          { bucket: '2026-07-01T18:00:00Z', count: 10 },
+          { bucket: '2026-07-01T19:00:00Z', count: 12 },
+          { bucket: '2026-07-01T20:00:00Z', count: 60 },
+        ],
+      },
+    ])
+
+    renderAnomalies()
+
+    const link = await screen.findByRole('link', { name: 'Spike on Event · Checkout tapped' })
+    const row = link.closest('[role="row"]') as HTMLElement
+    // The sparkline's flagged-bucket marker (r=2.5); the row menu's ellipsis
+    // icon draws circles too, so the marker is matched by its radius.
+    const marker = 'circle[r="2.5"]'
+    await waitFor(() => expect(row.querySelector(marker)).not.toBeNull())
+    expect(eventMetricsApi.getSignalSeries).toHaveBeenCalledTimes(1)
+    expect(eventMetricsApi.getSignalSeries).toHaveBeenCalledWith('demo', [
+      { scan_config_id: 'scan-1', scope_type: 'event', scope_ref: 'ev-1', bucket: flagged },
+    ])
+    // The metric row draws nothing and never shows a loading block.
+    const metricRow = screen
+      .getByRole('link', { name: 'Spike on Metric · Checkout conversion' })
+      .closest('[role="row"]') as HTMLElement
+    expect(metricRow.querySelector(marker)).toBeNull()
+    expect(within(metricRow).queryByTestId('sparkline-skeleton')).toBeNull()
   })
 })

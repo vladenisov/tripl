@@ -39,7 +39,7 @@ import { invalidateBranchCounts } from './branches/branchQueryKeys'
  * owns what they share: the selection (from the URL), the branch list and the
  * selected branch's diff.
  *
- * The selected branch lives in the URL (`/p/:slug/settings/branches/:branchId`),
+ * The selected branch lives in the URL (`/p/:slug/branches/:branchId`),
  * not in component state, so a review can be linked to and shared.
  */
 export function BranchesTab({ slug, branchId }: { slug: string; branchId?: string }) {
@@ -94,7 +94,7 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
   })
 
   const selectBranch = (branch: PlanBranchSummary) => {
-    navigate(`/p/${slug}/settings/branches/${branch.id}`)
+    navigate(`/p/${slug}/branches/${branch.id}`)
     // Below `lg` the list stacks above the review, so a tap changed content
     // off-screen (PL-30): bring the review into view.
     if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1023px)').matches) {

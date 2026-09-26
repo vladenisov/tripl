@@ -47,6 +47,19 @@ vi.mock('sonner', () => ({
   Toaster: () => null,
 }))
 
+/**
+ * The tab strip's counts (AL-46), stubbed. Their two probes are covered by
+ * useAlertingTabCounts.test.tsx; here they would add requests to every URL log
+ * below and a "(n)" to every tab name, so they answer nothing unless a test
+ * sets them.
+ */
+const tabCounts = vi.hoisted(() => ({
+  value: { openIncidents: undefined as number | undefined, failedDeliveries: undefined as number | undefined },
+}))
+vi.mock('./alerting/useAlertingTabCounts', () => ({
+  useAlertingTabCounts: () => tabCounts.value,
+}))
+
 function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -252,7 +265,7 @@ function renderTab(
   role: Role = 'editor',
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const path = `/p/demo/settings/alerting${section ? `?section=${section}` : ''}`
+  const path = `/p/demo/alerting${section ? `?section=${section}` : ''}`
   return render(
     <AuthContext.Provider value={authValue(role)}>
       <QueryClientProvider client={queryClient}>
@@ -494,7 +507,7 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
 
   function renderInboxTab(
     focusIncidentId?: string,
-    entry = '/p/demo/settings/alerting?section=inbox',
+    entry = '/p/demo/alerting?section=inbox',
   ) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
@@ -524,7 +537,7 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
 
   it('asks for every status on ?status=all (AL-14)', async () => {
     const { inboxUrls } = mockPagedInbox([makeInboxGroup()])
-    renderInboxTab(undefined, '/p/demo/settings/alerting?section=inbox&status=all')
+    renderInboxTab(undefined, '/p/demo/alerting?section=inbox&status=all')
 
     await screen.findByText(/Showing 1 of 1/)
     for (const url of inboxUrls) expect(url).not.toContain('status=')
@@ -542,7 +555,7 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
         scope_ref: 'scope-2',
       }),
     ])
-    renderInboxTab(undefined, '/p/demo/settings/alerting?section=inbox&status=all')
+    renderInboxTab(undefined, '/p/demo/alerting?section=inbox&status=all')
 
     await screen.findByText(/Showing 2 of 2/)
     // Muting freezes a row's sort key, so a muted incident sinks past the page
@@ -571,7 +584,7 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     const { inboxUrls } = mockPagedInbox([
       makeInboxGroup({ status: 'muted', muted: true, muted_until: '2026-08-19T10:00:00Z' }),
     ])
-    renderInboxTab(undefined, '/p/demo/settings/alerting?section=inbox&status=muted')
+    renderInboxTab(undefined, '/p/demo/alerting?section=inbox&status=muted')
 
     // Narrowed from the first request, with no unfiltered page in between.
     await waitFor(() => expect(inboxUrls.length).toBeGreaterThan(0))
@@ -593,26 +606,26 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     await pickInboxStatus('Resolved')
     expect(
       await screen.findByText(
-        'alerting-location:/p/demo/settings/alerting?section=inbox&status=resolved',
+        'alerting-location:/p/demo/alerting?section=inbox&status=resolved',
       ),
     ).toBeInTheDocument()
 
     // ...and "All" is spelled out, because no key now means Open (AL-14)...
     await pickInboxStatus('any')
     expect(
-      await screen.findByText('alerting-location:/p/demo/settings/alerting?section=inbox&status=all'),
+      await screen.findByText('alerting-location:/p/demo/alerting?section=inbox&status=all'),
     ).toBeInTheDocument()
 
     // ...while Open, the default, drops the key.
     await pickInboxStatus('Open')
     expect(
-      await screen.findByText('alerting-location:/p/demo/settings/alerting?section=inbox'),
+      await screen.findByText('alerting-location:/p/demo/alerting?section=inbox'),
     ).toBeInTheDocument()
   })
 
   it('degrades an unknown ?status= to All rather than showing an empty queue', async () => {
     const { inboxUrls } = mockPagedInbox([makeInboxGroup()])
-    renderInboxTab(undefined, '/p/demo/settings/alerting?section=inbox&status=not-a-status')
+    renderInboxTab(undefined, '/p/demo/alerting?section=inbox&status=not-a-status')
 
     await screen.findByText(/Showing 1 of 1/)
     for (const url of inboxUrls) {
@@ -648,13 +661,13 @@ describe('ProjectAlertingTab — the Inbox is a queue you can get to the bottom 
     // the last render, so the filter write put back the status the first call
     // had just removed and the list stayed empty.
     mockPagedInbox([makeInboxGroup()])
-    renderInboxTab(undefined, '/p/demo/settings/alerting?section=inbox&status=muted&direction=drop')
+    renderInboxTab(undefined, '/p/demo/alerting?section=inbox&status=muted&direction=drop')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Show all' }))
 
     // Every status, not the default Open queue (AL-14).
     expect(
-      await screen.findByText('alerting-location:/p/demo/settings/alerting?section=inbox&status=all'),
+      await screen.findByText('alerting-location:/p/demo/alerting?section=inbox&status=all'),
     ).toBeInTheDocument()
   })
 
@@ -828,7 +841,7 @@ describe('ProjectAlertingTab — an inbox action reports on its own row (tripl-o
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting?section=inbox']}>
           <ProjectAlertingTab slug="demo" />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -856,7 +869,7 @@ describe('ProjectAlertingTab — an inbox action reports on its own row (tripl-o
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting?section=inbox']}>
           <ProjectAlertingTab slug="demo" />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -879,7 +892,7 @@ describe('ProjectAlertingTab — an inbox action reports on its own row (tripl-o
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting?section=inbox']}>
           <ProjectAlertingTab slug="demo" />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -942,7 +955,7 @@ describe('ProjectAlertingTab — an open-ended mute is confirmed and sent explic
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting?section=inbox']}>
           <ProjectAlertingTab slug="demo" />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1120,7 +1133,7 @@ describe('ProjectAlertingTab — several incidents, one decision (tripl-gpfr)', 
     const treeAtRole = (current?: Role) => {
       const tree = (
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox&status=all']}>
+          <MemoryRouter initialEntries={['/p/demo/alerting?section=inbox&status=all']}>
             <ProjectAlertingTab slug="demo" />
           </MemoryRouter>
         </QueryClientProvider>
@@ -1459,7 +1472,7 @@ describe('ProjectAlertingTab — a note that is wrong can be taken back (tripl-p
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?section=inbox']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting?section=inbox']}>
           <ProjectAlertingTab slug="demo" />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1757,7 +1770,7 @@ describe('ProjectAlertingTab — per-scan focus via ?scan= (tripl-3y7z.2)', () =
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting']}>
           <ProjectAlertingTab slug="demo" focusScanId={focusScanId} />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -1877,7 +1890,7 @@ describe('ProjectAlertingTab — the delivery log remembers where it was (ALR-36
   it('reads the filters and the page back out of the URL', async () => {
     const deliveryUrls = mockDeliveryLog()
     renderLog(
-      '/p/demo/settings/alerting?section=audit&delivery_status=failed&delivery_channel=slack&delivery_offset=50',
+      '/p/demo/alerting?section=audit&delivery_status=failed&delivery_channel=slack&delivery_offset=50',
     )
 
     await waitFor(() => {
@@ -1892,7 +1905,7 @@ describe('ProjectAlertingTab — the delivery log remembers where it was (ALR-36
 
   it('drops a status the log does not know rather than sending it', async () => {
     const deliveryUrls = mockDeliveryLog()
-    renderLog('/p/demo/settings/alerting?section=audit&delivery_status=bogus')
+    renderLog('/p/demo/alerting?section=audit&delivery_status=bogus')
 
     await waitFor(() => expect(deliveryUrls.some(url => url.includes('limit=50'))).toBe(true))
     for (const url of deliveryUrls) expect(url).not.toContain('status=')
@@ -1901,7 +1914,7 @@ describe('ProjectAlertingTab — the delivery log remembers where it was (ALR-36
   it('drops malformed ids rather than sending a request the API would 422', async () => {
     const deliveryUrls = mockDeliveryLog()
     renderLog(
-      '/p/demo/settings/alerting?section=audit&delivery_destination=bogus&delivery_rule=0b1c2d3e-4f5a',
+      '/p/demo/alerting?section=audit&delivery_destination=bogus&delivery_rule=0b1c2d3e-4f5a',
     )
 
     await waitFor(() => expect(deliveryUrls.some(url => url.includes('limit=50'))).toBe(true))
@@ -1914,7 +1927,7 @@ describe('ProjectAlertingTab — the delivery log remembers where it was (ALR-36
   it('still sends a well-formed destination id from the URL', async () => {
     const deliveryUrls = mockDeliveryLog()
     const id = '3f2a9c1e-8b7d-4e6f-9a0b-1c2d3e4f5a6b'
-    renderLog(`/p/demo/settings/alerting?section=audit&delivery_destination=${id}`)
+    renderLog(`/p/demo/alerting?section=audit&delivery_destination=${id}`)
 
     await waitFor(() => {
       expect(deliveryUrls.some(url => url.includes(`destination_id=${id}`))).toBe(true)
@@ -1923,7 +1936,7 @@ describe('ProjectAlertingTab — the delivery log remembers where it was (ALR-36
 
   it('writes a filter change to the URL and restarts at the first page', async () => {
     mockDeliveryLog()
-    renderLog('/p/demo/settings/alerting?section=audit&delivery_offset=50')
+    renderLog('/p/demo/alerting?section=audit&delivery_offset=50')
 
     fireEvent.click(await screen.findByRole('combobox', { name: /^Status filter/ }))
     fireEvent.click(await screen.findByRole('option', { name: 'Failed' }))
@@ -1960,7 +1973,7 @@ describe('ProjectAlertingTab — the delivery log remembers where it was (ALR-36
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/p/demo/settings/alerting?scan=5c0a1d2e-0000-4000-8000-000000000001']}>
+        <MemoryRouter initialEntries={['/p/demo/alerting?scan=5c0a1d2e-0000-4000-8000-000000000001']}>
           <LocationProbe />
           <ProjectAlertingTab slug="demo" focusScanId="5c0a1d2e-0000-4000-8000-000000000001" />
         </MemoryRouter>
@@ -2134,7 +2147,7 @@ describe('ProjectAlertingTab — a config write reaches the incident views (trip
     return render(
       <AuthContext.Provider value={authValue('editor')}>
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={[`/p/demo/settings/alerting?section=${section}`]}>
+          <MemoryRouter initialEntries={[`/p/demo/alerting?section=${section}`]}>
             <ProjectAlertingTab slug="demo" />
           </MemoryRouter>
         </QueryClientProvider>
@@ -2907,5 +2920,61 @@ describe('ProjectAlertingTab — the Inbox when destinations will not load (ALR-
       await screen.findByText(/Could not load alert destinations and rules/),
     ).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'No alert rules yet' })).toBeNull()
+  })
+})
+
+// The strip itself as a triage signal (AL-46): "Inbox 3", "Delivery log 2".
+describe('ProjectAlertingTab — counts on the section tabs (AL-46)', () => {
+  afterEach(() => {
+    tabCounts.value = { openIncidents: undefined, failedDeliveries: undefined }
+  })
+
+  it('counts open incidents on Inbox and failed deliveries on Delivery log', async () => {
+    tabCounts.value = { openIncidents: 3, failedDeliveries: 2 }
+    mockAlertingFetch([makeDestination({ rules: [makeRule()] })], { inbox: [makeInboxGroup()] })
+    renderTab('inbox')
+
+    expect(await screen.findByRole('tab', { name: 'Inbox (3)' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Delivery log (2)' })).toBeInTheDocument()
+    // Rules and Destinations carry no count of their own.
+    expect(screen.getByRole('tab', { name: 'Rules' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Destinations' })).toBeInTheDocument()
+  })
+
+  it('leaves a zero off the tab rather than printing "Inbox 0"', async () => {
+    tabCounts.value = { openIncidents: 0, failedDeliveries: 0 }
+    mockAlertingFetch([makeDestination({ rules: [makeRule()] })], { inbox: [makeInboxGroup()] })
+    renderTab('inbox')
+
+    expect(await screen.findByRole('tab', { name: 'Inbox' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Delivery log' })).toBeInTheDocument()
+  })
+})
+
+// The counts arrived on every inbox page but the page's merged view of its
+// pages dropped them, so the Status filter never showed one (AL-14).
+describe('ProjectAlertingTab — status counts reach the Status filter (AL-14)', () => {
+  it('shows each status option with its incident count', async () => {
+    const spy = mockAlertingFetch([makeDestination({ rules: [makeRule()] })], {
+      inbox: [makeInboxGroup()],
+    })
+    const answer = spy.getMockImplementation()!
+    spy.mockImplementation(async (input, init) => {
+      if (/\/alert-inbox(\?|$)/.test(String(input))) {
+        return jsonResponse({
+          items: [makeInboxGroup()],
+          total: 1,
+          window_truncated_at: null,
+          status_counts: { open: 1, acknowledged: 2, muted: 0, resolved: 4, false_positive: 0 },
+        })
+      }
+      return answer(input, init)
+    })
+    renderTab('inbox')
+
+    await screen.findByText('payment_failed')
+    fireEvent.click(screen.getByRole('combobox', { name: /^Status filter/ }))
+    expect(await screen.findByRole('option', { name: 'Open · 1' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Resolved · 4' })).toBeInTheDocument()
   })
 })

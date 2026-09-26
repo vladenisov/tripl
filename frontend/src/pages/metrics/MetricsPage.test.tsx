@@ -743,7 +743,7 @@ describe('MetricsPage', () => {
       // Wait for the data to load: both rows visible before filtering.
       expect(await screen.findByText('Firing metric')).toBeInTheDocument()
       expect(screen.getByText('Quiet metric')).toBeInTheDocument()
-      const anomaliesFilter = screen.getByRole('button', { name: 'Filter by active anomalies' })
+      const anomaliesFilter = screen.getByRole('button', { name: /^With anomalies\b/ })
       // One of the two loaded metrics is firing on the latest scan.
       expect(within(anomaliesFilter).getByText('1')).toBeInTheDocument()
 
@@ -761,7 +761,7 @@ describe('MetricsPage', () => {
       renderMetrics()
 
       expect(await screen.findByText('Quiet metric')).toBeInTheDocument()
-      const anomaliesFilter = screen.getByRole('button', { name: 'Filter by active anomalies' })
+      const anomaliesFilter = screen.getByRole('button', { name: /^With anomalies\b/ })
       fireEvent.click(anomaliesFilter)
       expect(screen.queryByText('Quiet metric')).not.toBeInTheDocument()
 
@@ -777,7 +777,7 @@ describe('MetricsPage', () => {
       renderMetrics()
 
       expect(await screen.findByText('Quiet metric')).toBeInTheDocument()
-      const anomaliesFilter = screen.getByRole('button', { name: 'Filter by active anomalies' })
+      const anomaliesFilter = screen.getByRole('button', { name: /^With anomalies\b/ })
       fireEvent.click(anomaliesFilter)
       expect(screen.queryByText('Quiet metric')).not.toBeInTheDocument()
 

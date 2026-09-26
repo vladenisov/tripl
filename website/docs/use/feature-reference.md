@@ -38,7 +38,11 @@ Above the groups sit the **project switcher**, the **branch switcher** (shown
 only inside a project), and the **Search or jump** button (⌘K). The pinned
 footer holds **Project settings** and **Concepts** (the in-app domain primer),
 then your user row: the whole row opens the **account menu** (Profile,
-**Workspace settings**, **Appearance**, **Sign out**). While the pages read a
+**Workspace settings**, **Appearance**, **Sign out**); **Appearance** opens as a
+popover beside the button that opened it. The top bar's crumbs are links: the
+project, then the surfaces under it (**Observe › Alerting › Rules** opens the
+Alerting page and then its Rules tab). A nav group (Plan, Observe, Govern) is
+not a page, so its crumb stays plain text. While the pages read a
 plan branch, a **branch strip** under the top bar names the branch and its
 status and offers the way back to main. The top bar's **Activity** button opens
 and closes the activity rail. The **Search or jump** palette also finds every
@@ -53,6 +57,18 @@ shows — when any are open), and Alerting (open incidents, in solid red, when a
 are open). The Plan counts describe main, so they are hidden while a branch is
 active. Meta fields, Relations, Metrics, Plan branches, Coverage, Scans, and
 Audit log carry no count.
+
+**Keyboard shortcuts.** Letter keys work anywhere outside a text field. **?**
+opens the shortcut sheet, which lists them all. **c** presses the page's
+**New …** button (New event, New metric), or the create button a page marks as
+its own when it is labelled otherwise (**Add rule**, **Add connection**,
+**Create key**). **/** focuses the list's search box, and **Ctrl K** (**⌘K** on a
+Mac) opens **Search or jump**. **Esc** closes a dialog, menu or drawer.
+
+**List filters on a phone.** Below 640px, a list page's filter chips fold into
+one **Filters (n)** button, n being how many are set. It opens a bottom sheet
+holding the chips (and the date pickers beside them), where filters still apply
+as you pick them; **Done** closes it. The search box stays in the row.
 
 ---
 
@@ -138,6 +154,12 @@ pressed Enter. The **Sunset date** is entered and shown in your local time and
 stored as that instant. Changing the event type on a new event keeps the values
 of fields the new type has under the same name, and asks first when some values
 have nowhere to go.
+Once at least three of the type's events have been sampled and 80% of them
+share a naming style (`snake_case`, `Title Case`, `a:b` …), the **Name**
+placeholder shows one of those names instead of a generic example. A name typed
+in another style gets a note under the input, *Other Screen View events look
+like "Home Screen View"*, which never blocks saving: the name has to be
+whatever the app sends.
 For a series of similar events, **Save and add another** creates the current
 event, says what it created, and keeps the entered form values in place for the
 next one — change what differs and save again. It will not save the same name
@@ -145,7 +167,9 @@ twice in a row: an unchanged name is flagged before anything is sent. On an
 event type with no scan naming rule, an existing event of the same name is a
 warning rather than a refusal. Creating an event confirms with a toast (with
 **Open**, or on a branch **View changes**), and on a branch the form says the
-event is added to that branch and reaches main when the branch merges.
+event is added to that branch and reaches main when the branch merges. Back on
+the Events list after a create — one event or a pasted batch — the list scrolls
+to the new rows and marks each **New** for a few seconds.
 
 A **viewer** who opens an event's edit address is taken to the event's page
 (its monitoring detail), where the spec and the **Discussion** are readable; the
@@ -258,9 +282,18 @@ existing events than one lookup reads, or lies past the first 100 names, reads
 server refuses a taken identity regardless, so an unchecked line costs a
 rejected submit rather than a duplicate.
 
-Two event types cannot be filled this way and say so instead: one whose name
-format reads a value *inside* a JSON field, and one with a required field the
-list does not carry. Add those events one at a time.
+A type with a required field that the name is not built from takes that field
+as an extra column, after the identity columns and before the title: on a type
+named by `screen_name` with a required `platform`, a line reads
+`checkout_screen<TAB>ios<TAB>Checkout screen`, and the hint under the box gives
+the column order. A single identity column — a free name, or a format with one
+column — is split on a TAB only, so a name with commas in it stays whole; past
+one identity column a comma separates too. An enum value outside the field's
+options is caught on its line, e.g. `platform must be one of web, ios`.
+
+Only a type with a required JSON field, or one whose name format reads a value
+*inside* a JSON field, cannot be filled this way, and it says so instead. Add
+those events one at a time.
 
 Behind it is `POST /projects/{slug}/events/bulk`, which applies the naming rule
 per item exactly as the single create does. It is one transaction: if any item
@@ -316,10 +349,12 @@ freezes your answer, clearing it asks for a fresh one.
 
 **Seeing what else a field holds.** An event carries one value per field, so a
 scanned value is one out of however many the event actually fires with. Under
-each field, **Split volume by this field** adds that column to the event's
-metric breakdowns; once collection has data for it, **See every value this field
-takes** opens the event's **Breakdowns** tab on that column, with a series and a
-count per value.
+each field, **Split volume by this field** jumps to that column's toggle in the
+**Metric breakdowns** row and focuses it, so the column is switched on where the
+event's breakdowns are chosen. Once the column is on, the line reads **Split by
+this field** with a check and points back to that toggle; once collection has
+data for it, **See every value this field takes** opens the event's
+**Breakdowns** tab on that column, with a series and a count per value.
 
 ### Event discussion
 
@@ -594,7 +629,18 @@ resolved** — and a scan reopens an accepted row on its own once it observes a
 value outside the accepted set. An action without a resolution note preserves
 the existing note; send an explicit null to clear it, or reopen the drift.
 The event detail repeats the
-affected event's review panel. Selection enables bulk type/description/value changes and
+affected event's review panel.
+
+Each variable has its own page, `/p/:slug/variables/:id`, opened from
+the `${name}` link in its row. Its tabs are **Definition** (name, type,
+description, documented values and bindings), **Drift**, **Overrides** (the
+per-event lists) and **Observed** (the scan-observed contexts, with **Clear
+observed values**), each addressable with `?tab=` (`drift`, `overrides`,
+`observed`; Definition is the default). The row's quick-edit dialog still holds
+the same sections for a small change.
+
+Selection enables a bulk bar with **Set type…**, **Set description…** and **Add
+values…** — each a popover holding its own field and its own apply button — and
 delete. A bulk type change is chosen first and applied with **Set type**, after a
 confirm that names how many selected variables have documented values the new
 type would reject. Values are checked against the variable's type wherever they
@@ -689,6 +735,10 @@ Merged** progress line with a sentence naming the next step, and **Work on this
 branch**, which switches you onto it. **Merge** sits in the action row with the
 other transitions; **Reopen** on an approved branch reads **Move back to
 draft**, and **Submit for review** is disabled while the branch has no changes.
+On a branch with no reviewer, **Submit for review** first asks **Who should
+review this?**: **Add and submit** adds the picked reviewers and submits,
+**Submit without a reviewer** submits as it is, and **Cancel** leaves the branch
+a draft.
 A viewer gets no **Edit** on change rows. Conflicts offer **Keep main's value**
 and **Keep this branch's value**, and list the values in the order **Was → Main
 now → This branch**. The note that main has moved on since the branch was cut
@@ -697,7 +747,7 @@ confirmation it appears only when main changed fields the branch also changed.
 Once your own approval stands, **Approve** is no longer the primary button. A long text change is
 shown as one paragraph with the edits marked, not as two full copies.
 
-The selected branch is part of the route (`/p/:slug/settings/branches/:branchId`),
+The selected branch is part of the route (`/p/:slug/branches/:branchId`),
 so a review is linkable. Each diff row expands to its field-level changes;
 collection-valued fields (an event's field values and meta values, its tags, a
 variable's documented values and per-event overrides) are broken out member by
@@ -705,8 +755,8 @@ member rather than dumped whole. A row also links to the entity it describes —
 the event, event type, or variable — opened in the branch, or on `main` when the
 branch deleted it. Events and variables additionally carry **Edit** on the
 collapsed row, without expanding it first: an event opens its editor on that
-branch, and a variable opens its edit dialog on the Variables tab
-(`?edit=1`) — including a renamed row, whose Edit reaches the branch-side copy
+branch, and a variable opens its own page
+(`/p/:slug/variables/:id`) — including a renamed row, whose Edit reaches the branch-side copy
 rather than the base one it is drawn from. A merged or closed branch offers no
 Edit, matching what its writes would be refused for: the API answers a plan
 write sent with `?branch=` naming a merged branch, or a closed one until it is
@@ -905,7 +955,7 @@ it needs an owner signed in through the browser.
 ### Plan history & revisions
 
 **Where:** Plan › **Plan history** in the sidebar (route
-`/p/<slug>/settings/history`). Named plan revisions (snapshots): create a
+`/p/<slug>/history`). Named plan revisions (snapshots): create a
 revision, list them, and diff any two. Each revision is labelled with its kind,
 branch openings are folded together, and a diff is grouped by entity and can be
 filtered. A merge or a branch opening links to its branch's review by id and
@@ -978,14 +1028,19 @@ The bell in the top bar is titled **Alerts**. Its badge counts open incidents,
 the same number as the sidebar's Alerting badge. The popover lists **Open
 incidents** first (each links to its Inbox card), then **Active signals**, then
 **Recent alert deliveries**; retrying a Jira or Linear delivery from it asks
-first. See [Alerting](./alerting.md). The destination dialog has no Channel
+first. On **All projects** (the workspace pages) the badge counts every
+project's open incidents, and the popover lists **Projects needing attention**,
+worst first ("Checkout app · 1 open incident · 3 signals"): a project with an
+open incident links to its Inbox, one with only signals to its Anomalies list.
+Its footer link, **All projects**, opens the project list. See
+[Alerting](./alerting.md). The destination dialog has no Channel
 select on create — the channel comes from the **Add destination** item that
 opened it — and edit shows the channel read-only.
 
 ### Alert rules
 
 **Where:** Observe › Alerting › **Rules** (route
-`/p/<slug>/settings/alerting?section=monitors`; the tab used to be called
+`/p/<slug>/alerting?section=monitors`; the tab used to be called
 *Monitors*, and the `section=` key kept its old name so saved links still work). Every alert **rule** in the
 project, across all destinations, in one list: the **condition** it watches for
 (spike/drop direction, threshold, cooldown), the **destination** it routes to,
@@ -1088,7 +1143,10 @@ lands on the metric's page instead of a disabled form. Each catalog row shows
 the metric's owner as an avatar when it has one. The create/edit form
 picks a **kind** and then reveals kind-specific config; a new metric starts on
 **From tracked events**, and a kind card says when the project has no events or
-no fact tables to build from. Creating a new metric opens a template gallery
+no fact tables to build from, and is faded (still selectable) until it has. A
+project that tracks no events starts a new metric on **From a fact table**
+instead, or on **Custom SQL** when it has no fact tables either. **Description**,
+**colour** and the **internal name** sit under **More options**. Creating a new metric opens a template gallery
 first: **Start from scratch** skips it, and a **Browse templates** link on the
 form brings it back. The top bar names the edited metric: **Metrics › Active
 Sessions › Edit** (a fact table's editor reads **Metrics › Fact tables ›
@@ -1112,6 +1170,14 @@ Sessions › Edit** (a fact table's editor reads **Metrics › Fact tables ›
   to another (A / B), or an event **per distinct user**. Each side names one
   event — searched across the whole catalog — or a whole **event type**, which
   counts every event of that type.
+
+Fact and event-composition metrics have a **Preview** card, a dry run of the
+definition as it stands, over the last 50 buckets; nothing is saved. A fact
+metric's preview queries the warehouse; an event metric's composes the counts
+already collected, on the newest scan grid those events share. After the first
+**Preview** it re-runs by itself whenever the definition changes. Behind it is
+`POST /projects/{slug}/metrics/series-preview` (editor or owner), whose body is
+the same `fact` or `event_composition` definition a save would send.
 
 Every row of a fact metric's filters has to be complete before it saves: a named
 filter with no name picked, a condition with no column or value, or an empty SQL
@@ -1180,8 +1246,13 @@ columns and filters as labelled values) rather than the editor.
 The list shows each table's data source, timestamp column, and **Used by** —
 how many metrics read it. That count includes every metric that reads the table,
 so a ratio metric that uses it only as the denominator counts too. The stat
-strip's **Tables in use** counts the tables at least one metric reads. A row's
-**⋯** menu has **Edit** and **Delete**.
+strip's **Tables in use** counts the tables at least one metric reads, and
+**Used by** links to the metrics catalog narrowed to the metrics that read that
+table (`?fact_table=<id>`; API clients pass `fact_table_id` on
+`GET /projects/{slug}/metrics`). A row's **⋯** menu has **Edit**, **Duplicate**
+and **Delete**. In the editor, after the first **Preview** the column preview
+re-runs by itself as the SQL changes, and a new table takes the next palette
+colour no other table uses.
 
 A fact table that metrics still read cannot be pulled out from under them.
 **Deleting** it, **unbinding its data source**, **removing or renaming a named
@@ -1397,7 +1468,7 @@ on failures, plus channel, destination, rule, and **scan**. That third section's
 not the project-wide **Govern › Audit log** below.
 
 The scan filter is deep-linkable the same way Anomalies' is:
-`/p/<slug>/settings/alerting?scan=<scan_config_id>` opens the delivery log already
+`/p/<slug>/alerting?scan=<scan_config_id>` opens the delivery log already
 narrowed to one scan, which is where a scan run's **Alerts queued** counter
 links. As on Anomalies, an id this project does not have degrades to **All**
 once the scan list resolves, so a link to a since-deleted scan shows the full
@@ -1427,7 +1498,11 @@ creates the event on the active branch (you pick an event type when none is
 inferred), or **Dismiss** it. The inbox loads 100 rows at a time and says how
 many it is showing ("Showing 100 of 812"); **Show more** loads the next 100, as
 far as the list goes. The `new` tab carries the count of new events. Tick rows
-(or the select-all box) to **Accept** or **Dismiss** them in bulk. A bulk action
+(or the select-all box) to **Accept** or **Dismiss** them in bulk. A row's
+**Show N samples** opens up to five rows the last collection saw for that
+identity, each as its column/value pairs, so you can see what the event looks
+like before accepting it (`sample_properties` on each candidate; empty until a
+collection has observed it). A bulk action
 is one request (`POST …/reconciliation/shadow-events/batch`), and each row
 succeeds or fails on its own: a refused row shows the reason on the row and the
 others still go through. Bulk accept only takes rows that already have an event
@@ -1865,19 +1940,26 @@ The scan list heads four figures: **Scans**, **Monitoring** (scans that have
 both a time column and a schedule, so the dispatcher actually picks them up),
 **Failing**, and **Warehouse rows · 24h**. The detail page adds **Scanned · last
 run**, **Events written**, and **Metric points** — which also say when the last collection
-landed and when the next is due. The **Danger zone** on a scan's Configuration
+landed and when the next is due, both read from the scheduler's own record
+(`last_metrics_run_at` / `next_metrics_run_at` on `GET /projects/{slug}/scans/{scan_id}`)
+rather than guessed from the newest run. On a monitoring scan the header's
+chips add **Next run in …** (or **Next run due now**). Changing a scan is for
+owners, so a viewer or editor opening the Configuration tab sees a read-only
+list of its settings rather than a disabled form. The **Danger zone** on a scan's Configuration
 tab holds only **Delete**; replays start from **Replay a period…** in the page
 header. **Apply to existing events** sits on the Event mapping tab's **Event
 group rules** row. The Configuration tab's save bar appears only once you have
 edits, with **Discard** and **Save changes**. A project with no scans shows a
 single empty state in place of the list.
 
-**Warehouse rows · 24h** counts only the rows metrics runs read. A catalog
-run reads back grouped column combinations instead — a different unit — so
+**Warehouse rows · 24h** counts warehouse rows only: those metrics runs read,
+and those behind a newer catalog run's breakdown. An older catalog run reports
+only the grouped column combinations it read back — a different unit — so
 those are not added in; the figure's hover title names them separately
-("Catalog runs also read back 153 column combinations"). The activity endpoint
-returns the two sums as `warehouse_rows_24h` and `catalog_combinations_24h`;
-the older mixed `rows_read_24h` is their total.
+("Catalog runs that report no warehouse rows also read back 153 column
+combinations"). The activity endpoint returns the two sums as
+`warehouse_rows_24h` and `catalog_combinations_24h`; the older mixed
+`rows_read_24h` is their total.
 
 The 24h figure, and the **failed last N runs** tag on a scan's collapsed
 failures under **Recent runs**, are exact: the server counts them over each
@@ -1898,10 +1980,13 @@ breakdown variants), so the list and the detail page always show the same number
 for the same run.
 
 **Scanned** counts what a run read — bounded by the row caps below — not rows
-written into your plan. It is **one label over two populations**: a catalog run
-shows the distinct column combinations the warehouse grouped for it ("153
-combos", bounded by **Row cap per run**), a metrics run shows the warehouse rows
-read across every metrics chunk (bounded by **Row cap per metrics run**). A
+written into your plan. A metrics run shows the warehouse rows read across
+every metrics chunk (bounded by **Row cap per metrics run**). A catalog run shows
+the warehouse rows behind the column combinations it read back, with the
+combinations beside them — *Read 48,200 warehouse rows (153 distinct column
+combinations, grouped in the warehouse)* — bounded by **Row cap per run**. A
+catalog run from before that count existed still shows only its combinations
+("153 combos"), so the label spans **two populations**. A
 column header cannot vary per row, so each figure — the stat card and each cell
 in the run table — carries a hover title saying which of the two it is.
 
@@ -1912,7 +1997,7 @@ data, in this order, each omitted when the run has nothing to report for it.
 
 | Line | What it means |
 | --- | --- |
-| *Read N warehouse rows.* | Rows the run read from your warehouse. A replay adds *across N chunks*. Hover for which cap applied. |
+| *Read N warehouse rows.* | Rows the run read from your warehouse. A replay adds *across N chunks*; a catalog run adds the column combinations they grouped into, *(M distinct column combinations, grouped in the warehouse)*, and an older catalog run reports only those. Hover for which cap applied. |
 | *Added N events to your tracking plan.* | Events that did not exist in the plan and now do. |
 | *No new events — all N were already in your plan.* | The run discovered nothing new. Normal on an established catalog, not a failure. |
 | *N events were already in your plan and were left as they are.* | The old "Events skipped" counter, with its reason. Nothing was lost or overwritten; their field values were refreshed. |
@@ -2099,9 +2184,11 @@ headings and filtered by role exactly as the sidebar filters them, plus a
 Concepts, Detection settings); a **Projects** switcher; an
 **Event types** jump list; **branch-aware knowledge search** (from 2 characters)
 across events, event types, fields, meta fields, variables, relations, tags,
-metrics, fact tables, scans and alert rules, each with a
-confidence badge — the keyword answer is shown as soon as it lands and the
-semantic re-ranking replaces it when that arrives; **Ask AI** (when AI is
+metrics, fact tables, scans and alert rules — events that differ only in one
+naming-rule placeholder are folded into one row ("+ N variants") with a
+**Show/Hide N variants** row that expands them in place (see
+[Searching events](./searching-events.md)); the keyword answer is shown as soon
+as it lands and the semantic re-ranking replaces it when that arrives; **Ask AI** (when AI is
 enabled and the query is at least 8 characters, with cited sources); an
 **Actions** group; and **Sign out**.
 
@@ -2247,10 +2334,13 @@ before you create it, and nothing is stored by that test; a new source is tested
 again as soon as it is created, and an edited one when its host, credentials or
 TLS settings change); browse the schema (tables/columns) for the scan
 query builder; and view ingestion stats. Health is shown as healthy / stale /
-failing / untested. Each connection card says **Used by N scans** (or **Not used
-by any scan**). Deleting a source that scans read asks you to type its name
-first, and the confirmation names how many scans and scan runs are removed with
-it. The dialog checks secrets before saving: a BigQuery key must
+failing / untested. Each connection card has a **Used by** line naming the scans
+that read it, each linking to its scan page (with its project when it sits in
+another one, and *and N more* past the first few), or **Not used by any scan**.
+Deleting a source that scans read asks you to type its name first, and the
+confirmation says how many scans and scan runs are removed with it, naming the
+scans when there are three or fewer: *1 scan (Demo scan) and its 42 runs will be
+removed with it.* The dialog checks secrets before saving: a BigQuery key must
 be valid JSON with `"type": "service_account"` (paste it or **load the key
 file**), and PostgreSQL certificates and keys must be PEM blocks
 (`-----BEGIN …-----` to `-----END …-----`), not file paths. Credential fields

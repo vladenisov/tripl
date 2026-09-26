@@ -173,6 +173,7 @@ function renderHarness(
             <Route path="/p/:slug/settings/:tab" element={<LocationBeacon />} />
             <Route path="/p/:slug/monitoring" element={<LocationBeacon />} />
             <Route path="/p/:slug/alerting" element={<LocationBeacon />} />
+            <Route path="/p/:slug/branches" element={<LocationBeacon />} />
           </Routes>
         </MemoryRouter>
       </AuthContext.Provider>
@@ -242,6 +243,16 @@ describe('CommandPalette', () => {
     expect(screen.getByText('Detection settings')).toBeInTheDocument()
     expect(screen.getByText('Alerting')).toBeInTheDocument()
     expect(screen.getByText('Scans')).toBeInTheDocument()
+
+    // The keyboard-active row wears the focus ring, the same one the settings
+    // palette's rows wear: cmdk keeps DOM focus in the input, so the ring
+    // rides on aria-selected rather than on :focus-visible.
+    const selected = await waitFor(() => {
+      const row = screen.getAllByRole('option').find(option => option.getAttribute('aria-selected') === 'true')
+      expect(row).toBeDefined()
+      return row as HTMLElement
+    })
+    expect(selected).toHaveClass('aria-selected:ring-2', 'aria-selected:ring-inset', 'aria-selected:ring-ring')
 
     fireEvent.click(screen.getByText('Project settings'))
 
@@ -595,7 +606,7 @@ describe('CommandPalette', () => {
               title: '${user_id}',
               subtitle: '',
               snippet: '',
-              route_path: '/p/demo/settings/variables',
+              route_path: '/p/demo/variables',
               score: 4,
               highlights: [],
               semantic_used: false,
@@ -1451,7 +1462,7 @@ describe('CommandPalette reach and noise (#238 JR-19 / SH-19 / JR-20)', () => {
 
     fireEvent.click(screen.getByText('New branch'))
     await waitFor(() => {
-      expect(screen.getByTestId('location')).toHaveTextContent('/p/demo/settings/branches')
+      expect(screen.getByTestId('location')).toHaveTextContent('/p/demo/branches')
     })
     expect(screen.getByTestId('location-search')).toHaveTextContent('?new=1')
   })
@@ -1462,7 +1473,7 @@ describe('CommandPalette reach and noise (#238 JR-19 / SH-19 / JR-20)', () => {
     fireEvent.click(screen.getByTestId('open-palette'))
     await screen.findByText('Demo')
 
-    expect(screen.queryByText('/p/demo/settings/meta-fields')).toBeNull()
+    expect(screen.queryByText('/p/demo/meta-fields')).toBeNull()
     expect(screen.queryByText('/settings/members')).toBeNull()
   })
 })
