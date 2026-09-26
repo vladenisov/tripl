@@ -81,10 +81,29 @@ export function CreateProjectDialog({
       // the reader cannot edit without first finding "Customize URL" (SH-29).
       // The API says "slug"; this form calls the field Project URL.
       setSlugServerError(SLUG_TAKEN_MESSAGE)
-      setCustomizing(true)
-      requestAnimationFrame(() => document.getElementById('project-slug')?.focus())
+      focusSlugField()
     },
   })
+
+  // Focus lands on the URL field once it exists. It usually does not exist
+  // yet (the button or the error opens it), and a frame-timed lookup lost the
+  // race to React's commit on a busy machine, so the mount itself takes focus.
+  const focusSlugOnMount = useRef(false)
+  const focusSlugField = () => {
+    const field = document.getElementById('project-slug')
+    if (field) {
+      field.focus()
+      return
+    }
+    focusSlugOnMount.current = true
+    setCustomizing(true)
+  }
+  const slugFieldRef = (field: HTMLInputElement | null) => {
+    if (field && focusSlugOnMount.current) {
+      focusSlugOnMount.current = false
+      field.focus()
+    }
+  }
 
   const slugValid = isValidSlug(slug)
   // Said once the user has typed a slug or tried to submit, not while the
@@ -161,6 +180,7 @@ export function CreateProjectDialog({
                   </span>
                   <Input
                     id="project-slug"
+                    ref={slugFieldRef}
                     value={slug}
                     onChange={(event) => {
                       setSlugTouched(true)
@@ -195,9 +215,8 @@ export function CreateProjectDialog({
                   size="xs"
                   className="h-auto px-0"
                   onClick={() => {
-                    setCustomizing(true)
                     // The field replaces this button, so focus follows to it.
-                    requestAnimationFrame(() => document.getElementById('project-slug')?.focus())
+                    focusSlugField()
                   }}
                 >
                   Customize URL
