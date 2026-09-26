@@ -46,7 +46,7 @@ export const WELCOME_PILLARS: ReadonlyArray<{
     // metric points, and notifications need a monitor — the Concepts glossary
     // says so, and this card has to agree with it (WS-46).
     description:
-      "Scans read your warehouse, and once a monitoring scan records metrics, anomaly detection learns each event's normal rhythm — flagging spikes, drops, and schema drift. Monitors decide who hears about it.",
+      "Scans read your warehouse, and once a monitoring scan records metrics, anomaly detection learns each event's normal rhythm — flagging spikes, drops, and schema drift. Alert rules decide who hears about it.",
   },
   {
     id: 'govern',

@@ -178,6 +178,15 @@ describe('OnboardingChecklist', () => {
     }
   })
 
+  it('links "What is this?" under the title to the project glossary (JR-32)', () => {
+    renderChecklist({ summary: makeSummary() })
+
+    expect(screen.getByRole('link', { name: 'What is this?' })).toHaveAttribute(
+      'href',
+      '/p/demo/concepts',
+    )
+  })
+
   it('describes "Run a scan" by what a run produces, not by a baseline (tripl-3y7z)', () => {
     // The step ticks on ANY executed run, including a Catalog only scan's, and
     // the manual Run now it asks for calls `run_scan`, which writes events and

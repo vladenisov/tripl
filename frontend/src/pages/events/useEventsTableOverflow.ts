@@ -83,8 +83,18 @@ export function measurePinnedGeometry(
   }
 }
 
+/**
+ * The element that scrolls the table sideways: the page's `.tripl-table-wrap`,
+ * which since EV-3 scrolls both axes (`Table scroll={false}`), else the
+ * table's parent — the `Table` primitive's own x-scroller where it keeps one.
+ */
+function horizontalScrollerOf(table: HTMLTableElement): HTMLElement | null {
+  const wrap = table.closest('.tripl-table-wrap')
+  return wrap instanceof HTMLElement ? wrap : table.parentElement
+}
+
 export function measureOverflow(table: HTMLTableElement): number {
-  const scroller = table.parentElement
+  const scroller = horizontalScrollerOf(table)
   const headerCells = table.tHead?.rows[0]?.cells
   if (!scroller || !headerCells) return 0
 
@@ -124,8 +134,9 @@ export function measureOverflow(table: HTMLTableElement): number {
  * shadow through a custom property, so crossing scrollLeft 0 repaints instead
  * of re-rendering every row.
  *
- * The scroller is the `<table>`'s parent: `Table` (components/ui/table.tsx)
- * wraps it in the `.tripl-scroll-x` container that actually overflows.
+ * The scroller is the `.tripl-table-wrap` around the `<table>`: one box
+ * scrolls both axes, so the sticky header and pinned columns resolve against
+ * it (EV-3).
  */
 export function useEventsTableOverflow(): {
   tableRef: RefCallback<HTMLTableElement>
@@ -136,7 +147,7 @@ export function useEventsTableOverflow(): {
   const tableRef = useCallback((node: HTMLTableElement | null) => setTable(node), [])
 
   useEffect(() => {
-    const scroller = table?.parentElement
+    const scroller = table ? horizontalScrollerOf(table) : null
     if (!table || !scroller) return
 
     let frame = 0

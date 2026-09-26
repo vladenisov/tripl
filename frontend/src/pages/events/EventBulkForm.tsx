@@ -2,12 +2,16 @@ import { PageHeader } from '@/components/primitives/page-header'
 import { PageContainer } from '@/components/primitives/page-container'
 import { Button } from '@/components/ui/button'
 import { SaveBar } from '@/components/forms/SaveBar'
-import { useMemo, useState } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import type { EventType } from '@/types'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
+import { usersApi } from '@/api/users'
+import { ChipListInput } from '@/components/chip-list-input'
+import { PageSkeleton } from '@/components/states'
 import { useActiveBranchId } from '@/hooks/useBranch'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES } from '@/lib/eventStatus'
@@ -19,14 +23,15 @@ import {
   branchEventsKey,
   eventIdentityLookupKey,
   eventTypesKey,
+  usersKey,
 } from '@/lib/queryKeys'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
-import { ChevronLeft, Loader2, Plus } from 'lucide-react'
+import { AlertTriangle, Check, ChevronLeft, Loader2, Plus, X, type LucideIcon } from 'lucide-react'
 import { EV_INPUT_CLASS, EvField, SelectControl, SurfCard } from './eventFormLayout'
 import { nameFormatBaseColumns } from './utils'
 import { bulkUnsupportedReason, parseBulkDraft, type BulkRow } from './bulkEventDraft'
+import { normalizeTag } from './eventFormValues'
 import { useCanWriteProject } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 
 const EMPTY_EVENT_TYPES: EventType[] = []
@@ -72,6 +77,15 @@ const STATUS_COLOR: Record<BulkRow['status'], string> = {
   exists: 'var(--warning)',
 }
 
+/** A verdict's icon, so it reads without its colour (AU-20): a check for a
+ *  line that will be created, a cross for one that will not. */
+const STATUS_ICON: Record<BulkRow['status'], LucideIcon> = {
+  ready: Check,
+  incomplete: X,
+  duplicate: X,
+  exists: X,
+}
+
 /**
  * Author a run of events from a pasted block.
  *
@@ -90,7 +104,7 @@ export default function EventBulkForm() {
   const branchId = useActiveBranchId()
   const qc = useQueryClient()
   // Creating events is an editor action; a viewer who lands here by URL is
-  // told so up front rather than after pasting a list.
+  // sent back to the list with the reason, not shown a disabled form (#237).
   const canWrite = useCanWriteProject()
 
   // `null` is "not chosen yet": until the reader picks, the type the route names
@@ -99,23 +113,33 @@ export default function EventBulkForm() {
   const [chosenEtId, setEtId] = useState<string | null>(null)
   const [status, setStatus] = useState<EventStatus>('draft')
   const [draft, setDraft] = useState('')
+  // Shared by the whole batch, so it does not need a second pass through the
+  // list's bulk bar to set them (AU-20).
+  const [ownerId, setOwnerId] = useState('')
+  const [tags, setTags] = useState<string[]>([])
   // The pasted list is the work at risk; a type or status choice alone is one
-  // click to redo. A viewer's textarea is disabled, so theirs is never dirty.
+  // click to redo.
   const unsaved = useUnsavedChangesGuard(canWrite && draft.trim() !== '')
 
   // The query string comes along: it is the list's filters and the `?branch=`
   // EventsPage carries into this page on purpose, and dropping it returned the
   // reader to an unfiltered list on main (EVT-38).
+  const listPath = !tab || tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${tab}`
   const goBack = () => {
-    const base = !tab || tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${tab}`
-    navigate(`${base}${location.search}`)
+    navigate(`${listPath}${location.search}`)
   }
 
   const eventTypesQuery = useQuery({
     queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug!, branchId),
-    enabled: !!slug,
+    enabled: !!slug && canWrite,
   })
+  const usersQuery = useQuery({
+    queryKey: usersKey(),
+    queryFn: () => usersApi.list(),
+    enabled: canWrite,
+  })
+  const users = usersQuery.data ?? []
   const eventTypes = eventTypesQuery.data ?? EMPTY_EVENT_TYPES
   const routedEt = tab && tab !== 'all' ? eventTypes.find(et => et.name === tab) : undefined
   const etId = chosenEtId ?? routedEt?.id ?? ''
@@ -199,19 +223,18 @@ export default function EventBulkForm() {
   const uncheckedCount = overLimitCount + probes.unchecked.size
   // Why Create is greyed out, on the sticky bar beside it (AU-6): a disabled
   // button alone left the reason off screen or unsaid.
-  const blockingReason = !canWrite
-    ? 'Read-only access'
-    : !etId
-      ? 'Pick an event type'
-      : unsupported || unmappedColumns.length > 0
-        ? 'This event type cannot be filled from a pasted list'
-        : rows.length === 0
-          ? 'Paste at least one event name'
-          : checking
-            ? CHECKING_STATUS
-            : ready.length === 0
-              ? 'No line can be created'
-              : null
+  const cannotPaste = !!etId && (!!unsupported || unmappedColumns.length > 0)
+  const blockingReason = !etId
+    ? 'Pick an event type'
+    : cannotPaste
+      ? 'This event type cannot be filled from a pasted list'
+      : rows.length === 0
+        ? 'Paste at least one event name'
+        : checking
+          ? CHECKING_STATUS
+          : ready.length === 0
+            ? 'No line can be created'
+            : null
 
   const createMut = useMutation({
     meta: SILENT_ERROR_META,
@@ -225,6 +248,10 @@ export default function EventBulkForm() {
           // string would read as a deliberate blank.
           ...(row.title ? { title: row.title } : {}),
           status,
+          // Only when chosen, as with the title: the batch otherwise carries
+          // exactly what it always did.
+          ...(ownerId ? { owner_id: ownerId } : {}),
+          ...(tags.length > 0 ? { tags } : {}),
           field_values: namingColumns.flatMap((column, position) => {
             const field = fieldsByName.get(column)
             const value = row.values[position]
@@ -233,22 +260,39 @@ export default function EventBulkForm() {
         })),
         branchId,
       ),
-    onSuccess: () => {
+    onSuccess: created => {
       qc.invalidateQueries({ queryKey: branchEventsKey(slug, branchId) })
       qc.invalidateQueries({ queryKey: branchEventIdentityProbesKey(slug, branchId) })
       unsaved.release()
+      // The page used to step back to the list with no word (AU-20).
+      const count = Array.isArray(created) && created.length > 0 ? created.length : ready.length
+      toast.success(count === 1 ? 'Created 1 event' : `Created ${count} events`)
       goBack()
     },
   })
+
+  useEffect(() => {
+    if (!canWrite) toast.info('Only editors can add events.', { id: 'viewer-new-event' })
+  }, [canWrite])
+  if (!canWrite && slug) return <Navigate replace to={`${listPath}${location.search}`} />
 
   if (eventTypesQuery.error) {
     return (
       <PageContainer width="narrow">
         <ErrorState
-          title="Failed to load the event types"
+          title="Could not load the event types"
           error={eventTypesQuery.error}
           onRetry={() => void eventTypesQuery.refetch()}
         />
+      </PageContainer>
+    )
+  }
+
+  // The page's shape while the types load, not an empty picker (AU-43).
+  if (eventTypesQuery.isPending && slug) {
+    return (
+      <PageContainer width="narrow">
+        <PageSkeleton variant="form" label="Loading event types…" />
       </PageContainer>
     )
   }
@@ -292,7 +336,6 @@ export default function EventBulkForm() {
             </button>
           }
         />
-        {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
         <SurfCard title="What to create">
           <EvField label="Event type" htmlFor="bulk-event-type" required last={false}>
@@ -313,7 +356,6 @@ export default function EventBulkForm() {
             label="Status"
             htmlFor="bulk-status"
             hint="Applied to every event created here."
-            last
           >
             <SelectControl
               id="bulk-status"
@@ -325,26 +367,68 @@ export default function EventBulkForm() {
               ))}
             </SelectControl>
           </EvField>
+
+          <EvField label="Owner" htmlFor="bulk-owner" hint="Who answers for these events.">
+            <SelectControl id="bulk-owner" value={ownerId} onChange={setOwnerId}>
+              <option value="">No owner</option>
+              {users.map(u => (
+                <option key={u.id} value={u.id}>{u.name || u.email}</option>
+              ))}
+            </SelectControl>
+          </EvField>
+
+          <EvField label="Tags" htmlFor="bulk-tags" hint="Added to every event created here." last>
+            <ChipListInput
+              inputId="bulk-tags"
+              values={tags}
+              onChange={next => {
+                const normalized = next.map(normalizeTag).filter(Boolean)
+                setTags(normalized.filter((tag, i) => normalized.indexOf(tag) === i))
+              }}
+              placeholder="Type tag + Enter"
+              ariaLabel="Add a tag"
+            />
+          </EvField>
         </SurfCard>
 
-        {etId && unsupported && (
-          <p className="mb-[18px] text-body-sm" role="alert" style={{ color: 'var(--warning)' }}>
-            {unsupported}
-          </p>
-        )}
-
-        {etId && !unsupported && unmappedColumns.length > 0 && (
-          <p className="mb-[18px] text-body-sm" role="alert" style={{ color: 'var(--warning)' }}>
-            The scan builds the name from {unmappedColumns.join(', ')}, which this event type has
-            no field for — the events would carry the name and none of the values behind it. Add
-            the fields to the event type first.
-          </p>
+        {/* A type a pasted list cannot fill is a dead end unless the page
+            says where to go instead (AU-19): the two remedies the sentence
+            names, as actions. Create is hidden below rather than left at a
+            disabled "Create 0 events". */}
+        {cannotPaste && selectedEt && (
+          <div
+            role="alert"
+            className="mb-[18px] flex flex-col gap-3 rounded-card border border-warning/50 bg-warning-soft px-4 py-3 text-body-sm"
+          >
+            <p className="flex items-start gap-2 text-warning">
+              <AlertTriangle className="mt-[3px] size-3.5 shrink-0" aria-hidden="true" />
+              <span>
+                {unsupported ?? (
+                  <>
+                    The scan builds the name from {unmappedColumns.join(', ')}, which this event type
+                    has no field for — the events would carry the name and none of the values behind
+                    it. Add the fields to the event type first.
+                  </>
+                )}
+              </span>
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button asChild size="sm">
+                <Link to={`/p/${slug}/events/${tab ?? 'all'}/new${location.search}`}>Add one at a time</Link>
+              </Button>
+              <Button asChild size="sm" variant="outline">
+                <Link to={`/p/${slug}/settings/event-types/${selectedEt.id}`}>
+                  Edit {selectedEt.display_name} fields
+                </Link>
+              </Button>
+            </div>
+          </div>
         )}
 
         {etId && !unsupported && unmappedColumns.length === 0 && (
           <>
             <SurfCard
-              title="The list"
+              title="Events to add"
               subtitle={
                 nameFormat
                   ? `${columnHint} Each event is named by the scan rule ${nameFormat}. ${titleHint}`
@@ -417,7 +501,7 @@ export default function EventBulkForm() {
                             className="px-4 py-[6px]"
                             style={{ color: STATUS_COLOR[row.status] }}
                           >
-                            {rowVerdict(row)}
+                            <BulkVerdict row={row} verdict={rowVerdict(row)} />
                           </TableCell>
                         </TableRow>
                       ))}
@@ -442,16 +526,30 @@ export default function EventBulkForm() {
           <Button type="button" variant="ghost" onClick={goBack}>
             Cancel
           </Button>
-          <Button
-            type="button"
-            onClick={() => createMut.mutate()}
-            disabled={!canWrite || ready.length === 0 || checking || createMut.isPending}
-          >
-            {createMut.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
-            {ready.length === 1 ? 'Create 1 event' : `Create ${ready.length} events`}
-          </Button>
+          {!cannotPaste && (
+            <Button
+              type="button"
+              onClick={() => createMut.mutate()}
+              disabled={ready.length === 0 || checking || createMut.isPending}
+            >
+              {createMut.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
+              {ready.length === 1 ? 'Create 1 event' : `Create ${ready.length} events`}
+            </Button>
+          )}
         </SaveBar>
       </div>
     </PageContainer>
+  )
+}
+
+/** One line's verdict with its icon; "checking…" has none until it is known. */
+function BulkVerdict({ row, verdict }: { row: BulkRow; verdict: string }) {
+  if (verdict === 'checking…') return <>{verdict}</>
+  const Icon = row.status === 'ready' && verdict !== STATUS_LABEL.ready ? AlertTriangle : STATUS_ICON[row.status]
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+      {verdict}
+    </span>
   )
 }

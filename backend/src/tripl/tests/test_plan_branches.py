@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from pydantic import ValidationError
 from sqlalchemy import event as sa_event
 from sqlalchemy import select
 
@@ -27,6 +28,7 @@ from tripl.models.user import User
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
 from tripl.models.variable_value import VariableValue
+from tripl.schemas.plan_branch import PlanBranchCreate
 from tripl.services._plan_branch_renames import (
     pair_renames,
     rekey_in_place,
@@ -204,6 +206,45 @@ async def test_duplicate_branch_name_rejected(client: AsyncClient) -> None:
         json={"name": "main"},
     )
     assert reserved.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["feature-x", "checkout/paywall-copy", "WND-4770", "v1.2_rc", "a" * 64, "  padded  "],
+)
+def test_branch_name_rule_accepts_ref_like_names(name: str) -> None:
+    assert PlanBranchCreate(name=name).name == name.strip()
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("Bad name with spaces!!", "cannot contain spaces"),
+        ("-leading-dash", "start with a letter or number"),
+        ("emoji-\N{ROCKET}", "start with a letter or number"),
+        ("a" * 65, "at most 64 characters"),
+    ],
+)
+def test_branch_name_rule_refuses_what_the_dialog_refuses(name: str, message: str) -> None:
+    """The API enforces the rule the create dialog explains (PL-5).
+
+    It used to live only in branchMeta.ts, so a direct POST still created
+    "Bad name with spaces!!".
+    """
+    with pytest.raises(ValidationError) as exc:
+        PlanBranchCreate(name=name)
+    assert message in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_branch_name_rule_is_a_422_on_create(client: AsyncClient) -> None:
+    await _seed_plan(client, "branch-name-rule")
+    resp = await client.post(
+        "/api/v1/projects/branch-name-rule/branches",
+        json={"name": "Bad name with spaces!!"},
+    )
+    assert resp.status_code == 422
+    assert "cannot contain spaces" in resp.text
 
 
 @pytest.mark.asyncio

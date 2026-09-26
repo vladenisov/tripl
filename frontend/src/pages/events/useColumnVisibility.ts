@@ -1,5 +1,7 @@
 import { useCallback, useState } from 'react'
 
+import type { EventType, FieldDefinition } from '@/types'
+
 const STORAGE_KEY = 'tripl.eventsHiddenCols'
 
 /**
@@ -46,6 +48,16 @@ export function useColumnVisibility() {
 
   const [colMenuOpen, setColMenuOpen] = useState(false)
 
+  const updateColumns = useCallback((add: string[], remove: string[]) => {
+    setHiddenColumns((prev) => {
+      const next = new Set(prev)
+      for (const key of remove) next.delete(key)
+      for (const key of add) next.add(key)
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify([...next])) } catch { /* ignore */ }
+      return next
+    })
+  }, [])
+
   const toggleColumn = useCallback((key: string) => {
     setHiddenColumns((prev) => {
       const next = new Set(prev)
@@ -58,7 +70,53 @@ export function useColumnVisibility() {
   return {
     hiddenColumns,
     toggleColumn,
+    updateColumns,
     colMenuOpen,
     setColMenuOpen,
   }
+}
+
+/**
+ * The stored opt-in for a column that starts hidden on its tab: a type-specific
+ * field column on the All / queue tabs (EV-11). Kept in the same persisted set
+ * as the hidden keys, so one localStorage entry still holds every choice.
+ */
+export function shownColumnKey(key: string): string {
+  return `show:${key}`
+}
+
+/**
+ * The `f:<id>` keys of the field columns that not every event type defines.
+ * On the All tab the table lists the union of every type's fields, so each of
+ * these is a column of dashes for every other type: about 70% of those cells
+ * were "—", and they pushed Last seen and Owner off-screen at 1024 (EV-11).
+ */
+export function typeSpecificFieldKeys(
+  eventTypes: readonly EventType[],
+  fieldColumns: readonly FieldDefinition[],
+): Set<string> {
+  const keys = new Set<string>()
+  if (eventTypes.length < 2) return keys
+  for (const column of fieldColumns) {
+    const everyType = eventTypes.every(type =>
+      type.field_definitions.some(field => field.name === column.name),
+    )
+    if (!everyType) keys.add(`f:${column.id}`)
+  }
+  return keys
+}
+
+/**
+ * What the table hides: the stored choices, plus the default-hidden keys the
+ * reader has not opted into with {@link shownColumnKey}.
+ */
+export function withDefaultHidden(
+  hiddenColumns: ReadonlySet<string>,
+  defaultHidden: ReadonlySet<string>,
+): Set<string> {
+  const effective = new Set(hiddenColumns)
+  for (const key of defaultHidden) {
+    if (!hiddenColumns.has(shownColumnKey(key))) effective.add(key)
+  }
+  return effective
 }

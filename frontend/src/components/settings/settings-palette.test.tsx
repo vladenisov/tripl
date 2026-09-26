@@ -104,6 +104,23 @@ describe('Settings command palette destinations', () => {
   })
 })
 
+describe('Settings command palette search (#238 JR-19)', () => {
+  it('finds a section by a keyword it does not show, one word at a time', async () => {
+    renderPalette()
+
+    const palette = await openPalette()
+    fireEvent.change(within(palette).getByRole('combobox'), { target: { value: 'timezone' } })
+
+    expect(within(palette).getByText('General')).toBeInTheDocument()
+    expect(within(palette).queryByText('Members')).toBeNull()
+
+    // Two words that only match together, across label and keywords.
+    fireEvent.change(within(palette).getByRole('combobox'), { target: { value: 'api key' } })
+    expect(within(palette).getByText('API keys')).toBeInTheDocument()
+    expect(within(palette).queryByText('General')).toBeNull()
+  })
+})
+
 describe('Settings command palette focus restore', () => {
   it('hands focus to the settings content instead of dropping it on <body>', async () => {
     renderPalette()

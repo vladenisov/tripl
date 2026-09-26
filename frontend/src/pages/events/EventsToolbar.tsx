@@ -1,4 +1,5 @@
-import { ChevronDown, Download, ListPlus, MoreHorizontal, Plus } from 'lucide-react'
+import { useId, useState } from 'react'
+import { ArrowDownUp, ChevronDown, Download, ListFilter, ListPlus, MoreHorizontal, Plus } from 'lucide-react'
 import type { FieldDefinition, MetaFieldDefinition } from '@/types'
 import { EVENT_STATUS_LABELS, EVENT_STATUSES, type EventStatus } from '@/lib/eventStatus'
 import { Button } from '@/components/ui/button'
@@ -25,11 +26,12 @@ import type { EventsSavedView } from './savedViews'
 import type { EventsSortOrder } from './useEventsQuery'
 
 /**
- * The Sort and Status triggers in the FilterSelect chip geometry (DS-15):
- * 28px, caption text, "{Label}: {value}". Status is a multi-select menu and
- * Sort is not a filter, so neither can be a FilterSelect itself.
+ * The Status trigger in the FilterSelect chip geometry (DS-15): 28px, caption
+ * text, "{Label}: {value}". Status is a multi-select menu, so it cannot be a
+ * FilterSelect itself. `whitespace-nowrap`: "Status / any" wrapped inside the
+ * chip on a phone (EV-1).
  */
-const CHIP_TRIGGER_CLASS = 'h-7 w-auto gap-1.5 text-caption font-normal'
+const CHIP_TRIGGER_CLASS = 'h-7 w-auto gap-1.5 whitespace-nowrap text-caption font-normal'
 const CHIP_UNSET_CLASS = 'border-dashed bg-transparent text-fg-muted'
 const CHIP_SET_CLASS = 'border-accent bg-accent-soft text-fg'
 
@@ -38,6 +40,11 @@ const SILENT_DAY_PRESETS = [1, 7, 30]
 
 /** "no filter" for the single-value FilterSelects below. */
 const ANY = '__all__'
+
+/** Plain words for a silent-days preset: "Silent > 1d" was jargon (EV-15). */
+function silentDaysLabel(days: number): string {
+  return `No events for ${days}+ day${days === 1 ? '' : 's'}`
+}
 
 export function EventsToolbar({
   search,
@@ -139,100 +146,70 @@ export function EventsToolbar({
   const silentDayOptions = [
     ...SILENT_DAY_PRESETS,
     ...(customSilentDays !== undefined ? [customSilentDays] : []),
-  ].map(days => ({ value: String(days), label: `Silent > ${days}d` }))
+  ].map(days => ({ value: String(days), label: silentDaysLabel(days) }))
+  // Below sm the chips fold behind one "Filters (n)" toggle; from sm up they
+  // are always shown and the toggle is not rendered (EV-1).
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const filtersId = useId()
+  const activeChipCount =
+    (filterStatuses.length > 0 ? 1 : 0) +
+    (filterSilentDays !== undefined ? 1 : 0) +
+    (filterReviewed !== undefined ? 1 : 0) +
+    (filterOpenQuestions !== undefined ? 1 : 0)
+  // A search is a filter to the reader: "Clear filters" appears for it and
+  // clears it too (EV-16).
+  const anythingToClear = hasActiveFilters || search.trim() !== ''
   return (
-    // Two groups, not one wrapping row of dividers: find/refine on the left,
-    // wrapping as it must; the actions on the right, which never wrap. One flat
-    // row left a divider after the search box with nothing beside it and "New
-    // event" or "More" stranded alone on a line on tablets and phones (LIVE-25).
+    // One wrapping row, ordered per breakpoint (EV-1 / EV-2). The old two
+    // groups — filters `flex-1 min-w-0`, actions `ml-auto shrink-0` — let the
+    // action buttons draw over the Activity and Reviewed chips at 390, and at
+    // 768/1024 squeezed the filters into a five-row column.
+    //   phone: search + New event / Filters (n) + Views + Columns + More / chips
+    //   sm-lg: search … Views + Columns + More + New event / chips
+    //   lg+:   search, chips, then the actions, on one line where they fit
     <div className="mb-3 flex flex-wrap items-center gap-2">
-      {/* The shared filter bar (DS-15): search, then "{Label}: {value}" chips
-          that apply instantly, then "Clear filters" while anything is set. */}
-      <FilterBar className="min-w-0 flex-1" active={hasActiveFilters} onClear={onClearFilters}>
-        {/* Primary — find: full-text filter */}
-        <div className="relative flex min-w-[180px] max-w-[320px] flex-1">
-          <FilterSearch
-            things="events"
-            value={search}
-            onValueChange={onSearchChange}
-            className="max-w-none"
-            aria-busy={isFilterPending || undefined}
+      {/* Primary — find: full-text filter */}
+      <div className="relative order-1 flex min-w-0 flex-1 basis-40 sm:max-w-[320px] lg:flex-none lg:basis-[240px]">
+        <FilterSearch
+          things="events"
+          value={search}
+          onValueChange={onSearchChange}
+          className="max-w-none min-w-0"
+          aria-busy={isFilterPending || undefined}
+        />
+        {isFilterPending && (
+          <span
+            aria-hidden="true"
+            className="pulse-dot pointer-events-none absolute right-2.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full"
+            style={{ background: 'var(--accent)' }}
+            title="Updating results"
           />
-          {isFilterPending && (
-            <span
-              aria-hidden="true"
-              className="pulse-dot pointer-events-none absolute right-2.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full"
-              style={{ background: 'var(--accent)' }}
-              title="Updating results"
-            />
-          )}
-        </div>
+        )}
+      </div>
 
-        {/* Secondary — refine: status / activity filters. They wrap with the
-            bar: as a `shrink-0` row they needed ~460px inside a 366px phone
-            column, pushing the primary CTA off-screen (tripl-jfm3.42). */}
-        <StatusFilter
-          value={filterStatuses}
-          tabDefault={tabDefaultStatuses}
-          onChange={onFilterStatusesChange}
-        />
-        <FilterSelect
-          label="Activity"
-          value={filterSilentDays === undefined ? ANY : String(filterSilentDays)}
-          onValueChange={value => onFilterSilentDaysChange(value === ANY ? undefined : Number(value))}
-          options={silentDayOptions}
-          anyValue={ANY}
-        />
-        {/* Reviewed is a separate axis from status (an event can be reviewed
-            and still in_review), and until now it had no readable surface at
-            all: no filter, no counter, and a column hidden by default. Without
-            this control "Mark reviewed" wrote a flag the operator could never
-            see or isolate (tripl-invv). */}
-        <FilterSelect
-          label="Reviewed"
-          value={filterReviewed === undefined ? ANY : String(filterReviewed)}
-          onValueChange={value => onFilterReviewedChange(value === ANY ? undefined : value === 'true')}
-          options={[
-            { value: 'true', label: 'Yes' },
-            { value: 'false', label: 'No' },
-          ]}
-          anyValue={ANY}
-        />
-        {/* The discussion (tripl-h2sx.25) gave events a place to raise a
-            question; until threads could be resolved there was no way to ask
-            which events are still waiting on one (tripl-h2sx.26). Server-side,
-            like every filter here, so it sees the whole catalog and not one
-            loaded page — and twin-aware, so it answers on a branch too. */}
-        <FilterSelect
-          label="Questions"
-          value={filterOpenQuestions === undefined ? ANY : String(filterOpenQuestions)}
-          onValueChange={value =>
-            onFilterOpenQuestionsChange(value === ANY ? undefined : value === 'true')
-          }
-          options={[
-            { value: 'true', label: 'Open' },
-            { value: 'false', label: 'None open' },
-          ]}
-          anyValue={ANY}
-        />
-        {/* Sort orders the rows, it filters nothing: same chip geometry, but
-            never the "set" tint, and not counted by "Clear filters". */}
-        <Select
-          value={sortOrder}
-          onValueChange={value => onSortOrderChange(value as EventsSortOrder)}
+      {onNewEvent && (
+        // Primary — create. Beside the search on a phone, last from sm up.
+        <Button onClick={onNewEvent} size="sm" className="order-2 sm:order-4">
+          <Plus />
+          New event
+        </Button>
+      )}
+      {/* Ends the phone's first line, so the secondary controls start a new one. */}
+      <div aria-hidden="true" className="order-2 basis-full sm:hidden" />
+
+      <div className="order-3 flex flex-wrap items-center gap-2 sm:ml-auto lg:order-3">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="sm:hidden"
+          aria-expanded={filtersOpen}
+          aria-controls={filtersId}
+          onClick={() => setFiltersOpen(open => !open)}
         >
-          <SelectTrigger className={cn(CHIP_TRIGGER_CLASS, 'bg-transparent text-fg-muted')} aria-label="Sort order">
-            <span className="font-medium">Sort:</span>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="catalog">Catalog order</SelectItem>
-            <SelectItem value="volume">Busiest first</SelectItem>
-          </SelectContent>
-        </Select>
-      </FilterBar>
-
-      <div className="ml-auto flex shrink-0 items-center gap-2">
+          <ListFilter />
+          {activeChipCount > 0 ? `Filters (${activeChipCount})` : 'Filters'}
+        </Button>
         {/* Secondary — shape the table: saved views + columns */}
         {showSavedViews && (
           <SavedViewsMenu
@@ -280,7 +257,7 @@ export function EventsToolbar({
                   : 'Available once the current view has finished loading'
               }
             >
-              <Download className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+              <Download className="size-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
               {isExporting ? 'Exporting…' : 'Export CSV'}
             </DropdownMenuItem>
             {onBulkNew && (
@@ -289,21 +266,96 @@ export function EventsToolbar({
                 onSelect={onBulkNew}
                 title="Create a run of events from a pasted list"
               >
-                <ListPlus className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+                <ListPlus className="size-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
                 Add many events…
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>
         </DropdownMenu>
-
-        {onNewEvent && (
-          // Primary — create
-          <Button onClick={onNewEvent} size="sm">
-            <Plus />
-            New event
-          </Button>
-        )}
       </div>
+
+      {/* The shared filter bar (DS-15): "{Label}: {value}" chips that apply
+          instantly, then "Clear filters" while anything is set. A full line of
+          its own below lg, between search and actions from lg up. */}
+      <FilterBar
+        className={cn(
+          'order-5 w-full lg:order-2 lg:w-auto lg:min-w-0 lg:flex-1',
+          !filtersOpen && 'max-sm:hidden',
+        )}
+        active={anythingToClear}
+        onClear={onClearFilters}
+      >
+        <div id={filtersId} className="contents">
+        <StatusFilter
+          value={filterStatuses}
+          tabDefault={tabDefaultStatuses}
+          onChange={onFilterStatusesChange}
+        />
+        <FilterSelect
+          label="Activity"
+          value={filterSilentDays === undefined ? ANY : String(filterSilentDays)}
+          onValueChange={value => onFilterSilentDaysChange(value === ANY ? undefined : Number(value))}
+          options={silentDayOptions}
+          anyValue={ANY}
+          anyLabel="Any"
+        />
+        {/* Reviewed is a separate axis from status (an event can be reviewed
+            and still in_review), and until now it had no readable surface at
+            all: no filter, no counter, and a column hidden by default. Without
+            this control "Mark reviewed" wrote a flag the operator could never
+            see or isolate (tripl-invv). */}
+        <FilterSelect
+          label="Verified"
+          value={filterReviewed === undefined ? ANY : String(filterReviewed)}
+          onValueChange={value => onFilterReviewedChange(value === ANY ? undefined : value === 'true')}
+          options={[
+            { value: 'true', label: 'Yes' },
+            { value: 'false', label: 'No' },
+          ]}
+          anyValue={ANY}
+          anyLabel="Any"
+        />
+        {/* The discussion (tripl-h2sx.25) gave events a place to raise a
+            question; until threads could be resolved there was no way to ask
+            which events are still waiting on one (tripl-h2sx.26). Server-side,
+            like every filter here, so it sees the whole catalog and not one
+            loaded page — and twin-aware, so it answers on a branch too. */}
+        <FilterSelect
+          label="Questions"
+          value={filterOpenQuestions === undefined ? ANY : String(filterOpenQuestions)}
+          onValueChange={value =>
+            onFilterOpenQuestionsChange(value === ANY ? undefined : value === 'true')
+          }
+          options={[
+            { value: 'true', label: 'Open' },
+            { value: 'false', label: 'None open' },
+          ]}
+          anyValue={ANY}
+          anyLabel="Any"
+        />
+        {/* Sort orders the rows, it filters nothing, so it does not wear the
+            dashed filter-chip look (EV-14): a quiet ghost control with a sort
+            icon, never tinted as "set", not counted by "Clear filters". The
+            48h column header toggles the same order on desktop. */}
+        <Select
+          value={sortOrder}
+          onValueChange={value => onSortOrderChange(value as EventsSortOrder)}
+        >
+          <SelectTrigger
+            className="h-7 w-auto gap-1.5 whitespace-nowrap border-transparent bg-transparent text-caption font-normal text-fg-muted shadow-none hover:bg-surface-hover"
+            aria-label="Sort order"
+          >
+            <ArrowDownUp aria-hidden="true" className="size-3.5" />
+            <span className="font-medium">Sort:</span>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="catalog">Catalog order</SelectItem>
+            <SelectItem value="volume">Busiest first</SelectItem>
+          </SelectContent>
+        </Select>
+        </div>
+      </FilterBar>
     </div>
   )
 }
@@ -329,7 +381,7 @@ function StatusFilter({
   // so instead of reading "any" over a list of archived events.
   const applied = value.length > 0 ? value : tabDefault ?? []
   const summary =
-    applied.length === 0 ? 'any' : applied.map(status => EVENT_STATUS_LABELS[status]).join(', ')
+    applied.length === 0 ? 'Any' : applied.map(status => EVENT_STATUS_LABELS[status]).join(', ')
   const toggle = (status: EventStatus, checked: boolean) => {
     // Kept in the canonical order, so the URL a combination produces does not
     // depend on the order the boxes were ticked in. Built on what is applied,

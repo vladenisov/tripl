@@ -8,6 +8,7 @@ import { factTablesApi } from '@/api/factTables'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { SectionSkeleton, StatValueSkeleton } from '@/components/states'
 import { Panel } from '@/components/settings/kit'
 import { Chip } from '@/components/primitives/chip'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
@@ -79,11 +80,17 @@ export function FactTablesList({ slug }: { slug?: string }) {
         <MiniStatStrip boxed className={isEmpty ? 'opacity-60' : undefined}>
           <MiniStat
             label="Fact tables"
-            value={data ? formatNumber(data.total ?? factTables.length) : '—'}
+            value={data ? formatNumber(data.total ?? factTables.length) : <StatValueSkeleton />}
           />
           <MiniStat
             label="Data sources"
-            value={data ? formatNumber(new Set(factTables.map(t => t.data_source_id).filter(Boolean)).size) : '—'}
+            value={
+              data ? (
+                formatNumber(new Set(factTables.map(t => t.data_source_id).filter(Boolean)).size)
+              ) : (
+                <StatValueSkeleton />
+              )
+            }
           />
         </MiniStatStrip>
       )}
@@ -130,9 +137,8 @@ export function FactTablesList({ slug }: { slug?: string }) {
             subtitle={data ? `${formatNumber(data.total ?? factTables.length)} total` : undefined}
           >
             {factTablesQuery.isLoading ? (
-              <div className="px-4 py-6 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-                Loading…
-              </div>
+              // Rows in the table's shape, not one grey word (#237 MT-33).
+              <SectionSkeleton variant="rows" label="Loading fact tables…" />
             ) : (
               <div className="overflow-x-auto">
                 {dataSourceNamesState === 'error' && (

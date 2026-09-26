@@ -1,16 +1,23 @@
 import {
   AlertTriangle,
+  Archive,
   Bell,
-  Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
+  CircleDot,
+  Eye,
   Loader2,
+  Pencil,
+  Plus,
   RefreshCw,
   TrendingUp,
+  X,
   Zap,
   type LucideIcon,
 } from 'lucide-react'
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useState } from 'react'
+import { useRegisterInlineRail } from '@/components/activity-rail-store'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { activityApi } from '@/api/activity'
@@ -22,7 +29,7 @@ import { resolveActivityTargetPath } from '@/lib/navigation'
 import { countOf } from '@/lib/plural'
 import type { ActivityItem, ActivityItemSeverity, ActivityItemType } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { activityKey } from '@/lib/queryKeys'
+import { activityKey, projectsQueryOptions } from '@/lib/queryKeys'
 
 const ACTIVITY_LIMIT = 20
 
@@ -46,7 +53,29 @@ const KIND_ICON: Record<ActivityItemType, LucideIcon> = {
   anomaly: AlertTriangle,
   scan: TrendingUp,
   alert: Bell,
-  event: Check,
+  event: CircleDot,
+}
+
+type RowIcon = { icon: LucideIcon; tone?: string }
+
+// Event rows are told apart by what happened to the event. One check mark for
+// every kind made "Event needs review" and "Event archived" read as done
+// (#238 SH-22). Matched on the action in the title stem ("Event archived").
+const EVENT_ACTION_ICON: ReadonlyArray<[RegExp, RowIcon]> = [
+  [/implemented/i, { icon: CheckCircle2, tone: 'var(--success)' }],
+  [/review/i, { icon: Eye, tone: 'var(--warning)' }],
+  [/archived/i, { icon: Archive }],
+  [/updated|changed|edited/i, { icon: Pencil }],
+  [/added|created|new/i, { icon: Plus }],
+]
+
+function rowIcon(item: ActivityItem): RowIcon {
+  if (item.type === 'event') {
+    const stem = titleStem(item.title)
+    const match = EVENT_ACTION_ICON.find(([pattern]) => pattern.test(stem))
+    if (match) return match[1]
+  }
+  return { icon: KIND_ICON[item.type] }
 }
 
 // The noun a collapsed burst counts. A `scan` item is one scan RUN, not one
@@ -86,7 +115,25 @@ function titleStem(title: string): string {
 
 function itemName(item: ActivityItem): string {
   const sep = item.title.indexOf(': ')
-  return sep === -1 ? item.title : item.title.slice(sep + 2)
+  return displayName(sep === -1 ? item.title : item.title.slice(sep + 2))
+}
+
+/**
+ * A scan-generated event is named by its key/value signature
+ * ("event_name=Home Screen View | screen_name=Home"). A preview reads the
+ * values, "Home Screen View · Home", not the raw keys (#238 SH-22).
+ */
+function displayName(name: string): string {
+  const parts = name.split('|').map((part) => part.trim())
+  if (parts.length === 0 || !parts.every((part) => /^[\w.-]+=/.test(part))) return name
+  return parts.map((part) => part.slice(part.indexOf('=') + 1).trim()).filter(Boolean).join(' · ')
+}
+
+/** The row title with a scan signature shown by its values (see displayName). */
+function rowTitle(item: ActivityItem): string {
+  const sep = item.title.indexOf(': ')
+  if (sep === -1) return item.title
+  return `${item.title.slice(0, sep)}: ${displayName(item.title.slice(sep + 2))}`
 }
 
 function burstKey(item: ActivityItem): string {
@@ -146,8 +193,18 @@ function burstAction(stem: string): string {
   return sep === -1 ? '' : stem.slice(sep + 1).toLowerCase()
 }
 
+// The stem is written for one item ("Event needs review"); a count of them
+// takes the plural verb, or the summary read "6 events needs review" (SH-22).
+const PLURAL_VERB: Record<string, string> = { needs: 'need', is: 'are', was: 'were', has: 'have' }
+
+function pluralAction(action: string): string {
+  const [verb, ...rest] = action.split(' ')
+  const plural = verb ? PLURAL_VERB[verb] : undefined
+  return plural ? [plural, ...rest].join(' ') : action
+}
+
 function groupSummary(items: Readonly<Burst>): string {
-  const action = burstAction(titleStem(items[0].title))
+  const action = pluralAction(burstAction(titleStem(items[0].title)))
   const noun = TYPE_PLURAL[items[0].type]
   return action ? `${items.length} ${noun} ${action}` : `${items.length} ${noun}`
 }
@@ -167,53 +224,23 @@ function groupSeverity(items: readonly ActivityItem[]): ActivityItemSeverity {
   )
 }
 
-// ───────── Is the rail beside the page right now? ─────────
-//
-// Overview's own "Recent activity" panel repeated the rail item for item when
-// the rail sat inline next to it (LIVE-10). The page cannot see the shell's
-// state, so each open INLINE panel counts itself here. Layout says which one
-// is inline (`inline`), so the width threshold lives in Layout alone: below it
-// the panel is a modal drawer that covers the page, and hiding the page's panel
-// behind it would only reflow the page.
-let inlineRails = 0
-const railListeners = new Set<() => void>()
-
-function subscribeRail(listener: () => void): () => void {
-  railListeners.add(listener)
-  return () => {
-    railListeners.delete(listener)
-  }
-}
-
-function railIsInline(): boolean {
-  return inlineRails > 0
-}
-
-/** True while the activity rail is open inline beside the page content. */
-// eslint-disable-next-line react-refresh/only-export-components
-export function useActivityRailInline(): boolean {
-  return useSyncExternalStore(subscribeRail, railIsInline, () => false)
-}
-
 export function ActivityPanel({
   open,
   slug,
   inline = false,
+  onClose,
 }: {
   open: boolean
   slug?: string
   /** Rendered in the page's flow beside the content, not as the drawer. */
   inline?: boolean
+  /**
+   * Drawer mode: shows a Close button in the header. The drawer (every width
+   * below 1600px) had only a refresh icon, and covers most of a phone (SH-22).
+   */
+  onClose?: () => void
 }) {
-  useEffect(() => {
-    if (!open || !inline) return
-    inlineRails += 1
-    railListeners.forEach((listener) => listener())
-    return () => {
-      inlineRails -= 1
-      railListeners.forEach((listener) => listener())
-    }
-  }, [open, inline])
+  useRegisterInlineRail(open && inline)
 
   // Adaptive fallback: the live stream refreshes the feed via the invalidation
   // map, so poll only while the stream is unavailable (and never on a hidden tab).
@@ -228,6 +255,11 @@ export function ActivityPanel({
   })
 
   const now = useNow(60_000)
+  // The workspace feed mixes projects; name them as people do, from the list
+  // the shell already holds (read-only: never fetched from here).
+  const { data: projects } = useQuery({ ...projectsQueryOptions(), enabled: false })
+  const projectName = (projectSlug: string) =>
+    projects?.find((project) => project.slug === projectSlug)?.name ?? projectSlug
 
   if (!open) return null
 
@@ -252,7 +284,9 @@ export function ActivityPanel({
         style={{ borderColor: 'var(--border)' }}
       >
         <Dot tone={activityQuery.isError ? 'warning' : 'accent'} pulse={activityQuery.isFetching} size={7} />
-        <span className="text-body-sm font-semibold">Recent activity</span>
+        {/* "Activity", as the top-bar toggle says (#238 SH-8). "Recent
+            activity" is the Overview card's name. */}
+        <span className="text-body-sm font-semibold">Activity</span>
         {!isQuiet && (
           <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
             {activityQuery.isError ? 'offline' : 'auto-refresh'}
@@ -273,6 +307,17 @@ export function ActivityPanel({
         >
           <RefreshCw className="size-3.5" aria-hidden="true" />
         </button>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex size-8 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-hover)]"
+            style={{ color: 'var(--fg-muted)' }}
+            aria-label="Close activity"
+          >
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        )}
       </div>
       <div className="flex-1 overflow-y-auto py-2">
         {isInitialLoading && <ActivitySkeleton />}
@@ -338,9 +383,19 @@ export function ActivityPanel({
         {!isInitialLoading &&
           feed.map((entry) =>
             entry.kind === 'group' ? (
-              <ActivityGroupRow key={entry.id} items={entry.items} showProject={!slug} now={now} />
+              <ActivityGroupRow
+                key={entry.id}
+                items={entry.items}
+                projectName={slug ? undefined : projectName}
+                now={now}
+              />
             ) : (
-              <ActivityRow key={entry.item.id} item={entry.item} showProject={!slug} now={now} />
+              <ActivityRow
+                key={entry.item.id}
+                item={entry.item}
+                projectName={slug ? undefined : projectName}
+                now={now}
+              />
             ),
           )}
       </div>
@@ -362,16 +417,19 @@ export function ActivityPanel({
 const ROW_CLASS =
   'flex gap-2.5 px-3.5 py-[9px] no-underline transition-colors hover:bg-[var(--surface-hover)]'
 
+type ProjectNamer = (projectSlug: string) => string
+
 function ActivityRow({
   item,
-  showProject,
+  projectName,
   now,
 }: {
   item: ActivityItem
-  showProject: boolean
+  /** Set on the workspace feed, where rows come from several projects. */
+  projectName?: ProjectNamer
   now: number
 }) {
-  const KindIcon = KIND_ICON[item.type]
+  const { icon: KindIcon, tone: actionTone } = rowIcon(item)
   const sevColor = severityColor(item.severity)
   const content = (
     <>
@@ -379,13 +437,13 @@ function ActivityRow({
         className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-sm"
         style={{
           background: 'var(--surface)',
-          color: item.severity === 'low' ? 'var(--fg-muted)' : sevColor,
+          color: item.severity === 'low' ? (actionTone ?? 'var(--fg-muted)') : sevColor,
         }}
       >
-        <KindIcon className="h-3 w-3" />
+        <KindIcon className="size-3" aria-hidden="true" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-body-sm font-medium leading-[1.35]">{item.title}</div>
+        <div className="text-body-sm font-medium leading-[1.35]">{rowTitle(item)}</div>
         <div
           className="mt-0.5 text-caption leading-[1.3]"
           style={{ color: 'var(--fg-subtle)' }}
@@ -398,8 +456,8 @@ function ActivityRow({
           style={{ color: 'var(--fg-muted)' }}
         >
           {formatRelativeTime(item.occurred_at, now)}
-          {showProject ? (
-            <span style={{ color: 'var(--fg-faint)' }}>{` · ${item.project_slug}`}</span>
+          {projectName ? (
+            <span style={{ color: 'var(--fg-faint)' }}>{` · ${projectName(item.project_slug)}`}</span>
           ) : (
             ''
           )}
@@ -442,18 +500,18 @@ function ActivityRow({
 // items it stands in for.
 function ActivityGroupRow({
   items,
-  showProject,
+  projectName,
   now,
 }: {
   items: Burst
-  showProject: boolean
+  projectName?: ProjectNamer
   now: number
 }) {
   const [expanded, setExpanded] = useState(false)
   const first = items[0]
   const severity = groupSeverity(items)
   const sevColor = severityColor(severity)
-  const KindIcon = KIND_ICON[first.type]
+  const { icon: KindIcon, tone: actionTone } = rowIcon(first)
   const Chevron = expanded ? ChevronDown : ChevronRight
 
   return (
@@ -472,10 +530,10 @@ function ActivityGroupRow({
           className="mt-px flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-sm"
           style={{
             background: 'var(--surface)',
-            color: severity === 'low' ? 'var(--fg-muted)' : sevColor,
+            color: severity === 'low' ? (actionTone ?? 'var(--fg-muted)') : sevColor,
           }}
         >
-          <KindIcon className="h-3 w-3" />
+          <KindIcon className="size-3" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1 text-body-sm font-medium leading-[1.35]">
@@ -497,8 +555,8 @@ function ActivityGroupRow({
             style={{ color: 'var(--fg-muted)' }}
           >
             {formatRelativeTime(first.occurred_at, now)}
-            {showProject ? (
-              <span style={{ color: 'var(--fg-faint)' }}>{` · ${first.project_slug}`}</span>
+            {projectName ? (
+              <span style={{ color: 'var(--fg-faint)' }}>{` · ${projectName(first.project_slug)}`}</span>
             ) : (
               ''
             )}
@@ -508,7 +566,7 @@ function ActivityGroupRow({
       {expanded && (
         <div style={{ background: 'var(--surface)' }}>
           {items.map((item) => (
-            <ActivityRow key={item.id} item={item} showProject={showProject} now={now} />
+            <ActivityRow key={item.id} item={item} projectName={projectName} now={now} />
           ))}
         </div>
       )}

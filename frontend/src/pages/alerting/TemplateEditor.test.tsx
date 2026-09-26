@@ -135,3 +135,43 @@ describe('TemplateEditor — unknown variables (ALR-21)', () => {
     expect(screen.queryByText(/Unknown variable/)).toBeNull()
   })
 })
+
+describe('TemplateEditor — preview (AL-37)', () => {
+  it('renders the template with sample values instead of raw variables', () => {
+    render(<Harness initial="Rule ${rule_name}: ${matched_count} alerts" />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    expect(screen.getByRole('region', { name: 'Message Template preview' }))
+      .toHaveTextContent('Rule Checkout drops: 2 alerts')
+    expect(screen.getByRole('button', { name: 'Preview' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('keeps an unknown variable visible in the preview', () => {
+    render(<Harness initial="Hi ${rule_nme}" />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    expect(screen.getByRole('region', { name: 'Message Template preview' })).toHaveTextContent('Hi ${rule_nme}')
+  })
+
+  it('drops the empty side box on the item template', () => {
+    render(
+      <TemplateEditor
+        destinationType={null}
+        messageFormat="plain"
+        onMessageFormatChange={() => {}}
+        title="Item template"
+        variableOptions={ITEM_TEMPLATE_VARIABLE_OPTIONS}
+        helperText="help"
+        showFormatSelector={false}
+        placeholder=""
+        value=""
+        onChange={() => {}}
+      />,
+    )
+
+    expect(screen.queryByText(/Uses the same escaping/)).toBeNull()
+    expect(screen.queryByText(/Pick a destination/)).toBeNull()
+  })
+})

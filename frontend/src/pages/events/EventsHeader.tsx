@@ -1,8 +1,12 @@
 import { formatNumber } from '@/lib/format'
 import { Info } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { PageHeader } from '@/components/primitives/page-header'
+import { StatValueSkeleton } from '@/components/states'
+import { SEGMENTED_TRACK, segmentedItemVariants } from '@/components/ui/segmented-variants'
+import { cn } from '@/lib/utils'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import {
   Tooltip,
@@ -13,6 +17,7 @@ import {
 import type { EventType, MonitoringSignal } from '@/types'
 
 import { EventDriftBadge } from './EventDriftBadge'
+import { EVENT_VIEWS, eventsPageTitle } from './eventsViews'
 
 /** One event type with open schema drift, as the header shows it. */
 export type EventTypeDrift = {
@@ -23,25 +28,20 @@ export type EventTypeDrift = {
   coach?: boolean
 }
 
-// One-line clarifier for the header stat, which reads confusingly next to the
-// sidebar "Anomalies" badge on the same screen. The two counts are NOT nested:
-// this one comes from the collapsed signals endpoint (incident rollup, no
-// magnitude gate) over the series charted here, while the badge counts every
-// open signal in the project above the Significant threshold. Either number can
-// be the larger one, so the copy must not claim one contains the other.
-const CHART_SIGNALS_HELP =
-  'Open signals on the series charted here — the project total and event types, after incident rollup. The sidebar Anomalies count is a different measure: every open signal in the project above the Significant threshold. The two can differ in either direction.'
+// One sentence each (EV-25). The long form lived here as a five-line paragraph
+// about "incident rollup" and "Significant threshold". The point that matters:
+// this count covers the charted series (project total + event types), so it can
+// differ from the sidebar Anomalies badge in either direction.
+const OPEN_SIGNALS_HELP =
+  'Open anomalies on the volume the chart shows — the project total and each event type.'
 
 // The one stat in this row that does NOT follow the tab, filters or search: it
 // is a separate project-wide query (useEventsPageData `inReviewCount`), while
-// "Total" beside it is the filtered list count. Unlabelled, the row read as one
+// "Events" beside it is the filtered list count. Unlabelled, the row read as one
 // sentence — the archived tab showed "TOTAL 1 · IN REVIEW 6 pending" over a
-// single archived row, and status is single-valued, so 6 of 1 events could not
-// be awaiting review (tripl-4oqs). Same remedy as the coverage bar's "not
-// implemented" (tripl-jfm3.29): name the bucket so two adjacent numbers stop
-// reading as one.
+// single archived row (tripl-4oqs) — so the delta names the wider scope.
 const IN_REVIEW_HELP =
-  'Events whose status is In Review across the whole project on this branch. It ignores the tab, filters and search, so it can be larger than the count beside it — that one counts only what the current tab and filters match.'
+  'Events with status In review across the whole project; it ignores the tab, filters and search.'
 
 /**
  * The `(i)` affordance beside a stat whose scope is not self-evident. A Radix
@@ -63,7 +63,7 @@ function StatHelp({ help }: { help: string }) {
             <Info className="size-3" style={{ color: 'var(--fg-faint)' }} aria-hidden />
           </button>
         </TooltipTrigger>
-        <TooltipContent side="bottom" align="end" className="max-w-xs whitespace-normal">
+        <TooltipContent side="bottom" align="end" className="whitespace-normal">
           {help}
         </TooltipContent>
       </Tooltip>
@@ -107,21 +107,72 @@ export function EventTypeDriftBadges({
   )
 }
 
+/**
+ * All · Review queue (n) · Archived, as links in the segmented look: each is a
+ * route of its own, so they stay real anchors (open in a new tab, copy link).
+ * On a type tab the type is the current view and none of the three is.
+ */
+function EventViewTabs({
+  slug,
+  activeTab,
+  activeType,
+  inReviewCount,
+}: {
+  slug: string
+  activeTab: string
+  activeType: EventType | null
+  inReviewCount: number | undefined
+}) {
+  const item = cn(
+    segmentedItemVariants({ size: 'sm' }),
+    'aria-[current=page]:bg-surface aria-[current=page]:text-fg aria-[current=page]:shadow-sm',
+  )
+  return (
+    <nav aria-label="Event views" className={SEGMENTED_TRACK}>
+      {EVENT_VIEWS.map(view => (
+        <Link
+          key={view.tab}
+          to={view.tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${view.tab}`}
+          aria-current={!activeType && activeTab === view.tab ? 'page' : undefined}
+          className={item}
+        >
+          {view.label}
+          {view.tab === 'review' && inReviewCount !== undefined && inReviewCount > 0 && (
+            <span className="tnum text-fg-tertiary">{formatNumber(inReviewCount)}</span>
+          )}
+        </Link>
+      ))}
+      {activeType && (
+        <span aria-current="page" className={item}>
+          {activeType.display_name}
+        </span>
+      )}
+    </nav>
+  )
+}
+
 export function EventsHeader({
   total,
+  totalPending = false,
   columnFilter = null,
   inReviewCount,
+  inReviewPending = false,
   projectTotalSignal,
   eventTypeSignals,
+  signalsPending = false,
   activeType = null,
+  activeTab = 'all',
   slug,
   typeDrifts = [],
+  hideStats = false,
 }: {
   /**
    * Events the tab, search and server-side filters match (the server count);
    * formatted like the table footer.
    */
   total: number
+  /** The list query has not settled: `total` is a placeholder 0, not a count. */
+  totalPending?: boolean
   /**
    * Set while a column (field/meta) filter narrows the table. Those filters are
    * client-side, so `total` does not count their matches; the header then says
@@ -136,11 +187,16 @@ export function EventsHeader({
    * (tripl-invv).
    */
   inReviewCount: number
+  inReviewPending?: boolean
   projectTotalSignal: MonitoringSignal | null
   eventTypeSignals: Map<string, MonitoringSignal>
+  /** The signals query has not settled: "0 · none" would be a false all-clear. */
+  signalsPending?: boolean
   // When a type tab is active (e.g. /events/pv) the heading reflects it
   // ("Page View events") instead of the generic "Events".
   activeType?: EventType | null
+  /** Route tab: 'all', 'review', 'archived' or a type name. */
+  activeTab?: string
   slug?: string
   /**
    * Open schema drift, once per event type. Drift belongs to the type, and the
@@ -149,15 +205,30 @@ export function EventsHeader({
    * count (EVT-33).
    */
   typeDrifts?: EventTypeDrift[]
+  /** A project with no events: three zeroes teach nothing (EV-18). */
+  hideStats?: boolean
 }) {
   const openSignalCount = eventTypeSignals.size + (projectTotalSignal ? 1 : 0)
   const hasOpenSignal = openSignalCount > 0
+  const inReviewValue = inReviewPending ? (
+    <StatValueSkeleton />
+  ) : slug ? (
+    // The queue this number counts is one click away (EV-23).
+    <Link
+      to={`/p/${slug}/events/review`}
+      className="underline-offset-4 hover:underline"
+    >
+      {formatNumber(inReviewCount)}
+    </Link>
+  ) : (
+    formatNumber(inReviewCount)
+  )
 
   return (
     <PageHeader
       className="mb-3"
       eyebrow="Plan"
-      title={activeType ? `${activeType.display_name} events` : 'Events'}
+      title={eventsPageTitle(activeTab, activeType)}
       titleAddon={
         slug ? (
           <EventTypeDriftBadges slug={slug} typeDrifts={typeDrifts} namesType={!!activeType} />
@@ -167,40 +238,67 @@ export function EventsHeader({
       // Overview, Metrics and Anomalies, instead of right-aligned in the
       // actions slot (DS-5). The strip wraps on a phone-width viewport.
       stats={
-        <MiniStatStrip boxed>
-          {/* The one place the count appears in the header: the heading used to
-              repeat it beside the h1, unformatted, while the footer formatted
-              the same number (EVT-16). */}
-          {columnFilter ? (
-            <MiniStat
-              label="Matching"
-              value={formatNumber(columnFilter.matching)}
-              delta={`${formatNumber(columnFilter.checked)} of ${formatNumber(total)} checked`}
-            />
-          ) : (
-            <MiniStat label="Total" value={formatNumber(total)} />
-          )}
-          {/* The help icon rides on the caption it explains: beside the whole
-              stat it sat far from the label, next to the following stat
-              (LIVE-23). "Open"/"none", not "live"/"quiet": "Live" is the
-              lifecycle status of a shipped event, in green, one column over
-              (EV-5 / DS-7). */}
-          <MiniStat
-            label="Chart signals"
-            value={String(openSignalCount)}
-            delta={hasOpenSignal ? 'open' : 'none'}
-            tone={hasOpenSignal ? 'danger' : 'success'}
-            pulse={hasOpenSignal}
-            labelAddon={<StatHelp help={CHART_SIGNALS_HELP} />}
-          />
-          <MiniStat
-            label="In review · project"
-            value={String(inReviewCount)}
-            delta={inReviewCount > 0 ? 'pending' : undefined}
-            tone={inReviewCount > 0 ? 'warning' : 'success'}
-            labelAddon={<StatHelp help={IN_REVIEW_HELP} />}
-          />
-        </MiniStatStrip>
+        hideStats ? undefined : (
+          <div className="flex flex-col gap-3">
+            {slug && (
+              <EventViewTabs
+                slug={slug}
+                activeTab={activeTab}
+                activeType={activeType}
+                inReviewCount={inReviewPending ? undefined : inReviewCount}
+              />
+            )}
+            {/* Pending values are a skeleton with no delta or tone: "0 · none"
+                before the queries settle was a false all-clear (DS-25 / EV-19). */}
+            <MiniStatStrip boxed>
+              {/* The one place the count appears in the header: the heading used to
+                  repeat it beside the h1, unformatted, while the footer formatted
+                  the same number (EVT-16). */}
+              {columnFilter ? (
+                <MiniStat
+                  label="Matching"
+                  value={formatNumber(columnFilter.matching)}
+                  delta={`${formatNumber(columnFilter.checked)} of ${formatNumber(total)} checked`}
+                />
+              ) : (
+                <MiniStat
+                  label="Events"
+                  value={totalPending ? <StatValueSkeleton /> : formatNumber(total)}
+                />
+              )}
+              {/* The help icon rides on the caption it explains: beside the whole
+                  stat it sat far from the label, next to the following stat
+                  (LIVE-23). "Open"/"none", not "live"/"quiet": "Live" is the
+                  lifecycle status of a shipped event, in green, one column over
+                  (EV-5 / DS-7). */}
+              {signalsPending ? (
+                <MiniStat
+                  label="Open signals"
+                  value={<StatValueSkeleton />}
+                  labelAddon={<StatHelp help={OPEN_SIGNALS_HELP} />}
+                />
+              ) : (
+                <MiniStat
+                  label="Open signals"
+                  value={String(openSignalCount)}
+                  delta={hasOpenSignal ? 'open' : 'none'}
+                  tone={hasOpenSignal ? 'danger' : 'success'}
+                  pulse={hasOpenSignal}
+                  labelAddon={<StatHelp help={OPEN_SIGNALS_HELP} />}
+                />
+              )}
+              {/* "In review", the one name for this count app-wide (JR-27). */}
+              <MiniStat
+                label="In review"
+                value={inReviewValue}
+                delta={inReviewPending ? undefined : 'project-wide'}
+                tone="neutral"
+                valueTone={!inReviewPending && inReviewCount > 0 ? 'warning' : undefined}
+                labelAddon={<StatHelp help={IN_REVIEW_HELP} />}
+              />
+            </MiniStatStrip>
+          </div>
+        )
       }
     />
   )

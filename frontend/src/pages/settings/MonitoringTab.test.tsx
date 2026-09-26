@@ -277,7 +277,7 @@ describe('MonitoringTab — settling allowance vs open signal window (tripl-l429
     await waitFor(() => expect(settling).toHaveValue(120))
   })
 
-  it('refuses a value outside the bounds before sending it (PLAN-55)', async () => {
+  it('refuses a value outside the bounds before sending it, and keeps it in view (PLAN-55, AL-44)', async () => {
     const { patches } = mockSettingsFetch({ recent_signal_window_hours: 24 })
     renderTab()
 
@@ -285,9 +285,29 @@ describe('MonitoringTab — settling allowance vs open signal window (tripl-l429
     fireEvent.change(settling, { target: { value: '5000' } })
     fireEvent.blur(settling)
 
-    expect(await screen.findByText('Must be between 0 and 1439.')).toBeInTheDocument()
-    expect(settling).toHaveValue(120)
+    expect(await screen.findByText('5000 is out of range: use 0 to 1439. Not saved.')).toBeInTheDocument()
+    // The refused number stays in the box beside the message, rather than a
+    // valid-looking saved value sitting under a red "must be" (AL-44).
+    expect(settling).toHaveValue(5000)
+    expect(settling).toHaveAttribute('aria-invalid', 'true')
     expect(patches).toEqual([])
+
+    // Typing a valid value clears the error at once.
+    fireEvent.change(settling, { target: { value: '60' } })
+    expect(settling).not.toHaveAttribute('aria-invalid')
+    expect(screen.queryByText(/out of range/)).toBeNull()
+  })
+
+  it('names a value under the minimum as such', async () => {
+    mockSettingsFetch()
+    renderTab()
+
+    const sigma = await screen.findByLabelText('Sigma threshold')
+    fireEvent.change(sigma, { target: { value: '0' } })
+    fireEvent.blur(sigma)
+
+    expect(await screen.findByText('0 is below the minimum (0.1). Not saved.')).toBeInTheDocument()
+    expect(sigma).toHaveValue(0)
   })
 
   it('says a committed value was saved (PLAN-55)', async () => {
@@ -364,7 +384,7 @@ describe('MonitoringTab — false-positive scope overrides', () => {
 })
 
 describe('MonitoringTab — a viewer reads the settings without changing them', () => {
-  it('disables every setting, hides Remove, and says why once', async () => {
+  it('shows a read view instead of a disabled form, hides Remove, and says why once', async () => {
     mockSettingsFetch({}, [scopeOverridePayload()])
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
@@ -375,8 +395,13 @@ describe('MonitoringTab — a viewer reads the settings without changing them', 
       </QueryClientProvider>,
     )
 
-    expect(await screen.findByRole('switch', { name: 'Toggle signal detection' })).toBeDisabled()
-    expect(screen.getByRole('checkbox', { name: 'Metrics' })).toBeDisabled()
+    // No controls that do nothing (#237 rule 4): the values, as a definition.
+    expect(await screen.findByText('Scored scopes')).toBeInTheDocument()
+    expect(screen.getByText('Project total, Event types, Events, Metrics')).toBeInTheDocument()
+    expect(screen.getByText('168 buckets')).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Toggle signal detection' })).toBeNull()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(screen.queryByRole('spinbutton')).toBeNull()
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
     expect(await screen.findByText('checkout_started')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Remove override/ })).not.toBeInTheDocument()
@@ -435,5 +460,67 @@ describe('MonitoringTab — a failed refresh after an autosave (review 204)', ()
     expect(await screen.findByText(/Couldn't refresh detection settings/)).toBeInTheDocument()
     expect(screen.getByLabelText('Sigma threshold')).toBeInTheDocument()
     expect(screen.queryByText("Couldn't load detection settings")).not.toBeInTheDocument()
+  })
+})
+
+describe('MonitoringTab — help text is one line, the rest on demand (AL-43)', () => {
+  it('titles the two sections as sections and groups the fields', async () => {
+    mockSettingsFetch()
+    renderTab()
+
+    expect(await screen.findByRole('heading', { level: 2, name: 'Detection' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Scope overrides' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 3, name: 'Sensitivity' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 3, name: 'Timing' })).toBeInTheDocument()
+  })
+
+  it('ties a one-line hint to each field', async () => {
+    mockSettingsFetch()
+    renderTab()
+
+    expect(await screen.findByLabelText('Sigma threshold'))
+      .toHaveAccessibleDescription('Higher is quieter; lower catches smaller moves.')
+  })
+})
+
+describe('MonitoringTab — turning detection off (AL-45)', () => {
+  it('asks first, and does nothing when the reader backs out', async () => {
+    const { patches } = mockSettingsFetch()
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Toggle signal detection' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Stop detecting anomalies in this project?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(patches).toEqual([])
+  })
+
+  it('turns it off once confirmed', async () => {
+    const { patches } = mockSettingsFetch()
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Toggle signal detection' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Stop detecting anomalies in this project?' })
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Turn off detection' }))
+
+    await waitFor(() => expect(patches).toEqual([{ anomaly_detection_enabled: false }]))
+  })
+
+  it('turns it back on without asking', async () => {
+    const { patches } = mockSettingsFetch({ anomaly_detection_enabled: false })
+    renderTab()
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Toggle signal detection' }))
+
+    await waitFor(() => expect(patches).toEqual([{ anomaly_detection_enabled: true }]))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
+
+  it('keeps saying so while detection is off', async () => {
+    mockSettingsFetch({ anomaly_detection_enabled: false })
+    renderTab()
+
+    expect(await screen.findByText(/Detection is off for this project/)).toBeInTheDocument()
   })
 })

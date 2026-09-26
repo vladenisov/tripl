@@ -172,7 +172,7 @@ under Alerting, not to a person.
 
 ### Account security
 
-**Settings → Security** has one working control: **Email me a reset link**. It
+**Settings → Password & sessions** has one working control: **Email me a reset link**. It
 runs the same password-reset flow as the sign-in screen's **Forgot your
 password?** link (`/auth/password-reset/request`) for your signed-in address,
 and says so when the instance has no email configured and so cannot send one.
@@ -264,9 +264,10 @@ need `tk_r_`, and three verbs need `tk_w_` behind an editor or owner.
 
 ## Instance settings (owner only)
 
-**Settings → Instance** is visible only to owners — non-owner accounts see an
-"Owner role is required to view or change instance-level settings" message, and
-the API rejects them (`GET`/`PATCH`/`PUT /api/v1/settings` all require an owner
+**Settings → Instance** is visible only to owners. A non-owner who opens an
+instance page from a link sees the section's title, a lock notice ("Owner role
+is required to view or change instance-level settings. Ask an owner, or go to
+Profile.") and a **Go to Profile** link, and the API rejects them (`GET`/`PATCH`/`PUT /api/v1/settings` all require an owner
 session). It exposes a curated subset of the server configuration as overrides
 stored in the database.
 

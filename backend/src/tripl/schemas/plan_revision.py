@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from tripl.models.plan_revision import PlanRevisionKind
+
 
 class PlanRevisionCreate(BaseModel):
     summary: str = Field(default="", max_length=2000)
@@ -19,6 +21,11 @@ class PlanRevisionSummary(BaseModel):
     summary: str
     created_at: datetime
     created_by: uuid.UUID | None
+    # What produced it — a user snapshot, a branch's merge base, or a merge —
+    # and the branch behind the last two (NULL once that branch is deleted), so
+    # History need not parse ``summary`` or resolve a branch by name (PL-21).
+    kind: PlanRevisionKind = PlanRevisionKind.snapshot
+    branch_id: uuid.UUID | None = None
     # Coarse counts so the list UI can show "1 event type, 23 events, …" at a glance.
     entity_counts: dict[str, int]
 

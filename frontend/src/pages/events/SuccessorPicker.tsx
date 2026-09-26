@@ -3,13 +3,17 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { eventsApi } from '@/api/events'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { eventKey, eventsPickerKey } from '@/lib/queryKeys'
+import type { EventType } from '@/types'
 import { EvField, EvInput, SelectControl } from './eventFormLayout'
+import { disambiguate, type SuccessorCandidate } from './successorLabels'
 
 // Replacement candidates offered at once. Deliberately small, for the reason
 // the variables tab spells out (tripl-46am): the search below is server-side,
 // so anything outside the page is one keystroke away, and the count of what is
 // missing is printed rather than hidden.
 const SUCCESSOR_PAGE_SIZE = 100
+
+const NO_TYPES: readonly EventType[] = []
 
 /**
  * "Replaced by" on a deprecated event: a server-side search and the pick.
@@ -23,6 +27,7 @@ export function SuccessorPicker({
   eventId,
   value,
   onChange,
+  eventTypes = NO_TYPES,
 }: {
   slug: string
   branchId: string | null
@@ -30,6 +35,8 @@ export function SuccessorPicker({
   eventId: string
   value: string
   onChange: (value: string) => void
+  /** The project's types, to name each option's type (AU-24). */
+  eventTypes?: readonly EventType[]
 }) {
   const [search, setSearch] = useState('')
   // The successor roster, searched SERVER-side for the reason the variables tab
@@ -55,17 +62,28 @@ export function SuccessorPicker({
     enabled: !!value,
   })
   const options = useMemo(() => {
-    const items = (roster?.items ?? [])
+    // "name · type": options showed the name alone, so two events of one name
+    // under different types could not be told apart (AU-24). Two namesakes of
+    // one type — the duplicate AU-2 describes — share that label too, so those
+    // alone also carry their status and the day they were added, and the id's
+    // head when even that matches.
+    const typeNames = new Map(eventTypes.map(et => [et.id, et.display_name]))
+    const base = (item: SuccessorCandidate) => {
+      const typeName = item.event_type_id ? typeNames.get(item.event_type_id) : undefined
+      return typeName ? `${item.name} · ${typeName}` : item.name
+    }
+    const items: SuccessorCandidate[] = (roster?.items ?? [])
       // An event cannot replace itself; the server answers 400, but offering it
       // at all invites the trip.
       .filter(item => item.id !== eventId)
-      .map(item => ({ id: item.id, name: item.name }))
     // The current choice is prepended when the search does not hold it, so
     // opening a retired event shows what replaced it rather than a blank select,
     // and a selection survives retyping the search.
-    if (!successor || items.some(option => option.id === successor.id)) return items
-    return [{ id: successor.id, name: successor.name }, ...items]
-  }, [roster, successor, eventId])
+    const candidates = !successor || items.some(item => item.id === successor.id)
+      ? items
+      : [successor, ...items]
+    return disambiguate(candidates, base)
+  }, [roster, successor, eventId, eventTypes])
   // What the search did not return, printed rather than hidden — a short list
   // and a complete one are otherwise indistinguishable.
   const hiddenCount = Math.max(0, (roster?.total ?? 0) - (roster?.items.length ?? 0))

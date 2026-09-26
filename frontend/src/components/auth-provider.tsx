@@ -128,6 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refresh: () => {
       void meQuery.refetch()
     },
+    sessionExpired: heldUser !== null,
   }
 
   return (

@@ -62,11 +62,11 @@ function project(slug: string, name: string): Project {
 // bind to when nothing had been chosen (tripl-jfm3.32).
 const projects = [project('windy-android', 'Windy Android'), project('windy-ios', 'Windy iOS')]
 
-function renderArea(section: string, search = '') {
+function renderArea(section: string, search = '', auth: AuthContextValue = ownerAuthValue()) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <AuthContext.Provider value={ownerAuthValue()}>
+      <AuthContext.Provider value={auth}>
         {/* A DATA router: the layout's unsaved-work guard uses useBlocker,
             which has no context under a plain MemoryRouter. */}
         <RouterProvider
@@ -95,6 +95,8 @@ describe('SettingsArea project binding', () => {
     renderArea('project/general')
 
     expect(await screen.findByRole('heading', { name: 'Pick a project' })).toBeInTheDocument()
+    // The page still says which page it is (#237 ST-36).
+    expect(screen.getByRole('heading', { level: 1, name: 'General' })).toBeInTheDocument()
     // Never silently binds to whichever project happened to sort first: the
     // projects are offered as choices, not applied.
     expect(screen.getByRole('button', { name: /Windy Android/ })).toBeInTheDocument()
@@ -291,7 +293,7 @@ describe('SettingsArea follows a slug rename (WS-8)', () => {
         '/p/windy-ios-2/events',
       )
     })
-    expect(screen.queryByText('Failed to load project.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Could not load this project|Project not found/)).not.toBeInTheDocument()
     expect(screen.getByLabelText('Slug')).toHaveValue('windy-ios-2')
 
     // A second save goes to the new address, not the dead one.
@@ -315,6 +317,23 @@ describe('SettingsArea follows a slug rename (WS-8)', () => {
         '/settings/project/plan-rules?project=windy-ios-2',
       )
     })
-    expect(screen.queryByText('Failed to load project.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Could not load this project|Project not found/)).not.toBeInTheDocument()
+  })
+})
+
+describe('SettingsArea owner-only sections (#237 ST-17 / ST-36)', () => {
+  it('titles the page and explains the owner gate with a way out', async () => {
+    vi.spyOn(projectsApi, 'list').mockResolvedValue(projects)
+    const owner = ownerAuthValue()
+    const member: AuthContextValue = { ...owner, user: owner.user && { ...owner.user, role: 'editor' } }
+
+    renderArea('instance/email', '', member)
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Email' })).toBeInTheDocument()
+    expect(screen.getByRole('note')).toHaveTextContent(/Owner role is required/)
+    expect(screen.getByRole('link', { name: 'Go to Profile' })).toHaveAttribute(
+      'href',
+      '/settings/profile',
+    )
   })
 })

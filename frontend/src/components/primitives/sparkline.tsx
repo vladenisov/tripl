@@ -1,5 +1,6 @@
 import { memo, useId, type CSSProperties } from "react"
 import { SERIES_COLORS } from "@/components/ui/chart-format"
+import { Skeleton } from "@/components/ui/skeleton"
 
 export type SparklineVariant = "line" | "line-only" | "bar"
 
@@ -136,3 +137,28 @@ function SparklineInner({
 }
 
 export const Sparkline = memo(SparklineInner)
+
+/**
+ * A sparkline whose series has not arrived: a pulsing block of the same size,
+ * so a row does not claim "—" (no data) for the seconds before it fills in
+ * (EV-20). Reserve "—" for a series that loaded empty.
+ */
+export function SparklineSkeleton({
+  width = 80,
+  height = 22,
+  responsive = false,
+  className,
+}: {
+  width?: number
+  height?: number
+  responsive?: boolean
+  className?: string
+}) {
+  return (
+    <Skeleton
+      data-testid="sparkline-skeleton"
+      className={className}
+      style={{ width: responsive ? "100%" : width, height }}
+    />
+  )
+}

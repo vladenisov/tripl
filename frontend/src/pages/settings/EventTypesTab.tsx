@@ -53,7 +53,7 @@ import {
 } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { ReadOnlyNotice } from '@/components/states'
 import {
   parseContract,
   regexNotice,

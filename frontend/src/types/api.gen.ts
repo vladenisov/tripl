@@ -4371,7 +4371,7 @@ export interface components {
             min_expected_count: number;
             /**
              * Min Percent Delta
-             * @default 100
+             * @default 30
              */
             min_percent_delta: number;
             /** Name */
@@ -4393,7 +4393,7 @@ export interface components {
          * AlertRuleFilterField
          * @enum {string}
          */
-        AlertRuleFilterField: "event_type" | "event" | "direction";
+        AlertRuleFilterField: "event_type" | "event" | "direction" | "metric";
         /**
          * AlertRuleFilterOperator
          * @enum {string}
@@ -8183,6 +8183,9 @@ export interface components {
              * @default false
              */
             incident_child: boolean;
+            /** Incident Id */
+            incident_id?: string | null;
+            incident_status?: components["schemas"]["AlertInboxStatus"] | null;
             /** Relative Effect */
             relative_effect?: number | null;
             /** Scan Config Id */
@@ -8274,6 +8277,8 @@ export interface components {
             enabled: boolean;
             /** Firing Scope Count */
             firing_scope_count: number;
+            /** Firing Scopes */
+            firing_scopes: components["schemas"]["MonitorFiringScope"][];
             /** Include Distribution Drifts */
             include_distribution_drifts: boolean;
             /** Include Event Types */
@@ -8330,6 +8335,35 @@ export interface components {
             status: "firing" | "warning" | "healthy";
             /** Total Deliveries */
             total_deliveries: number;
+        };
+        /**
+         * MonitorFiringScope
+         * @description One scope of a monitor that is firing now (MO-36).
+         *
+         *     Chosen by the same horizon test as ``firing_scope_count``, so the list and
+         *     the count cannot disagree. ``scope_name``, ``event_id`` and ``direction``
+         *     come from the item of the delivery that last notified this scope; all three
+         *     are null for a scope the rule has not notified (a cooldown or a mute can
+         *     hold the first message back while the state is already open).
+         */
+        MonitorFiringScope: {
+            direction: components["schemas"]["AnomalyDirection"] | null;
+            /** Event Id */
+            event_id: string | null;
+            /**
+             * Last Anomaly Bucket
+             * Format: date-time
+             */
+            last_anomaly_bucket: string;
+            /** Last Notified At */
+            last_notified_at: string | null;
+            /** Scan Config Id */
+            scan_config_id: string | null;
+            /** Scope Name */
+            scope_name: string | null;
+            /** Scope Ref */
+            scope_ref: string;
+            scope_type: components["schemas"]["MetricScopeType"];
         };
         /** MonitorMuteRequest */
         MonitorMuteRequest: {
@@ -8716,6 +8750,8 @@ export interface components {
         };
         /** PlanRevisionDetail */
         PlanRevisionDetail: {
+            /** Branch Id */
+            branch_id?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -8732,6 +8768,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** @default snapshot */
+            kind: components["schemas"]["PlanRevisionKind"];
             /** Payload */
             payload: {
                 [key: string]: unknown;
@@ -8744,6 +8782,17 @@ export interface components {
             /** Summary */
             summary: string;
         };
+        /**
+         * PlanRevisionKind
+         * @description What produced a revision (PL-21).
+         *
+         *     ``snapshot`` is a user-taken one (``POST /plan-revisions``); ``branch_base``
+         *     is the merge base captured when a branch opens; ``merge`` is the live plan
+         *     right after a branch merged into it. Stored rather than parsed back out of
+         *     ``summary``, which is free text a user can also write.
+         * @enum {string}
+         */
+        PlanRevisionKind: "snapshot" | "branch_base" | "merge";
         /** PlanRevisionList */
         PlanRevisionList: {
             /** Items */
@@ -8756,6 +8805,8 @@ export interface components {
          * @description List-view of a revision — payload omitted to keep responses small.
          */
         PlanRevisionSummary: {
+            /** Branch Id */
+            branch_id?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -8772,6 +8823,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** @default snapshot */
+            kind: components["schemas"]["PlanRevisionKind"];
             /**
              * Project Id
              * Format: uuid
@@ -9152,6 +9205,11 @@ export interface components {
              * @default 0
              */
             event_type_count: number;
+            /**
+             * Failing Alert Destination Count
+             * @default 0
+             */
+            failing_alert_destination_count: number;
             /**
              * Failing Scan Config Count
              * @default 0
@@ -9665,6 +9723,15 @@ export interface components {
             metric_breakdown_values_limit: number | null;
             /** Metrics Row Limit */
             metrics_row_limit: number | null;
+            /**
+             * Monitoring Enabled
+             * @description Whether the scheduler collects metrics for this scan (MO-23).
+             *
+             *     Derived, never stored: the beat schedule and every monitoring read path
+             *     select on ``interval IS NOT NULL``, so this is that test said out loud
+             *     rather than a second switch that could disagree with it.
+             */
+            readonly monitoring_enabled: boolean;
             /** Name */
             name: string;
             /** Platform Column */
@@ -10736,6 +10803,11 @@ export interface components {
             name: string;
             /** Total Count */
             total_count: number;
+            /**
+             * Window Total Count
+             * @default 0
+             */
+            window_total_count: number;
         };
         /**
          * TopMoverItem
@@ -12073,7 +12145,10 @@ export interface operations {
     };
     get_project_api_v1_projects__slug__get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Plan branch id (UUID) to read and write instead of the main branch. */
+                branch?: string | null;
+            };
             header?: never;
             path: {
                 slug: string;

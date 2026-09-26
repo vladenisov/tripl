@@ -142,7 +142,9 @@ describe('App', () => {
     // while the footer still renders the signed-in user and sign-out action.
     expect(await screen.findByText('Keep your product analytics honest')).toBeInTheDocument()
     expect(screen.getAllByText('Owner').length).toBeGreaterThan(0)
-    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
+    // Sign out lives in the account menu the user row opens (#238 SH-39).
+    fireEvent.keyDown(screen.getByRole('button', { name: /^Account menu/ }), { key: 'Enter' })
+    expect(await screen.findByRole('menuitem', { name: 'Sign out' })).toBeInTheDocument()
   })
 
   it('redirects anonymous users to the auth page', async () => {

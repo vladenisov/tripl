@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { MonitoringSignal } from '@/types'
-import { compareSignalsByMagnitude, relativeEffect, selectSignificantSignals } from './signalMagnitude'
+import {
+  MAGNITUDE_PRESETS,
+  compareSignalsByMagnitude,
+  magnitudePresetLabel,
+  relativeEffect,
+  selectSignificantSignals,
+  signalMagnitudeWord,
+} from './signalMagnitude'
 
 function signal(over: Partial<MonitoringSignal>): MonitoringSignal {
   return {
@@ -74,5 +81,23 @@ describe('relativeEffect', () => {
     const list = [calm, loud]
     expect(selectSignificantSignals(list).map(s => s.scope_ref)).toEqual(['loud', 'calm'])
     expect([...list].sort(compareSignalsByMagnitude).map(s => s.scope_ref)).toEqual(['loud', 'calm'])
+  })
+})
+
+describe('magnitude words and labels (MO-3, JR-31)', () => {
+  it('puts the threshold in the filter label, in the % the rows show', () => {
+    expect(MAGNITUDE_PRESETS.map(magnitudePresetLabel)).toEqual([
+      'All',
+      'Significant (≥50%)',
+      'Major (≥100%)',
+    ])
+  })
+
+  it('buckets a signal on the same bars as the filter', () => {
+    expect(signalMagnitudeWord(signal({ actual_count: 120, expected_count: 100 }))).toBe('Minor')
+    expect(signalMagnitudeWord(signal({ actual_count: 150, expected_count: 100 }))).toBe('Significant')
+    expect(signalMagnitudeWord(signal({ actual_count: 200, expected_count: 100 }))).toBe('Major')
+    // The server value wins here too.
+    expect(signalMagnitudeWord(signal({ actual_count: 1, expected_count: 1, relative_effect: 2 }))).toBe('Major')
   })
 })

@@ -141,19 +141,29 @@ describe('TabMetricsCard', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
+  it('shows no range or bucket controls while collapsed (EV-22)', async () => {
+    installFetch()
+    renderCard(null, { isOpen: false })
+
+    expect(await screen.findByRole('button', { name: /Show chart/ })).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Time range' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Time granularity' })).not.toBeInTheDocument()
+  })
+
   it('picks its range with the shared segmented control (LIVE-26)', async () => {
     const fetchSpy = installFetch()
     renderCard(null)
 
     const group = await screen.findByRole('group', { name: 'Time range' })
     expect(within(group).getByRole('button', { name: '7d' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByText(/Last 7 days/)).toBeInTheDocument()
+    expect(await screen.findByText(/Last 7 days, grouped by hour/)).toBeInTheDocument()
 
     fireEvent.click(within(group).getByRole('button', { name: '30d' }))
 
     expect(within(group).getByRole('button', { name: '30d' })).toHaveAttribute('aria-pressed', 'true')
     expect(within(group).getByRole('button', { name: '7d' })).toHaveAttribute('aria-pressed', 'false')
-    expect(screen.getByText(/Last 30 days/)).toBeInTheDocument()
+    // A month of hourly buckets is a sawtooth: the wider range buckets by day (EV-21).
+    expect(await screen.findByText(/Last 30 days, grouped by day/)).toBeInTheDocument()
     // The wider window is a new query.
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
   })

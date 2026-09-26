@@ -6,12 +6,12 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight } from 'lucide-react'
 import { eventMetricsApi } from '@/api/eventMetrics'
 import { ErrorState } from '@/components/error-state'
 import { Chip } from '@/components/primitives/chip'
-import { LoadingState } from '@/components/primitives/loading-state'
+import { SectionSkeleton } from '@/components/states'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { MetricsChart } from '@/components/ui/chart'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { granularityForInterval } from '@/lib/metricAdapters'
-import { formatSignalSeverity } from '@/lib/monitoring'
+import { formatSignalEffectDetail } from '@/lib/monitoring'
 import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
 import { signalDirectionColor, signalDirectionTone } from '@/lib/statusLexicon'
 import type {
@@ -87,13 +87,7 @@ export function TopMoversPanel({
   })
 
   if (isLoading) {
-    return (
-      <Card>
-        <CardContent>
-          <LoadingState label="Loading top movers…" className="text-body-sm" />
-        </CardContent>
-      </Card>
-    )
+    return <SectionSkeleton variant="list" rows={3} label="Loading top movers…" />
   }
 
   // A failed request used to return null, so an outage looked exactly like an
@@ -216,7 +210,14 @@ function TopMoverRow({
       <div className="flex items-center gap-2 whitespace-nowrap text-right text-body-sm">
         {/* The shared direction colours: a spike was painted green here, the
             opposite of every other signal surface (MON-19). */}
-        <Chip tone={tone} size="xs" icon={<Icon aria-hidden="true" />}>
+        {/* The z-score is a hover detail, not a column: the row already says
+            the move as a count and a % (MO-2 / JR-31). */}
+        <Chip
+          tone={tone}
+          size="xs"
+          icon={<Icon aria-hidden="true" />}
+          title={formatSignalEffectDetail(item)}
+        >
           {delta > 0 ? '+' : ''}{formatCount(delta)}
         </Chip>
         {pct && (
@@ -231,10 +232,6 @@ function TopMoverRow({
             {pct}
           </span>
         )}
-        {/* A figure, so sans with tabular digits (DS-17). */}
-        <span className="tnum text-muted-foreground">
-          {formatSignalSeverity(item)}
-        </span>
       </div>
     </button>
   )

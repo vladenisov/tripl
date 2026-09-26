@@ -32,6 +32,10 @@ export interface ProjectSummary {
   // Number of scan configs whose latest run failed. Counts hidden per-config
   // failures the single newest `latest_scan_job` misses.
   failing_scan_config_count: number
+  // Enabled alert destinations whose latest delivery failed: the per-channel
+  // twin of `failing_scan_config_count`, for the Overview status line (MO-15).
+  // Always sent (default 0); optional so summaries built before it still type.
+  failing_alert_destination_count?: number
   latest_scan_job: ProjectLatestScanJob | null
   latest_signal: ProjectLatestSignal | null
 }

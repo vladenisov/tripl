@@ -1,16 +1,18 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /** The toaster, stubbed: a failed row write says why in one (ALR-6). */
-const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }))
+const { toastError, toastSuccess } = vi.hoisted(() => ({ toastError: vi.fn(), toastSuccess: vi.fn() }))
 vi.mock('sonner', () => ({
-  toast: { success: vi.fn(), error: toastError },
+  toast: { success: toastSuccess, error: toastError },
   Toaster: () => null,
 }))
 
 import { alertingApi, MAX_ALERT_RULE_NAME_LENGTH } from '@/api/alerting'
+import { anomalySettingsApi } from '@/api/anomalySettings'
+import type { ProjectAnomalySettings } from '@/types'
 import { ApiError } from '@/api/client'
 import { INDEFINITE_MUTE, muteChoiceName } from '@/lib/mutePresets'
 import type { AlertDestination, AlertRule, MonitorsSummaryResponse, ScanConfig } from '@/types'
@@ -166,10 +168,29 @@ function renderSection(options: RenderOptions = {}) {
   )
 }
 
+/** Detection is on unless a test says otherwise; the section reads it for AL-45. */
+function mockDetection(enabled: boolean) {
+  return vi.spyOn(anomalySettingsApi, 'get').mockResolvedValue({
+    anomaly_detection_enabled: enabled,
+  } as ProjectAnomalySettings)
+}
+
+beforeEach(() => {
+  mockDetection(true)
+})
+
 afterEach(() => {
   vi.restoreAllMocks()
   toastError.mockClear()
+  toastSuccess.mockClear()
 })
+
+/** Replay, Mute and Delete live behind the row's "…" menu (AL-8). */
+async function openRowMenu(ruleName = 'Prod drops') {
+  const trigger = await screen.findByRole('button', { name: `More actions for ${ruleName}` })
+  fireEvent.keyDown(trigger, { key: 'Enter' })
+  return screen.findByRole('menu')
+}
 
 describe('MonitorsSection live state (tripl-89ps)', () => {
   it('shows the firing state that only the standalone page used to carry', async () => {
@@ -266,10 +287,11 @@ describe('MonitorsSection mute', () => {
     const mute = vi.spyOn(alertingApi, 'muteMonitor').mockResolvedValue({} as never)
     renderSection()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Mute Prod drops' }))
+    await openRowMenu()
     // The duration is on the control, so no mute is silent — the same labels
-    // and the same reveal the Inbox uses.
-    fireEvent.click(screen.getByRole('button', { name: 'Mute Prod drops for 24h' }))
+    // the Inbox uses, in a menu rather than an inline reveal that pushed the
+    // row's columns sideways (AL-9).
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mute Prod drops for 24h' }))
 
     await waitFor(() => expect(mute).toHaveBeenCalled())
     expect(at(mute.mock.calls, 0)[0]).toBe('windy-ios')
@@ -284,7 +306,8 @@ describe('MonitorsSection mute', () => {
     renderSection({ rules: [makeRule({ muted: true, muted_until: '2026-08-19T00:00:00Z' })] })
 
     expect(await screen.findByText(/^muted until /)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Unmute Prod drops' }))
+    await openRowMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Unmute Prod drops' }))
 
     await waitFor(() => expect(unmute).toHaveBeenCalledWith('windy-ios', 'rule-1'))
   })
@@ -330,9 +353,11 @@ describe('MonitorsSection mute', () => {
     await screen.findByRole('link', { name: 'Prod drops' })
     expect(screen.queryByText(/muted until/)).toBeNull()
     expect(screen.queryByText('muted')).toBeNull()
-    // And the control offers Mute, not Unmute — the row agrees with itself
+    // And the menu offers Mute, not Unmute — the row agrees with itself
     // about which state the rule is in.
-    expect(screen.getByRole('button', { name: 'Mute Prod drops' })).toBeInTheDocument()
+    await openRowMenu()
+    expect(screen.getByRole('menuitem', { name: 'Mute Prod drops for 24h' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Unmute Prod drops' })).toBeNull()
   })
 
   it('can only mute a rule for a fixed time — no open-ended choice here (tripl-a50u)', async () => {
@@ -348,10 +373,10 @@ describe('MonitorsSection mute', () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
     renderSection()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Mute Prod drops' }))
+    await openRowMenu()
 
     for (const label of ['1h', '24h', '7d']) {
-      expect(screen.getByRole('button', { name: `Mute Prod drops for ${label}` }))
+      expect(screen.getByRole('menuitem', { name: `Mute Prod drops for ${label}` }))
         .toBeInTheDocument()
     }
     // The COUNT as well, per surface. Three surfaces map `MUTE_PRESETS` and each
@@ -361,9 +386,9 @@ describe('MonitorsSection mute', () => {
     // typed, and a `(` in it would quietly match something else.
     const presetPrefix = 'Mute Prod drops for '
     expect(
-      screen.getAllByRole('button', { name: (name: string) => name.startsWith(presetPrefix) }),
+      screen.getAllByRole('menuitem', { name: (name: string) => name.startsWith(presetPrefix) }),
     ).toHaveLength(3)
-    expect(screen.queryByRole('button', { name: /until unmuted/i })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: /until unmuted/i })).toBeNull()
     expect(screen.queryByText(/Until I unmute/i)).toBeNull()
     // …and the same two negatives built from the shared module, which is what
     // keeps this guard alive through a rename. A frozen negative matches
@@ -378,7 +403,7 @@ describe('MonitorsSection mute', () => {
     // calls `muteChoiceName`, which contains that branch, so the same leak
     // would read as grammatical English. This assertion is the replacement.
     expect(
-      screen.queryByRole('button', { name: muteChoiceName('Prod drops', INDEFINITE_MUTE) }),
+      screen.queryByRole('menuitem', { name: muteChoiceName('Prod drops', INDEFINITE_MUTE) }),
     ).toBeNull()
     expect(screen.queryByText(INDEFINITE_MUTE.label)).toBeNull()
   })
@@ -393,7 +418,8 @@ describe('MonitorsSection rule writes', () => {
     const remove = vi.spyOn(alertingApi, 'deleteRule').mockResolvedValue(undefined)
     renderSection()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete rule Prod drops' }))
+    await openRowMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete rule Prod drops' }))
 
     expect(
       await screen.findByText(
@@ -435,6 +461,9 @@ describe('MonitorsSection guided-setup handoff (tripl-oxkt.15)', () => {
     renderSection({ autoOpenRuleForDestinationId: 'dest-1' })
 
     expect(await screen.findByText('New alert rule')).toBeInTheDocument()
+    // Named after its destination and marked as the last step (AL-34).
+    expect(screen.getByLabelText('Name')).toHaveValue('Alerts to TG')
+    expect(screen.getByText('Step 3 of 3')).toBeInTheDocument()
   })
 
   it('stays closed on every ordinary visit', async () => {
@@ -483,8 +512,39 @@ describe('MonitorsSection rule editor', () => {
     expect(screen.getByText('New alert rule')).toBeInTheDocument()
     expect(screen.getByLabelText('Destination')).toBeInTheDocument()
     // Nothing routes anywhere until one is named — the API addresses the rule
-    // through its destination, so Create would 404 on a segment nobody saw.
-    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled()
+    // through its destination. Create says so on submit instead of sitting
+    // disabled with no reason (AL-3).
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New rule' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(screen.getByText('Pick a destination.')).toBeInTheDocument()
+  })
+
+  it('preselects the only enabled destination (AL-3)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({
+      destinations: [
+        makeDestination(),
+        makeDestination({ id: 'dest-2', name: 'Old Slack', type: 'slack', enabled: false }),
+      ],
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add rule/ }))
+
+    expect(screen.getByRole('combobox', { name: 'Destination' })).toHaveTextContent('TG')
+  })
+
+  it('says a rule was created, like a destination does (AL-10)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    vi.spyOn(alertingApi, 'createRule').mockResolvedValue(
+      makeRule({ id: 'rule-9', name: 'Checkout drops' }) as AlertRule,
+    )
+    renderSection()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add rule/ }))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Checkout drops' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Rule "Checkout drops" created'))
   })
 })
 
@@ -496,14 +556,14 @@ describe('MonitorsSection panel subtitle (tripl-6r8c)', () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
     renderSection({ rules: [makeRule(), makeRule({ id: 'rule-2', name: 'Weekly health' })] })
 
-    expect(await screen.findByText('2 routing rules')).toBeInTheDocument()
+    expect(await screen.findByText('2 alert rules')).toBeInTheDocument()
   })
 
   it('agrees with a single rule', async () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
     renderSection()
 
-    expect(await screen.findByText('1 routing rule')).toBeInTheDocument()
+    expect(await screen.findByText('1 alert rule')).toBeInTheDocument()
   })
 })
 
@@ -532,7 +592,9 @@ describe('MonitorsSection empty states', () => {
 })
 
 describe('MonitorsSection viewer gating (tripl-oxkt.9)', () => {
-  const WRITE_CONTROLS = ['Mute Prod drops', 'Edit rule Prod drops', 'Delete rule Prod drops']
+  // Mute and Delete sit behind "More actions" (AL-8); the menu itself is the
+  // write control a viewer must not get.
+  const WRITE_CONTROLS = ['More actions for Prod drops', 'Edit rule Prod drops']
 
   it('offers an editor every write control', async () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
@@ -640,7 +702,7 @@ describe('MonitorsSection inert scope notice', () => {
     )
 
     await screen.findByText(DISTRIBUTION_SENTENCE)
-    const box = within(screen.getByText('Distribution').closest('label')!).getByRole('checkbox')
+    const box = within(screen.getByText('Distribution drift').closest('label')!).getByRole('checkbox')
     expect(box).not.toBeDisabled()
     expect(box).toBeChecked()
   })
@@ -698,11 +760,14 @@ describe('MonitorsSection row writes that fail say why (ALR-6)', () => {
     )
     renderSection()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete rule Prod drops' }))
+    await openRowMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete rule Prod drops' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
 
     await waitFor(() => expect(remove).toHaveBeenCalledTimes(1))
-    expect(screen.getByRole('button', { name: 'Delete rule Prod drops' })).toBeDisabled()
+    await openRowMenu()
+    expect(screen.getByRole('menuitem', { name: 'Delete rule Prod drops' }))
+      .toHaveAttribute('aria-disabled', 'true')
 
     reject(new Error('Rule not found'))
     await waitFor(() => expect(toastError).toHaveBeenCalledWith('Rule not found', expect.anything()))
@@ -713,8 +778,8 @@ describe('MonitorsSection row writes that fail say why (ALR-6)', () => {
     vi.spyOn(alertingApi, 'muteMonitor').mockRejectedValue(new Error('Forbidden'))
     renderSection()
 
-    fireEvent.click(await screen.findByRole('button', { name: /^Mute Prod drops$/ }))
-    fireEvent.click(screen.getAllByRole('button', { name: /^Mute Prod drops for / })[0]!)
+    await openRowMenu()
+    fireEvent.click(screen.getAllByRole('menuitem', { name: /^Mute Prod drops for / })[0]!)
 
     await waitFor(() => expect(toastError).toHaveBeenCalledWith('Forbidden', expect.anything()))
   })
@@ -759,11 +824,11 @@ describe('MonitorsSection rule row details', () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
     renderSection({ rules: [makeRule({ total_deliveries: 1, incident_count: 1 })] })
 
-    const remove = await screen.findByRole('button', { name: 'Delete rule Prod drops' })
-    // A real tooltip now (DS-12), shown on keyboard focus as well as hover,
-    // rather than a `title` only a mouse could reach.
-    fireEvent.focus(remove)
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('1 delivery and 1 incident')
+    // Written on the menu item itself, under its label — visible to keyboard
+    // and touch alike, where a tooltip or `title` was not (AL-8).
+    await openRowMenu()
+    expect(screen.getByRole('menuitem', { name: 'Delete rule Prod drops' }))
+      .toHaveTextContent('1 delivery and 1 incident')
   })
 
   it('links the settings toggle to the row it opens, which spans the table (ALR-46)', async () => {
@@ -835,13 +900,15 @@ describe('MonitorsSection rule form — what is saved is what is shown', () => {
     expect(screen.queryByRole('combobox', { name: 'Message format' })).toBeNull()
 
     fireEvent.click(screen.getByRole('combobox', { name: 'Destination' }))
-    fireEvent.click(await screen.findByRole('option', { name: 'Slack · slack' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Slack · Slack' }))
+    // The templates are collapsed by default (AL-1).
+    fireEvent.click(screen.getByRole('button', { name: /Customize message/ }))
     fireEvent.click(screen.getByRole('combobox', { name: 'Message format' }))
     fireEvent.click(await screen.findByRole('option', { name: 'Slack mrkdwn' }))
     expect(screen.getByRole('combobox', { name: 'Message format' })).toHaveTextContent('Slack mrkdwn')
 
     fireEvent.click(screen.getByRole('combobox', { name: 'Destination' }))
-    fireEvent.click(await screen.findByRole('option', { name: 'TG · telegram' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'TG · Telegram' }))
 
     expect(screen.getByRole('combobox', { name: 'Message format' })).toHaveTextContent('Plain text')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New rule' } })
@@ -872,6 +939,8 @@ describe('MonitorsSection rule form — what is saved is what is shown', () => {
     vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
     renderSection()
 
+    // The replay runs on open (AL-35); held in flight, it is not what this asserts.
+    vi.spyOn(alertingApi, 'simulateRule').mockReturnValue(new Promise(() => {}))
     fireEvent.click(await screen.findByRole('button', { name: 'Edit rule Prod drops' }))
     fireEvent.click(screen.getByRole('button', { name: 'Replay saved rule' }))
 
@@ -907,16 +976,65 @@ describe('MonitorsSection rule form — what is saved is what is shown', () => {
     // No edits yet: only the saved rule can be replayed.
     expect(screen.queryByRole('button', { name: 'Replay with these edits' })).toBeNull()
 
-    fireEvent.change(screen.getByLabelText('Cooldown minutes'), { target: { value: '45' } })
+    // The saved 360 minutes shows as 6 hours (AL-6); 45 of them is 2700 minutes.
+    fireEvent.change(screen.getByLabelText(/re-alert the same scope for/), { target: { value: '45' } })
     fireEvent.click(screen.getByRole('button', { name: 'Replay with these edits' }))
 
     expect(
       await screen.findByRole('heading', { name: /Replay rule “Prod drops” with your unsaved edits/ }),
     ).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
-
+    // It runs on open (AL-35); no second click needed.
     await waitFor(() => expect(simulate).toHaveBeenCalled())
-    expect(simulate.mock.calls[0]?.[5]).toMatchObject({ cooldown_minutes: 45 })
+    expect(simulate.mock.calls[0]?.[5]).toMatchObject({ cooldown_minutes: 45 * 60 })
     expect(update).not.toHaveBeenCalled()
+  })
+})
+
+describe('MonitorsSection — detection switched off (AL-45)', () => {
+  it('says above the rules that none of them can fire, and links to the switch', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    mockDetection(false)
+    renderSection()
+
+    expect(await screen.findByText(/Detection is off for this project/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Detection settings' })).toHaveAttribute(
+      'href',
+      '/p/windy-ios/settings/monitoring',
+    )
+  })
+
+  it('says nothing while detection is on', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    await screen.findByRole('link', { name: 'Prod drops' })
+    await waitFor(() => expect(anomalySettingsApi.get).toHaveBeenCalled())
+    expect(screen.queryByText(/Detection is off for this project/)).toBeNull()
+  })
+})
+
+describe('MonitorsSection — rows read as sentences (AL-11, JR-15)', () => {
+  it('writes the condition in words and names what a metrics-only rule watches', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection({
+      rules: [makeRule({ include_project_total: false, include_metrics: true, notify_on_spike: true })],
+    })
+
+    const table = await screen.findByRole('table', { name: 'Alert rules' })
+    expect(within(table).getByText('Spikes & drops ≥ 100% · 6h cooldown')).toBeInTheDocument()
+    expect(within(table).getByText('Metrics')).toBeInTheDocument()
+    // No raw channel type chip.
+    expect(within(table).queryByText('telegram')).toBeNull()
+  })
+
+  it('keeps the row actions to a switch, Edit and one labelled menu (AL-8)', async () => {
+    vi.spyOn(alertingApi, 'getMonitorsSummary').mockResolvedValue(makeSummary())
+    renderSection()
+
+    await screen.findByRole('link', { name: 'Prod drops' })
+    // No bell-with-slash on an unmuted row: mute is an action in the menu.
+    expect(screen.queryByRole('button', { name: 'Mute Prod drops' })).toBeNull()
+    const menu = await openRowMenu()
+    expect(within(menu).getByRole('menuitem', { name: 'Replay Prod drops' })).toHaveTextContent('Replay')
   })
 })

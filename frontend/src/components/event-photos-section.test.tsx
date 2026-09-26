@@ -178,3 +178,18 @@ describe('EventPhotosSection viewer (EVT-51)', () => {
     }
   })
 })
+
+describe('EventPhotosSection empty state (EV-33)', () => {
+  it('stays one line and opens the Figma field only on request', async () => {
+    renderSection()
+
+    expect(await screen.findByText(/No screenshots or Figma links yet/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Figma URL')).toBeNull()
+
+    const attach = screen.getByRole('button', { name: 'Attach Figma link' })
+    expect(attach).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(attach)
+    expect(attach).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByLabelText('Figma URL')).toBeInTheDocument()
+  })
+})

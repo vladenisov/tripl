@@ -1,3 +1,5 @@
+import type { AlertInboxStatus } from './alerting'
+
 // Exhaustive scope-type union mirroring the backend MetricScopeType enum
 // (backend/src/tripl/models/domain_enums.py). Keep all eight members in sync;
 // narrowing this to a subset silently mis-routes the omitted scopes.
@@ -27,6 +29,10 @@ export interface TopEvent {
   name: string
   event_type_id: string
   total_count: number
+  // The project's volume over the same window, identical on every row, so a
+  // row can show its event's share without a second request (MO-25). Counted
+  // the project-total way, so the shares need not add up to 100%.
+  window_total_count: number
 }
 
 export interface OverviewKpiSeries {
@@ -80,6 +86,11 @@ export interface MonitoringSignal {
   // When the detector wrote the anomaly — distinct from `bucket`, when the
   // anomalous period STARTED (MON-40). Null on a payload that predates it.
   detected_at: string | null
+  // The Alerting Inbox incident this signal was routed into and its status
+  // there, so an Anomalies row can link to the incident (JR-6). Null when no
+  // rule delivered it; filled on the expanded list only.
+  incident_id?: string | null
+  incident_status?: AlertInboxStatus | null
 }
 
 export interface TopMoverItem {

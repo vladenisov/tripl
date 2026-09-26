@@ -9,7 +9,27 @@ import type {
 } from '@/types'
 import type { EventStatus } from '@/lib/eventStatus'
 
+/** Per-project key holding which tabs have their volume chart open. */
+export function chartOpenStorageKey(slug: string): string {
+  return `tripl.eventsChartOpen.${slug}`
+}
+
+function readOpenCharts(slug: string): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(chartOpenStorageKey(slug))
+    if (raw === null) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'),
+    )
+  } catch {
+    return {}
+  }
+}
+
 export function useEventsViewState({
+  slug,
   activeTab,
   activeEt,
   eventTypeSignals,
@@ -25,6 +45,7 @@ export function useEventsViewState({
   metaFilters,
   projectTotalSignal,
 }: {
+  slug: string
   activeTab: string
   activeEt: EventType | null
   eventTypeSignals: Map<string, MonitoringSignal>
@@ -41,15 +62,30 @@ export function useEventsViewState({
   projectTotalSignal: MonitoringSignal | null
 }) {
   const [, setSearchParams] = useSearchParams()
-  const [openCharts, setOpenCharts] = useState<Record<string, boolean>>({})
+  // Keyed by the project it was read for, so switching projects re-reads the
+  // stored choice instead of carrying the previous project's toggles over.
+  const [openChartsState, setOpenChartsState] = useState(() => ({
+    slug,
+    charts: readOpenCharts(slug),
+  }))
+  const openCharts =
+    openChartsState.slug === slug ? openChartsState.charts : readOpenCharts(slug)
 
-  // UX-14: the dynamics chart opens by default so a fresh tab leads with its
-  // trend at a glance. Per-tab user toggles still win — once a tab is closed,
-  // its explicit `false` overrides this default for the rest of the session.
-  const isTabChartOpen = openCharts[activeTab] ?? true
+  // The volume chart starts collapsed: open, its 260px pushed the table below
+  // the fold on every visit, for one unannotated line (EV-21; it replaces
+  // UX-14's open default). A per-tab toggle is remembered per project, so the
+  // reader who opens it keeps it open across reloads.
+  const isTabChartOpen = openCharts[activeTab] ?? false
   const setIsTabChartOpen = useCallback((open: boolean) => {
-    setOpenCharts(prev => ({ ...prev, [activeTab]: open }))
-  }, [activeTab])
+    setOpenChartsState(prev => {
+      const base = prev.slug === slug ? prev.charts : readOpenCharts(slug)
+      const charts = { ...base, [activeTab]: open }
+      try {
+        localStorage.setItem(chartOpenStorageKey(slug), JSON.stringify(charts))
+      } catch { /* storage full or blocked: the choice lasts the session */ }
+      return { slug, charts }
+    })
+  }, [activeTab, slug])
   const activeTabSignal = useMemo(() => {
     if (activeTab === 'all') return projectTotalSignal
     if (!activeEt) return null
@@ -104,9 +140,14 @@ export function useEventsViewState({
     Object.values(fieldFilters).some(v => v !== '') ||
     Object.values(metaFilters).some(v => v !== '')
 
+  // Clears the search too, in the same URL write: to the reader a search that
+  // matches nothing is one more filter, and "Clear filters" left it in place
+  // (EV-16). One updater, because two back-to-back setSearchParams calls both
+  // start from the same params and the second undoes the first.
   const clearAllFilters = useCallback(() => {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
+      next.delete('q')
       next.delete('status')
       next.delete('tag')
       next.delete('silent_days')

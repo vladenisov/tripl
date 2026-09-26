@@ -54,6 +54,7 @@ from tripl.schemas.metric_definition import (
     SqlMetricCreate,
     SqlMetricDefinition,
 )
+from tripl.services._alerting_destinations import drop_deleted_metric_from_rule_filters
 from tripl.services._celery_dispatch import dispatch
 from tripl.services.data_source_scope import (
     DATA_SOURCE_NOT_AVAILABLE,
@@ -1506,6 +1507,9 @@ async def delete_metric_definition(session: AsyncSession, slug: str, metric_id: 
     metric = await get_metric_definition(session, slug, metric_id)
     project_id = metric.project_id
     await _delete_metric_scope_anomalies(session, metric_id)
+    # Its id would otherwise outlive it in alert rules' ``metric`` filters, and
+    # every later save of such a rule would 404 on the dangling id.
+    await drop_deleted_metric_from_rule_filters(session, project_id=project_id, metric_id=metric_id)
     await session.delete(metric)
     await session.commit()
     await _refresh_main_search_index(session, project_id, slug)

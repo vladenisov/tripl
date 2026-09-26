@@ -4,20 +4,27 @@ import { Chip } from '@/components/primitives/chip'
 import { PageContainer } from '@/components/primitives/page-container'
 import { PageHead, Panel } from '@/components/settings/kit'
 import { PRODUCT_PILLARS, type PillarId } from '@/components/workspace-welcome-pillars'
+import { termAnchor } from '@/lib/glossary'
 
 /**
  * A single domain term: its plain-language definition and, where the concept has
  * a real home in the app, the route segment (relative to `/p/:slug`) it lives at.
- * `surface` overrides the default "Open" link label when the term is only
- * *surfaced* somewhere (e.g. a shadow event appears on the Reconciliation page)
- * rather than having its own dedicated page.
+ * `surface` names that page when it is not the term itself (a shadow event
+ * appears on Reconciliation); the link always reads "Open <page>" (#238 DA-36).
+ * `workspace` marks a path that is not under the project (`/settings/...`).
  */
 type Term = {
   term: string
   definition: string
   path?: string
   surface?: string
+  workspace?: boolean
 }
+
+// The anchor helper lives in lib so pages that link a term (TermHint) do not
+// import this page. Re-exported for callers that already import it here.
+// eslint-disable-next-line react-refresh/only-export-components
+export { termAnchor } from '@/lib/glossary'
 
 type AreaKey = PillarId
 
@@ -68,9 +75,11 @@ const AREAS: readonly Area[] = [
         path: '/settings/event-types',
       },
       {
-        term: 'Schema & fields',
+        // Named as the sidebar names it (#238 AU-10). Not "Schema & fields":
+        // an event type's own field definitions are its schema.
+        term: 'Meta fields',
         definition:
-          'The meta fields an event is expected to carry and their data types — the contract for what a well-formed event looks like.',
+          'Extra attributes every event carries whatever its type — owner team, Jira ticket, review date. The payload fields an event sends are defined per event type.',
         path: '/settings/meta-fields',
       },
       {
@@ -91,6 +100,19 @@ const AREAS: readonly Area[] = [
           'Isolated copies of the plan you can edit and review before merging, like version-control branches for your tracking plan.',
         path: '/settings/branches',
       },
+      {
+        term: 'Plan history',
+        definition:
+          'The snapshots of the plan taken at each merge (and on demand), so you can see what the plan looked like at any point and what changed.',
+        path: '/settings/history',
+      },
+      {
+        term: 'In review',
+        definition:
+          'An event status: the event is proposed and waiting for someone to confirm it. The review count on Overview and Events counts these. Not the same as a branch that is ready for review.',
+        path: '/events',
+        surface: 'Events',
+      },
     ],
   },
   {
@@ -100,20 +122,38 @@ const AREAS: readonly Area[] = [
     accent: 'var(--info)',
     terms: [
       {
-        term: 'Live activity',
+        // The project's home, named as the sidebar names it (#238 SH-8).
+        term: 'Overview',
         definition:
-          'The real-time stream of incoming events and recent plan changes — the first place to see what your data is doing right now.',
+          "The project's home page: event volume, open signals, top events, source health and the getting-started checklist — the first place to see what your data is doing.",
         path: '/overview',
+      },
+      {
+        term: 'Metrics',
+        definition:
+          'Numbers tripl computes from your warehouse on a schedule — a count, a sum or a ratio over a fact table — and watches for spikes and drops like event volume.',
+        path: '/metrics',
+      },
+      {
+        term: 'Metric points',
+        definition:
+          'The individual values a monitoring scan or a metric records, one per time bucket. Charts, anomaly detection and alerts are all built on them.',
+      },
+      {
+        term: 'Fact tables',
+        definition:
+          'A saved SQL query over your warehouse that metrics are defined on: one row per fact (an order, a session), with a time column and the columns metrics sum or count.',
+        path: '/metrics/fact-tables',
       },
       {
         term: 'Scopes',
         definition:
-          'The level at which activity and anomalies are measured: the whole project, a single event type, or one event. Signals and monitors are always scoped.',
+          'The level at which activity and anomalies are measured: the whole project, a single event type, or one event. Signals and alert rules are always scoped.',
       },
       {
         term: 'Signals',
         definition:
-          'An open anomaly at a given scope — a spike or drop tripl found in the volume. Signals are raised automatically by detection on every scan; no monitor has to exist for one to appear.',
+          'An open anomaly at a given scope — a spike or drop tripl found in the volume. Signals are raised automatically by detection on every scan; no alert rule has to exist for one to appear.',
         path: '/anomalies',
         surface: 'Anomalies',
       },
@@ -124,10 +164,26 @@ const AREAS: readonly Area[] = [
         path: '/anomalies',
       },
       {
-        term: 'Monitors',
+        term: 'Detection settings',
         definition:
-          'Alert rules layered on top of detection: a monitor decides which signals matter for a scope and where they are routed, and carries its own live state — firing, warning or healthy. A project with no monitors still raises signals — it just does not notify anyone about them. "Monitor" and "alert rule" name the same object, and it lives on one screen: the Monitors tab of Alerting.',
+          'How sensitive anomaly detection is for this project: the thresholds and minimum volumes a spike or drop must pass before it becomes a signal.',
+        path: '/settings/monitoring',
+      },
+      {
+        // One name for the object (#238 JR-28). The glossary used to explain
+        // that "monitor" and "alert rule" were two words for it.
+        term: 'Alert rules',
+        definition:
+          'Rules layered on top of detection: an alert rule decides which signals matter for a scope and where they are sent, and carries its own live state — firing, warning or healthy. A project with no alert rules still raises signals — it just does not notify anyone about them.',
         path: '/settings/alerting?section=monitors',
+        surface: 'Alerting',
+      },
+      {
+        term: 'Incidents',
+        definition:
+          'A group of signals an alert rule routed to your team, with a triage state: open, acknowledged, resolved or false positive. Signals are what detection found; incidents are the ones somebody owes an answer on.',
+        path: '/settings/alerting',
+        surface: 'Alerting',
       },
       {
         term: 'Alerting',
@@ -176,9 +232,29 @@ const AREAS: readonly Area[] = [
         path: '/scans',
       },
       {
+        term: 'Catalog and monitoring scans',
+        definition:
+          'A catalog scan only adds events and fields to the plan. A monitoring scan does that and also records metric points on a schedule, which is what anomaly detection reads.',
+        path: '/scans',
+        surface: 'Scans',
+      },
+      {
+        term: 'Data sources',
+        definition:
+          'The warehouse connections (ClickHouse, Postgres, BigQuery…) scans and metrics query. They are shared across the workspace and set up in Settings.',
+        path: '/settings/data-sources',
+        workspace: true,
+      },
+      {
+        term: 'Coverage',
+        definition:
+          'The share of active planned events marked implemented. Different from the data match on Reconciliation, which compares the plan with what actually arrives.',
+        path: '/coverage',
+      },
+      {
         term: 'Audit log',
         definition:
-          'A chronological record of who changed what in the plan, so every adoption, edit, and archive is traceable.',
+          "A chronological record of who changed what in this project's plan, so every adoption, edit, and archive is traceable. Workspace-level changes (members, API keys) are in the instance audit log.",
         path: '/settings/audit',
       },
     ],
@@ -197,7 +273,7 @@ function MapCard({ area }: { area: Area }) {
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
           style={{ background: 'var(--surface-hover)' }}
         >
-          <Icon className="h-4 w-4" style={{ color: area.accent }} aria-hidden="true" />
+          <Icon className="size-4" style={{ color: area.accent }} aria-hidden="true" />
         </span>
         <div className="min-w-0">
           <div className="text-body font-semibold leading-tight">{area.label}</div>
@@ -209,11 +285,19 @@ function MapCard({ area }: { area: Area }) {
       <p className="mt-2.5 text-body-sm leading-relaxed" style={{ color: 'var(--fg-subtle)' }}>
         {area.blurb}
       </p>
+      {/* Each chip jumps to its glossary row: chips that looked like links
+          and did nothing were a dead end (#238 DA-36). */}
       <div className="mt-3 flex flex-wrap gap-1.5">
         {area.terms.map((t) => (
-          <Chip key={t.term} size="xs">
-            {t.term}
-          </Chip>
+          <a
+            key={t.term}
+            href={`#${termAnchor(t.term)}`}
+            className="rounded-full no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          >
+            <Chip size="xs" className="cursor-pointer hover:bg-surface-active">
+              {t.term}
+            </Chip>
+          </a>
         ))}
       </div>
     </div>
@@ -221,29 +305,33 @@ function MapCard({ area }: { area: Area }) {
 }
 
 function TermRow({ term, slug }: { term: Term; slug: string | undefined }) {
-  const href = slug && term.path ? `/p/${slug}${term.path}` : undefined
+  const href = term.path
+    ? term.workspace
+      ? term.path
+      : slug
+        ? `/p/${slug}${term.path}`
+        : undefined
+    : undefined
+  // One label shape for every row, "Open <page>" (#238 DA-36): most rows said
+  // "Open", some named a page, and the right column was ragged.
+  const page = term.surface ?? term.term
+  const label = `Open ${page}`
   return (
-    <div className="px-4 py-3">
+    <div id={termAnchor(term.term)} className="scroll-mt-4 px-4 py-3">
       <div className="flex items-baseline justify-between gap-3">
         <h4 className="text-body font-semibold">{term.term}</h4>
         {href && (
-          // The name STARTS with the visible label: "Open Signals in the app" on
-          // a link that reads "Anomalies" failed WCAG 2.5.3, so a voice user
-          // saying "click Anomalies" never reached it (WS-45). An aria-label
-          // rather than hidden text: a name is built from each element's
-          // trimmed text, so " Events in the app" in a span read "OpenEvents".
+          // The name STARTS with the visible label (WCAG 2.5.3, WS-45), and
+          // says which term sent the reader there when the page is another
+          // one's.
           <Link
             to={href}
             className="flex shrink-0 items-center gap-0.5 text-caption font-medium no-underline"
             style={{ color: 'var(--accent)' }}
-            aria-label={
-              term.surface
-                ? `${term.surface}, where ${term.term} appear in the app`
-                : `Open ${term.term} in the app`
-            }
+            aria-label={term.surface ? `${label}, for ${term.term}` : `${label} in the app`}
           >
-            {term.surface ?? 'Open'}
-            <ArrowRight className="h-3 w-3" aria-hidden="true" />
+            {label}
+            <ArrowRight className="size-3" aria-hidden="true" />
           </Link>
         )}
       </div>
@@ -278,7 +366,7 @@ export default function ConceptsPage() {
           >
             {AREAS.map((area, i) => (
               <span key={area.key} className="flex items-center gap-1.5">
-                {i > 0 && <ArrowRight className="h-3 w-3" aria-hidden="true" />}
+                {i > 0 && <ArrowRight className="size-3" aria-hidden="true" />}
                 <span>{area.label}</span>
               </span>
             ))}

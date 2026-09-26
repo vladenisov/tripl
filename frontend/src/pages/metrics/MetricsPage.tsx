@@ -3,10 +3,11 @@ import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/primitives/page-header'
 import { PageContainer } from '@/components/primitives/page-container'
+import { TermHint, TERM_HINTS } from '@/components/term-hint'
 import { FactTablesList } from '@/pages/fact-tables/FactTablesList'
 import { MetricsCatalog } from './MetricsCatalog'
 import { useCanWriteProject } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { ReadOnlyNotice } from '@/components/states'
 
 export type MetricsTab = 'catalog' | 'fact-tables'
 
@@ -49,7 +50,14 @@ export default function MetricsPage({ tab = 'catalog' }: { tab?: MetricsTab }) {
   return (
     <PageContainer>
       <div className="space-y-4">
-        <PageHeader eyebrow="Observe" title="Metrics" actions={action} />
+        {/* Fact tables are a panel, not the page's title, so the hint rides the
+            Metrics header while their tab is open (#238 JR-31). */}
+        <PageHeader
+          eyebrow="Observe"
+          title="Metrics"
+          titleAddon={slug && tab === 'fact-tables' && <TermHint slug={slug} {...TERM_HINTS.factTables} />}
+          actions={action}
+        />
         <MetricsTabs slug={slug} tab={tab} />
       </div>
 

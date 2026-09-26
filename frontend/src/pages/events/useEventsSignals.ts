@@ -38,6 +38,8 @@ export function useEventsSignals({ slug }: { slug: string | undefined }) {
   return {
     projectTotalSignal,
     eventTypeSignals,
+    // "0 · none" before the query settles is a false all-clear (EV-19).
+    signalsPending: tabSignalsQuery.isPending,
   }
 }
 

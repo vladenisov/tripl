@@ -1,8 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
+import { AlertTriangle, GitCompare } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { planBranchesApi } from '@/api/planBranches'
+import { Chip } from '@/components/primitives/chip'
+import { Button } from '@/components/ui/button'
 import { useBranchContext } from '@/hooks/useBranch'
 import { planBranchesKey } from '@/lib/queryKeys'
+import { STATUS_LABEL, STATUS_TONE } from '@/lib/branchStatus'
 
 interface EntityBranchBannerProps {
   slug: string
@@ -59,23 +63,27 @@ export function EntityBranchBanner({
 
   if (!mismatch) {
     if (rowIsMain) return null
+    // The info tone the shell's branch strip uses, with the status in the same
+    // words every branch surface uses ("Ready for review"), not the raw enum
+    // (PL-3). Pages render it above their title.
     return (
       <div
-        className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-body-sm text-muted-foreground"
+        className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-card border border-info/40 bg-info-soft px-3 py-2 text-body-sm text-fg-secondary"
         data-testid="entity-branch-banner"
       >
+        <GitCompare className="size-3.5 shrink-0 text-info" aria-hidden="true" />
         <span>
-          Branch <span className="font-medium text-foreground">{rowBranch.name}</span> ·{' '}
-          {rowBranch.status.replace(/_/g, ' ')}
+          Branch copy on <span className="mono font-medium text-fg">{rowBranch.name}</span>
         </span>
+        <Chip tone={STATUS_TONE[rowBranch.status]} size="xs">
+          {STATUS_LABEL[rowBranch.status]}
+        </Chip>
         {mainPath && (
-          <Link
-            to={mainPath}
-            onClick={() => setBranchId(null, { updateUrl: false })}
-            className="underline-offset-2 hover:underline"
-          >
-            View main plan
-          </Link>
+          <Button asChild variant="link" size="sm" className="h-auto px-0">
+            <Link to={mainPath} onClick={() => setBranchId(null, { updateUrl: false })}>
+              View main plan
+            </Link>
+          </Button>
         )}
       </div>
     )
@@ -83,25 +91,30 @@ export function EntityBranchBanner({
 
   const target = rowIsMain ? path : `${path}${path.includes('?') ? '&' : '?'}branch=${encodeURIComponent(rowBranchId)}`
   const activeName = activeBranchId ? (byId.get(activeBranchId)?.name ?? 'another branch') : 'main'
+  // The page below this banner reads a row the active branch does not have:
+  // its edit form cannot save there (AU-1 / PL-2). This is the first thing on
+  // the page and an alert, and the way out is a real button, not an inline link.
   return (
     <div
-      role="status"
-      className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-warning/50 bg-warning-soft px-3 py-2 text-body-sm text-warning"
+      role="alert"
+      className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-card border border-warning/50 bg-warning-soft px-3 py-2 text-body-sm text-warning"
       data-testid="entity-branch-banner"
     >
-      <span>
+      <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
+      <span className="min-w-0 flex-1">
         This {noun} lives on{' '}
         <span className="font-medium">{rowIsMain ? 'the main plan' : `branch ${rowBranch.name}`}</span>
-        {rowIsMain ? '' : ` (${rowBranch.status.replace(/_/g, ' ')})`}; you are viewing{' '}
+        {rowIsMain ? '' : ` (${STATUS_LABEL[rowBranch.status]})`}; you are viewing{' '}
         <span className="font-medium">{activeName}</span>.
       </span>
-      <Link
-        to={target}
-        onClick={() => setBranchId(rowIsMain ? null : rowBranchId, { updateUrl: false })}
-        className="font-medium underline-offset-2 hover:underline"
-      >
-        {rowIsMain ? 'Switch to main' : `Switch to ${rowBranch.name}`}
-      </Link>
+      <Button asChild size="sm">
+        <Link
+          to={target}
+          onClick={() => setBranchId(rowIsMain ? null : rowBranchId, { updateUrl: false })}
+        >
+          {rowIsMain ? 'Switch to main' : `Switch to ${rowBranch.name}`}
+        </Link>
+      </Button>
     </div>
   )
 }

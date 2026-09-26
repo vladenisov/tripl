@@ -58,7 +58,7 @@ describe('buildEventsCsvColumns', () => {
   it('mirrors the column picker — a hidden column is not exported', () => {
     const headers = columns({ hideOwner: true, hideTags: true }).map(col => col.header)
 
-    expect(headers).toEqual(['Event', 'Title', 'Type', 'Status', 'Reviewed', 'Last seen'])
+    expect(headers).toEqual(['Event', 'Title', 'Type', 'Status', 'Verified', 'Last seen'])
   })
 
   // tripl-kjhi.3: the title has no column of its own in the table (it renders

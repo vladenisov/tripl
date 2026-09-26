@@ -62,9 +62,26 @@ describe('EventsToolbar filter bar (DS-15)', () => {
   it('reads each filter as "{Label}: {value}" and offers "Clear filters" only when one is set', () => {
     renderToolbar()
 
-    expect(screen.getByRole('combobox', { name: /^Activity filter/ })).toHaveTextContent('Activity:any')
-    expect(screen.getByRole('button', { name: 'Status filter' })).toHaveTextContent('Status:any')
+    expect(screen.getByRole('combobox', { name: /^Activity filter/ })).toHaveTextContent('Activity:Any')
+    expect(screen.getByRole('button', { name: 'Status filter' })).toHaveTextContent('Status:Any')
     expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull()
+  })
+
+  it('counts a search as something to clear (EV-16)', () => {
+    const onClearFilters = vi.fn()
+    renderToolbar({ search: 'checkout', onClearFilters })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(onClearFilters).toHaveBeenCalledTimes(1)
+  })
+
+  it('folds the chips behind a "Filters (n)" toggle for phones (EV-1)', () => {
+    renderToolbar({ filterSilentDays: 7, filterReviewed: true })
+
+    const toggle = screen.getByRole('button', { name: 'Filters (2)' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('clears every filter from the bar', () => {
@@ -83,10 +100,12 @@ describe('EventsToolbar filter bar (DS-15)', () => {
 })
 
 describe('EventsToolbar reviewed filter (tripl-invv)', () => {
-  it('offers a reviewed filter so the flag "Mark reviewed" writes can be isolated', () => {
+  it('offers a verified filter so the flag "Mark as verified" writes can be isolated', () => {
     renderToolbar()
 
-    expect(screen.getByRole('combobox', { name: /^Reviewed filter/ })).toBeInTheDocument()
+    // "Verified", so it cannot be read as the In review status (JR-27).
+    expect(screen.getByRole('combobox', { name: /^Verified filter/ })).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: /^Reviewed filter/ })).toBeNull()
   })
 })
 
@@ -164,13 +183,13 @@ describe('EventsToolbar filters that came from a link (EVT-35)', () => {
 
     const trigger = screen.getByRole('button', { name: 'Status filter' })
     expect(trigger).toHaveTextContent(/Draft, Live/)
-    expect(trigger).not.toHaveTextContent(/any/)
+    expect(trigger).not.toHaveTextContent(/Any/)
   })
 
   it('shows a silent-days value no preset names', () => {
     renderToolbar({ filterSilentDays: 3 })
 
-    expect(screen.getByRole('combobox', { name: /^Activity filter/ })).toHaveTextContent(/Silent > 3d/)
+    expect(screen.getByRole('combobox', { name: /^Activity filter/ })).toHaveTextContent(/No events for 3\+ days/)
   })
 })
 
@@ -188,10 +207,10 @@ describe('EventsToolbar status multi-select (EVT-35)', () => {
     fireEvent.keyDown(screen.getByRole('button', { name: 'Status filter' }), { key: 'Enter' })
   }
 
-  it('reads "any" with nothing ticked, the default that hides archived', async () => {
+  it('reads "Any" with nothing ticked, the default that hides archived', async () => {
     renderToolbar()
 
-    expect(screen.getByRole('button', { name: 'Status filter' })).toHaveTextContent(/any/)
+    expect(screen.getByRole('button', { name: 'Status filter' })).toHaveTextContent(/Any/)
     openStatusMenu()
     expect(await screen.findByRole('menuitemcheckbox', { name: 'Any status' })).toHaveAttribute(
       'aria-checked',
@@ -239,12 +258,12 @@ describe('EventsToolbar status multi-select (EVT-35)', () => {
 })
 
 describe('EventsToolbar status filter on a narrowing tab (EVT-35)', () => {
-  it('names the archived tab default instead of reading "any"', async () => {
+  it('names the archived tab default instead of reading "Any"', async () => {
     renderToolbar({ filterStatuses: [], tabDefaultStatuses: ['archived'] })
 
     const trigger = screen.getByRole('button', { name: 'Status filter' })
     expect(trigger).toHaveTextContent(/Archived/)
-    expect(trigger).not.toHaveTextContent(/any/)
+    expect(trigger).not.toHaveTextContent(/Any/)
 
     fireEvent.keyDown(trigger, { key: 'Enter' })
     expect(await screen.findByRole('menuitemcheckbox', { name: 'Archived' })).toHaveAttribute(

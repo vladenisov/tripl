@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -17,6 +18,16 @@ BranchTransitionAction = Literal[
     "reopen",
     "close",
 ]
+
+
+# A new branch's name reads like a ref everywhere it appears (the switcher,
+# ``?branch=`` links): a letter or digit first, then letters, digits and
+# ``- _ / .``, at most 64 characters. Mirrors ``branchNameProblem`` in the
+# frontend's branchMeta.ts, which only explains it earlier (PL-5). The 64 is
+# checked in the validator rather than as the field's ``max_length``, which
+# stays the column width (see below).
+BRANCH_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9/_.-]*")
+BRANCH_NAME_MAX = 64
 
 
 class PlanBranchCreate(BaseModel):
@@ -39,6 +50,15 @@ class PlanBranchCreate(BaseModel):
             raise ValueError("Branch name is required")
         if normalized.lower() == "main":
             raise ValueError("'main' is reserved for the live plan")
+        if len(normalized) > BRANCH_NAME_MAX:
+            raise ValueError(f"Branch name must be at most {BRANCH_NAME_MAX} characters")
+        if not BRANCH_NAME_RE.fullmatch(normalized):
+            if any(ch.isspace() for ch in normalized):
+                raise ValueError("Branch names cannot contain spaces")
+            raise ValueError(
+                "Branch name must start with a letter or number and use only "
+                "letters, numbers and - _ / ."
+            )
         return normalized
 
 

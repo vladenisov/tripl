@@ -60,7 +60,7 @@ describe('BulkActionBar select-all-matching (tripl-7l83.11)', () => {
       isSelectingAll: true,
     })
     expect(screen.getByRole('button', { name: 'Selecting…' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: /Mark reviewed/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Mark as verified/ })).toBeDisabled()
   })
 
   it('renders nothing when the selection is empty', () => {

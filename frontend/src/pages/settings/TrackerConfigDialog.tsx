@@ -6,6 +6,7 @@ import { ApiError } from '@/api/client'
 import { trackerConfigApi } from '@/api/trackerConfig'
 import { useAuth } from '@/components/auth-context'
 import { ErrorState } from '@/components/error-state'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -175,7 +176,16 @@ export function TrackerConfigDialog({ slug, open, onOpenChange }: TrackerConfigD
             onRetry={() => void configQuery.refetch()}
           />
         ) : (
-          <p className="py-4 text-body text-muted-foreground">Loading tracker…</p>
+          // The form's shape while it loads, not a sentence (#237 AU-43).
+          <div role="status" className="space-y-4 py-4">
+            <span className="sr-only">Loading tracker…</span>
+            {[0, 1, 2].map(index => (
+              <div key={index} className="space-y-1.5">
+                <Skeleton className="h-3 w-24" />
+                <Skeleton className="h-8 w-full" />
+              </div>
+            ))}
+          </div>
         )}
       </DialogContent>
     </Dialog>

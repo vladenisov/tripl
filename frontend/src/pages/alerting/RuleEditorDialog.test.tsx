@@ -10,6 +10,8 @@ import type { AlertDestination } from '@/types'
 import { defaultRuleForm, type RuleFormState } from './constants'
 import { RuleEditorDialog } from './RuleEditorDialog'
 
+const COOLDOWN_LABEL = /re-alert the same scope for/
+
 function makeDestination(overrides: Partial<AlertDestination> = {}): AlertDestination {
   return {
     id: 'dest-1',
@@ -53,20 +55,28 @@ function Harness({
   initial = { ...defaultRuleForm(), name: 'Checkout drops' },
   onSubmit,
   error = null,
+  destinationId: initialDestinationId = 'dest-1',
+  destinations = [makeDestination()],
+  guidedStep = false,
 }: {
   initial?: RuleFormState
   onSubmit: (form: RuleFormState) => void
   error?: unknown
+  destinationId?: string
+  destinations?: AlertDestination[]
+  guidedStep?: boolean
 }) {
   const [ruleForm, setRuleForm] = useState(initial)
+  const [destinationId, setDestinationId] = useState(initialDestinationId)
   return (
     <RuleEditorDialog
       open
       onClose={() => {}}
       slug="demo"
-      destinations={[makeDestination()]}
-      destinationId="dest-1"
-      onDestinationIdChange={() => {}}
+      destinations={destinations}
+      destinationId={destinationId}
+      onDestinationIdChange={setDestinationId}
+      guidedStep={guidedStep}
       isEditing={false}
       ruleForm={ruleForm}
       setRuleForm={setRuleForm}
@@ -96,7 +106,7 @@ describe('RuleEditorDialog — numbers can be cleared and are checked (ALR-16)',
     const onSubmit = vi.fn()
     renderDialog({ onSubmit })
 
-    const cooldown = screen.getByLabelText('Cooldown minutes')
+    const cooldown = screen.getByLabelText(COOLDOWN_LABEL)
     fireEvent.change(cooldown, { target: { value: '' } })
     expect(cooldown).toHaveValue(null)
 
@@ -111,11 +121,133 @@ describe('RuleEditorDialog — numbers can be cleared and are checked (ALR-16)',
     const onSubmit = vi.fn()
     renderDialog({ onSubmit })
 
-    fireEvent.change(screen.getByLabelText('Cooldown minutes'), { target: { value: '30' } })
+    fireEvent.change(screen.getByLabelText(COOLDOWN_LABEL), { target: { value: '30' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 
     expect(onSubmit).toHaveBeenCalledTimes(1)
-    expect(onSubmit.mock.calls[0]![0]).toMatchObject({ cooldown_minutes: '30' })
+    // The default cooldown is a day, shown as "1 days"; 30 of that unit is
+    // 30 days in minutes (AL-6).
+    expect(onSubmit.mock.calls[0]![0]).toMatchObject({ cooldown_minutes: String(30 * 1440) })
+  })
+})
+
+describe('RuleEditorDialog — cooldown in human units (AL-6)', () => {
+  it('shows 1440 minutes as 1 day, not as a number to divide', () => {
+    renderDialog({ onSubmit: vi.fn() })
+
+    expect(screen.getByLabelText(COOLDOWN_LABEL)).toHaveValue(1)
+    expect(screen.getByRole('combobox', { name: 'Cooldown unit' })).toHaveTextContent('days')
+  })
+
+  it('keeps an odd number of minutes in minutes', () => {
+    renderDialog({ onSubmit: vi.fn(), initial: { ...defaultRuleForm(), name: 'x', cooldown_minutes: '45' } })
+
+    expect(screen.getByLabelText(COOLDOWN_LABEL)).toHaveValue(45)
+    expect(screen.getByRole('combobox', { name: 'Cooldown unit' })).toHaveTextContent('minutes')
+  })
+})
+
+describe('RuleEditorDialog — thresholds say what they mean (AL-2)', () => {
+  it('starts a new rule at 30%, so a partial drop can alert', () => {
+    renderDialog({ onSubmit: vi.fn() })
+
+    expect(screen.getByLabelText('Alert when the change is at least')).toHaveValue(30)
+    expect(screen.queryByText(/Drops will only alert when volume falls to zero/)).toBeNull()
+  })
+
+  it('warns, without blocking, when a drop rule could only fire at zero volume', () => {
+    const onSubmit = vi.fn()
+    renderDialog({ onSubmit })
+
+    fireEvent.change(screen.getByLabelText('Alert when the change is at least'), { target: { value: '100' } })
+
+    expect(screen.getByText(/Drops will only alert when volume falls to zero/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('RuleEditorDialog — destination (AL-3)', () => {
+  it('keeps Create enabled without a destination and names the missing field on submit', async () => {
+    const onSubmit = vi.fn()
+    renderDialog({ onSubmit, destinationId: '' })
+
+    const create = screen.getByRole('button', { name: 'Create' })
+    expect(create).toBeEnabled()
+    fireEvent.click(create)
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(screen.getByText('Pick a destination.')).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Destination' })).toHaveAttribute('aria-invalid', 'true')
+  })
+})
+
+describe('RuleEditorDialog — one validation timing (AL-5)', () => {
+  it('names an emptied name once the field is left, before any submit', () => {
+    renderDialog({ onSubmit: vi.fn(), initial: defaultRuleForm() })
+
+    const name = screen.getByLabelText('Name')
+    expect(name).not.toHaveAttribute('aria-invalid')
+    fireEvent.blur(name)
+
+    expect(name).toHaveAttribute('aria-invalid', 'true')
+    expect(name).toHaveAccessibleDescription('Required')
+  })
+
+  it('names an emptied cooldown once the field is left', () => {
+    renderDialog({ onSubmit: vi.fn() })
+
+    const cooldown = screen.getByLabelText(COOLDOWN_LABEL)
+    fireEvent.change(cooldown, { target: { value: '' } })
+    fireEvent.blur(cooldown)
+
+    expect(cooldown).toHaveAccessibleDescription(/Enter a number/)
+  })
+})
+
+describe('RuleEditorDialog — what / when / where (AL-1)', () => {
+  it('orders the steps so filters sit with the signals, and hides the templates', () => {
+    renderDialog({ onSubmit: vi.fn() })
+
+    const headings = screen.getAllByRole('heading', { level: 3 }).map(heading => heading.textContent)
+    expect(headings.slice(0, 3)).toEqual(['1What to watch', '2When', '3Where'])
+    // Filters live under "What to watch".
+    const what = screen.getByRole('region', { name: /What to watch/ })
+    expect(within(what).getByRole('button', { name: /Add filter/ })).toBeInTheDocument()
+    // The two template editors are collapsed until asked for.
+    expect(screen.queryByRole('combobox', { name: 'Message template' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Customize message/ }))
+    expect(screen.getByRole('combobox', { name: 'Message template' })).toBeInTheDocument()
+  })
+
+  it('says in one sentence what Create will set up', () => {
+    renderDialog({ onSubmit: vi.fn() })
+
+    expect(screen.getByText(/^Sends to TG when .* spikes or drops by at least 30%, then waits 1 day/))
+      .toBeInTheDocument()
+  })
+
+  it('does not ask for a scan on a rule that only watches metrics (JR-15)', () => {
+    renderDialog({
+      onSubmit: vi.fn(),
+      initial: {
+        ...defaultRuleForm(),
+        name: 'Revenue',
+        include_project_total: false,
+        include_event_types: false,
+        include_events: false,
+        include_metrics: true,
+      },
+    })
+
+    expect(screen.queryByLabelText('Scan')).toBeNull()
+    expect(screen.getByText(/not tied to a scan/)).toBeInTheDocument()
+  })
+
+  it('says it is the last guided step when opened from guided setup (AL-34)', () => {
+    renderDialog({ onSubmit: vi.fn(), guidedStep: true })
+
+    expect(screen.getByText('Step 3 of 3')).toBeInTheDocument()
   })
 })
 
@@ -182,6 +314,9 @@ describe('RuleEditorDialog — scopes (ALR-15)', () => {
     })
 
     expect(screen.getByRole('group', { name: 'Signals' })).toHaveAccessibleDescription(/signal kind/)
+    // Two groups, in words a PM knows (AL-38).
+    expect(screen.getByText('Volume changes in')).toBeInTheDocument()
+    expect(screen.getByText('Also alert on')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     expect(onSubmit).not.toHaveBeenCalled()
   })
@@ -206,7 +341,7 @@ describe('RuleEditorDialog — server errors sit beside their fields (ALR-8)', (
     error.fields = [{ loc: ['body', 'cooldown_minutes'], msg: 'Value error, too short', type: 'value_error' }]
     renderDialog({ onSubmit: vi.fn(), error })
 
-    const cooldown = screen.getByLabelText('Cooldown minutes')
+    const cooldown = screen.getByLabelText(COOLDOWN_LABEL)
     expect(cooldown).toHaveAttribute('aria-invalid', 'true')
     expect(cooldown).toHaveAccessibleDescription('too short')
     expect(screen.queryByText(/Value error/)).toBeNull()

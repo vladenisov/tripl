@@ -46,7 +46,8 @@ export function SurfCard({
   children,
 }: {
   title: string
-  subtitle?: string
+  /** One line under the title; may carry a link to where the thing is defined. */
+  subtitle?: ReactNode
   children: ReactNode
 }) {
   // The kit Panel's geometry (DS-4): 10px radius, a 16px header gutter that

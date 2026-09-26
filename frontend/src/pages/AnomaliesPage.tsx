@@ -1,26 +1,38 @@
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Activity, ArrowDown, ArrowUp, Settings2 } from 'lucide-react'
+import { Activity, ArrowDown, ArrowUp, BellRing, CalendarPlus, ExternalLink, MoreHorizontal, Play, Settings2 } from 'lucide-react'
 import { scansApi } from '@/api/scans'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Panel } from '@/components/settings/kit'
 import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
+import { TermHint, TERM_HINTS } from '@/components/term-hint'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { FilterBar, FilterSelect } from '@/components/ui/filter-bar'
 import { Dot } from '@/components/primitives/dot'
-import { LoadingState } from '@/components/primitives/loading-state'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
+import { SectionSkeleton, StatValueSkeleton } from '@/components/states'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
-import { formatNumber } from '@/lib/format'
-import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
+import { APP_LOCALE, formatNumber } from '@/lib/format'
+import { formatSignalEffect, formatSignalEffectDetail, getMonitoringPath } from '@/lib/monitoring'
+import { getAlertingPath } from '@/lib/navigation'
+import { alertInboxStatusLabel } from '@/lib/alertStatus'
+import { useCanWriteProject } from '@/lib/permissions'
 import {
   DEFAULT_MAGNITUDE_LEVEL,
   MAGNITUDE_PRESETS,
   type MagnitudeLevel,
   compareSignalsByMagnitude,
+  magnitudePresetLabel,
   relativeEffect,
+  signalMagnitudeWord,
 } from '@/lib/signalMagnitude'
 import { signalDirectionColor, signalDirectionTone } from '@/lib/statusLexicon'
 import { formatSignalValues } from '@/lib/signalMetricFormat'
@@ -33,7 +45,14 @@ import {
 import type { MonitoringSignal } from '@/types'
 import { scansKey } from '@/lib/queryKeys'
 
-const ANOMALY_GRID = 'grid grid-cols-[1.7fr_1fr_72px_96px] items-center gap-3 px-4'
+// Change sits right after the scope, the one figure a reader scans for (MO-19).
+// Below `sm` the same four cells fold into a two-line card — scope and change on
+// the first line, values and time on the second — instead of a 640px table in a
+// sideways scroller that hid "how bad" and "how recent" off-screen (MO-20).
+// The last column is the row's action menu (MO-4). On a phone it spans both
+// lines of the two-line card, so the other cells keep their two columns.
+const ANOMALY_GRID =
+  'grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-0.5 px-4 sm:grid-cols-[minmax(0,1.7fr)_88px_minmax(0,1fr)_120px_28px]'
 
 // ───────── Magnitude filter ─────────
 //
@@ -66,8 +85,8 @@ function isLinkableScope(signal: MonitoringSignal): boolean {
  *
  * Words and not a shimmer bar. `animate-pulse` is this app's Skeleton
  * (`components/ui/skeleton.tsx`), and OverviewPage uses the identical `h-3 w-32`
- * one to mean "fetching" — while the table here is already gated on
- * `signalsQuery.isLoading` and a rendered row's name is server-resolved. So the
+ * one to mean "fetching" — while the table here is already gated on the
+ * signals query's first load and a rendered row's name is server-resolved. So the
  * pulse could only ever mean "will never resolve" and read as "still arriving":
  * the operator waits and refreshes on a terminal state. `role="img"` stays so
  * the ref remains the accessible name rather than being replaced by the
@@ -256,6 +275,14 @@ export default function AnomaliesPage() {
     allFiltered && activeScanId !== ALL_SCANS && (scanTotals.get(activeScanId) ?? 0) === 0
   const activeScanLabel =
     activeScanId === CATALOG_METRICS ? 'Catalog metrics' : (scanNames.get(activeScanId) ?? 'this scan')
+  // Nothing open AND nothing that could ever open anything: no scan collects
+  // volume on a schedule (a Catalog only scan has no interval). The reassuring
+  // "No anomalies right now" was a false all-clear for a project that has not
+  // started monitoring (MO-23). Decided only once the scan list has loaded.
+  const monitoringIsOff =
+    isEmpty && scansQuery.isSuccess && !(scansQuery.data ?? []).some((scan) => scan.interval)
+  // First load: a skeleton of the stat strip and the table, never zeros.
+  const isFirstLoad = signalsQuery.isPending && !signalsQuery.isError
 
   return (
     <PageContainer
@@ -264,6 +291,19 @@ export default function AnomaliesPage() {
       <PageHeader
         eyebrow="Observe"
         title="Anomalies"
+        titleAddon={slug && <TermHint slug={slug} {...TERM_HINTS.scopes} />}
+        // Two queues that looked alike (JR-6): say which one owes work.
+        description={
+          slug ? (
+            <>
+              Signals are what detection found. Incidents, in{' '}
+              <Link to={getAlertingPath(slug)} style={{ color: 'var(--accent)' }}>
+                Alerting
+              </Link>
+              , are the ones an alert rule routed to your team; triage happens there.
+            </>
+          ) : undefined
+        }
         actions={
           slug ? (
             <Button asChild variant="outline" size="sm">
@@ -277,7 +317,9 @@ export default function AnomaliesPage() {
       />
 
       {/* Rollup */}
-      {signalsQuery.isError ? (
+      {isFirstLoad ? (
+        <SectionSkeleton variant="table" rows={5} label="Loading anomalies…" />
+      ) : signalsQuery.isError ? (
         <ErrorState
           title="Anomalies unavailable"
           error={signalsQuery.error}
@@ -287,12 +329,15 @@ export default function AnomaliesPage() {
           retryLabel="Retry"
           compact
         />
-      ) : (
+      ) : monitoringIsOff ? null : (
+        // Hidden when monitoring is off: three zeros say nothing there (MO-23).
         <MiniStatStrip boxed className={isEmpty ? 'opacity-60' : undefined}>
+          {/* Neutral at zero, not green: an empty list is not praise (MO-17).
+              A pending value is a skeleton, never a "0" (DS-25). */}
           <MiniStat
             label="Open signals"
-            value={signalsQuery.data ? formatNumber(visibleCount) : '—'}
-            tone={visibleCount > 0 ? 'danger' : 'success'}
+            value={signalsQuery.data ? formatNumber(visibleCount) : <StatValueSkeleton />}
+            tone={visibleCount > 0 ? 'danger' : 'neutral'}
             pulse={visibleCount > 0}
             delta={
               signalsQuery.data && hiddenCount > 0 ? `of ${formatNumber(total)}` : undefined
@@ -302,26 +347,51 @@ export default function AnomaliesPage() {
               only the delta — so the emphasis never rendered (MON-42). */}
           <MiniStat
             label="Spikes"
-            value={signalsQuery.data ? formatNumber(spikes) : '—'}
+            value={signalsQuery.data ? formatNumber(spikes) : <StatValueSkeleton />}
             valueTone={spikes > 0 ? signalDirectionTone('spike') : 'neutral'}
           />
           <MiniStat
             label="Drops"
-            value={signalsQuery.data ? formatNumber(drops) : '—'}
+            value={signalsQuery.data ? formatNumber(drops) : <StatValueSkeleton />}
             valueTone={drops > 0 ? signalDirectionTone('drop') : 'neutral'}
           />
         </MiniStatStrip>
       )}
 
       {/* Signals table — or a centered empty state when nothing is firing */}
-      {!signalsQuery.isError &&
+      {!signalsQuery.isError && !isFirstLoad &&
         (isEmpty ? (
           <div className="flex flex-1 items-center justify-center">
-            <EmptyState
-              icon={Activity}
-              title="No anomalies right now"
-              description="When detection flags a spike or drop against the learned baseline, it shows up here. Tune sensitivity in detection settings."
-            />
+            {monitoringIsOff ? (
+              <EmptyState
+                icon={Activity}
+                title="Monitoring isn’t running yet"
+                description="Anomalies appear once a scan collects volume. Connect a source and run a scan with Catalog + monitoring."
+                action={
+                  slug ? (
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <Button asChild size="sm">
+                        <Link to={`/p/${slug}/scans`} className="no-underline">
+                          <Play aria-hidden="true" />
+                          Run a scan
+                        </Link>
+                      </Button>
+                      <Button asChild variant="outline" size="sm">
+                        <Link to={`/p/${slug}/settings/monitoring`} className="no-underline">
+                          Detection settings
+                        </Link>
+                      </Button>
+                    </div>
+                  ) : undefined
+                }
+              />
+            ) : (
+              <EmptyState
+                icon={Activity}
+                title="No anomalies right now"
+                description="When detection flags a spike or drop against the learned baseline, it shows up here. Tune sensitivity in detection settings."
+              />
+            )}
           </div>
         ) : (
           <Panel
@@ -358,20 +428,23 @@ export default function AnomaliesPage() {
                     className="max-w-[18rem]"
                   />
                 )}
+                {/* Each level names its bar in the % the rows show, so why a
+                    row is or is not "Major" reads off the control (MO-3). */}
                 <FilterSelect
                   label="Magnitude"
                   value={level}
                   onValueChange={(next) => setLevel(toMagnitudeLevel(next))}
                   anyValue="all"
                   anyLabel="All"
-                  options={MAGNITUDE_PRESETS.map((preset) => ({ value: preset.id, label: preset.label }))}
+                  options={MAGNITUDE_PRESETS.map((preset) => ({
+                    value: preset.id,
+                    label: magnitudePresetLabel(preset),
+                  }))}
                 />
               </FilterBar>
             }
           >
-            {signalsQuery.isLoading ? (
-              <LoadingState className="px-4 py-6 text-body-sm" />
-            ) : allFiltered ? (
+            {allFiltered ? (
               <div className="px-4 py-10">
                 <EmptyState
                   icon={Activity}
@@ -413,21 +486,27 @@ export default function AnomaliesPage() {
                 />
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <div role="table" aria-label="Anomaly signals" className="min-w-[640px]">
+              <div>
+                <div role="table" aria-label="Anomaly signals">
                   <div role="rowgroup">
+                    {/* No header row on phones: each row is a two-line card
+                        there, and every cell reads on its own (MO-20). */}
                     <div
                       role="row"
-                      className={`${ANOMALY_GRID} border-b py-2 micro-label`}
+                      className={`${ANOMALY_GRID} hidden border-b py-2 micro-label sm:grid`}
                       style={{ borderColor: 'var(--border-subtle)', color: 'var(--fg-faint)' }}
                     >
                       <span role="columnheader">Anomaly</span>
-                      <span role="columnheader">Actual vs expected</span>
-                      <span role="columnheader" className="text-right">Severity</span>
-                      {/* The bucket's START, which is what the row carries — on
-                          a daily or weekly scan that is days before detection,
-                          so "When" over-promised (MON-40). */}
-                      <span role="columnheader" className="text-right">Bucket</span>
+                      <span role="columnheader" className="text-right">Change</span>
+                      <span role="columnheader" className="text-right">Actual / expected</span>
+                      {/* The cell leads with the bucket's absolute START (its
+                          tooltip says so) and adds when the detector found it:
+                          one absolute and one relative time, not two relative
+                          ones that read as a contradiction (MON-40, MO-21). */}
+                      <span role="columnheader" className="text-right">When</span>
+                      <span role="columnheader">
+                        <span className="sr-only">Actions</span>
+                      </span>
                     </div>
                   </div>
                   <div role="rowgroup">
@@ -456,6 +535,25 @@ function signalRowKey(signal: MonitoringSignal): string {
   return `${signal.scan_config_id ?? 'metric'}:${signal.scope_type}:${signal.scope_ref}:${signal.bucket}`
 }
 
+/**
+ * A bucket's start as a short absolute time — "Today 18:00", "Sep 25, 18:00" —
+ * which, unlike "1h ago", cannot read as contradicting "found 16m ago" under
+ * it (MO-21).
+ */
+function formatShortWhen(iso: string, now: Date = new Date()): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  const time = date.toLocaleTimeString(APP_LOCALE, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  })
+  if (date.toDateString() === now.toDateString()) return `Today ${time}`
+  const dayOptions: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
+  if (date.getFullYear() !== now.getFullYear()) dayOptions.year = 'numeric'
+  return `${date.toLocaleDateString(APP_LOCALE, dayOptions)}, ${time}`
+}
+
 /** The viewer's own zone, named, since the bucket is shown in it. */
 function localTimeZone(): string {
   try {
@@ -482,10 +580,18 @@ function AnomalyRow({
   const isDrop = signal.direction === 'drop'
   const DirIcon = isDrop ? ArrowDown : ArrowUp
   const severityColor = signalDirectionColor(signal.direction)
+  const effectDetail = formatSignalEffectDetail(signal)
   const href = slug && isLinkableScope(signal) ? getMonitoringPath(slug, signal) : undefined
+  // The "Spike on" / "Drop on" prefix is visual on sm+ only: on a phone the
+  // arrow already carries the direction and the words cost the scope name
+  // most of its width (MO-20). `sr-only` rather than `hidden` keeps it in the
+  // link's accessible name at every width, since the arrow is aria-hidden.
+  // The separating space sits outside the span: inside it, the name ran the
+  // words together ("Spike onMetric · …"). Out of flow on phones, the prefix
+  // leaves that space at the line start, where it collapses away.
   const text = (
     <>
-      {isDrop ? 'Drop' : 'Spike'} on{' '}
+      <span className="sr-only sm:not-sr-only">{isDrop ? 'Drop' : 'Spike'} on</span>{' '}
       {label ?? <UnnamedScope signal={signal} />}
     </>
   )
@@ -502,18 +608,21 @@ function AnomalyRow({
       style={{ borderColor: 'var(--border-subtle)' }}
     >
       <span role="cell" className="flex min-w-0 items-center gap-2">
-        <Dot tone={signalDirectionTone(signal.direction)} pulse size={7} />
+        {/* Static in a list: with every row pulsing, a flooded project
+            shimmered and motion stopped meaning "new" (MO-18). */}
+        <Dot tone={signalDirectionTone(signal.direction)} size={7} />
         <DirIcon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" style={{ color: severityColor }} />
         {href ? (
           <Link
             to={href}
+            data-anomaly-label=""
             className={`${textClass} no-underline outline-none after:absolute after:inset-0 after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-[var(--accent)]`}
             style={{ color: 'var(--fg)' }}
           >
             {text}
           </Link>
         ) : (
-          <span className={textClass} style={{ color: 'var(--fg)' }}>
+          <span data-anomaly-label="" className={textClass} style={{ color: 'var(--fg)' }}>
             {text}
           </span>
         )}
@@ -523,29 +632,61 @@ function AnomalyRow({
             // `relative` lifts it over the row link so its tooltip still shows.
             className="relative hidden shrink-0 whitespace-nowrap text-micro sm:inline"
             style={{ color: 'var(--fg-faint)' }}
-            title="This scope fired as part of a project-total spike or drop on the same bucket"
+            title={`This scope fired as part of a project-total ${isDrop ? 'drop' : 'spike'} on the same bucket`}
           >
-            · part of total
+            {/* Says what it means; "part of total" read as a data annotation
+                (MO-22). A child is keyed to its parent by direction too, so a
+                drop child sits under a total drop, never a spike. */}
+            · within total {isDrop ? 'drop' : 'spike'}
           </span>
         )}
+        {/* The incident a rule routed this signal into, so the queue that
+            owes work is one click away (JR-6). `relative` lifts it over the
+            row link. */}
+        {slug && signal.incident_id && (
+          <Link
+            to={getAlertingPath(slug, { incidentId: signal.incident_id })}
+            className="relative shrink-0 whitespace-nowrap text-micro no-underline hover:underline"
+            style={{ color: 'var(--accent)' }}
+          >
+            Incident
+            {signal.incident_status ? ` · ${alertInboxStatusLabel(signal.incident_status).toLowerCase()}` : ''}
+          </Link>
+        )}
       </span>
-      {/* Figures and relative times in sans with tabular digits: they are
-          numbers, not code (DS-17). */}
-      <span role="cell" className="tnum truncate text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      {/* The change first, in the direction colour: "+203%" where the row used
+          to print z=40.7 (MO-2). The magnitude word rides underneath and the
+          z-score in the tooltip, for whoever wants them (JR-31). Figures in
+          sans with tabular digits: numbers, not code (DS-17). `relative` lifts
+          the figure over the row link so its tooltip shows. */}
+      <span role="cell" className="flex flex-col items-end text-right">
+        <span
+          className="tnum relative text-body-sm font-semibold"
+          style={{ color: severityColor }}
+          title={effectDetail}
+        >
+          {formatSignalEffect(signal)}
+        </span>
+        <span className="hidden text-micro sm:block" style={{ color: 'var(--fg-faint)' }}>
+          {signalMagnitudeWord(signal)}
+        </span>
+      </span>
+      <span
+        role="cell"
+        className="tnum truncate text-caption sm:text-right"
+        style={{ color: 'var(--fg-subtle)' }}
+      >
         {formatSignalValues(signal)}
       </span>
-      <span role="cell" className="tnum text-right text-caption" style={{ color: severityColor }}>
-        {formatSignalSeverity(signal)}
-      </span>
-      <span role="cell" className="tnum text-right text-micro" style={{ color: 'var(--fg-faint)' }}>
-        {/* `relative` lifts it over the row link, so the absolute time in its
-            tooltip is reachable (MON-40). */}
+      <span role="cell" className="tnum text-right text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        {/* `relative` lifts it over the row link, so the tooltip naming this as
+            the bucket's start is reachable (MON-40). */}
         <time
           dateTime={signal.bucket}
           title={`Bucket starting ${formatTimestamp(signal.bucket)} (${localTimeZone()})`}
           className="relative"
         >
-          {formatRelativeTime(signal.bucket)}
+          {formatShortWhen(signal.bucket)}
         </time>
         {/* When the detector caught it, which can be long after the bucket
             began — an hourly bucket is flagged at the scan after it (MON-40). */}
@@ -554,11 +695,70 @@ function AnomalyRow({
             dateTime={signal.detected_at}
             title={`Detected ${formatTimestamp(signal.detected_at)} (${localTimeZone()})`}
             className="relative block text-micro"
+            style={{ color: 'var(--fg-faint)' }}
           >
-            detected {formatRelativeTime(signal.detected_at)}
+            found {formatRelativeTime(signal.detected_at)}
           </time>
         )}
       </span>
+      <span
+        role="cell"
+        className="relative col-start-3 row-span-2 row-start-1 flex justify-end sm:col-start-auto sm:row-span-1 sm:row-start-auto"
+      >
+        {slug && <SignalActions slug={slug} signal={signal} href={href} />}
+      </span>
     </div>
+  )
+}
+
+/**
+ * The row's action menu (MO-4): open the detail, jump to the alerts it raised,
+ * or start an annotation on its bucket. Mute and "Mark as expected" wait on a
+ * backend action for a single signal.
+ */
+function SignalActions({
+  slug,
+  signal,
+  href,
+}: {
+  slug: string
+  signal: MonitoringSignal
+  href: string | undefined
+}) {
+  const navigate = useNavigate()
+  const canWrite = useCanWriteProject()
+  const iconStyle = { color: 'var(--fg-subtle)' }
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon-sm" aria-label="Signal actions" className="text-fg-muted">
+          <MoreHorizontal aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={6} className="w-[180px]">
+        {href && (
+          <DropdownMenuItem asChild className="text-body-sm">
+            <Link to={href}>
+              <ExternalLink className="h-3.5 w-3.5 shrink-0" style={iconStyle} /> Open detail
+            </Link>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem asChild className="text-body-sm">
+          <Link to={getAlertingPath(slug, { incidentId: signal.incident_id })}>
+            <BellRing className="h-3.5 w-3.5 shrink-0" style={iconStyle} /> View alerts
+          </Link>
+        </DropdownMenuItem>
+        {/* The detail page's banner Annotate, from here: its Volume tab with
+            the form prefilled on this bucket (JR-5). */}
+        {href && canWrite && (
+          <DropdownMenuItem
+            className="text-body-sm"
+            onSelect={() => navigate(href, { state: { annotateBucket: signal.bucket } })}
+          >
+            <CalendarPlus className="h-3.5 w-3.5 shrink-0" style={iconStyle} /> Annotate
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { MoreHorizontal, Plus, Settings2, Ticket } from 'lucide-react'
+import { toast } from 'sonner'
 
 import { planBranchesApi, type PlanBranchListResponse } from '@/api/planBranches'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { ReadOnlyNotice, SectionSkeleton } from '@/components/states'
 import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
 import { Button } from '@/components/ui/button'
@@ -14,6 +15,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useBranchContext } from '@/hooks/useBranch'
 import { useConfirm } from '@/hooks/useConfirm'
 import { useUsersById } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -46,7 +48,30 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
   const canWrite = useCanWriteProject()
   const navigate = useNavigate()
   const { confirm, dialog } = useConfirm()
-  const [createOpen, setCreateOpen] = useState(false)
+  const { branchId: activeBranchId, setBranchId } = useBranchContext()
+  // `?new=1` opens the create dialog on arrival: the branch switcher's "New
+  // branch from main" lands here (PL-13 / JR-11). Followed on change too, for
+  // a switcher click made while this page is already open.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const wantsNew = searchParams.get('new') === '1'
+  const [createOpen, setCreateOpenState] = useState(() => wantsNew && canWrite)
+  const [seenNew, setSeenNew] = useState(wantsNew)
+  if (seenNew !== wantsNew) {
+    setSeenNew(wantsNew)
+    if (wantsNew && canWrite) setCreateOpenState(true)
+  }
+  const setCreateOpen = (open: boolean) => {
+    setCreateOpenState(open)
+    if (!open && searchParams.has('new')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('new')
+      setSearchParams(next, { replace: true })
+    }
+  }
+  // On by default: the next thing after creating a branch is working on it,
+  // and it used to leave you on main with no hint how to start (PL-4 / JR-12).
+  const [switchAfterCreate, setSwitchAfterCreate] = useState(true)
+  const detailRef = useRef<HTMLDivElement>(null)
   const [policyOpen, setPolicyOpen] = useState(false)
   const [trackerOpen, setTrackerOpen] = useState(false)
   const [createName, setCreateName] = useState('')
@@ -68,8 +93,14 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
     meta: SILENT_ERROR_META,
   })
 
-  const selectBranch = (branch: PlanBranchSummary) =>
+  const selectBranch = (branch: PlanBranchSummary) => {
     navigate(`/p/${slug}/settings/branches/${branch.id}`)
+    // Below `lg` the list stacks above the review, so a tap changed content
+    // off-screen (PL-30): bring the review into view.
+    if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1023px)').matches) {
+      requestAnimationFrame(() => detailRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' }))
+    }
+  }
 
   const createMut = useMutation({
     meta: SILENT_ERROR_META,
@@ -87,6 +118,14 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
       setCreateName('')
       setCreateDescription('')
       selectBranch(branch)
+      if (switchAfterCreate) {
+        // The address being left keeps its own branch; the destination (the
+        // branch's review) names none, and the provider keeps this choice.
+        setBranchId(branch.id, { updateUrl: false })
+        toast.success(`Switched to ${branch.name}. Changes you make now stay on this branch until it merges.`)
+      } else {
+        toast.success(`Branch ${branch.name} created`)
+      }
     },
   })
 
@@ -197,7 +236,7 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
         {!canWrite && <ReadOnlyNotice />}
 
         {isLoading ? (
-          <p className="text-body text-muted-foreground">Loading branches…</p>
+          <SectionSkeleton variant="cards" label="Loading branches…" />
         ) : (
           // `minmax(0,1fr)`, not `1fr`: a bare `1fr` track is `minmax(auto,1fr)`,
           // so its MINIMUM is the detail column's min-content width and the
@@ -210,18 +249,23 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
             <BranchList
               items={items}
               selectedId={selected?.id ?? null}
+              activeBranchId={activeBranchId}
               countsByBranch={countsByBranch}
               usersById={usersById}
               onSelect={selectBranch}
             />
-            <BranchDetail
-              slug={slug}
-              branch={selected}
-              notFound={notFound}
-              diff={selectedDiff}
-              diffLoad={selectedDiffLoad}
-              confirm={confirm}
-            />
+            <div ref={detailRef} className="min-w-0 scroll-mt-4">
+              <BranchDetail
+                slug={slug}
+                branch={selected}
+                notFound={notFound}
+                diff={selectedDiff}
+                diffLoad={selectedDiffLoad}
+                confirm={confirm}
+                branches={items}
+                onNewBranch={canWrite ? () => setCreateOpen(true) : undefined}
+              />
+            </div>
           </div>
         )}
       </PageContainer>
@@ -236,6 +280,9 @@ export function BranchesTab({ slug, branchId }: { slug: string; branchId?: strin
         description={createDescription}
         pending={createMut.isPending}
         error={createMut.isError ? getErrorMessage(createMut.error) : null}
+        existingNames={items.map((b) => b.name)}
+        switchAfterCreate={switchAfterCreate}
+        onSwitchAfterCreate={setSwitchAfterCreate}
         onName={setCreateName}
         onDescription={setCreateDescription}
         onOpenChange={setCreateOpen}

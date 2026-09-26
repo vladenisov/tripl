@@ -93,7 +93,7 @@ describe('TopBar mobile nav', () => {
     expect(screen.getByRole('button', { name: 'Open navigation' })).toHaveClass('h-10', 'w-10', 'sm:h-8')
     expect(screen.getByRole('button', { name: 'Notifications' })).toHaveClass('h-9', 'w-9', 'sm:h-8')
     expect(screen.getByRole('button', { name: 'Command palette' })).toHaveClass('h-9', 'sm:h-8')
-    expect(screen.getByRole('button', { name: 'Toggle activity panel' })).toHaveClass('h-9', 'sm:h-8')
+    expect(screen.getByRole('button', { name: 'Toggle activity feed' })).toHaveClass('h-9', 'sm:h-8')
   })
 })
 
@@ -449,5 +449,80 @@ describe('TopBar notifications — scope names (tripl-9tyr, tripl-y4wt)', () => 
 
     expect(await screen.findByText(/1\.2 actual vs 0\.4 expected/)).toBeInTheDocument()
     expect(screen.queryByText(/vs 0 expected/)).toBeNull()
+  })
+})
+
+describe('TopBar naming and phone context (#238 SH-8 / SH-14 / SH-21)', () => {
+  function renderPlain(props: Partial<Parameters<typeof TopBar>[0]> = {}) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <TopBar title="Events" onToggleActivity={() => {}} {...props} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('names the feed toggle "Activity", not "Now"', () => {
+    renderPlain()
+    const toggle = screen.getByRole('button', { name: 'Toggle activity feed' })
+    expect(toggle).toHaveTextContent('Activity')
+    expect(toggle).not.toHaveTextContent('Now')
+  })
+
+  it('shows the project name under the title on phones only', () => {
+    renderPlain({ projectName: 'Demo Project 2' })
+    expect(screen.getByTestId('topbar-project')).toHaveTextContent('Demo Project 2')
+    expect(screen.getByTestId('topbar-project')).toHaveClass('sm:hidden')
+  })
+
+  it('keeps the palette trigger only where the sidebar is a drawer', () => {
+    renderPlain()
+    expect(screen.getByRole('button', { name: 'Command palette' })).toHaveClass('lg:hidden')
+  })
+})
+
+describe('BranchStrip (#243 PL-1)', () => {
+  async function renderStrip(branchId: string | null, setBranchId = vi.fn()) {
+    const { BranchStrip } = await import('./top-bar')
+    const { BranchContext } = await import('./branch-context-internal')
+    const { planBranchesApi } = await import('@/api/planBranches')
+    vi.spyOn(planBranchesApi, 'list').mockResolvedValue({
+      items: [
+        { id: 'main-1', name: 'main', kind: 'main', status: 'merged' },
+        { id: 'b-1', name: 'feature/checkout-funnel', kind: 'working', status: 'ready_for_review' },
+      ],
+      total: 2,
+    } as unknown as Awaited<ReturnType<typeof planBranchesApi.list>>)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BranchContext.Provider value={{ branchId, setBranchId, slug: 'demo' }}>
+          <MemoryRouter>
+            <BranchStrip slug="demo" />
+          </MemoryRouter>
+        </BranchContext.Provider>
+      </QueryClientProvider>,
+    )
+    return setBranchId
+  }
+
+  it('renders nothing on main', async () => {
+    await renderStrip(null)
+    expect(screen.queryByTestId('branch-strip')).toBeNull()
+  })
+
+  it('names the branch, its status and the ways out', async () => {
+    const setBranchId = await renderStrip('b-1')
+    const strip = await screen.findByRole('region', { name: 'Plan branch' })
+    await waitFor(() => expect(strip).toHaveTextContent('feature/checkout-funnel'))
+    expect(strip).toHaveTextContent('Ready for review')
+    expect(screen.getByRole('link', { name: 'Review changes' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/branches/b-1',
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Back to main' }))
+    expect(setBranchId).toHaveBeenCalledWith(null)
   })
 })

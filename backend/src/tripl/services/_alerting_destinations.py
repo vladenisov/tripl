@@ -21,14 +21,17 @@ from tripl.alerting_validation import (
     validate_telegram_chat_id,
 )
 from tripl.core.alert_schedule import next_fire_at
+from tripl.core.event_references import plan_alert_filter_change
 from tripl.crypto import encrypt_value
 from tripl.models.alert_destination import AlertDestination, AlertDestinationType
 from tripl.models.alert_pending_item import AlertPendingItem
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_filter import AlertRuleFilter
 from tripl.models.alert_rule_state import AlertRuleState
+from tripl.models.domain_enums import AlertRuleFilterField
 from tripl.models.event import Event
 from tripl.models.event_type import EventType
+from tripl.models.metric_definition import MetricDefinition
 from tripl.models.project import Project
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.alerting import (
@@ -177,11 +180,14 @@ async def validate_filters(
 ) -> None:
     event_type_ids: set[uuid.UUID] = set()
     event_ids: set[uuid.UUID] = set()
+    metric_ids: set[uuid.UUID] = set()
     for filter_payload in filters:
         if filter_payload.field == "event_type":
             event_type_ids.update(uuid.UUID(value) for value in filter_payload.values)
         elif filter_payload.field == "event":
             event_ids.update(uuid.UUID(value) for value in filter_payload.values)
+        elif filter_payload.field == "metric":
+            metric_ids.update(uuid.UUID(value) for value in filter_payload.values)
 
     if event_type_ids:
         found_ids = set(
@@ -212,6 +218,20 @@ async def validate_filters(
         missing = event_ids - found_ids
         if missing:
             raise HTTPException(status_code=404, detail="Filter event not found")
+
+    if metric_ids:
+        found_ids = set(
+            (
+                await session.execute(
+                    select(MetricDefinition.id).where(
+                        MetricDefinition.project_id == project_id,
+                        MetricDefinition.id.in_(metric_ids),
+                    )
+                )
+            ).scalars()
+        )
+        if metric_ids - found_ids:
+            raise HTTPException(status_code=404, detail="Filter metric not found")
 
 
 async def validate_scan_config(
@@ -547,6 +567,66 @@ async def clear_rule_states(session: AsyncSession, rule_ids: list[uuid.UUID]) ->
     if not rule_ids:
         return
     await session.execute(delete(AlertRuleState).where(AlertRuleState.rule_id.in_(rule_ids)))
+
+
+async def drop_deleted_metric_from_rule_filters(
+    session: AsyncSession, *, project_id: uuid.UUID, metric_id: uuid.UUID
+) -> None:
+    """Take a catalog metric that is being deleted out of every ``metric`` filter.
+
+    The metric counterpart of ``_event_reference_cleanup._apply_alert_filter_changes``
+    and the same policy through the same ``plan_alert_filter_change``: a filter
+    that still names other metrics keeps them; an emptied exclusive filter goes
+    and the rule stays on; an emptied inclusive filter goes and the rule is
+    DISABLED, because dropping the row alone would widen a rule narrowed to one
+    metric to every signal its destination watches.
+
+    Without this the dead id stayed in the filter, and ``validate_filters``
+    re-checks every metric id whenever a rule edit resends its filters — which
+    the rule editor always does — so the rule answered every save with "Filter
+    metric not found" until someone found the orphan by hand.
+
+    Call BEFORE the delete, inside the caller's transaction; adds no commit.
+    """
+    dead_refs = {str(metric_id)}
+    rows = (
+        (
+            await session.execute(
+                select(AlertRuleFilter)
+                .join(AlertRule, AlertRuleFilter.rule_id == AlertRule.id)
+                .join(AlertDestination, AlertRule.destination_id == AlertDestination.id)
+                .where(
+                    AlertDestination.project_id == project_id,
+                    AlertRuleFilter.field == AlertRuleFilterField.metric.value,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    disable_rule_ids: list[uuid.UUID] = []
+    for row in rows:
+        change = plan_alert_filter_change(
+            operator=row.operator, values=row.values or [], removed=dead_refs
+        )
+        if change is None:
+            continue
+        if not change.delete_filter:
+            row.values = change.remaining
+            continue
+        if change.disable_rule:
+            disable_rule_ids.append(row.rule_id)
+        await session.delete(row)
+
+    if disable_rule_ids:
+        for rule in (
+            (await session.execute(select(AlertRule).where(AlertRule.id.in_(disable_rule_ids))))
+            .scalars()
+            .all()
+        ):
+            rule.enabled = False
+    await session.flush()
+    await clear_rule_states(session, disable_rule_ids)
 
 
 async def list_destinations(session: AsyncSession, slug: str) -> list[AlertDestinationResponse]:

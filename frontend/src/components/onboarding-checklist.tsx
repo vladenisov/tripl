@@ -286,7 +286,16 @@ export function OnboardingChecklist({
   return (
     <Panel
       title="Get started"
-      subtitle="Your first run · Plan → Observe → Govern"
+      subtitle={
+        <>
+          Your first run · Plan → Observe → Govern ·{' '}
+          {/* The glossary, for a reader who does not know the words the
+              steps use yet (#238 JR-32). */}
+          <Link to={`/p/${slug}/concepts`} className="text-accent no-underline hover:underline">
+            What is this?
+          </Link>
+        </>
+      }
       right={
         <div className="flex items-center gap-2">
           <Chip tone="info" size="sm">{`${completed} of ${total}`}</Chip>

@@ -7,6 +7,7 @@ import type {
   EventType,
 } from "@/types"
 import { eventsApi } from "@/api/events"
+import { metricsCatalogApi } from "@/api/metricsCatalog"
 import { useActiveBranchId } from "@/hooks/useBranch"
 import { useDebouncedValue } from "@/hooks/useDebouncedValue"
 import { eventNameLabel } from "@/lib/eventName"
@@ -26,7 +27,12 @@ import {
   makeFilterUid,
   type RuleFilterDraft,
 } from "./constants"
-import { eventKey, eventsPickerKey } from "@/lib/queryKeys"
+import {
+  eventKey,
+  eventsPickerKey,
+  metricDefinitionKey,
+  metricsCatalogListKey,
+} from "@/lib/queryKeys"
 
 type PickerOption = { value: string; label: string }
 
@@ -36,6 +42,18 @@ type PickerOption = { value: string; label: string }
 // (tripl-jfm3.106). Anything past this page is reachable by typing, and the
 // footer says how much is hidden rather than truncating silently.
 const EVENT_PAGE_SIZE = 50
+
+// The metric catalog is searched the same way, for the same reason: it has no
+// upper bound either, and the picker only needs the page that matches.
+const METRIC_PAGE_SIZE = 50
+
+/** What a server-searched value picker needs from its option source. */
+type ServerOptions = {
+  options: PickerOption[]
+  selectedLabels: [string, string][]
+  loading: boolean
+  hiddenCount: number
+}
 
 export function FilterEditor({
   filters,
@@ -87,7 +105,7 @@ export function FilterEditor({
       </div>
       {filters.length === 0 ? (
         <p className="text-body-sm text-muted-foreground">
-          No filters. Alerts match all anomalies that pass the basic thresholds above.
+          No filters: every signal ticked above can alert.
         </p>
       ) : (
         <div className="space-y-2">
@@ -128,12 +146,7 @@ function useEventOptions({
   enabled: boolean
   search: string
   selectedValues: string[]
-}): {
-  options: PickerOption[]
-  selectedLabels: [string, string][]
-  loading: boolean
-  hiddenCount: number
-} {
+}): ServerOptions {
   const branchId = useActiveBranchId()
   const debouncedSearch = useDebouncedValue(search)
 
@@ -189,6 +202,75 @@ function useEventOptions({
   }
 }
 
+/** Server-side options for the `metric` filter field (JR-15).
+ *
+ * The values are MetricDefinition ids — a catalog signal's scope_ref — so the
+ * picker lists the metrics catalog rather than anything event-shaped. Same two
+ * reads as {@link useEventOptions}: a searched page once the popover opens, and
+ * one read per id already on the rule, under the key the monitoring drilldown
+ * and the metric form use for the same definition.
+ */
+function useMetricOptions({
+  slug,
+  enabled,
+  search,
+  selectedValues,
+}: {
+  slug: string
+  enabled: boolean
+  search: string
+  selectedValues: string[]
+}): ServerOptions {
+  const debouncedSearch = useDebouncedValue(search)
+
+  const listQuery = useQuery({
+    // Under the catalog's own prefix, so a metric created or renamed elsewhere
+    // invalidates this page too; the `alert-filter` slot keeps it apart from
+    // the catalog screen's whole-catalog walk, which caches a different shape.
+    queryKey: metricsCatalogListKey(slug, 'alert-filter', '', debouncedSearch),
+    queryFn: () =>
+      metricsCatalogApi.list(slug, {
+        search: debouncedSearch || undefined,
+        limit: METRIC_PAGE_SIZE,
+        offset: 0,
+      }),
+    enabled,
+    staleTime: 60_000,
+  })
+
+  const selectedLabels = useQueries({
+    queries: selectedValues.map(metricId => ({
+      queryKey: metricDefinitionKey(slug, metricId),
+      queryFn: () => metricsCatalogApi.get(slug, metricId),
+      staleTime: 60_000,
+    })),
+    combine: results =>
+      results.flatMap(result =>
+        result.data
+          ? ([[result.data.id, metricLabel(result.data)]] as [string, string][])
+          : [],
+      ),
+  })
+
+  const items = useMemo(() => listQuery.data?.items ?? [], [listQuery.data])
+  const options = useMemo(
+    () => items.map(metric => ({ value: metric.id, label: metricLabel(metric) })),
+    [items],
+  )
+
+  return {
+    options,
+    selectedLabels,
+    loading: listQuery.isFetching,
+    hiddenCount: Math.max(0, (listQuery.data?.total ?? 0) - items.length),
+  }
+}
+
+/** The catalog's display name, or its machine name when that is blank. */
+function metricLabel(metric: { display_name: string; name: string }) {
+  return metric.display_name.trim() || metric.name
+}
+
 function FilterRow({
   filter,
   eventTypes,
@@ -214,6 +296,7 @@ function FilterRow({
     FILTER_FIELD_OPTIONS.find(option => option.value === filter.field)?.label ?? filter.field
 
   const isEventField = filter.field === 'event'
+  const isMetricField = filter.field === 'metric'
   const single = isSingleValueOperator(filter.operator)
   const selectedValues = single ? filter.values.slice(0, 1) : filter.values
 
@@ -222,38 +305,65 @@ function FilterRow({
     enabled: isEventField && pickerOpen,
     search,
     // Guard the per-id reads: on any other field these values are event-type
-    // ids or direction literals, and asking /events for them would 404.
+    // ids, metric ids or direction literals, and asking /events for them would 404.
     selectedValues: isEventField ? selectedValues : [],
   })
+  const metricOptions = useMetricOptions({
+    slug,
+    enabled: isMetricField && pickerOpen,
+    search,
+    selectedValues: isMetricField ? selectedValues : [],
+  })
+  // Both catalogs are unbounded, so both are searched on the server.
+  const serverOptions: ServerOptions | null = isEventField
+    ? eventOptions
+    : isMetricField
+      ? metricOptions
+      : null
 
   const staticOptions = useMemo<PickerOption[]>(() => {
     if (filter.field === 'event_type') {
       return eventTypes.map(eventType => ({ value: eventType.id, label: eventType.display_name }))
     }
-    if (filter.field === 'event') {
-      return []
+    if (filter.field === 'direction') {
+      return DIRECTION_VALUE_OPTIONS
     }
-    return DIRECTION_VALUE_OPTIONS
+    // `event` and `metric` come from the server; anything else has no options
+    // here rather than borrowing the direction ones (JR-15).
+    return []
   }, [filter.field, eventTypes])
 
   // Static option sets are small and already in memory, so they filter in the
-  // browser; event options arrive from the server already filtered.
+  // browser; event and metric options arrive from the server already filtered.
+  const serverPage = serverOptions?.options
+  const serverSelected = serverOptions?.selectedLabels
   const visibleOptions = useMemo(() => {
-    if (isEventField) return eventOptions.options
+    if (serverPage) return serverPage
     if (!search) return staticOptions
     const needle = search.toLowerCase()
     return staticOptions.filter(option => option.label.toLowerCase().includes(needle))
-  }, [isEventField, eventOptions.options, staticOptions, search])
+  }, [serverPage, staticOptions, search])
 
   // Chips and the collapsed trigger label read from here, so it must cover
   // selected ids that the current search page does not contain.
   const labelByValue = useMemo(() => {
     const map = new Map<string, string>()
     for (const option of staticOptions) map.set(option.value, option.label)
-    for (const option of eventOptions.options) map.set(option.value, option.label)
-    for (const [id, name] of eventOptions.selectedLabels) map.set(id, name)
+    for (const option of serverPage ?? []) map.set(option.value, option.label)
+    for (const [id, name] of serverSelected ?? []) map.set(id, name)
     return map
-  }, [staticOptions, eventOptions.options, eventOptions.selectedLabels])
+  }, [staticOptions, serverPage, serverSelected])
+
+  // "Choose event types…" rather than "Select value": the row reads as a
+  // sentence — "Event type · is one of · Choose event types…" (AL-39).
+  const valuePlaceholder =
+    filter.field === 'event_type'
+      ? single ? 'Choose an event type…' : 'Choose event types…'
+      : filter.field === 'event'
+        ? single ? 'Choose an event…' : 'Choose events…'
+        : filter.field === 'metric'
+          ? single ? 'Choose a metric…' : 'Choose metrics…'
+          : 'Choose a direction…'
 
   const onFieldChange = (nextField: AlertRuleFilterField) => {
     setSearch('')
@@ -295,7 +405,7 @@ function FilterRow({
           </SelectContent>
         </Select>
         <Select value={filter.operator} onValueChange={value => onOperatorChange(value as AlertRuleFilterOperator)}>
-          <SelectTrigger aria-label="Filter operator" className="w-24"><SelectValue /></SelectTrigger>
+          <SelectTrigger aria-label="Filter operator" className="w-36"><SelectValue /></SelectTrigger>
           <SelectContent>
             {FILTER_OPERATOR_OPTIONS.map(option => (
               <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
@@ -308,13 +418,14 @@ function FilterRow({
           onOpenChange={setPickerOpen}
           search={search}
           onSearchChange={setSearch}
-          placeholder={isEventField ? 'Search events…' : 'Search…'}
+          placeholder={isEventField ? 'Search events…' : isMetricField ? 'Search metrics…' : 'Search…'}
+          emptyLabel={valuePlaceholder}
           options={visibleOptions}
           labelByValue={labelByValue}
           selectedValues={selectedValues}
           onToggle={toggleValue}
-          loading={isEventField && eventOptions.loading}
-          hiddenCount={isEventField ? eventOptions.hiddenCount : 0}
+          loading={serverOptions?.loading ?? false}
+          hiddenCount={serverOptions?.hiddenCount ?? 0}
           errorId={error ? `${errorIdBase}-error` : undefined}
         />
         {/* Named by position and field: several rows share this icon, and an
@@ -358,6 +469,7 @@ function FilterValuePicker({
   search,
   onSearchChange,
   placeholder,
+  emptyLabel,
   options,
   labelByValue,
   selectedValues,
@@ -372,6 +484,8 @@ function FilterValuePicker({
   search: string
   onSearchChange: (search: string) => void
   placeholder: string
+  /** What the collapsed trigger says while nothing is picked. */
+  emptyLabel: string
   options: PickerOption[]
   labelByValue: Map<string, string>
   selectedValues: string[]
@@ -383,7 +497,7 @@ function FilterValuePicker({
 }) {
   const triggerLabel = (() => {
     const [value] = selectedValues
-    if (value === undefined) return 'Select value'
+    if (value === undefined) return emptyLabel
     if (single) return labelByValue.get(value) ?? value
     return `${selectedValues.length} selected`
   })()

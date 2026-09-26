@@ -1,11 +1,12 @@
 import { formatRelativeTime } from '@/lib/datetime'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle } from 'lucide-react'
+import { GitCompare } from 'lucide-react'
 
 import { eventTypesApi } from '@/api/eventTypes'
 import { useDemoScenarioActions } from '@/demo/demoScenarioContext'
 import { Button } from '@/components/ui/button'
+import { ErrorState } from '@/components/error-state'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { chipVariants } from '@/components/primitives/chip-variants'
 import { cn, getErrorMessage } from '@/lib/utils'
@@ -89,16 +90,18 @@ export function EventDriftBadge({
       <PopoverTrigger asChild>
         {/* The drift/warning flag of the badge taxonomy (DS-6): a soft
             warning pill at the xs size, not a 16px uppercase square tag. It
-            stays a <button>, so it borrows the Chip's classes. */}
+            stays a <button>, so it borrows the Chip's classes. It says what it
+            counts: "Purchase 2" beside the title read as a count of Purchase
+            events or a notification (EV-24). */}
         <button
           type="button"
           className={cn(chipVariants({ tone: 'warning', size: 'xs' }), 'hover:bg-warning/25')}
           aria-label={`${count} schema drift${count === 1 ? '' : 's'} on ${typeLabel ? `event type ${typeLabel}` : 'this event type'}`}
-          title="Schema drift detected"
         >
-          <AlertTriangle aria-hidden />
-          {typeLabel && <span className="max-w-[14ch] truncate">{typeLabel}</span>}
+          <GitCompare aria-hidden />
           <span className="tnum">{count}</span>
+          <span>schema drift{count === 1 ? '' : 's'}</span>
+          {typeLabel && <span className="max-w-[14ch] truncate">· {typeLabel}</span>}
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72 p-2 text-body-sm">
@@ -106,11 +109,17 @@ export function EventDriftBadge({
           <span className="font-semibold">Schema drift</span>
           <span className="text-micro text-muted-foreground">last 30 days</span>
         </div>
+        {/* What each action does, once, instead of three unexplained buttons. */}
+        {canWrite && (
+          <p className="mb-2 text-caption text-fg-tertiary">
+            Accept adds the change to the plan. Snooze hides it for 7 days.
+          </p>
+        )}
         {driftsQuery.isLoading && <div className="text-muted-foreground">Loading…</div>}
+        {/* Through ErrorState, so a 401 under the session-expired dialog
+            reads as paused, not as a red auth failure (SH-35). */}
         {driftsQuery.isError && (
-          <div className="text-destructive">
-            Failed to load drifts: {getErrorMessage(driftsQuery.error)}
-          </div>
+          <ErrorState compact headingLevel={3} title="Failed to load drifts" error={driftsQuery.error} />
         )}
         {driftsQuery.data && driftsQuery.data.items.length === 0 && (
           <div className="text-muted-foreground">No drifts in this window.</div>
@@ -160,7 +169,7 @@ export function EventDriftBadge({
                       {drift.status === 'open' || drift.status === 'snoozed' ? (
                         <>
                           <Button
-                            size="xs"
+                            size="sm"
                             variant="outline"
                             disabled={actionMut.isPending}
                             onClick={() => actionMut.mutate({ driftId: drift.id, action: 'accept' })}
@@ -168,7 +177,7 @@ export function EventDriftBadge({
                             Accept
                           </Button>
                           <Button
-                            size="xs"
+                            size="sm"
                             variant="outline"
                             disabled={actionMut.isPending}
                             onClick={() => actionMut.mutate({ driftId: drift.id, action: 'snooze' })}
@@ -176,7 +185,7 @@ export function EventDriftBadge({
                             Snooze
                           </Button>
                           <Button
-                            size="xs"
+                            size="sm"
                             variant="outline"
                             disabled={actionMut.isPending}
                             onClick={() => actionMut.mutate({ driftId: drift.id, action: 'false_positive' })}
@@ -186,7 +195,7 @@ export function EventDriftBadge({
                         </>
                       ) : (
                         <Button
-                          size="xs"
+                          size="sm"
                           variant="outline"
                           disabled={actionMut.isPending}
                           onClick={() => actionMut.mutate({ driftId: drift.id, action: 'reopen' })}

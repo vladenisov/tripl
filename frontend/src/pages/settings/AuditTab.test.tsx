@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AuditActionCatalog, AuditEntry, AuditEntryDetail, AuditListResponse } from '@/types'
@@ -18,6 +19,15 @@ const { listMock, getMock, actionsMock } = vi.hoisted(() => ({
 
 vi.mock('@/api/audit', () => ({
   auditApi: { list: listMock, get: getMock, actions: actionsMock },
+}))
+
+// Rows name the actor from the roster, falling back to the email.
+vi.mock('@/api/users', () => ({
+  usersApi: {
+    list: vi.fn(async () => [
+      { id: 'u-alice', email: 'alice@example.com', name: 'Alice Moreau', role: 'owner', created_at: '2026-01-01T00:00:00Z' },
+    ]),
+  },
 }))
 
 import { AuditTab, WorkspaceAuditLog } from './AuditTab'
@@ -49,7 +59,9 @@ function renderTab(auth: AuthContextValue | null = authAs('owner')) {
   return render(
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={auth}>
-        <AuditTab slug="demo" />
+        <MemoryRouter>
+          <AuditTab slug="demo" />
+        </MemoryRouter>
       </AuthContext.Provider>
     </QueryClientProvider>,
   )
@@ -126,7 +138,9 @@ describe('WorkspaceAuditLog — the instance-wide feed (tripl-wkwv.17)', () => {
     return render(
       <QueryClientProvider client={queryClient}>
         <AuthContext.Provider value={authAs('owner')}>
-          <WorkspaceAuditLog />
+          <MemoryRouter>
+            <WorkspaceAuditLog />
+          </MemoryRouter>
         </AuthContext.Provider>
       </QueryClientProvider>,
     )
@@ -471,7 +485,9 @@ describe('AuditTab — the action vocabulary comes from the backend (PLAN-49)', 
     render(
       <QueryClientProvider client={queryClient}>
         <AuthContext.Provider value={authAs('owner')}>
-          <WorkspaceAuditLog />
+          <MemoryRouter>
+            <WorkspaceAuditLog />
+          </MemoryRouter>
         </AuthContext.Provider>
       </QueryClientProvider>,
     )
@@ -486,5 +502,57 @@ describe('AuditTab — the action vocabulary comes from the backend (PLAN-49)', 
 
     const select = screen.getByLabelText('Action') as HTMLSelectElement
     expect(Array.from(select.querySelectorAll('option')).map((o) => o.textContent)).toEqual(['Action: any'])
+  })
+})
+
+describe('AuditTab — rows read as sentences (PL-23 / PL-24)', () => {
+  it('says what happened in words, names the person, and groups rows by day', async () => {
+    listMock.mockResolvedValue({
+      items: [
+        {
+          ...auditRow(0, 'redesign-checkout'),
+          user_id: 'u-alice',
+          action: 'plan_branch.approve',
+          target_type: 'plan_branch',
+          target_id: 'b-9',
+          target_name: 'redesign-checkout',
+          project_id: 'p-1',
+        },
+      ],
+      total: 1,
+    })
+    getMock.mockResolvedValue({
+      ...auditRow(0),
+      payload: { status: 'approved' },
+    })
+    renderTab()
+
+    const chip = await screen.findByText('Approved branch')
+    // The code stays reachable for whoever filters by it.
+    expect(chip).toHaveAttribute('title', 'plan_branch.approve')
+    expect(await screen.findByText('Alice Moreau')).toHaveAttribute('title', 'alice@example.com')
+    expect(screen.getByRole('region', { name: 'Aug 17, 2026' })).toBeInTheDocument()
+
+    fireEvent.click(chip.closest('button') as HTMLElement)
+    // The payload as labelled values, the raw JSON folded away, and links to
+    // the target and its branch.
+    expect(await screen.findByText('Status')).toBeInTheDocument()
+    expect(screen.getByText('approved')).toBeInTheDocument()
+    expect(screen.getByText('Raw JSON')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Open branch$/ })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/branches/b-9',
+    )
+    expect(screen.getByRole('link', { name: /Open branch redesign-checkout/ })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/branches/branch-0',
+    )
+  })
+
+  it('keeps the header to one line and the details under "About this log"', () => {
+    renderTab()
+
+    expect(screen.getByText("Every change to this project's plan, scans, metrics and alerting.")).toBeInTheDocument()
+    expect(screen.getByText('About this log')).toBeInTheDocument()
   })
 })

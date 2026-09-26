@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, Inbox, Layers, ListPlus, Loader2, Plus } from 'lucide-react'
+import { ArrowDown, ChevronDown, ChevronRight, Inbox, Layers, ListPlus, Loader2, Plus, X } from 'lucide-react'
 import {
   DndContext,
   closestCenter,
@@ -25,8 +25,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Dot } from '@/components/primitives/dot'
 import { EmptyState } from '@/components/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
 import type {
   EventFieldValue,
   EventListItem,
@@ -49,6 +49,8 @@ import {
 } from './eventNameGroups'
 import { PINNED_EVENT_CELL_STYLE } from './useEventsTableOverflow'
 import { PHONE_FULL_ROW, PHONE_HEADER_ROW, PHONE_TABLE } from './eventsPhoneCard'
+import { useFillViewportHeight } from './useFillViewportHeight'
+import type { EventsSortOrder } from './useEventsQuery'
 import { EMPTY_WINDOW_POINTS, ROW_METRICS_LABEL } from './utils'
 import { variablesKey } from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
@@ -61,7 +63,11 @@ const MAX_VISIBLE_CLUSTERS = 6
 // the demo's series ends ~2h before now, so the recent window covers 22 of 24),
 // and the per-cell tooltip is only reachable once you already suspect something.
 const DELTA_HEAD_HELP =
-  'Δ · 24h — change in volume versus the previous 24-hour window. A * marks a window the collected series does not fully cover; hover the value for what it does cover.'
+  'Δ · 24h — change in volume versus the previous 24-hour window. A dotted underline marks a window the collected series does not fully cover; hover the value for what it does cover.'
+
+/** Under the scroller: its 30px footer, the card border and the page gutter. */
+const TABLE_SCROLLER_RESERVE_PX = 64
+const TABLE_SCROLLER_MIN_PX = 320
 
 export type EventsTableProps = {
   // Layout
@@ -139,6 +145,17 @@ export type EventsTableProps = {
   onNewEvent?: () => void
   /** Adds ids to the selection in one update (a name cluster's "Select"). */
   selectMany: (ids: string[]) => void
+  /** Clears the search and every filter: the way out of a filtered-empty table. */
+  onClearFilters?: () => void
+  /** The 48h column header toggles "Busiest first" (EV-14). */
+  sortOrder?: EventsSortOrder
+  onSortOrderChange?: (value: EventsSortOrder) => void
+  /**
+   * Ids whose 48h metrics have answered. Every other row's metric cells show a
+   * placeholder instead of the "—" that means "no data" (EV-20). Omitted =
+   * every row settled.
+   */
+  rowMetricsSettled?: Set<string>
 }
 
 export function EventsTable({
@@ -198,6 +215,10 @@ export function EventsTable({
   emptyContext,
   onNewEvent,
   selectMany,
+  onClearFilters,
+  sortOrder,
+  onSortOrderChange,
+  rowMetricsSettled,
 }: EventsTableProps) {
   const branchId = useActiveBranchId()
   // Selecting is only ever for a bulk edit, which a viewer cannot make.
@@ -261,6 +282,7 @@ export function EventsTable({
     // of a misleading bare "0".
     const windowTotal =
       windowData.length > 0 ? windowMetric?.total_count : undefined
+    const metricsPending = rowMetricsSettled ? !rowMetricsSettled.has(ev.id) : false
     return (
       <EventRow
         key={ev.id}
@@ -283,6 +305,7 @@ export function EventsTable({
         rowSignal={eventRowSignals.get(ev.id)}
         windowTotal={windowTotal}
         windowData={windowData}
+        metricsPending={metricsPending}
         metaValueMap={metaValuesByEvent.get(ev.id)}
         eventType={eventTypesById.get(ev.event_type_id)}
         getFieldValue={getFieldValue}
@@ -296,6 +319,21 @@ export function EventsTable({
       />
     )
   }
+
+  // The scroller fills the rest of the viewport, wherever it starts (EV-4). It
+  // is the ONE scroll container for both axes, so the sticky header and the
+  // pinned columns resolve against it and the horizontal scrollbar sits at the
+  // bottom of the visible area, not under the full table height (EV-3).
+  const fillHeight = useFillViewportHeight(tableScrollRef, {
+    reserve: TABLE_SCROLLER_RESERVE_PX,
+    min: TABLE_SCROLLER_MIN_PX,
+    observe: '[data-events-page]',
+  })
+  const isEmpty = events.length === 0
+  const isFirstLoad = isEmpty && (isLoading || isScanningForMatches)
+  const sortable = !!onSortOrderChange
+  const busiestFirst = sortOrder === 'volume'
+  const filteredEmpty = !!emptyContext && (emptyContext.hasActiveFilters || !!emptyContext.search.trim())
 
   // Spacer rows stand in for the virtualized rows above and below the window.
   const firstVirtual = virtualItems[0]
@@ -381,20 +419,26 @@ export function EventsTable({
             ref={tableScrollRef}
             className="tripl-table-wrap"
             style={{
-              maxHeight: isTabChartOpen
-                ? 'max(320px, calc(100vh - 455px))'
-                : 'max(420px, calc(100vh - 285px))',
-              overflowY: 'auto',
+              maxHeight:
+                fillHeight ??
+                (isTabChartOpen
+                  ? 'max(320px, calc(100vh - 455px))'
+                  : 'max(420px, calc(100vh - 285px))'),
+              overflow: 'auto',
             }}
           >
             <Table
               ref={tableRef}
+              scroll={false}
               // A card per row below md (eventsPhoneCard.ts).
               className={`tripl-table ${PHONE_TABLE}`}
               aria-label={activeEt ? `${activeEt.display_name} events` : 'Events'}
             >
               <TableHeader>
-                <TableRow className={PHONE_HEADER_ROW}>
+                {/* A header over no rows is a stray "EVENT" box on a phone
+                    (EV-17). On a phone the bar is only the select-all
+                    checkbox, so a viewer, who has none, gets no bar (EV-28). */}
+                <TableRow className={`${PHONE_HEADER_ROW} ${isEmpty || !canWrite ? 'max-md:hidden' : ''}`}>
                   <TableHead className="w-8 px-1" aria-label="Reorder" />
                   <TableHead className="tripl-pin-l w-10 pl-5">
                     {canWrite && (
@@ -422,11 +466,11 @@ export function EventsTable({
                   >
                     Event
                   </TableHead>
-                  {!activeEt && <TableHead>Type</TableHead>}
-                  {!hideStatus && <TableHead>Status</TableHead>}
-                  {!hideReviewed && (
-                    <TableHead className="w-20 text-center text-caption">Reviewed</TableHead>
-                  )}
+                  {/* Volume and trend first after the name, then state, then
+                      the type (already in the sparkline colour and the
+                      sidebar): at 1024 the 48h count used to be off-screen
+                      behind Type and Status (EV-12). EventRow renders its
+                      cells in this same order. */}
                   {/* "Signal", not "Monitor": these cells report the anomaly
                       tripl detected on the row, which needs no monitor to
                       exist. Heading them "Monitor" put "Firing" beside 30
@@ -440,6 +484,27 @@ export function EventsTable({
                       Signal
                     </TableHead>
                   )}
+                  {/* The busiest-first toggle lives on the column it sorts by:
+                      readers clicked "48h" expecting it to sort (EV-14). */}
+                  <TableHead
+                    className="w-32 text-right"
+                    aria-sort={sortable ? (busiestFirst ? 'descending' : 'none') : undefined}
+                    title={`Event volume over the last ${ROW_METRICS_LABEL} (rolling 48 hours), with sparkline`}
+                  >
+                    {sortable ? (
+                      <button
+                        type="button"
+                        onClick={() => onSortOrderChange?.(busiestFirst ? 'catalog' : 'volume')}
+                        className="inline-flex items-center gap-1 rounded-sm hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        aria-label={busiestFirst ? `${ROW_METRICS_LABEL}, busiest first. Sort by catalog order` : `${ROW_METRICS_LABEL}. Sort busiest first`}
+                      >
+                        {busiestFirst && <ArrowDown className="size-3" aria-hidden="true" />}
+                        {ROW_METRICS_LABEL}
+                      </button>
+                    ) : (
+                      ROW_METRICS_LABEL
+                    )}
+                  </TableHead>
                   {!hideDelta && (
                     <TableHead
                       className="w-20 text-right text-caption"
@@ -448,12 +513,14 @@ export function EventsTable({
                       Δ · 24h
                     </TableHead>
                   )}
-                  <TableHead
-                    className="w-32 text-right"
-                    title={`Event volume over the last ${ROW_METRICS_LABEL} (rolling 48 hours), with sparkline`}
-                  >
-                    {ROW_METRICS_LABEL}
-                  </TableHead>
+                  {!hideLastSeen && (
+                    <TableHead className="w-24 text-caption">Last seen</TableHead>
+                  )}
+                  {!hideStatus && <TableHead>Status</TableHead>}
+                  {!activeEt && <TableHead>Type</TableHead>}
+                  {!hideReviewed && (
+                    <TableHead className="w-20 text-center text-caption">Verified</TableHead>
+                  )}
                   {!hideTags && (
                     <FilterableHead
                       label="Tags"
@@ -469,9 +536,6 @@ export function EventsTable({
                         ) : null
                       }
                     />
-                  )}
-                  {!hideLastSeen && (
-                    <TableHead className="w-24 text-caption">Last seen</TableHead>
                   )}
                   {!hideOwner && <TableHead className="w-28 text-caption">Owner</TableHead>}
                   {visibleFieldColumns.map((f) => {
@@ -572,23 +636,32 @@ export function EventsTable({
                       <td colSpan={colCount} />
                     </tr>
                   )}
-                {events.length === 0 && (
+                {isEmpty && (
                   <TableRow className={PHONE_FULL_ROW}>
                     <TableCell colSpan={99}>
-                      {isLoading || isScanningForMatches ? (
-                        // Not the empty state: during the cold load it
-                        // flashed "No events yet — create your first event"
-                        // on every visit (EVT-14), and a column filter with no
-                        // match on the first page is still searching the rest
-                        // (EVT-4).
+                      {isFirstLoad && isLoading ? (
+                        // Row-shaped placeholders, not the empty state: during
+                        // the cold load it flashed "No events yet — create your
+                        // first event" on every visit (EVT-14).
+                        <div role="status" className="space-y-3 py-3">
+                          <span className="sr-only">Loading events…</span>
+                          {Array.from({ length: 8 }, (_, i) => (
+                            <div key={i} className="flex items-center gap-4" aria-hidden="true">
+                              <Skeleton className="h-3.5 w-48 max-w-[40%]" />
+                              <Skeleton className="h-3.5 w-16" />
+                              <Skeleton className="ml-auto h-3.5 w-24" />
+                            </div>
+                          ))}
+                        </div>
+                      ) : isFirstLoad ? (
+                        // A column filter with no match on the first page is
+                        // still searching the rest (EVT-4).
                         <div
                           role="status"
                           className="flex items-center justify-center gap-2 py-16 text-body text-muted-foreground"
                         >
-                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                          {isLoading
-                            ? 'Loading events…'
-                            : `Searching… ${loadedCount.toLocaleString()} of ${total.toLocaleString()} events checked`}
+                          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                          {`Searching… ${loadedCount.toLocaleString()} of ${total.toLocaleString()} events checked`}
                         </div>
                       ) : (
                         <EmptyState
@@ -598,8 +671,14 @@ export function EventsTable({
                           action={
                             emptyCopy.isFirstRun && onNewEvent ? (
                               <Button size="sm" onClick={onNewEvent}>
-                                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                                <Plus className="size-3.5" aria-hidden="true" />
                                 New event
+                              </Button>
+                            ) : filteredEmpty && onClearFilters ? (
+                              // The description says to clear them; this does it (EV-16).
+                              <Button size="sm" variant="outline" onClick={onClearFilters}>
+                                <X aria-hidden="true" />
+                                Clear search and filters
                               </Button>
                             ) : undefined
                           }
@@ -630,13 +709,6 @@ export function EventsTable({
                 <span className="inline-flex items-center gap-1.5">
                   <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
                   searching the rest…
-                </span>
-              )}
-              <div className="flex-1" />
-              {virtualize && (
-                <span className="inline-flex items-center gap-1.5">
-                  <Dot tone="accent" size={5} pulse />
-                  virtualized · row {firstVisible.toLocaleString()}
                 </span>
               )}
             </div>

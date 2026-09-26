@@ -202,13 +202,22 @@ function mockAlertingFetch(
     // A string is the shortened window it reports when its row cap bit first
     // (tripl-39n6).
     windowTruncatedAt = null as string | null,
+    // Left out of the project body unless given, as in the fixtures written
+    // before guided setup read it; a number adds `summary.scan_count`.
+    scanCount = undefined as number | undefined,
   } = {},
 ) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input)
     // The tab reads the project to know whether it is a zero-egress demo.
     if (/\/projects\/[^/]+$/.test(url)) {
-      return jsonResponse({ id: 'proj-1', slug: 'demo', name: 'Demo', is_demo: isDemo })
+      return jsonResponse({
+        id: 'proj-1',
+        slug: 'demo',
+        name: 'Demo',
+        is_demo: isDemo,
+        ...(scanCount === undefined ? {} : { summary: { scan_count: scanCount } }),
+      })
     }
     if (url.includes('/alert-destinations')) return jsonResponse(destinations)
     if (url.includes('/alert-deliveries')) {
@@ -307,15 +316,32 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     expect(screen.queryByText('Inbox')).toBeNull()
     expect(screen.queryByText('Signals route to destinations via rules.')).toBeNull()
 
-    // ...but the Audit log stays reachable even before anything is configured
-    // (tripl-7l83.14): it renders below the guided card with an empty state.
-    expect(screen.getByText('Delivery log')).toBeInTheDocument()
-    expect(screen.getByText('No deliveries yet.')).toBeInTheDocument()
+    // The empty "Delivery log / No deliveries yet." panel that sat under the
+    // setup is gone (AL-33): guided state has zero deliveries by definition.
+    expect(screen.queryByText('No deliveries yet.')).toBeNull()
 
     // ...but every channel type is still addable from the guided flow.
     for (const label of ['Slack', 'Telegram', 'Webhook', 'Email', 'Jira', 'Linear']) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
     }
+    // The picker is step 1 itself, not a row of buttons under the steps.
+    expect(screen.getByRole('button', { name: 'Slack' })).toHaveAccessibleDescription('Post to a channel')
+  })
+
+  it('names the missing scan as the first step when nothing can alert yet (AL-33)', async () => {
+    mockAlertingFetch([], { scanCount: 0 })
+    renderTab()
+
+    expect(await screen.findByText('Connect data and run a scan')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Go to Scans' })).toHaveAttribute('href', '/p/demo/scans')
+  })
+
+  it('skips the scan step on a project that has one', async () => {
+    mockAlertingFetch([], { scanCount: 2 })
+    renderTab()
+
+    expect(await screen.findByText('Set up alerting')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('Connect data and run a scan')).toBeNull())
   })
 
   it('explains an Inbox that cannot hold anything yet, rather than listing nothing', async () => {
@@ -331,7 +357,7 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     // in flight, so asserting its absence before this resolves would be timing,
     // not behaviour.
     expect(
-      await screen.findByText(/No rules yet, so nothing can raise an incident/),
+      await screen.findByText(/No alert rules yet, so nothing can raise an incident/),
     ).toBeInTheDocument()
     expect(screen.queryByText('No correlated alert groups.')).toBeNull()
     // Destinations exist → out of guided setup.
@@ -350,8 +376,9 @@ describe('ProjectAlertingTab — guided setup (tripl-7l83.14)', () => {
     ).toBeInTheDocument()
     expect(screen.queryByText('Set up alerting')).toBeNull()
 
-    // Monitors is the fourth, and it is where the rules went (tripl-89ps).
-    for (const name of ['Inbox', 'Monitors', 'Destinations', 'Delivery log']) {
+    // Rules is the fourth, and it is where the rules went (tripl-89ps). It was
+    // called Monitors until JR-28 gave the object one name.
+    for (const name of ['Inbox', 'Rules', 'Destinations', 'Delivery log']) {
       expect(screen.getByRole('tab', { name })).toBeInTheDocument()
     }
     expect(screen.getByRole('tab', { name: 'Destinations' })).toHaveAttribute(
@@ -1984,6 +2011,8 @@ describe('ProjectAlertingTab — viewer role (tripl-oxkt.9)', () => {
     for (const name of [
       'Add rule',
       'Edit rule payment_failed spike',
+      // Mute and Delete live behind this menu (AL-8).
+      'More actions for payment_failed spike',
       'Delete rule payment_failed spike',
       'Mute payment_failed spike',
     ]) {
@@ -2128,7 +2157,12 @@ describe('ProjectAlertingTab — a config write reaches the incident views (trip
 
   /** Delete the one rule on the card, through its confirm. */
   async function deleteTheRule() {
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete rule payment_failed spike' }))
+    // Delete sits behind the row's "More actions" menu (AL-8).
+    fireEvent.keyDown(
+      await screen.findByRole('button', { name: 'More actions for payment_failed spike' }),
+      { key: 'Enter' },
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete rule payment_failed spike' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
   }
 
@@ -2156,7 +2190,7 @@ describe('ProjectAlertingTab — a config write reaches the incident views (trip
     await screen.findByText(/Showing 1 of 1/)
     const before = inboxRequests().length
 
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Monitors' }))
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Rules' }))
     await deleteTheRule()
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Inbox' }))
 
@@ -2249,7 +2283,7 @@ describe('ProjectAlertingTab — guided setup lands step 2 on step 3 (tripl-oxkt
     // aria-hidden: the tab strip is still THERE and still selected, it is just
     // not in the accessibility tree while a dialog is trapping focus.
     expect(
-      screen.getByRole('tab', { name: 'Monitors', hidden: true }),
+      screen.getByRole('tab', { name: 'Rules', hidden: true }),
     ).toHaveAttribute('aria-selected', 'true')
     // The new destination is the one the form is prefilled for — named on the
     // picker the form grew when it left the destination card (tripl-89ps). The
@@ -2258,6 +2292,12 @@ describe('ProjectAlertingTab — guided setup lands step 2 on step 3 (tripl-oxkt
     expect(
       screen.getByRole('combobox', { name: 'Destination', hidden: true }),
     ).toHaveTextContent('Ops Slack')
+    // Step 2 says it worked, and step 3 opens named and marked (AL-34).
+    expect(toastSuccess).toHaveBeenCalledWith(
+      'Destination "Ops Slack" created — now choose what should alert',
+    )
+    expect(screen.getByLabelText('Name', { selector: 'input#rule-name' })).toHaveValue('Alerts to Ops Slack')
+    expect(screen.getByText('Step 3 of 3')).toBeInTheDocument()
   })
 
   it('asks before Escape drops an edited rule draft, and keeps it on Cancel (ALR-17)', async () => {
@@ -2323,7 +2363,7 @@ describe('ProjectAlertingTab — the tab strip honours the contract it declares 
     // The three unmounted sections must not claim a panel that is not in the
     // document — a dangling aria-controls is a broken reference, not a hint.
     expect(screen.getByRole('tab', { name: 'Inbox' })).not.toHaveAttribute('aria-controls')
-    expect(screen.getByRole('tab', { name: 'Monitors' })).not.toHaveAttribute('aria-controls')
+    expect(screen.getByRole('tab', { name: 'Rules' })).not.toHaveAttribute('aria-controls')
   })
 
   it('keeps one Tab stop for the whole strip', async () => {
@@ -2333,13 +2373,13 @@ describe('ProjectAlertingTab — the tab strip honours the contract it declares 
     // Radix roving focus: every tab is out of the Tab order, and the strip
     // hands focus to the selected one; once it holds focus it is the stop.
     const inbox = await screen.findByRole('tab', { name: 'Inbox' })
-    for (const name of ['Inbox', 'Monitors', 'Destinations', 'Delivery log']) {
+    for (const name of ['Inbox', 'Rules', 'Destinations', 'Delivery log']) {
       expect(screen.getByRole('tab', { name })).toHaveAttribute('tabindex', '-1')
     }
     // Radix's roving group records the focused tab in state: focus inside act.
     act(() => inbox.focus())
     await waitFor(() => expect(inbox).toHaveAttribute('tabindex', '0'))
-    for (const name of ['Monitors', 'Destinations', 'Delivery log']) {
+    for (const name of ['Rules', 'Destinations', 'Delivery log']) {
       expect(screen.getByRole('tab', { name })).toHaveAttribute('tabindex', '-1')
     }
   })
@@ -2358,12 +2398,12 @@ describe('ProjectAlertingTab — the tab strip honours the contract it declares 
     // Focus travels with the selection, or the next arrow press starts from the
     // button the reader left.
     await waitFor(() => {
-      const monitors = screen.getByRole('tab', { name: 'Monitors' })
+      const monitors = screen.getByRole('tab', { name: 'Rules' })
       expect(monitors).toHaveAttribute('aria-selected', 'true')
       expect(monitors).toHaveFocus()
     })
 
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'Monitors' }), { key: 'ArrowLeft' })
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Rules' }), { key: 'ArrowLeft' })
     await waitFor(() =>
       expect(screen.getByRole('tab', { name: 'Inbox' })).toHaveAttribute('aria-selected', 'true'),
     )
@@ -2847,6 +2887,6 @@ describe('ProjectAlertingTab — the Inbox when destinations will not load (ALR-
     expect(
       await screen.findByText(/Could not load alert destinations and rules/),
     ).toBeInTheDocument()
-    expect(screen.queryByText(/No rules yet, so nothing can raise an incident/)).toBeNull()
+    expect(screen.queryByText(/No alert rules yet, so nothing can raise an incident/)).toBeNull()
   })
 })

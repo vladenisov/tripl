@@ -273,9 +273,13 @@ async def delete_demo_project(session: SessionDep, current_user: EditorUserDep, 
 
 @router.get("/{slug}", response_model=ProjectResponse)
 async def get_project(
-    session: SessionDep, request: Request, current_user: CurrentUserDep, slug: str
+    session: SessionDep,
+    request: Request,
+    current_user: CurrentUserDep,
+    slug: str,
+    branch_id: BranchIdDep,
 ) -> ProjectResponse:
-    project = await project_service.get_project(session, slug)
+    project = await project_service.get_project(session, slug, branch_id=branch_id)
     return await _one_for_caller(session, request, current_user, project)
 
 

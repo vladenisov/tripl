@@ -1,19 +1,31 @@
-import { useState } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import type { EventMutationResponse, EventType, MetaFieldDefinition, Variable } from '@/types'
 import { eventCommentsApi } from '@/api/eventComments'
 import { eventsApi } from '@/api/events'
 import { eventTypesApi } from '@/api/eventTypes'
 import { metaFieldsApi } from '@/api/metaFields'
+import { planBranchesApi } from '@/api/planBranches'
 import { variablesApi } from '@/api/variables'
-import { useActiveBranchId } from '@/hooks/useBranch'
+import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { CommentThread } from '@/components/comment-thread'
 import { EntityBranchBanner } from '@/components/EntityBranchBanner'
 import { ErrorState } from '@/components/error-state'
 import { PageContainer } from '@/components/primitives/page-container'
-import { eventCommentsKey, eventKey, eventTypesKey, metaFieldsKey, variablesKey } from '@/lib/queryKeys'
+import { PageSkeleton, QueryErrorState } from '@/components/states'
+import { Button } from '@/components/ui/button'
+import { useCanWriteProject } from '@/lib/permissions'
+import {
+  eventCommentsKey,
+  eventKey,
+  eventTypesKey,
+  metaFieldsKey,
+  planBranchesKey,
+  variablesKey,
+} from '@/lib/queryKeys'
 import { getErrorMessage } from '@/lib/utils'
 import { DraftDiscussionNote } from './DraftDiscussionNote'
 import { EventForm } from './EventFormView'
@@ -34,7 +46,10 @@ export default function EventEditPage() {
   const location = useLocation()
   const branchId = useActiveBranchId()
   const usersById = useUsersById()
+  const branchLink = useBranchLinkProps()
+  const canWrite = useCanWriteProject()
   const isNew = !eventId
+  const listPath = !tab || tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${tab}`
 
   // Reviewing a branch and fixing three of its events used to cost three round
   // trips through Settings > Branches, because closing the editor always landed
@@ -47,10 +62,9 @@ export default function EventEditPage() {
       navigate(-1)
       return
     }
-    const base = !tab || tab === 'all' ? `/p/${slug}/events` : `/p/${slug}/events/${tab}`
     // With the query string: the list's filters and the `?branch=` EventsPage
     // carries here on purpose, which a cold-opened link otherwise lost (EVT-38).
-    navigate(`${base}${location.search}`)
+    navigate(`${listPath}${location.search}`)
   }
 
   // A question raised while the event is being authored. It cannot be a comment
@@ -84,42 +98,87 @@ export default function EventEditPage() {
     }
   }
 
+  // Nothing is loaded for a viewer: they are sent on below.
   const eventTypesQuery = useQuery({
     queryKey: eventTypesKey(slug, branchId),
     queryFn: () => eventTypesApi.list(slug!, branchId),
-    enabled: !!slug,
+    enabled: !!slug && canWrite,
   })
   const metaFieldsQuery = useQuery({
     queryKey: metaFieldsKey(slug, branchId),
     queryFn: () => metaFieldsApi.list(slug!, branchId),
-    enabled: !!slug,
+    enabled: !!slug && canWrite,
   })
   const variablesQuery = useQuery({
     queryKey: variablesKey(slug, branchId),
     queryFn: () => variablesApi.list(slug!, branchId),
-    enabled: !!slug,
+    enabled: !!slug && canWrite,
   })
   const eventQuery = useQuery({
     queryKey: eventKey(slug, branchId, eventId),
     queryFn: () => eventsApi.get(slug!, eventId!, branchId),
-    enabled: !!slug && !!eventId,
+    enabled: !!slug && !!eventId && canWrite,
+  })
+  // The plan's branches, for two things: whether the event opened here lives
+  // on the branch being edited (AU-1 / PL-2), and the branch's name in the
+  // "added to branch" confirmation (JR-13). The same query the branch banner
+  // runs, so it is read once.
+  const rowBranchId = eventQuery.data?.branch_id
+  const branchesQuery = useQuery({
+    queryKey: planBranchesKey(slug),
+    queryFn: () => planBranchesApi.list(slug!),
+    enabled: !!slug && canWrite && (!!rowBranchId || (isNew && branchId !== null)),
+    staleTime: 60_000,
   })
 
-  const loadError =
-    eventTypesQuery.error ?? metaFieldsQuery.error ?? variablesQuery.error ?? eventQuery.error
+  // A viewer creating an event has nothing to be shown, so they are told so
+  // once and returned to the list (AU-33). A toast id, so a re-run of the
+  // effect does not stack a second one.
+  useEffect(() => {
+    if (!canWrite && isNew) toast.info('Only editors can add events.', { id: 'viewer-new-event' })
+  }, [canWrite, isNew])
+
+  // Viewers get the page built for reading — the event's detail page, with its
+  // spec and activity — instead of a disabled form with live-looking
+  // controls, required stars and authoring hints (#237 MT-28 / AU-33 / JR-18).
+  if (!canWrite && slug) {
+    return (
+      <Navigate
+        replace
+        to={isNew ? `${listPath}${location.search}` : `/p/${slug}/monitoring/event/${eventId}${location.search}`}
+      />
+    )
+  }
+
+  // The event itself first: a missing one is not an error to retry but a
+  // dead link, with the way back to the list (#237 SH-33).
+  if (eventQuery.error) {
+    return (
+      <PageContainer width="narrow">
+        <QueryErrorState
+          error={eventQuery.error}
+          title="Could not load this event"
+          notFound={{ title: 'Event not found', back: { to: listPath, label: 'Back to Events' } }}
+          onRetry={() => void eventQuery.refetch()}
+        />
+      </PageContainer>
+    )
+  }
+
+  const loadError = eventTypesQuery.error ?? metaFieldsQuery.error ?? variablesQuery.error
 
   if (loadError) {
     return (
       <PageContainer width="narrow">
+        {/* Names what failed, not the view (SH-33). */}
         <ErrorState
-          title="Failed to load event editor"
+          title="Could not load the event types, meta fields or variables"
           error={loadError}
           onRetry={() => {
             void Promise.all([
               eventTypesQuery.refetch(),
               metaFieldsQuery.refetch(),
               variablesQuery.refetch(),
-              ...(eventId ? [eventQuery.refetch()] : []),
             ])
           }}
         />
@@ -132,13 +191,61 @@ export default function EventEditPage() {
     || metaFieldsQuery.isLoading
     || variablesQuery.isLoading
     || (!isNew && eventQuery.isLoading)
+    // The branch lock below reads the branch list; rendering before it lands
+    // showed an editable form with Save live until the list arrived (AU-1).
+    || (!!rowBranchId && branchesQuery.isPending)
 
+  // The form's shape while it loads, not a sentence in an empty column (AU-43).
   if (isLoading || !slug) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-        Loading…
-      </div>
+      <PageContainer width="narrow">
+        <PageSkeleton variant="form" label={isNew ? 'Loading the event form…' : 'Loading event…'} />
+      </PageContainer>
     )
+  }
+
+  // A main event opened while a branch is active — or a branch row opened on
+  // main — renders the row the lenient read found, but the save is strict and
+  // answers "Event not found". Read-only, with the switch in Save's place.
+  const branches = branchesQuery.data?.items
+  const mainBranch = branches?.find(b => b.kind === 'main')
+  const rowBranch = rowBranchId ? branches?.find(b => b.id === rowBranchId) : undefined
+  // Without the list (it failed), a row read on a branch is still known to be
+  // elsewhere whenever its id is not that branch's; on main the main branch's
+  // id is unknown, so nothing is claimed there.
+  const branchMismatch = branchesQuery.error
+    ? !!eventId && !!rowBranchId && !!branchId && rowBranchId !== branchId
+    : !!eventId && !!rowBranch && !!mainBranch && rowBranchId !== (branchId ?? mainBranch.id)
+  const rowIsMain = rowBranch?.kind === 'main'
+  const switchLink = rowBranch
+    ? branchLink(`/p/${slug}/events/${tab ?? 'all'}/${eventId}/edit`, rowIsMain ? null : rowBranch.id)
+    : null
+  const activeBranchName = branchId ? branches?.find(b => b.id === branchId)?.name : undefined
+
+  // Say that it worked, and where (AU-21, JR-13): "Create event" used to step
+  // back to a long list with nothing to find the new row by, and on a branch
+  // the diff it had just grown was two clicks away.
+  const announceCreated = (created: EventMutationResponse) => {
+    if (branchId && activeBranchName) {
+      toast.success(`Added ${created.name} to branch ${activeBranchName}`, {
+        action: {
+          label: 'View changes',
+          onClick: () => navigate(`/p/${slug}/settings/branches/${branchId}`),
+        },
+      })
+      return
+    }
+    toast.success(`Created ${created.name}`, {
+      action: {
+        label: 'Open',
+        onClick: () => navigate(branchLink(`/p/${slug}/monitoring/event/${created.id}`, branchId).to),
+      },
+    })
+  }
+  const onCreated = async (created: EventMutationResponse): Promise<boolean> => {
+    const closes = await postDraftNote(created)
+    if (closes) announceCreated(created)
+    return closes
   }
 
   const eventTypesData = eventTypesQuery.data ?? EMPTY_EVENT_TYPES
@@ -149,30 +256,6 @@ export default function EventEditPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      {eventId ? (
-        // The form is where a branch edit is actually made, and it was the one
-        // authoring surface that never said which plan it was writing to. The
-        // read is lenient and the write is strict, so a mismatch rendered a
-        // perfectly normal form and failed as a bare 404 at Save.
-        // The form's narrow column, from the shell's own left edge (DS-3).
-        <div className="mb-4 max-w-[880px]">
-          <EntityBranchBanner
-            slug={slug}
-            rowBranchId={eventQuery.data?.branch_id}
-            path={`/p/${slug}/events/${tab ?? 'all'}/${eventId}/edit`}
-            // Not this page's id on main: it is the branch row's, which main
-            // would render again under a mismatch warning (EVT-42). The main
-            // twin's page when the server names one, else the list on main.
-            mainPath={
-              eventQuery.data?.main_event_id
-                ? `/p/${slug}/events/${tab ?? 'all'}/${eventQuery.data.main_event_id}/edit`
-                : !tab || tab === 'all'
-                  ? `/p/${slug}/events`
-                  : `/p/${slug}/events/${tab}`
-            }
-          />
-        </div>
-      ) : null}
       <EventForm
         slug={slug}
         eventTypes={eventTypesData}
@@ -181,14 +264,56 @@ export default function EventEditPage() {
         event={eventQuery.data ?? null}
         defaultEventTypeId={defaultEventTypeId}
         onClose={goBack}
-        onCreated={postDraftNote}
+        onCreated={onCreated}
         hasOtherUnsavedInput={draftNote.trim() !== ''}
+        lockedReason={
+          !branchMismatch
+            ? undefined
+            : rowBranch
+              ? `This event lives on ${rowIsMain ? 'the main plan' : `branch ${rowBranch.name}`}, so it cannot be saved from here.`
+              : 'This event lives outside the branch being edited, so it cannot be saved from here.'
+        }
+        lockedAction={
+          branchMismatch && switchLink && rowBranch ? (
+            <Button asChild>
+              <Link to={switchLink.to} onClick={switchLink.onClick}>
+                {rowIsMain ? 'Switch to main' : `Switch to ${rowBranch.name}`}
+              </Link>
+            </Button>
+          ) : undefined
+        }
+        banner={
+          // Only once the branch list is in: the banner reads the same query,
+          // and mounting a second observer on a FAILED list refetches it, which
+          // puts it back to pending — and the pending gate above then swapped
+          // the page for its skeleton, unmounted the banner, failed again and
+          // looped. Without the list the banner renders nothing anyway.
+          eventId && branchesQuery.data ? (
+            // The form is where a branch edit is actually made, and it was the
+            // one authoring surface that never said which plan it was writing
+            // to. The read is lenient and the write is strict, so a mismatch
+            // rendered a perfectly normal form and failed as a bare 404 at
+            // Save. Under the title, as part of the page, not above its back
+            // link (AU-1).
+            <EntityBranchBanner
+              slug={slug}
+              rowBranchId={eventQuery.data?.branch_id}
+              path={`/p/${slug}/events/${tab ?? 'all'}/${eventId}/edit`}
+              // Not this page's id on main: it is the branch row's, which main
+              // would render again under a mismatch warning (EVT-42). The main
+              // twin's page when the server names one, else the list on main.
+              mainPath={
+                eventQuery.data?.main_event_id
+                  ? `/p/${slug}/events/${tab ?? 'all'}/${eventQuery.data.main_event_id}/edit`
+                  : !tab || tab === 'all'
+                    ? `/p/${slug}/events`
+                    : `/p/${slug}/events/${tab}`
+              }
+            />
+          ) : undefined
+        }
         beforeActions={
-          eventId ? undefined : (
-            <div className="mb-[18px]">
-              <DraftDiscussionNote value={draftNote} onChange={setDraftNote} />
-            </div>
-          )
+          eventId ? undefined : <DraftDiscussionNote value={draftNote} onChange={setDraftNote} />
         }
       />
       {/* The one home for the discussion, and outside the form on purpose: it
@@ -219,7 +344,8 @@ export default function EventEditPage() {
             heading="Discussion"
             emptyText="Nothing raised yet. Questions and notes here stay out of the spec."
             composerId="event-discussion-body"
-            className="flex flex-col rounded-md border bg-card p-3"
+            // The form's card geometry (AU-8), not a smaller box of its own.
+            className="flex flex-col rounded-card border bg-(--surface) p-4"
           />
         </div>
       )}

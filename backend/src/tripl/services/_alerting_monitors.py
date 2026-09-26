@@ -11,18 +11,21 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
+from tripl.models.alert_delivery_item import AlertDeliveryItem
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
+from tripl.models.domain_enums import AnomalyDirection, MetricScopeType
 from tripl.models.scan_config import ScanConfig
 from tripl.schemas.alerting import (
     MonitorDetailResponse,
+    MonitorFiringScope,
     MonitorsSummaryResponse,
     MonitorSummaryItem,
 )
 from tripl.services._alerting_scope_readiness import load_scope_readiness
 from tripl.services._monitor_state_intervals import load_monitor_state_intervals
-from tripl.services.monitoring_utils import summarize_monitor_states
+from tripl.services.monitoring_utils import firing_monitor_states, summarize_monitor_states
 from tripl.services.project_lookup import get_project_by_slug as _get_project
 
 
@@ -142,6 +145,57 @@ async def get_monitors_summary(session: AsyncSession, slug: str) -> MonitorsSumm
     )
 
 
+async def _load_firing_scopes(
+    session: AsyncSession, firing: list[AlertRuleState]
+) -> list[MonitorFiringScope]:
+    """Describe each firing state from the item that last notified it (MO-36).
+
+    ``AlertRuleState`` keeps only the scope's identity and timestamps; its name,
+    event and direction live on the delivery item ``last_notified_delivery_id``
+    points at. One query for all of them.
+    """
+    delivery_ids = {
+        state.last_notified_delivery_id
+        for state in firing
+        if state.last_notified_delivery_id is not None
+    }
+    items: dict[tuple[uuid.UUID, str, str], AlertDeliveryItem] = {}
+    if delivery_ids:
+        for item in (
+            await session.execute(
+                select(AlertDeliveryItem).where(AlertDeliveryItem.delivery_id.in_(delivery_ids))
+            )
+        ).scalars():
+            items[(item.delivery_id, str(item.scope_type), item.scope_ref)] = item
+
+    scopes: list[MonitorFiringScope] = []
+    for state in firing:
+        notified = (
+            items.get((state.last_notified_delivery_id, str(state.scope_type), state.scope_ref))
+            if state.last_notified_delivery_id is not None
+            else None
+        )
+        assert state.last_anomaly_bucket is not None  # guaranteed by firing_monitor_states
+        scopes.append(
+            MonitorFiringScope(
+                scan_config_id=state.scan_config_id,
+                scope_type=MetricScopeType(state.scope_type),
+                scope_ref=state.scope_ref,
+                scope_name=notified.scope_name if notified is not None else None,
+                event_id=notified.event_id if notified is not None else None,
+                direction=AnomalyDirection(notified.direction) if notified is not None else None,
+                last_anomaly_bucket=state.last_anomaly_bucket,
+                last_notified_at=state.last_notified_at,
+            )
+        )
+    scopes.sort(key=lambda scope: _utc(scope.last_anomaly_bucket), reverse=True)
+    return scopes
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 async def _build_monitor_detail(
     session: AsyncSession,
     *,
@@ -156,8 +210,10 @@ async def _build_monitor_detail(
         .scalars()
         .all()
     )
-    rollup = summarize_monitor_states(
-        states, now=now, interval_of=await load_monitor_state_intervals(session, states)
+    interval_of = await load_monitor_state_intervals(session, states)
+    rollup = summarize_monitor_states(states, now=now, interval_of=interval_of)
+    firing_scopes = await _load_firing_scopes(
+        session, firing_monitor_states(states, now=now, interval_of=interval_of)
     )
 
     total_deliveries = (
@@ -221,6 +277,7 @@ async def _build_monitor_detail(
         last_delivery_status=(
             AlertDeliveryStatus(last_delivery[1]) if last_delivery is not None else None
         ),
+        firing_scopes=firing_scopes,
         # Project-level, so it is the identical block the monitors list carries
         # — the detail screen renders the same two toggles and must not disagree
         # with the list about whether anything feeds them (tripl-wkwv.1).

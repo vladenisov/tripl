@@ -9,6 +9,7 @@ import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { MetricsChart } from '@/components/ui/chart-lazy'
+import { ChartSkeleton } from '@/components/states'
 import { RangeSegmentedControl } from '@/components/range-segmented-control'
 import {
   Collapsible,
@@ -23,7 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { aggregateMetricPoints, type MetricsGranularity } from '@/lib/metrics'
-import type { EventType, MonitoringSignal } from '@/types'
+import type { ChartAnnotation, EventType, MonitoringSignal } from '@/types'
 
 import { getMonitoringPath } from '@/lib/monitoring'
 import { eventsMetricsChartKey } from '@/lib/queryKeys'
@@ -47,6 +48,34 @@ type TabMetricsFilters = {
  */
 function volumeTitle(tabLabel: string, isTypeTab: boolean): string {
   return !isTypeTab && tabLabel === 'All events' ? 'Event volume' : `${tabLabel} volume`
+}
+
+/** The bucket a range reads best at: hourly past a week is a dense sawtooth (EV-21). */
+function defaultGranularity(rangeDays: number): MetricsGranularity {
+  return rangeDays > 7 ? 'day' : 'hour'
+}
+
+/**
+ * The open signal as a marker on the chart, so "View signal" points at
+ * something the reader can see: the line alone showed no anomaly (EV-21).
+ */
+function signalAnnotation(signal: MonitoringSignal | null): ChartAnnotation[] | undefined {
+  if (!signal?.bucket) return undefined
+  return [
+    {
+      id: `signal-${signal.scope_type}-${signal.scope_ref}-${signal.bucket}`,
+      project_id: '',
+      // Only the chart reads this: the bucket, label and colour.
+      scope_type: null,
+      scope_ref: signal.scope_ref,
+      bucket: signal.bucket,
+      label: 'Open signal',
+      description: null,
+      color: 'var(--danger)',
+      created_by_user_id: null,
+      created_at: signal.bucket,
+    },
+  ]
 }
 
 /**
@@ -79,8 +108,15 @@ export function TabMetricsCard({
   // table beside it lists, not main's (tripl-vk1p).
   branchId?: string | null
 }) {
-  const [rangeDays, setRangeDays] = useState(TAB_METRICS_RANGE_DAYS_DEFAULT)
-  const [granularity, setGranularity] = useState<MetricsGranularity>('hour')
+  const [rangeDays, setRangeDaysState] = useState(TAB_METRICS_RANGE_DAYS_DEFAULT)
+  const [granularity, setGranularity] = useState<MetricsGranularity>(
+    defaultGranularity(TAB_METRICS_RANGE_DAYS_DEFAULT),
+  )
+  // A new range brings its own bucket size; the select still overrides it.
+  const setRangeDays = (days: number) => {
+    setRangeDaysState(days)
+    setGranularity(defaultGranularity(days))
+  }
 
   // Live bound, not a mount-time snapshot (tripl-jfm3.114).
   const range = useLiveTimeRange(rangeDays * 24 * 60 * 60 * 1000)
@@ -109,6 +145,10 @@ export function TabMetricsCard({
   )
 
   const hasChartData = tabMetricsData.length > 0
+  // Loaded and empty: the card stays a header with one line, not a box around
+  // "No recent volume" with live range controls (EV-16).
+  const isEmpty = isOpen && !isLoading && !hasChartData
+  const annotations = useMemo(() => signalAnnotation(activeTabSignal), [activeTabSignal])
 
   return (
     <Collapsible open={isOpen} onOpenChange={onOpenChange}>
@@ -123,35 +163,50 @@ export function TabMetricsCard({
                 double-counts the events a legacy/backfill scan also collected —
                 so name it here rather than let the title imply the project's
                 whole volume (tripl-jfm3.20). */}
-            <p className="text-caption leading-tight text-muted-foreground">
-              Last {rangeDays} days, grouped by {granularity}
-              {tabMetrics?.scan_config_name ? ` · scan: ${tabMetrics.scan_config_name}` : ''}.
-              {unappliedFilters.length > 0 && ` Not narrowed by ${unappliedFilters.join(', ')}.`}
-            </p>
+            {/* Collapsed by default, and then a bare header: the chart pushed
+                the table below the fold on every visit (EV-21). */}
+            {isOpen && (
+              <p className="text-caption leading-tight text-muted-foreground">
+                {isEmpty ? `No volume in the last ${rangeDays} days` : `Last ${rangeDays} days, grouped by ${granularity}`}
+                {tabMetrics?.scan_config_name ? ` · scan: ${tabMetrics.scan_config_name}` : ''}
+                {/* The collection interval rides in the subtitle instead of a
+                    line of its own under the chart (EV-21). */}
+                {tabMetrics?.interval ? ` · collected every ${tabMetrics.interval}` : ''}.
+                {unappliedFilters.length > 0 && ` Not narrowed by ${unappliedFilters.join(', ')}.`}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {/* The same range control the monitoring drilldown uses (LIVE-26). */}
-            <RangeSegmentedControl
-              size="sm"
-              value={rangeDays}
-              onChange={setRangeDays}
-              options={TAB_METRICS_RANGE_OPTIONS}
-            />
-            <Select
-              value={granularity}
-              onValueChange={value => setGranularity(value as MetricsGranularity)}
-            >
-              <SelectTrigger className="h-7 w-28" aria-label="Time granularity">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TAB_METRICS_GRANULARITY_OPTIONS.map(option => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {/* Range and bucket only while the chart is shown (EV-22); the
+                bucket only while there is a series to bucket. The same range
+                control the monitoring drilldown uses (LIVE-26). */}
+            {isOpen && (
+              <RangeSegmentedControl
+                size="sm"
+                value={rangeDays}
+                onChange={setRangeDays}
+                options={TAB_METRICS_RANGE_OPTIONS}
+              />
+            )}
+            {isOpen && !isEmpty && (
+              <>
+                <Select
+                  value={granularity}
+                  onValueChange={value => setGranularity(value as MetricsGranularity)}
+                >
+                  <SelectTrigger className="h-7 w-28" aria-label="Time granularity">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TAB_METRICS_GRANULARITY_OPTIONS.map(option => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
+            )}
             {activeTabSignal && (
               <Button
                 variant={getSignalTone(activeTabSignal).button}
@@ -174,41 +229,26 @@ export function TabMetricsCard({
           </div>
         </div>
         <CollapsibleContent>
-          <CardContent className="border-t px-4 py-3">
-            {isLoading ? (
-              <div className="flex h-[160px] items-center justify-center text-body text-muted-foreground">
-                Loading metrics…
-              </div>
-            ) : hasChartData ? (
-              <>
-                {/* The served band multiplier rather than the chart's own
-                    constant, so this card can never disagree with the drilldown
-                    it links to (tripl-0zpq.299). Inert while the events-total
-                    series stays count-only — metrics_service.get_events_metrics
-                    emits bare `EventMetricPoint(bucket, count)`, so no point
-                    carries the expected_count/stddev a band needs — but the
-                    prop is what keeps the two charts on one source the day it
-                    does. */}
-                {/* No `color`: volume takes the one fixed single-series hue, as
-                    on Overview and the event detail, instead of a teal/blue
-                    of its own or the type's colour (DS-27). */}
+          {!isEmpty && (
+            <CardContent className="border-t px-4 py-3">
+              {isLoading ? (
+                <ChartSkeleton height={160} label="Loading volume…" />
+              ) : (
+                // The served band multiplier rather than the chart's own
+                // constant, so this card can never disagree with the drilldown
+                // it links to (tripl-0zpq.299). No `color`: volume takes the one
+                // fixed single-series hue (DS-27).
                 <MetricsChart
                   data={tabMetricsData}
                   forecast={tabMetrics?.forecast}
                   height={160}
                   granularity={granularity}
                   sigmaThreshold={tabMetrics?.sigma_threshold}
+                  annotations={annotations}
                 />
-                {tabMetrics?.interval && (
-                  <p className="mt-2 text-body-sm text-muted-foreground">
-                    Collection interval: {tabMetrics.interval}
-                  </p>
-                )}
-              </>
-            ) : (
-              <p className="text-body-sm text-muted-foreground">No recent volume to chart</p>
-            )}
-          </CardContent>
+              )}
+            </CardContent>
+          )}
         </CollapsibleContent>
       </Card>
     </Collapsible>

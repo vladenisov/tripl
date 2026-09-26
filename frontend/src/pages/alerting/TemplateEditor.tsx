@@ -1,5 +1,7 @@
 import { useId, useMemo, useRef, useState, type KeyboardEvent } from "react"
+import { renderTemplatePreview } from './templatePreview'
 import type { AlertDestinationType, AlertMessageFormat } from "@/types"
+import { CodeToken } from "@/components/primitives/code-token"
 import { AnchoredListbox } from "@/components/ui/anchored-listbox"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -141,151 +143,175 @@ export function TemplateEditor({
   }
 
   const formatSelector = showFormatSelector !== false
+  const [previewing, setPreviewing] = useState(false)
+  const preview = useMemo(
+    () => (previewing ? renderTemplatePreview(value || placeholder) : ''),
+    [previewing, value, placeholder],
+  )
   return (
-    <div className="grid gap-3">
-      <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3">
-        <div className="grid gap-2">
-          {formatSelector && destinationType ? (
-            <>
-              <Label id={formatLabelId}>Message format</Label>
-              <Select
-                value={messageFormat}
-                onValueChange={nextValue => onMessageFormatChange(nextValue as AlertMessageFormat)}
-              >
-                <SelectTrigger aria-labelledby={formatLabelId}>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MESSAGE_FORMAT_OPTIONS[destinationType].map(option => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <div className="rounded-md border bg-muted/20 p-3 text-body-sm text-muted-foreground">
-                {FORMAT_HELP[messageFormat].map(helpLine => (
-                  <div key={helpLine} className="font-mono leading-5">
-                    {helpLine}
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : formatSelector ? (
-            <div className="rounded-md border bg-muted/20 p-3 text-body-sm text-muted-foreground">
-              Pick a destination to choose a message format — the choices depend on the channel.
-            </div>
-          ) : (
-            // No "Message format" label here: it labelled a static note, not
-            // a control (ALR-18).
-            <div className="rounded-md border bg-muted/20 p-3 text-body-sm text-muted-foreground">
-              Uses the same escaping and channel formatting as the selected message format.
-            </div>
-          )}
-        </div>
-
-        <div className="grid gap-2">
-          <div className="flex items-center justify-between gap-2">
-            <Label htmlFor={textareaId}>{title}</Label>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button type="button" variant="outline" size="sm">Variables</Button>
-              </PopoverTrigger>
-              {/* Capped at the viewport: 28rem is 448px, wider than a 375px
-                  phone, and Radix clamps the position but not the width, so
-                  the list ran off screen with its descriptions cut (ALR-20). */}
-              <PopoverContent align="end" className="w-[min(28rem,calc(100vw-2rem))] space-y-2">
-                <div className="text-body font-medium">Available variables</div>
-                <div className="max-h-72 overflow-y-auto space-y-1">
-                  {variableOptions.map(option => (
-                    <button
-                      key={option.name}
-                      type="button"
-                      className="flex w-full items-start justify-between gap-3 rounded-md px-2 py-1.5 text-left text-body hover:bg-muted"
-                      onClick={() => insertVariable(option.name)}
-                    >
-                      <span className="font-mono text-body-sm">{`\${${option.name}}`}</span>
-                      <span className="text-body-sm text-muted-foreground">{option.description}</span>
-                    </button>
-                  ))}
-                </div>
-              </PopoverContent>
-            </Popover>
-          </div>
-          <div ref={fieldRef} className="relative">
-            <Textarea
-              ref={textareaRef}
-              id={textareaId}
-              role="combobox"
-              aria-expanded={listOpen}
-              aria-autocomplete="list"
-              aria-controls={listboxId}
-              aria-activedescendant={listOpen ? optionId(highlighted) : undefined}
-              {...fieldErrorProps(textareaId, error)}
-              aria-describedby={describedBy}
-              value={value}
-              rows={8}
-              placeholder={placeholder}
-              onChange={event => {
-                onChange(event.target.value)
-                updateToken(event.target.value, event.target.selectionStart ?? event.target.value.length)
-              }}
-              onKeyDown={handleKeyDown}
-              onClick={event => updateToken(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
-              onKeyUp={event => {
-                // The list's own keys have been handled on the way down; a
-                // re-read here would re-open the list Escape just closed.
-                if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) return
-                updateToken(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length)
-              }}
-              onBlur={() => setActiveToken(null)}
-            />
-            {/* Portalled and anchored to the field (DS-35): inline, the list
-                sat under the dialog's scroll clip and z-order. */}
-            <AnchoredListbox
-              id={listboxId}
-              open={listOpen}
-              anchorRef={fieldRef}
-              onDismiss={() => setActiveToken(null)}
-              ariaLabel="Variable suggestions"
-              className="max-h-72"
+    <div className="grid gap-2">
+      {/* One header row: the title, the format beside it, and the two tools.
+          The format used to own a 220px side column that — before a
+          destination was picked, and always on the item template — held only
+          a grey note stretched to the textarea's height (AL-37). */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Label htmlFor={textareaId} className="mr-auto">{title}</Label>
+        {formatSelector && destinationType && (
+          <span className="inline-flex items-center gap-1.5">
+            <Label id={formatLabelId} className="text-body-sm font-normal text-fg-subtle">Message format</Label>
+            <Select
+              value={messageFormat}
+              onValueChange={nextValue => onMessageFormatChange(nextValue as AlertMessageFormat)}
             >
-                {suggestions.map((option, index) => (
-                  <button
-                    key={option.name}
-                    type="button"
-                    id={optionId(index)}
-                    role="option"
-                    aria-selected={index === highlighted}
-                    // Out of the Tab order: the list is driven from the
-                    // textarea through aria-activedescendant.
-                    tabIndex={-1}
-                    className={`flex w-full items-start justify-between gap-3 rounded-sm px-2 py-1.5 text-left hover:bg-surface-hover ${index === highlighted ? 'bg-surface-hover' : ''}`}
-                    // Keep focus in the textarea, where the arrow keys live.
-                    onMouseDown={event => event.preventDefault()}
-                    onClick={() => insertVariable(option.name)}
-                  >
-                    <span className="font-mono text-body-sm">{`\${${option.name}}`}</span>
-                    <span className="text-body-sm text-muted-foreground">{option.description}</span>
-                  </button>
+              <SelectTrigger aria-labelledby={formatLabelId} className="h-7 w-auto min-w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MESSAGE_FORMAT_OPTIONS[destinationType].map(option => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
                 ))}
-            </AnchoredListbox>
-          </div>
-          {unknownVariables.length > 0 && (
-            <p id={warningId} className="text-body-sm text-warning">
-              {unknownVariables.length === 1 ? 'Unknown variable' : 'Unknown variables'}{' '}
-              {unknownVariables.map(name => `\${${name}}`).join(', ')} — this template does not
-              offer {unknownVariables.length === 1 ? 'it' : 'them'}, so saving will be refused.
-              Pick from Variables.
+              </SelectContent>
+            </Select>
+          </span>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          aria-pressed={previewing}
+          onClick={() => setPreviewing(current => !current)}
+        >
+          Preview
+        </Button>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="outline" size="sm">Variables</Button>
+          </PopoverTrigger>
+          {/* Capped at the viewport: 28rem is 448px, wider than a 375px
+              phone, and Radix clamps the position but not the width, so
+              the list ran off screen with its descriptions cut (ALR-20). */}
+          <PopoverContent align="end" className="w-[min(28rem,calc(100vw-2rem))] space-y-2">
+            <div className="text-body font-medium">Available variables</div>
+            <div className="max-h-72 overflow-y-auto space-y-1">
+              {variableOptions.map(option => (
+                <button
+                  key={option.name}
+                  type="button"
+                  className="flex w-full items-start justify-between gap-3 rounded-md px-2 py-1.5 text-left text-body hover:bg-muted"
+                  onClick={() => insertVariable(option.name)}
+                >
+                  <span className="font-mono text-body-sm">{`\${${option.name}}`}</span>
+                  <span className="text-body-sm text-muted-foreground">{option.description}</span>
+                </button>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+      {formatSelector && !destinationType && (
+        <p className="m-0 text-caption text-fg-subtle">
+          Pick a destination to choose a message format — the choices depend on the channel.
+        </p>
+      )}
+      <div className="grid gap-2">
+        {previewing && (
+          <div
+            role="region"
+            aria-label={`${title} preview`}
+            className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words rounded-control border border-border-subtle bg-bg-sunken p-3 text-body-sm"
+          >
+            {preview}
+            <p className="mt-2 mb-0 text-caption text-fg-subtle">
+              Sample values; formatting marks are shown as typed.
             </p>
-          )}
-          {error && (
-            <p id={fieldErrorId(textareaId)} className="text-body-sm text-destructive">{error}</p>
-          )}
-          <p className="text-body-sm text-muted-foreground">
-            {helperText}
-          </p>
+          </div>
+        )}
+        <div ref={fieldRef} className={previewing ? 'hidden' : 'relative'}>
+          <Textarea
+            ref={textareaRef}
+            id={textareaId}
+            role="combobox"
+            aria-expanded={listOpen}
+            aria-autocomplete="list"
+            aria-controls={listboxId}
+            aria-activedescendant={listOpen ? optionId(highlighted) : undefined}
+            {...fieldErrorProps(textareaId, error)}
+            aria-describedby={describedBy}
+            value={value}
+            rows={8}
+            placeholder={placeholder}
+            onChange={event => {
+              onChange(event.target.value)
+              updateToken(event.target.value, event.target.selectionStart ?? event.target.value.length)
+            }}
+            onKeyDown={handleKeyDown}
+            onClick={event => updateToken(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
+            onKeyUp={event => {
+              // The list's own keys have been handled on the way down; a
+              // re-read here would re-open the list Escape just closed.
+              if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) return
+              updateToken(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length)
+            }}
+            onBlur={() => setActiveToken(null)}
+          />
+          {/* Portalled and anchored to the field (DS-35): inline, the list
+              sat under the dialog's scroll clip and z-order. */}
+          <AnchoredListbox
+            id={listboxId}
+            open={listOpen}
+            anchorRef={fieldRef}
+            onDismiss={() => setActiveToken(null)}
+            ariaLabel="Variable suggestions"
+            className="max-h-72"
+          >
+              {suggestions.map((option, index) => (
+                <button
+                  key={option.name}
+                  type="button"
+                  id={optionId(index)}
+                  role="option"
+                  aria-selected={index === highlighted}
+                  // Out of the Tab order: the list is driven from the
+                  // textarea through aria-activedescendant.
+                  tabIndex={-1}
+                  className={`flex w-full items-start justify-between gap-3 rounded-sm px-2 py-1.5 text-left hover:bg-surface-hover ${index === highlighted ? 'bg-surface-hover' : ''}`}
+                  // Keep focus in the textarea, where the arrow keys live.
+                  onMouseDown={event => event.preventDefault()}
+                  onClick={() => insertVariable(option.name)}
+                >
+                  <span className="font-mono text-body-sm">{`\${${option.name}}`}</span>
+                  <span className="text-body-sm text-muted-foreground">{option.description}</span>
+                </button>
+              ))}
+          </AnchoredListbox>
         </div>
+        {unknownVariables.length > 0 && (
+          <p id={warningId} className="text-body-sm text-warning">
+            {unknownVariables.length === 1 ? 'Unknown variable' : 'Unknown variables'}{' '}
+            {unknownVariables.map(name => `\${${name}}`).join(', ')} — this template does not
+            offer {unknownVariables.length === 1 ? 'it' : 'them'}, so saving will be refused.
+            Pick from Variables.
+          </p>
+        )}
+        {error && (
+          <p id={fieldErrorId(textareaId)} className="text-body-sm text-destructive">{error}</p>
+        )}
+        <p className="m-0 text-caption text-fg-subtle">
+          {helperText}
+        </p>
+        {formatSelector && destinationType && messageFormat !== 'plain' && (
+          <p className="m-0 flex flex-wrap items-center gap-1 text-caption text-fg-subtle">
+            <span>Formatting:</span>
+            {FORMAT_HELP[messageFormat].filter(line => !line.includes(' ')).map(helpLine => (
+              <CodeToken key={helpLine}>{helpLine}</CodeToken>
+            ))}
+            {FORMAT_HELP[messageFormat].filter(line => line.includes(' ')).map(helpLine => (
+              <span key={helpLine}>{helpLine}</span>
+            ))}
+          </p>
+        )}
       </div>
     </div>
   )

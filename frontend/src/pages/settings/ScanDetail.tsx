@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { IconButton } from "@/components/ui/icon-button"
 import { Chip } from "@/components/primitives/chip"
 import { ErrorState } from "@/components/error-state"
+import { DisabledReason, SectionSkeleton, StatValueSkeleton, disabledReasonAria } from '@/components/states'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { getErrorMessage } from '@/lib/utils'
 import { friendlyScanError } from '@/lib/scanError'
@@ -41,6 +42,9 @@ import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
 import { useConfirm } from '@/hooks/useConfirm'
 import { ScanErrorTechnicalDetails } from './scans/ScanErrorTechnicalDetails'
 
+/** Why Apply groups is off: there is nothing saved to apply. */
+const APPLY_GROUPS_BLOCKER = 'Add event group rules first.'
+
 function chipList(values: string[]) {
   if (values.length === 0) return <NoneTag />
   return (
@@ -65,7 +69,7 @@ function PlatformPresencePanel({ slug, scanConfigId }: { slug: string; scanConfi
 
   let body: React.ReactNode
   if (isLoading) {
-    body = <p className="px-4 py-3 text-body text-muted-foreground">Loading platform presence…</p>
+    body = <SectionSkeleton variant="rows" rows={2} label="Loading platform presence…" />
   } else if (isError) {
     // Without this branch a failed fetch fell through to "No platform column
     // configured" — false for a scan that has one (DATA-21).
@@ -295,10 +299,13 @@ export function ScanDetail({
       <MiniStatStrip boxed>
         {/* An active run is "Running", not "just now": the relative time of a
             run still in progress read as a finished one (DA-23). */}
+        {/* Before the runs answer, a skeleton, not "never" and "—" (#237 DS-25). */}
         <MiniStat
           label="Last run"
           value={
-            lastJob && (lastJob.status === 'pending' || lastJob.status === 'running')
+            isLoading
+              ? <StatValueSkeleton />
+              : lastJob && (lastJob.status === 'pending' || lastJob.status === 'running')
               ? 'Running'
               : lastJob
                 ? formatRelativeTime(lastJob.completed_at ?? lastJob.started_at ?? lastJob.created_at)
@@ -309,13 +316,13 @@ export function ScanDetail({
             and a metrics run reports query_rows_scanned. The figure cannot say
             which, so the title does. */}
         <div title={jobRowsReadTitle(lastJob)}>
-          <MiniStat label="Rows read · last run" value={lastRows == null ? '—' : lastRows.toLocaleString()} />
+          <MiniStat label="Rows read · last run" value={isLoading ? <StatValueSkeleton /> : lastRows == null ? '—' : lastRows.toLocaleString()} />
         </div>
-        <MiniStat label="Events written" value={lastEvents == null ? '—' : lastEvents.toLocaleString()} />
+        <MiniStat label="Events written" value={isLoading ? <StatValueSkeleton /> : lastEvents == null ? '—' : lastEvents.toLocaleString()} />
         {/* "Metric points", not "Metric rows": these are time-series points on a
             metric, and "Metrics" is the name of a different surface (Observe ›
             Metrics, the user-defined catalog). */}
-        <MiniStat label="Metric points" value={lastMetricPoints == null ? '—' : lastMetricPoints.toLocaleString()} />
+        <MiniStat label="Metric points" value={isLoading ? <StatValueSkeleton /> : lastMetricPoints == null ? '—' : lastMetricPoints.toLocaleString()} />
       </MiniStatStrip>
 
       {/* Source & query */}
@@ -411,20 +418,33 @@ export function ScanDetail({
         title="Recent runs"
         subtitle={recentJobsSubtitle}
         right={canApplyGroups ? (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => applyGroupsMut.mutate()}
-            disabled={scanConfig.event_group_rules.length === 0 || applyGroupsMut.isPending}
-            title={
-              scanConfig.event_group_rules.length > 0
-                ? 'Apply saved group rules to existing events'
-                : 'Add event group rules first'
-            }
-          >
-            <GitMerge className="size-3" />
-            {applyGroupsMut.isPending ? 'Applying…' : 'Apply groups'}
-          </Button>
+          // With no rules the reason is a caption beside the button, not a
+          // `title` a disabled button never shows (#237 DA-9).
+          <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1">
+            <DisabledReason
+              id="apply-groups"
+              tone="muted"
+              reason={scanConfig.event_group_rules.length === 0 ? APPLY_GROUPS_BLOCKER : null}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => applyGroupsMut.mutate()}
+              disabled={scanConfig.event_group_rules.length === 0 || applyGroupsMut.isPending}
+              {...disabledReasonAria(
+                'apply-groups',
+                scanConfig.event_group_rules.length === 0 ? APPLY_GROUPS_BLOCKER : null,
+              )}
+              title={
+                scanConfig.event_group_rules.length > 0
+                  ? 'Apply saved group rules to existing events'
+                  : undefined
+              }
+            >
+              <GitMerge className="size-3" />
+              {applyGroupsMut.isPending ? 'Applying…' : 'Apply groups'}
+            </Button>
+          </div>
         ) : undefined}
       >
         {applyGroupsMut.isError && (
@@ -476,7 +496,7 @@ export function ScanDetail({
             )}
           </div>
         )}
-        {isLoading && <p className="px-4 py-3 text-body text-muted-foreground">Loading runs…</p>}
+        {isLoading && <SectionSkeleton variant="rows" rows={3} label="Loading runs…" />}
         {/* A failed jobs fetch previously fell through to "No runs yet" — surface
             the error with a retry instead of a false empty (tripl-2su6.9). */}
         {jobsError && !isLoading && (

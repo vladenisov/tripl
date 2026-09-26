@@ -233,6 +233,10 @@ class ProjectSummary(BaseModel):
     # logs a newer success, so this per-config rollup is what the workspace
     # "failed jobs" surface must count.
     failing_scan_config_count: int = 0
+    # Enabled alert destinations whose *latest* delivery failed — the
+    # per-channel twin of ``failing_scan_config_count``, so the Overview status
+    # line can name a broken channel next to failing scans (MO-15).
+    failing_alert_destination_count: int = 0
     latest_scan_job: ProjectLatestScanJob | None = None
     latest_signal: ProjectLatestSignal | None = None
 

@@ -78,7 +78,11 @@ export default function AuthPage() {
   // A reset link lands on /auth?reset_token=... (the SPA has no dedicated reset
   // route), so an incoming token puts the page straight into reset mode.
   const resetToken = searchParams.get('reset_token') ?? ''
-  const [chosenMode, setChosenMode] = useState<AuthMode>('login')
+  // The session-expiry dialog links to /auth?mode=forgot, so that link opens
+  // the reset-request form rather than sign-in (SH-35).
+  const [chosenMode, setChosenMode] = useState<AuthMode>(() =>
+    searchParams.get('mode') === 'forgot' ? 'forgot' : 'login',
+  )
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')

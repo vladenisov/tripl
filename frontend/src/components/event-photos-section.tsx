@@ -8,7 +8,8 @@ import { Card, CardContent } from '@/components/ui/card'
 import { CommentThread } from '@/components/comment-thread'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Frame, ImagePlus, Loader2, Trash2, Upload } from 'lucide-react'
+import { Frame, ImagePlus, Link2, Loader2, Trash2, Upload } from 'lucide-react'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useConfirm } from '@/hooks/useConfirm'
 import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -74,6 +75,9 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [opened, setOpened] = useState<EventPhoto | null>(null)
   const [dragOver, setDragOver] = useState(false)
+  // The Figma URL row opens on demand: shown up front it was one of three
+  // competing ways to add something to an empty section (EV-33).
+  const [figmaOpen, setFigmaOpen] = useState(false)
   const [figmaUrl, setFigmaUrl] = useState('')
   const [figmaTitle, setFigmaTitle] = useState('')
   const [uploads, setUploads] = useState<UploadItem[]>([])
@@ -128,6 +132,7 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
       setError(null)
       setFigmaUrl('')
       setFigmaTitle('')
+      setFigmaOpen(false)
       void queryClient.invalidateQueries({ queryKey: photosKey })
     },
     onError: (err: unknown) => {
@@ -185,15 +190,16 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
   }
 
   const photos = photosQuery.data ?? []
+  const isEmpty = !photosQuery.isLoading && photos.length === 0
 
   return (
     <Card>
       {/* The Card's own p-4 body and the section-title scale (12.5px
           semibold), not a p-6 body under an 18px title (DS-4, MO-9). */}
       <CardContent>
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className={`${isEmpty ? 'mb-2' : 'mb-4'} flex flex-wrap items-center justify-between gap-3`}>
           <div className="flex items-center gap-2">
-            <ImagePlus className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+            <ImagePlus className="size-4 text-muted-foreground" aria-hidden="true" />
             <h2 className="text-body-sm font-semibold">Photos &amp; specs</h2>
             <span className="tnum text-caption text-muted-foreground">({photos.length})</span>
           </div>
@@ -217,18 +223,31 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
                 disabled={uploading}
               >
                 {uploading ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  <Loader2 className="animate-spin" aria-hidden="true" />
                 ) : (
-                  <Upload className="mr-2 h-4 w-4" />
+                  <Upload aria-hidden="true" />
                 )}
                 Upload image
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                aria-expanded={figmaOpen}
+                aria-controls="figma-attach"
+                onClick={() => setFigmaOpen(open => !open)}
+              >
+                <Link2 aria-hidden="true" />
+                Attach Figma link
               </Button>
             </div>
           )}
         </div>
 
-        {canWrite && (
-          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
+        {canWrite && figmaOpen && (
+          <div
+            id="figma-attach"
+            className="mb-4 flex flex-wrap items-center gap-2 rounded-card border bg-bg-sunken px-3 py-2"
+          >
             <Frame className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
             <label htmlFor="figma-url" className="sr-only">Figma URL</label>
             <Input
@@ -248,14 +267,13 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
             />
             <Button
               size="sm"
-              variant="secondary"
               disabled={!figmaUrl.trim() || figmaMut.isPending}
               onClick={() => figmaMut.mutate()}
             >
               {figmaMut.isPending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                <Loader2 className="animate-spin" aria-hidden="true" />
               ) : null}
-              Attach spec
+              Attach
             </Button>
           </div>
         )}
@@ -275,26 +293,30 @@ export default function EventPhotosSection({ slug, eventId }: Props) {
             setDragOver(false)
             handleFiles(event.dataTransfer.files)
           }}
-          className={`rounded-md border-2 border-dashed p-4 transition-colors ${
-            dragOver ? 'border-primary bg-primary/5' : 'border-muted-foreground/20'
-          }`}
+          // The drop target shows itself only while something is dragged over
+          // it: a 400px dashed box around nothing was the empty state (EV-33).
+          className={`rounded-card border-2 border-dashed transition-colors ${
+            dragOver ? 'border-primary bg-primary/5 p-4' : 'border-transparent'
+          } ${isEmpty && !dragOver ? 'py-1' : ''}`}
         >
           {photosQuery.isLoading ? (
-            <div className="flex h-24 items-center justify-center text-body text-muted-foreground">
-              Loading photos…
+            <div role="status" className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+              <span className="sr-only">Loading photos…</span>
+              {Array.from({ length: 4 }, (_, i) => (
+                <Skeleton key={i} className="aspect-square w-full rounded-control" />
+              ))}
             </div>
           ) : photos.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-1 py-6 text-center text-body text-muted-foreground">
-              <ImagePlus className="size-5 text-muted-foreground/70" />
+            <div className="text-body-sm text-muted-foreground">
               {canWrite ? (
                 <>
-                  <div>Drop images here, click <span className="font-medium">Upload</span>, or attach a Figma URL above</div>
-                  <div className="text-body-sm">
+                  <p>No screenshots or Figma links yet. Drop images here, or use the buttons above.</p>
+                  <p className="text-caption text-fg-tertiary">
                     JPEG, PNG, GIF, or WebP{maxSizeMb !== undefined && `, up to ${maxSizeMb} MB each`}
-                  </div>
+                  </p>
                 </>
               ) : (
-                <div>No photos or specs attached yet.</div>
+                <p>No screenshots or Figma links yet.</p>
               )}
             </div>
           ) : (

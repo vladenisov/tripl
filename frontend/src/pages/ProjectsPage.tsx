@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { dataSourcesApi } from '@/api/dataSources'
 import { projectsApi } from '@/api/projects'
 import { useAuth } from '@/components/auth-context'
@@ -9,6 +10,7 @@ import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { StatValueSkeleton } from '@/components/states'
 import { WorkspaceWelcome } from '@/components/workspace-welcome'
 import { DemoProvisioningDialog } from '@/demo/DemoProvisioningDialog'
 import {
@@ -40,7 +42,18 @@ import { reviewQueueHint, summarizePortfolio } from './ProjectsPagePortfolio'
 export default function MainPage() {
   const queryClient = useQueryClient()
   const { user } = useAuth()
-  const [showForm, setShowForm] = useState(false)
+  // `?new=1` opens the create dialog on arrival: the sidebar project
+  // switcher's "New project" item lands here (#238 SH-15).
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [showForm, setShowFormState] = useState(() => searchParams.get('new') === '1')
+  const setShowForm = (open: boolean) => {
+    setShowFormState(open)
+    if (!open && searchParams.has('new')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('new')
+      setSearchParams(next, { replace: true })
+    }
+  }
   // The slug whose delete succeeded but whose list refetch has not landed yet:
   // its card is still listed and must keep saying "Deleting…" (WS-9).
   const [settlingSlug, setSettlingSlug] = useState<string | null>(null)
@@ -143,7 +156,9 @@ export default function MainPage() {
   const dataSourceValue = dataSourcesQuery.isError
     ? 'Unavailable'
     : dataSourcesQuery.isLoading
-      ? '...'
+      // A placeholder bar, not "..." (#237 DS-25): the strip never claims a
+      // figure it has not loaded.
+      ? <StatValueSkeleton />
       : String(dataSourceCount)
   const isOwner = isOwnerRole(user?.role)
   const canCreateProject = canWrite(user?.role)
@@ -211,7 +226,7 @@ export default function MainPage() {
         }
       />
 
-      {showForm && (
+      {showForm && canCreateProject && (
         <CreateProjectDialog
           onClose={() => setShowForm(false)}
           existingSlugs={projects.map((project) => project.slug)}
@@ -302,11 +317,11 @@ export default function MainPage() {
                   one project and there is no workspace-wide queue to open. It used
                   to link to whichever project was edited last — "2292 events across
                   3 projects" opening the 796 of them in one — so it names where the
-                  events are instead, and each project card's own pending-review chip
+                  events are instead, and each project card's own in-review chip
                   is the link into that project's queue (tripl-a1d1). */}
               <AttentionStat
                 icon={BellRing}
-                label="Review queue"
+                label="In review"
                 value={String(portfolio.reviewPendingEventCount)}
                 unit={pluralize(portfolio.reviewPendingEventCount, 'event', 'events')}
                 hint={reviewQueueHint(projects)}

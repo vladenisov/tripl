@@ -139,7 +139,7 @@ synthetic source:
 The demo offers two guides, and they do different jobs.
 
 - **The product tour** (*Take the tour* on the welcome panel) walks the surfaces:
-  Events, Scans, Live activity, Metrics and fact tables, Monitors, Anomalies,
+  Events, Scans, Overview, Metrics and fact tables, Alert rules, Anomalies,
   Coverage, Reconciliation, Branches and the alert preview, and ends by opening
   *Search by meaning* (the command palette) for you. Opening a step's surface
   advances the tour and it remembers where you were, so it can be followed across

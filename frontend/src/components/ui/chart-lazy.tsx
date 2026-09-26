@@ -1,7 +1,7 @@
 import { Suspense, type ComponentProps } from 'react'
 import { lazyWithReload } from '@/lib/lazyWithReload'
 import type * as ChartLib from './chart'
-import { cn } from '@/lib/utils'
+import { ChartSkeleton } from '@/components/states'
 
 // Lazy wrapper that keeps recharts out of pages' initial chunks. Both lazies
 // resolve via the same dynamic import — Vite/Rollup deduplicates the request,
@@ -23,6 +23,8 @@ type MetricsChartProps = ComponentProps<typeof ChartLib.MetricsChart>
 type MiniMetricsChartProps = ComponentProps<typeof ChartLib.MiniMetricsChart>
 type MetricsMultiSeriesChartProps = ComponentProps<typeof ChartLib.MetricsMultiSeriesChart>
 
+// A chart-shaped skeleton at the chart's own height, not a "Loading…" word in
+// a blank box (DS-26).
 function ChartFallback({
   className,
   height,
@@ -30,18 +32,7 @@ function ChartFallback({
   className?: string
   height?: number
 }) {
-  return (
-    <div
-      role="status"
-      className={cn(
-        'flex items-center justify-center text-body-sm text-muted-foreground',
-        className,
-      )}
-      style={{ height }}
-    >
-      Loading…
-    </div>
-  )
+  return <ChartSkeleton className={className} height={height} />
 }
 
 export function MetricsChart(props: MetricsChartProps) {

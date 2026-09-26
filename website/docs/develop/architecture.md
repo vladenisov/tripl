@@ -153,8 +153,8 @@ Locally, all of the above (except the warehouses) run under Docker Compose:
   event. It combines **z-score** thresholds with **seasonality** decomposition
   (**STL / MSTL**) so it understands daily and weekly rhythms rather than just a
   flat baseline.
-- **Forecast** — a next-bucket extrapolation, rendered as a dashed line on the
-  metric chart.
+- **Forecast** — a next-bucket extrapolation, rendered on the metric chart as a
+  hollow point with a whisker for its likely range.
 - **Schema drift** — detects fields appearing, disappearing, or carrying new
   values; keeps sample values; and prunes old drift records on a retention
   schedule.

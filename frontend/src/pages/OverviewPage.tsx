@@ -1,3 +1,4 @@
+import { Fragment, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -9,27 +10,33 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { activityApi } from '@/api/activity'
-import { useActivityRailInline } from '@/components/activity-panel'
+import { useActivityRailInline } from '@/components/activity-rail-store'
 import { ApiError } from '@/api/client'
 import { dataSourcesApi } from '@/api/dataSources'
 import { eventMetricsApi } from '@/api/eventMetrics'
-import { projectsApi } from '@/api/projects'
 import NotFoundPage from '@/pages/NotFoundPage'
 import { ErrorState } from '@/components/error-state'
 import { OnboardingChecklist } from '@/components/onboarding-checklist'
 import { countRealSources } from '@/components/onboarding-utils'
 import { SyntheticSourceBadge } from '@/demo/capabilityBadges'
 import { DemoWelcomePanel } from '@/demo/DemoWelcomePanel'
+import { Chip } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
-import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
+import { MiniStat, MiniStatStrip, type MiniStatTone } from '@/components/primitives/mini-stat'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { Panel } from '@/components/settings/kit'
 import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
-import { LoadingState } from '@/components/primitives/loading-state'
+import { EmptyState } from '@/components/empty-state'
+import { StatValueSkeleton } from '@/components/states'
+import { Button } from '@/components/ui/button'
 import { SERIES_COLORS } from '@/components/ui/chart-format'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useAuth } from '@/components/auth-context'
 import { useTheme } from '@/components/theme-provider'
+import { isOwner } from '@/lib/permissions'
+import { getAlertingPath } from '@/lib/navigation'
+import { METRIC_INTERVAL_LABEL } from '@/lib/metricFormat'
 import { formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
 import {
   coverageTone,
@@ -39,13 +46,14 @@ import {
   type StatusLexeme,
 } from '@/lib/statusLexicon'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
-import { formatNumber } from '@/lib/format'
-import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
+import { APP_LOCALE, formatNumber } from '@/lib/format'
+import { formatSignalEffect, formatSignalEffectDetail, getMonitoringPath } from '@/lib/monitoring'
 import { selectSignificantSignals } from '@/lib/signalMagnitude'
 import { formatSignalValues } from '@/lib/signalMetricFormat'
 import { friendlyScanError } from '@/lib/scanError'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
 import { useLiveTimeRange } from '@/hooks/useLiveTimeRange'
+import { useActiveBranchId } from '@/hooks/useBranch'
 import {
   signalScopeLabel,
   signalScopeRefLabel,
@@ -57,6 +65,7 @@ import type {
   ActivityItemSeverity,
   ActivityItemType,
   DataSource,
+  EventMetricPoint,
   MonitoringSignal,
 } from '@/types'
 import {
@@ -65,7 +74,7 @@ import {
   overviewKpiSeriesKey,
   overviewTopEventsKey,
   overviewVolumeKey,
-  projectKey,
+  projectQueryOptions,
 } from '@/lib/queryKeys'
 
 const SIGNAL_LIMIT = 6
@@ -89,13 +98,16 @@ const VOLUME_SUBTITLE = 'One scan — not the project’s combined volume across
 export default function OverviewPage() {
   const { slug } = useParams<{ slug: string }>()
   const { chartStyle } = useTheme()
+  const { user } = useAuth()
   // Adaptive fallback cadence: the live stream refreshes signals/activity via the
   // invalidation map, so poll only while the stream is unavailable.
   const refetchInterval = useAdaptiveRefetchInterval({ activeMs: 60_000 })
 
+  // On a working branch the plan KPIs (active, implemented, in review) count
+  // that branch's events, like the lists beside them (SH-11).
+  const branchId = useActiveBranchId()
   const projectQuery = useQuery({
-    queryKey: projectKey(slug),
-    queryFn: () => projectsApi.get(slug!),
+    ...projectQueryOptions(slug, branchId),
     enabled: !!slug,
   })
   // A live bound rather than a mount-time snapshot, so a long-open tab keeps
@@ -199,6 +211,33 @@ export default function OverviewPage() {
   // it is pending but NOT fetching, so an `isLoading` check let the card claim
   // "No volume data yet." before it had even asked (tripl-jfjt).
   const isVolumePending = volumeQuery.isPending && !projectQuery.isError
+  // Same for every project-gated panel: pending-and-waiting is still pending.
+  const isSignalsPending = signalsQuery.isPending && !projectQuery.isError
+  const isTopEventsPending = topEventsQuery.isPending && !projectQuery.isError
+  // The card's headline: the last 24 hours against the 24 before, not the
+  // newest (partial) bucket, and a caption in dates rather than "167 buckets"
+  // (MO-16).
+  const volumeSummary = summarizeVolume(volumePoints)
+  const volumeInterval = volumeQuery.data?.interval
+  const volumeCadence =
+    volumeInterval && volumeInterval in METRIC_INTERVAL_LABEL
+      ? METRIC_INTERVAL_LABEL[volumeInterval as keyof typeof METRIC_INTERVAL_LABEL].toLowerCase()
+      : null
+  const projectTotalPath = volumeScanConfigId
+    ? getMonitoringPath(slug!, { scope_type: 'project_total', scope_ref: volumeScanConfigId })
+    : null
+  // Nothing to show below the checklist yet: no active event and no source.
+  // Five empty panels of chrome competed with the checklist that does teach,
+  // so the page shows one empty state instead (MO-24).
+  const isBlankProject =
+    !!summary && summary.active_event_count === 0 && sourcesQuery.isSuccess && sources.length === 0
+  // Colour only the exception (MO-17): coverage under the good bar reads as a
+  // warning, never an alarm red, and a good or not-yet-measured one is neutral.
+  const coverageKpiTone: MiniStatTone =
+    summary && summary.active_event_count > 0 && coverageTone(coveragePct) !== 'success'
+      ? 'warning'
+      : 'neutral'
+  const canConnectSource = isOwner(user?.role)
 
   // A nonexistent slug is a 404 on the project query itself: replace the whole
   // widget grid with the app's full-page not-found (issue .9). Non-404 project
@@ -210,8 +249,30 @@ export default function OverviewPage() {
 
   return (
     <PageContainer>
+      {/* Header. The eyebrow is the nav group, never the project name: the
+          top bar's breadcrumb already carries that (DS-2 / MO-40). The title
+          is "Overview", what the nav and the URL call the project home; "Live
+          activity" named it after one of its cards (SH-8 / JR-35). The one-line
+          status under it answers "is everything OK?" before any panel (MO-15). */}
+      <PageHeader
+        eyebrow="Observe"
+        title="Overview"
+        description={
+          slug && summary && !isBlankProject ? (
+            <OverviewStatus
+              slug={slug}
+              signalCount={signalsQuery.data ? signalCount : null}
+              openIncidents={summary.open_incident_count}
+              failingScans={summary.failing_scan_config_count}
+              failingDestinations={summary.failing_alert_destination_count ?? 0}
+              sources={sourcesQuery.isSuccess ? sources : null}
+            />
+          ) : undefined
+        }
+      />
+
       {/* A freshly-created demo lands here (not Events): orient the user and
-          launch the tour before anything else. */}
+          launch the tour before anything else below the title. */}
       {projectQuery.data?.is_demo && <DemoWelcomePanel project={projectQuery.data} />}
 
       {/* Guided first-run checklist (UX-24) — a "start here" for the core
@@ -228,12 +289,24 @@ export default function OverviewPage() {
         />
       )}
 
-      {/* Header. The eyebrow is the nav group, never the project name: the
-          top bar's breadcrumb already carries that (DS-2 / MO-40). */}
-      <PageHeader eyebrow="Observe" title="Live activity" />
-
-
-      {/* KPI strip */}
+      {isBlankProject ? (
+        <EmptyState
+          icon={Database}
+          title="Overview fills in after your first scan"
+          description="Connect a data source and run a scan. Volume, top events, anomalies and source health then show up here."
+          action={
+            canConnectSource ? (
+              <Button asChild size="sm">
+                <Link to="/settings/data-sources" className="no-underline">
+                  Connect a data source
+                </Link>
+              </Button>
+            ) : undefined
+          }
+        />
+      ) : (
+      <>
+      {/* KPI strip. The exception tiles link where the work is (MO-15). */}
       {projectQuery.isError ? (
         <ErrorState
           title="Overview unavailable"
@@ -246,36 +319,50 @@ export default function OverviewPage() {
         />
       ) : (
         <MiniStatStrip boxed>
+          {/* Neutral figures by default; only the exceptions carry a colour
+              (MO-17). A pending value is a skeleton, never a "0" (DS-25). */}
           <MiniStat
             label="Active events"
-            value={summary ? formatNumber(summary.active_event_count) : '—'}
+            value={summary ? formatNumber(summary.active_event_count) : <StatValueSkeleton />}
           />
           <MiniStat
             label="Implemented"
-            value={summary ? formatNumber(summary.implemented_event_count) : '—'}
-            tone="success"
+            value={summary ? formatNumber(summary.implemented_event_count) : <StatValueSkeleton />}
           />
-          <MiniStat
-            label="Needs review"
-            value={summary ? formatNumber(reviewCount) : '—'}
-            tone={reviewCount > 0 ? 'warning' : 'neutral'}
-          />
-          <MiniStat
-            label="Open signals"
-            value={signalsQuery.data ? formatNumber(signalCount) : '—'}
-            tone={signalCount > 0 ? 'danger' : 'success'}
-            pulse={signalCount > 0}
-            delta={signalCount > 0 ? 'active' : undefined}
-          />
-          <MiniStat
-            label="Coverage"
-            value={
-              summary
-                ? formatPlanCoverage(summary.implemented_event_count, summary.active_event_count)
-                : '—'
-            }
-            tone={coverageTone(coveragePct)}
-          />
+          {/* "In review", the one name for the status count everywhere
+              (JR-27): the tile, the Events tab and the glossary. */}
+          <KpiLink to={slug ? `/p/${slug}/events/review` : undefined}>
+            <MiniStat
+              label="In review"
+              value={summary ? formatNumber(reviewCount) : <StatValueSkeleton />}
+            />
+          </KpiLink>
+          <KpiLink to={slug ? `/p/${slug}/anomalies` : undefined}>
+            <MiniStat
+              label="Open signals"
+              value={signalsQuery.data ? formatNumber(signalCount) : <StatValueSkeleton />}
+              tone={signalsQuery.data && signalCount > 0 ? 'danger' : 'neutral'}
+              // The one pulse on the page: the rows below are static (MO-18).
+              pulse={signalCount > 0}
+              delta={signalCount > 0 ? 'active' : undefined}
+            />
+          </KpiLink>
+          <KpiLink to={slug ? `/p/${slug}/coverage` : undefined}>
+            <MiniStat
+              label="Coverage"
+              value={
+                !summary ? (
+                  <StatValueSkeleton />
+                ) : summary.active_event_count > 0 ? (
+                  formatPlanCoverage(summary.implemented_event_count, summary.active_event_count)
+                ) : (
+                  // Nothing planned yet: no score, rather than a red 0% (MO-17).
+                  '—'
+                )
+              }
+              tone={coverageKpiTone}
+            />
+          </KpiLink>
           {newEventsSeries.length > 1 && (
             <>
               {/* Stacked like the MiniStat columns (caption above, figure below):
@@ -313,165 +400,10 @@ export default function OverviewPage() {
         </MiniStatStrip>
       )}
 
-      {/* Volume — one scan config, named. Labelled "project total" until
-          tripl-jfm3.20, where it plotted 2.4 % of windy-ios's volume directly
-          above a "Top events" row 12× larger. */}
-      <Panel
-        // The window is in the title because the card is capped at it and says
-        // so nowhere else — the caption reads "latest bucket · N buckets" and
-        // the sibling panel below already names its own ("Top events · 48h").
-        title={
-          volumeScanName
-            ? `Volume · ${volumeScanName} · ${VOLUME_WINDOW_DAYS}d`
-            : `Volume · ${VOLUME_WINDOW_DAYS}d`
-        }
-        // Held through the pending state as well, so the header keeps its second
-        // line instead of growing one when the series lands (tripl-jfjt).
-        subtitle={volumeScanName || isVolumePending ? VOLUME_SUBTITLE : undefined}
-      >
-        <div className="p-4">
-        {volumeQuery.isError && (
-          <ErrorState
-            title="Volume unavailable"
-            error={volumeQuery.error}
-            onRetry={() => {
-              void volumeQuery.refetch()
-            }}
-            retryLabel="Retry"
-            compact
-          />
-        )}
-        {!volumeQuery.isError && isVolumePending && <VolumeSkeleton />}
-        {!volumeQuery.isError && !isVolumePending && volumePoints.length === 0 && (
-          // Two different facts, and the card used to report only the second.
-          // A scan whose last bucket predates the window has months of history
-          // and nothing here — that is a scan that stopped, the state the
-          // failing-scan chip above exists to surface, not an empty project.
-          // The drilldown carries a range selector, so it can show the rest.
-          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-            {volumeScanConfigId ? (
-              <>
-                No volume in the last {VOLUME_WINDOW_DAYS} days.{' '}
-                <Link
-                  to={getMonitoringPath(slug!, {
-                    scope_type: 'project_total',
-                    scope_ref: volumeScanConfigId,
-                  })}
-                  style={{ color: 'var(--accent)' }}
-                >
-                  See this scan’s full history
-                </Link>
-              </>
-            ) : (
-              'No volume data yet.'
-            )}
-          </div>
-        )}
-        {volumePoints.length > 0 && (
-          // The chart takes the rest of the row and scales to it. A fixed 320px
-          // SVG beside the figure ran off the card on a phone, cutting off the
-          // newest buckets, and left half of a wide card empty (MON-33, LIVE-29).
-          <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
-            <div
-              role="group"
-              aria-label={`Latest bucket volume ${formatNumber(volumeCounts[volumeCounts.length - 1]!)}, ${volumePoints.length} buckets`}
-              className="flex shrink-0 flex-col gap-px"
-            >
-              {/* The hero figure: sans with tabular digits (DS-17) on the
-                  display step of the type scale (DS-13). */}
-              <span className="tnum text-display font-semibold">
-                {formatNumber(volumeCounts[volumeCounts.length - 1]!)}
-              </span>
-              <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
-                latest bucket · {volumePoints.length} buckets
-              </span>
-            </div>
-            <div
-              role="img"
-              aria-label={volumeChartLabel(volumeCounts, volumeScanName)}
-              className="min-w-[8rem] flex-1"
-            >
-              <Sparkline data={volumeCounts} variant={chartStyle} width={320} height={48} responsive />
-              <span className="sr-only">
-                Volume by bucket: {volumeCounts.map((c) => formatNumber(c)).join(', ')}.
-              </span>
-            </div>
-          </div>
-        )}
-        </div>
-      </Panel>
-
-      {/* Top events by volume — summed across EVERY scan config, unlike the
-          volume card above it, which charts one. Saying so is what stops the
-          two panels reading as a contradiction (tripl-jfm3.20). */}
-      <Panel title="Top events · 48h" subtitle="Across every scan in this project.">
-        <div className="p-4">
-        {topEventsQuery.isError && (
-          <ErrorState
-            title="Top events unavailable"
-            error={topEventsQuery.error}
-            onRetry={() => {
-              void topEventsQuery.refetch()
-            }}
-            retryLabel="Retry"
-            compact
-          />
-        )}
-        {!topEventsQuery.isError && topEvents.length === 0 && (
-          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-            {topEventsQuery.isLoading ? <LoadingState as="span" /> : 'No event volume in the last 48 hours.'}
-          </div>
-        )}
-        {topEvents.length > 0 && (
-          <div role="list" aria-label="Top events by volume, last 48 hours" className="space-y-1.5">
-            {topEvents.map((e) => (
-              <div
-                key={e.event_id}
-                role="listitem"
-                aria-label={`${e.name}: ${formatNumber(e.total_count)} events`}
-                className="flex items-center gap-3"
-              >
-                {/* The label column grows with the panel instead of sitting at
-                    a fixed 10rem. Event names share long prefixes
-                    (`feature_flag:flag_use:app` vs `…:growthbook`), so a fixed
-                    column truncated the top rows to one identical string and
-                    the ranking became unreadable (tripl-jfm3.31). Capped so the
-                    bar track still carries the comparison. */}
-                {/* Sans: an event name is a display name, not code (DS-17). */}
-                <span
-                  className="w-[min(45%,22rem)] shrink-0 truncate text-body-sm"
-                  title={e.name}
-                >
-                  {e.name}
-                </span>
-                <div
-                  aria-hidden="true"
-                  className="relative h-2 flex-1 overflow-hidden rounded-full"
-                  style={{ background: 'var(--surface-active)' }}
-                >
-                  <div
-                    className="absolute inset-y-0 left-0 rounded-full"
-                    style={{
-                      width: `${maxTopVolume > 0 ? (e.total_count / maxTopVolume) * 100 : 0}%`,
-                      background: SERIES_COLORS[0],
-                    }}
-                  />
-                </div>
-                <span
-                  className="tnum w-16 shrink-0 text-right text-caption"
-                  style={{ color: 'var(--fg-subtle)' }}
-                >
-                  {formatNumber(e.total_count)}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-        </div>
-      </Panel>
-
-      {/* Active signals. Capped at SIGNAL_LIMIT rows while the headline can
-          count dozens, so the full list is one click away (MON-15). */}
+      {/* Active signals, straight under the KPIs: the widget that answers "is
+          anything wrong?" sat fourth, below the fold at 1440 (MO-15). Capped at
+          SIGNAL_LIMIT rows while the headline can count dozens, so the full
+          list is one click away (MON-15). */}
       <Panel
         title="Active signals"
         right={
@@ -498,9 +430,12 @@ export default function OverviewPage() {
             compact
           />
         )}
-        {!signalsQuery.isError && signals.length === 0 && (
+        {!signalsQuery.isError && isSignalsPending && (
+          <RowsSkeleton rows={3} label="Loading signals…" />
+        )}
+        {!signalsQuery.isError && !isSignalsPending && signals.length === 0 && (
           <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-            {signalsQuery.isLoading ? <LoadingState as="span" /> : 'No active monitoring signals.'}
+            No active monitoring signals.
           </div>
         )}
         {signals.length > 0 && slug && (
@@ -514,6 +449,241 @@ export default function OverviewPage() {
                 signal={signal}
               />
             ))}
+          </div>
+        )}
+        </div>
+      </Panel>
+
+      {/* Volume — one scan config, named. Labelled "project total" until
+          tripl-jfm3.20, where it plotted 2.4 % of windy-ios's volume directly
+          above a "Top events" row 12× larger. */}
+      <Panel
+        // The window is in the title because the card is capped at it; the
+        // sibling panel below already names its own ("Top events · 48h").
+        title={
+          volumeScanName
+            ? `Volume · ${volumeScanName} · ${VOLUME_WINDOW_DAYS}d`
+            : `Volume · ${VOLUME_WINDOW_DAYS}d`
+        }
+        // Held through the pending state as well, so the header keeps its second
+        // line instead of growing one when the series lands (tripl-jfjt).
+        subtitle={volumeScanName || isVolumePending ? VOLUME_SUBTITLE : undefined}
+        // The card leads to the chart it summarises (MO-15).
+        right={
+          projectTotalPath && volumePoints.length > 0 ? (
+            <Link
+              to={projectTotalPath}
+              className="rounded-md px-2 py-1 text-body-sm no-underline transition-colors hover:bg-[var(--surface-hover)]"
+              style={{ color: 'var(--accent)' }}
+            >
+              Open chart
+            </Link>
+          ) : undefined
+        }
+      >
+        <div className="p-4">
+        {volumeQuery.isError && (
+          <ErrorState
+            title="Volume unavailable"
+            error={volumeQuery.error}
+            onRetry={() => {
+              void volumeQuery.refetch()
+            }}
+            retryLabel="Retry"
+            compact
+          />
+        )}
+        {!volumeQuery.isError && isVolumePending && <VolumeSkeleton />}
+        {!volumeQuery.isError && !isVolumePending && volumePoints.length === 0 && (
+          // Two different facts, and the card used to report only the second.
+          // A scan whose last bucket predates the window has months of history
+          // and nothing here — that is a scan that stopped, the state the
+          // failing-scan chip above exists to surface, not an empty project.
+          // The drilldown carries a range selector, so it can show the rest.
+          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+            {projectTotalPath ? (
+              <>
+                No volume in the last {VOLUME_WINDOW_DAYS} days.{' '}
+                <Link
+                  to={projectTotalPath}
+                  style={{ color: 'var(--accent)' }}
+                >
+                  See this scan’s full history
+                </Link>
+              </>
+            ) : (
+              'No volume data yet.'
+            )}
+          </div>
+        )}
+        {volumePoints.length > 0 && (
+          // The chart takes the rest of the row and scales to it. A fixed 320px
+          // SVG beside the figure ran off the card on a phone, cutting off the
+          // newest buckets, and left half of a wide card empty (MON-33, LIVE-29).
+          <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
+            <div
+              role="group"
+              aria-label={volumeHeadlineLabel(volumeSummary)}
+              className="flex shrink-0 flex-col gap-px"
+            >
+              {/* The hero figure: the last 24 hours, not the newest bucket —
+                  a partial hour is not a meaningful total (MO-16). Sans with
+                  tabular digits (DS-17) on the display step (DS-13). */}
+              <span className="flex items-baseline gap-2">
+                <span className="tnum text-display font-semibold">
+                  {formatNumber(volumeSummary.last24h)}
+                </span>
+                {volumeSummary.changePct != null && (
+                  <span
+                    className="tnum text-caption"
+                    style={{ color: 'var(--fg-subtle)' }}
+                    title="Against the 24 hours before"
+                  >
+                    {formatVolumeChange(volumeSummary.changePct)}
+                  </span>
+                )}
+              </span>
+              <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                last 24h
+              </span>
+            </div>
+            <div
+              role="img"
+              aria-label={volumeChartLabel(volumeCounts, volumeScanName)}
+              className="min-w-[8rem] flex-1"
+            >
+              {/* Flagged buckets get the chart's anomaly marker, so the spike
+                  behind the Open signals figure is visible here too. */}
+              <Sparkline
+                data={volumeCounts}
+                variant={chartStyle}
+                width={320}
+                height={48}
+                responsive
+                anomalyIdx={volumeSummary.lastAnomalyIdx}
+              />
+              {/* A time axis in words: where the line starts and its cadence,
+                  in place of "167 buckets" (MO-16). */}
+              <div
+                aria-hidden="true"
+                className="mt-1 flex justify-between text-micro"
+                style={{ color: 'var(--fg-faint)' }}
+              >
+                <span>{volumeSummary.firstLabel}</span>
+                <span>{volumeCadence ? `now · ${volumeCadence}` : 'now'}</span>
+              </div>
+              <span className="sr-only">
+                Volume by bucket: {volumeCounts.map((c) => formatNumber(c)).join(', ')}.
+              </span>
+            </div>
+          </div>
+        )}
+        </div>
+      </Panel>
+
+      {/* Top events by volume — summed across EVERY scan config, unlike the
+          volume card above it, which charts one. Saying so is what stops the
+          two panels reading as a contradiction (tripl-jfm3.20). */}
+      <Panel title="Top events · 48h" subtitle="Across every scan in this project.">
+        <div className="p-4">
+        {topEventsQuery.isError && (
+          <ErrorState
+            title="Top events unavailable"
+            error={topEventsQuery.error}
+            onRetry={() => {
+              void topEventsQuery.refetch()
+            }}
+            retryLabel="Retry"
+            compact
+          />
+        )}
+        {!topEventsQuery.isError && isTopEventsPending && (
+          <RowsSkeleton rows={4} label="Loading top events…" />
+        )}
+        {!topEventsQuery.isError && !isTopEventsPending && topEvents.length === 0 && (
+          <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+            No event volume in the last 48 hours.
+          </div>
+        )}
+        {topEvents.length > 0 && (
+          <div role="list" aria-label="Top events by volume, last 48 hours" className="space-y-1">
+            {topEvents.map((e) => {
+              // The event's share of the project's volume over the same window
+              // (MO-25). Left out when the total is unknown or zero rather than
+              // printed as 0%.
+              const share = e.window_total_count > 0 ? e.total_count / e.window_total_count : null
+              const shareLabel =
+                share == null ? null : formatNumber(share, { style: 'percent', maximumFractionDigits: share < 0.1 ? 1 : 0 })
+              const row = (
+                <>
+                  {/* The label column grows with the panel instead of sitting
+                      at a fixed 10rem. Event names share long prefixes
+                      (`feature_flag:flag_use:app` vs `…:growthbook`), so a fixed
+                      column truncated the top rows to one identical string and
+                      the ranking became unreadable (tripl-jfm3.31). Capped
+                      narrower so the bar starts near the names rather than mid
+                      card, and on a phone the name sits above its bar instead
+                      of being squeezed beside it (MO-25). Sans: a display name
+                      is not code (DS-17). */}
+                  <span
+                    className="w-full truncate text-body-sm sm:w-[min(40%,16rem)] sm:shrink-0"
+                    title={e.name}
+                  >
+                    {e.name}
+                  </span>
+                  <span className="flex min-w-0 flex-1 items-center gap-3">
+                    <span
+                      aria-hidden="true"
+                      className="relative h-2 flex-1 overflow-hidden rounded-full"
+                      style={{ background: 'var(--surface-active)' }}
+                    >
+                      <span
+                        className="absolute inset-y-0 left-0 rounded-full"
+                        style={{
+                          width: `${maxTopVolume > 0 ? (e.total_count / maxTopVolume) * 100 : 0}%`,
+                          background: SERIES_COLORS[0],
+                        }}
+                      />
+                    </span>
+                    {/* The counts are the data: body ink, not the faintest
+                        text on the card (MO-25). */}
+                    <span className="tnum w-20 shrink-0 text-right text-caption" style={{ color: 'var(--fg)' }}>
+                      {formatNumber(e.total_count)}
+                    </span>
+                    {shareLabel && (
+                      <span
+                        className="tnum w-10 shrink-0 text-right text-caption"
+                        style={{ color: 'var(--fg-subtle)' }}
+                        title="Share of the project's volume in the same window"
+                      >
+                        {shareLabel}
+                      </span>
+                    )}
+                  </span>
+                </>
+              )
+              const rowClass = 'flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded-sm py-0.5 sm:flex-nowrap'
+              return (
+                <div
+                  key={e.event_id}
+                  role="listitem"
+                  aria-label={`${e.name}: ${formatNumber(e.total_count)} events${shareLabel ? `, ${shareLabel} of the total` : ''}`}
+                >
+                  {/* Each row opens the event's own monitoring page (MO-15). */}
+                  {slug ? (
+                    <Link
+                      to={getMonitoringPath(slug, { scope_type: 'event', scope_ref: e.event_id })}
+                      className={`${rowClass} no-underline transition-colors hover:bg-[var(--surface-hover)]`}
+                      style={{ color: 'inherit' }}
+                    >
+                      {row}
+                    </Link>
+                  ) : (
+                    <div className={rowClass}>{row}</div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
         </div>
@@ -534,9 +704,12 @@ export default function OverviewPage() {
             compact
           />
         )}
-        {!activityQuery.isError && activity.length === 0 && (
+        {!activityQuery.isError && activityQuery.isLoading && (
+          <RowsSkeleton rows={3} label="Loading activity…" />
+        )}
+        {!activityQuery.isError && !activityQuery.isLoading && activity.length === 0 && (
           <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-            {activityQuery.isLoading ? <LoadingState as="span" /> : 'No recent activity.'}
+            No recent activity.
           </div>
         )}
         {activity.length > 0 && (
@@ -564,9 +737,12 @@ export default function OverviewPage() {
             compact
           />
         )}
-        {!sourcesQuery.isError && sources.length === 0 && (
+        {!sourcesQuery.isError && sourcesQuery.isLoading && (
+          <RowsSkeleton rows={2} label="Loading data sources…" />
+        )}
+        {!sourcesQuery.isError && !sourcesQuery.isLoading && sources.length === 0 && (
           <div className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-            {sourcesQuery.isLoading ? <LoadingState as="span" /> : 'No data sources connected.'}
+            No data sources connected.
           </div>
         )}
         {sources.length > 0 && (
@@ -578,6 +754,8 @@ export default function OverviewPage() {
         )}
         </div>
       </Panel>
+      </>
+      )}
     </PageContainer>
   )
 }
@@ -606,6 +784,188 @@ function VolumeSkeleton() {
       </span>
     </div>
   )
+}
+
+/**
+ * A panel body's rows while its query is in flight: the loaded shape instead of
+ * a "Loading…" word, so the cards hold their height (batch 5, JR-36). One
+ * `role="status"` with the label; the bars are aria-hidden.
+ */
+function RowsSkeleton({ rows, label }: { rows: number; label: string }) {
+  return (
+    <div role="status" aria-live="polite" aria-busy="true" className="space-y-2.5">
+      <span className="sr-only">{label}</span>
+      {Array.from({ length: rows }, (_, index) => (
+        <div key={index} className="flex items-center gap-3">
+          <Skeleton className="h-3 w-1/3" />
+          <Skeleton className="h-3 flex-1" />
+          <Skeleton className="h-3 w-12" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * A KPI that opens where its number is worked on (MO-15). The whole stat is
+ * the link, so its name reads "In review 8".
+ */
+function KpiLink({ to, children }: { to?: string; children: ReactNode }) {
+  if (!to) return <>{children}</>
+  return (
+    <Link
+      to={to}
+      className="-m-1 block rounded-sm p-1 no-underline outline-none transition-colors hover:bg-[var(--surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+      style={{ color: 'inherit' }}
+    >
+      {children}
+    </Link>
+  )
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${formatNumber(count)} ${count === 1 ? one : many}`
+}
+
+/**
+ * The one-line answer to "is everything OK?" under the title (MO-15): open
+ * anomalies, incidents still owed an answer, failing scans, alert destinations
+ * whose deliveries fail and source health,
+ * each linking where it is dealt with. A clause whose data has not arrived is
+ * left out rather than guessed.
+ */
+function OverviewStatus({
+  slug,
+  signalCount,
+  openIncidents,
+  failingScans,
+  failingDestinations,
+  sources,
+}: {
+  slug: string
+  /** Null while the signals are still loading. */
+  signalCount: number | null
+  openIncidents: number
+  failingScans: number
+  /** Enabled alert destinations whose latest delivery failed. */
+  failingDestinations: number
+  /** Null while the sources are still loading. */
+  sources: DataSource[] | null
+}) {
+  const linkStyle = { color: 'var(--accent)' }
+  const parts: ReactNode[] = []
+  if (signalCount != null) {
+    parts.push(
+      signalCount > 0 ? (
+        <Link to={`/p/${slug}/anomalies`} style={linkStyle}>
+          {plural(signalCount, 'open anomaly', 'open anomalies')}
+        </Link>
+      ) : (
+        'No open anomalies'
+      ),
+    )
+  }
+  if (openIncidents > 0) {
+    parts.push(
+      <Link to={getAlertingPath(slug)} style={linkStyle}>
+        {plural(openIncidents, 'open incident', 'open incidents')}
+      </Link>,
+    )
+  }
+  if (failingScans > 0) {
+    parts.push(
+      <Link to={`/p/${slug}/scans`} style={linkStyle}>
+        {plural(failingScans, 'failing scan', 'failing scans')}
+      </Link>,
+    )
+  }
+  // A broken channel means incidents fire and nobody hears them, so it sits
+  // next to the failing scans rather than only on the Alerting page (MO-15).
+  if (failingDestinations > 0) {
+    parts.push(
+      <Link to={getAlertingPath(slug)} style={linkStyle}>
+        {plural(failingDestinations, 'broken alert channel', 'broken alert channels')}
+      </Link>,
+    )
+  }
+  if (sources && sources.length > 0) {
+    const tones = sources.map((source) => sourceHealth(source).tone)
+    const failing = tones.filter((tone) => tone === 'danger').length
+    if (failing > 0) parts.push(plural(failing, 'source failing', 'sources failing'))
+    else if (tones.every((tone) => tone === 'success')) parts.push('sources healthy')
+  }
+  if (parts.length === 0) return null
+  return (
+    <span>
+      {parts.map((part, index) => (
+        <Fragment key={index}>
+          {index > 0 && ' · '}
+          {part}
+        </Fragment>
+      ))}
+    </span>
+  )
+}
+
+interface VolumeSummary {
+  /** Events in the buckets that started in the last 24 hours. */
+  last24h: number
+  /** % change against the 24 hours before; null when those are not covered. */
+  changePct: number | null
+  /** The newest flagged bucket, for the sparkline's anomaly marker. */
+  lastAnomalyIdx: number | null
+  /** "Sep 19": where the line starts. */
+  firstLabel: string
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * The volume card's headline (MO-16). The card read "6,556 · latest bucket":
+ * one partial hour, not a meaningful total. This sums the last 24 hours and
+ * compares them with the 24 before — the newest bucket is still filling, so a
+ * small dip in the change is expected late in an hour.
+ */
+function summarizeVolume(points: EventMetricPoint[], now: number = Date.now()): VolumeSummary {
+  let last24h = 0
+  let prior24h = 0
+  let priorCovered = false
+  let lastAnomalyIdx: number | null = null
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index]!
+    if (point.is_anomaly) lastAnomalyIdx = index
+    const start = Date.parse(point.bucket)
+    if (Number.isNaN(start)) continue
+    if (start > now - DAY_MS) last24h += point.count
+    else if (start > now - 2 * DAY_MS) {
+      prior24h += point.count
+      priorCovered = true
+    }
+  }
+  const first = points[0] ? new Date(points[0].bucket) : null
+  return {
+    last24h,
+    changePct: priorCovered && prior24h > 0 ? ((last24h - prior24h) / prior24h) * 100 : null,
+    lastAnomalyIdx,
+    firstLabel:
+      first && !Number.isNaN(first.getTime())
+        ? first.toLocaleDateString(APP_LOCALE, { month: 'short', day: 'numeric' })
+        : '',
+  }
+}
+
+/** "+2%" / "−14%" with a real minus sign, like the signal rows. */
+function formatVolumeChange(pct: number): string {
+  const rounded = Math.round(pct)
+  return `${rounded < 0 ? '−' : '+'}${formatNumber(Math.abs(rounded))}%`
+}
+
+function volumeHeadlineLabel(summary: VolumeSummary): string {
+  const change =
+    summary.changePct == null
+      ? ''
+      : `, ${formatVolumeChange(summary.changePct)} against the 24 hours before`
+  return `Volume in the last 24 hours: ${formatNumber(summary.last24h)}${change}`
 }
 
 // Text alternative for the volume sparkline (issue M8): the SVG itself is
@@ -656,18 +1016,23 @@ function SignalRow({
       className="flex min-h-(--row-h) items-center gap-2 py-1 no-underline transition-colors hover:bg-[var(--surface-hover)]"
       style={{ color: 'inherit' }}
     >
-      <Dot tone={signalDirectionTone(signal.direction)} pulse size={7} />
+      {/* Static: only the Open signals KPI pulses, so motion still means
+          "live" rather than shimmering down every row (MO-18). */}
+      <Dot tone={signalDirectionTone(signal.direction)} size={7} />
       <span className="flex-1 truncate text-body-sm font-medium" title={signalTitle}>
         {signalSummary}
       </span>
-      <span className="tnum shrink-0 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      <span className="tnum hidden shrink-0 text-caption sm:inline" style={{ color: 'var(--fg-subtle)' }}>
         {formatSignalValues(signal)}
       </span>
+      {/* "+203%", not z=40.7: the change in the reader's terms, with the
+          magnitude word and z-score on hover (MO-2, JR-31). */}
       <span
-        className="tnum w-[52px] shrink-0 text-right text-caption"
+        className="tnum w-24 shrink-0 text-right text-caption font-semibold"
         style={{ color: signalDirectionColor(signal.direction) }}
+        title={formatSignalEffectDetail(signal)}
       >
-        {formatSignalSeverity(signal)}
+        {formatSignalEffect(signal)}
       </span>
     </Link>
   )
@@ -752,23 +1117,34 @@ function SourceRow({ source }: { source: DataSource }) {
   // the name keeps an 8rem basis, the uppercase type (the badge already says
   // "synthetic") drops below `sm`, and the check time moves to a second line
   // (MON-33, LIVE-20).
+  //
+  // The engine shows only when it adds something: a synthetic source's badge
+  // already says "Synthetic", and printing `synthetic` beside it said it twice.
+  // The status is a toned chip, the one status idiom, rather than grey text
+  // next to a coloured dot; the row opens the source (MO-26).
+  const showEngine = !(source.is_synthetic && source.db_type === 'synthetic')
   return (
-    <div className="flex min-h-(--row-h) flex-wrap items-center gap-x-2 gap-y-0.5 py-2">
-      <Dot tone={tone} size={7} />
-      <Database className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+    <Link
+      to={`/settings/data-sources/${source.id}`}
+      className="flex min-h-(--row-h) flex-wrap items-center gap-x-2 gap-y-0.5 py-2 no-underline transition-colors hover:bg-[var(--surface-hover)]"
+      style={{ color: 'inherit' }}
+    >
+      <Database aria-hidden="true" className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
       <span className="min-w-0 flex-1 basis-32 truncate text-body-sm font-medium" title={source.name}>
         {source.name}
       </span>
       {source.is_synthetic && <SyntheticSourceBadge />}
-      <span
-        className="mono hidden shrink-0 text-micro sm:inline"
-        style={{ color: 'var(--fg-faint)' }}
-      >
-        {source.db_type}
-      </span>
-      <span className="w-[64px] shrink-0 text-right text-caption" style={{ color: 'var(--fg-subtle)' }}>
+      {showEngine && (
+        <span
+          className="mono hidden shrink-0 text-micro sm:inline"
+          style={{ color: 'var(--fg-faint)' }}
+        >
+          {source.db_type}
+        </span>
+      )}
+      <Chip tone={tone} className="shrink-0">
         {label}
-      </span>
+      </Chip>
       <span
         className="ml-auto shrink-0 truncate text-right text-caption sm:ml-0 sm:w-[104px]"
         style={{ color: 'var(--fg-faint)' }}
@@ -776,6 +1152,6 @@ function SourceRow({ source }: { source: DataSource }) {
       >
         {checkedLabel}
       </span>
-    </div>
+    </Link>
   )
 }

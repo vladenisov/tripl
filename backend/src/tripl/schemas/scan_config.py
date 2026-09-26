@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 from tripl.core.adapters.measure_validator import validate_select_sql_safety
 from tripl.core.intervals import get_interval
@@ -348,6 +348,17 @@ class ScanConfigResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def monitoring_enabled(self) -> bool:
+        """Whether the scheduler collects metrics for this scan (MO-23).
+
+        Derived, never stored: the beat schedule and every monitoring read path
+        select on ``interval IS NOT NULL``, so this is that test said out loud
+        rather than a second switch that could disagree with it.
+        """
+        return self.interval is not None
 
 
 class ScanPreviewColumnResponse(BaseModel):

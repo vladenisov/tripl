@@ -115,7 +115,9 @@ export function buildTourSteps(slug: string): [TourStep, ...TourStep[]] {
     {
       id: 'live-activity',
       area: 'Observe',
-      title: 'Live activity',
+      // The sidebar item and the page heading say "Overview" (#238 SH-8); the
+      // step id keeps its old name so saved tour progress still matches.
+      title: 'Overview',
       // "as scans ... run" counted an execution as a scan, the same slip the
       // activity rail's burst summary made. An execution is a *run*.
       blurb: 'The Overview updates live as scan runs and metric collection land.',
@@ -131,7 +133,8 @@ export function buildTourSteps(slug: string): [TourStep, ...TourStep[]] {
     {
       id: 'monitors',
       area: 'Observe',
-      title: 'Monitors',
+      // One name for the object everywhere: alert rule (#238 JR-28).
+      title: 'Alert rules',
       blurb: 'The rules that decide which spikes and drops are worth notifying about, and their live state.',
       // The section, not the standalone page: that page rendered these same
       // rules under a second noun and was merged in (tripl-89ps). `/monitors`

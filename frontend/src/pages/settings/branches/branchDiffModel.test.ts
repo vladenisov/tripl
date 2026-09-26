@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ApiError } from '@/api/client'
 import type { PlanBranchDiffSummary, PlanDiffEntry } from '@/types'
 import {
+  changeSummary,
   describeBranchActionError,
   diffView,
   entryRowKey,
@@ -146,24 +147,50 @@ describe('revertOutcome', () => {
   })
 })
 
+describe('changeSummary', () => {
+  it('names changed fields in words, not their keys (PL-12)', () => {
+    expect(
+      changeSummary(
+        entry({
+          field_changes: [
+            { field: 'status', before: 'live', after: 'deprecated' },
+            { field: 'metric_breakdown_columns', before: ['a'], after: ['a', 'b'] },
+          ],
+        }),
+      ),
+    ).toBe('Status live → deprecated, Metric breakdowns edited')
+  })
+})
+
 describe('mergePrompt', () => {
   it('always asks, naming what lands on main', () => {
     const prompt = mergePrompt(pairedDiffCounts(RENAME), [], false)
 
     expect(prompt.title).toBe('Merge to main')
     expect(prompt.confirmLabel).toBe('Merge')
-    expect(prompt.message).toContain('Merge 2 changes (+0 ~1 −0, renamed 1) into main?')
+    // Words, not git's "+0 ~1 −0" tally (PL-29), and the names that land.
+    expect(prompt.message).toContain('Merge 2 changes into main (1 modified, 1 renamed)?')
+    expect(prompt.message).toContain('open a new branch that reverts')
+    expect(prompt.message).not.toContain('cannot be undone here')
     expect(prompt.message).not.toContain('Main has moved on')
   })
 
   it('carries the variable deletion and the behind-main warnings in the same dialog', () => {
-    const prompt = mergePrompt(pairedDiffCounts(undefined), ['variant'], true)
+    const prompt = mergePrompt(pairedDiffCounts(undefined), ['variant'], true, [], 2)
 
     expect(prompt.title).toBe('Merge deletes variables from main')
     expect(prompt.confirmLabel).toBe('Merge anyway')
     expect(prompt.variant).toBe('danger')
     expect(prompt.message).toContain('removes 1 variable from main: variant')
     expect(prompt.message).toContain('Main has moved on')
+    expect(prompt.message).toContain('2 fields you changed were also changed there')
+  })
+
+  it('says nothing about main having moved on when nothing overlaps (PL-8)', () => {
+    const prompt = mergePrompt(pairedDiffCounts(RENAME), [], true, [], 0)
+
+    expect(prompt.message).not.toContain('Main has moved on')
+    expect(prompt.message).not.toContain('refused')
   })
 })
 

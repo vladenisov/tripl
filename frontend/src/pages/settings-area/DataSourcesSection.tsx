@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
 import { lazyWithReload } from '@/lib/lazyWithReload'
 import { SHeader } from '@/components/settings/kit'
+import { SectionSkeleton } from '@/components/states'
 
 const DataSourcesPage = lazyWithReload(() => import('@/pages/DataSourcesPage'))
 
@@ -17,7 +18,8 @@ export default function DataSourcesSection() {
         description="Where tripl reads events from for reconciliation and metrics. Each connection carries its own credentials."
       />
       <Suspense
-        fallback={<div className="text-body" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>}
+        // The roster's shape under the header, not a 14px "Loading…" (#237 ST-35).
+        fallback={<SectionSkeleton variant="list" label="Loading data sources…" />}
       >
         <DataSourcesPage />
       </Suspense>

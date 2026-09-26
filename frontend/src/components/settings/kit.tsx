@@ -874,7 +874,12 @@ export function Panel({
   className,
   bodyClassName,
 }: {
-  title?: string
+  /**
+   * The section heading. A node, not only a string, so a page whose panel IS
+   * the entity can name it in its own style (the branch detail shows the
+   * branch name as a mono heading, #243 PL-17).
+   */
+  title?: ReactNode
   subtitle?: ReactNode
   subtitleTone?: PanelSubtitleTone
   right?: ReactNode

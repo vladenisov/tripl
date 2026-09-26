@@ -282,7 +282,7 @@ describe('ProjectsPage — card semantics (WS-42, WS-43)', () => {
     mockApi()
     renderPage()
 
-    const term = await screen.findByText('Review queue')
+    const term = await screen.findByText('In review', { selector: 'dt' })
     expect(term.tagName).toBe('DT')
     const list = term.closest('dl')
     expect(list?.querySelector('dt, dd')).toBe(term)

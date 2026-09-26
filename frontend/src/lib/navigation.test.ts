@@ -68,6 +68,12 @@ describe('buildNavGroups', () => {
     })
   })
 
+  it('names Overview and Meta fields for what they are (#238 SH-8 / AU-10)', () => {
+    const items = buildNavGroups('demo', undefined).flatMap((g) => g.items)
+    expect(items.find((i) => i.id === 'overview')!.label).toBe('Overview')
+    expect(items.find((i) => i.id === 'schema')!.label).toBe('Meta fields')
+  })
+
   it('derives counts from the project summary', () => {
     const items = buildNavGroups('demo', projectSummary()).flatMap((g) => g.items)
     expect(items.find((i) => i.id === 'events')!.count).toBe('2.5k')
@@ -109,7 +115,9 @@ describe('buildNavGroups', () => {
       .flatMap((g) => g.items)
       .find((i) => i.id === 'anomalies')!
     expect(anomalies.count).toBe('9')
-    expect(anomalies.tone).toBe('danger')
+    // Signals are information; the danger tone is kept for Alerting's
+    // incidents, the work somebody owes (#240 JR-6).
+    expect(anomalies.tone).toBe('warning')
   })
 
   it('omits the Anomalies badge when no signals are open', () => {
@@ -154,14 +162,18 @@ describe('buildNavGroups', () => {
     }
   })
 
-  it('gives Alerting the same badge treatment as the Anomalies item above it', () => {
-    // The defect was a parity one — Alerting was the only backlog surface in the
-    // Observe group whose badge was untoned — so assert the two agree in shape.
+  it('tones both Observe backlogs, keeping danger for the work Alerting owes (#240 JR-6)', () => {
+    // The original defect: Alerting was the only backlog surface in the
+    // Observe group whose badge was untoned. Both stay toned, but no longer in
+    // the same red — signals are information (warning), incidents are the work
+    // somebody owes (danger), so a PM can tell which queue they owe.
     const summary = projectSummary({ monitoring_signal_count: 68, open_incident_count: 52 })
     const items = buildNavGroups('demo', summary).flatMap((g) => g.items)
     const anomalies = items.find((i) => i.id === 'anomalies')!
     const alerting = items.find((i) => i.id === 'alerting')!
-    expect(alerting.tone).toBe(anomalies.tone)
+    expect(anomalies.tone).toBe('warning')
+    expect(alerting.tone).toBe('danger')
+    expect(alerting.tone).not.toBe(anomalies.tone)
   })
 
   it('gives Plan history a home next to the branches it snapshots (tripl-ebib)', () => {
@@ -280,9 +292,9 @@ describe('resolveNavLocation', () => {
     ['/p/demo', 'Plan', 'Events'],
     ['/p/demo/events/checkout', 'Plan', 'Events'],
     ['/p/demo/monitoring/event/evt-1', 'Plan', 'Events'],
-    ['/p/demo/overview', 'Observe', 'Live activity'],
+    ['/p/demo/overview', 'Observe', 'Overview'],
     ['/p/demo/settings/event-types', 'Plan', 'Event types'],
-    ['/p/demo/settings/meta-fields', 'Plan', 'Schema & fields'],
+    ['/p/demo/settings/meta-fields', 'Plan', 'Meta fields'],
     ['/p/demo/settings/branches', 'Plan', 'Plan branches'],
     ['/p/demo/settings/history', 'Plan', 'Plan history'],
     // A rule's fired history is an Alerting surface; the detection settings are

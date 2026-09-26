@@ -109,7 +109,7 @@ function copyFor(
   if (status === 'success') {
     return {
       title: 'Demo workspace is ready',
-      description: 'Seeded with synthetic events, metrics, monitors and alerts. Opening it now.',
+      description: 'Seeded with synthetic events, metrics and alert rules. Opening it now.',
     }
   }
   if (status === 'cancelling') {

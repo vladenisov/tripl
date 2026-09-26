@@ -287,11 +287,21 @@ function SqlExpression({ config }: { config: Record<string, unknown> }) {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-1.5 text-body-sm text-muted-foreground">
-        {/* Column names are identifiers: code tokens, not pills (DS-6). */}
-        <span>time</span>
-        <CodeToken>{timeColumn ?? '—'}</CodeToken>
-        <span>value</span>
-        <CodeToken>{valueColumn ?? '—'}</CodeToken>
+        {/* Column names are identifiers: code tokens, not pills (DS-6). A
+            column the metric does not use is left out, not shown as an
+            empty "–" token (MO-33). */}
+        {timeColumn && (
+          <>
+            <span>time</span>
+            <CodeToken>{timeColumn}</CodeToken>
+          </>
+        )}
+        {valueColumn && (
+          <>
+            <span>value</span>
+            <CodeToken>{valueColumn}</CodeToken>
+          </>
+        )}
       </div>
       {metricSql && (
         <details className="rounded-md border">

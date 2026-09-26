@@ -4,6 +4,7 @@ import {
   Bar,
   ComposedChart,
   CartesianGrid,
+  ErrorBar,
   Line,
   ReferenceLine,
   ResponsiveContainer,
@@ -23,14 +24,17 @@ import {
   formatSeriesValue,
   formatTick,
   formatTooltipLabel,
+  isSubDayGranularity,
   SERIES_COLORS,
   seriesNounPlural,
   summarizeBuckets,
   summarizeForecastRange,
   type SeriesNoun,
 } from '@/components/ui/chart-format'
-import { formatNumber } from '@/lib/format'
+import { formatDateTime } from '@/lib/datetime'
+import { APP_LOCALE, formatNumber } from '@/lib/format'
 import type { MetricsGranularity } from '@/lib/metrics'
+import { ratioDelta } from '@/lib/percentDelta'
 import { useTheme, type ChartStyle } from '@/components/theme-provider'
 import type { ChartAnnotation, EventMetricPoint, ForecastPoint } from '@/types'
 import { annotationDisplayColor, truncateAnnotationLabel } from '@/lib/chartAnnotations'
@@ -94,6 +98,22 @@ interface MetricsChartProps {
    */
   from?: string
   to?: string
+  /**
+   * Rolled-up buckets the data does not fully cover (MO-5). A 30-day chart in
+   * days starts mid-day and ends at "now", so its first and last buckets hold
+   * a fraction of a day and drew as cliffs. They are drawn dashed with a
+   * hollow point and named in the tooltip instead. `first` is the instant the
+   * data starts inside the first bucket, `last` the instant it runs through in
+   * the last one.
+   */
+  partial?: PartialWindow
+  /** Draw the legend under the plot (MO-1): only the marks the chart has. */
+  legend?: boolean
+}
+
+export interface PartialWindow {
+  first?: string
+  last?: string
 }
 
 interface MiniMetricsChartProps {
@@ -251,9 +271,54 @@ interface ChartDataPoint {
   anomaly_direction?: 'spike' | 'drop' | null
   z_score?: number | null
   band?: [number, number]
+  /** `band` as offsets from `expected_count`, the shape ErrorBar reads. */
+  expected_error?: [number, number]
   forecast_expected?: number
   forecast_band?: [number, number]
+  forecast_error?: [number, number]
   is_forecast?: boolean
+  /** The value drawn solid; null on a partial bucket (MO-5). */
+  solid_count?: number | null
+  /** The dashed stub into a partial bucket: the partial point and its neighbour. */
+  partial_count?: number | null
+  partial_from?: string
+  partial_through?: string
+}
+
+/**
+ * Below this many points a line is drawn straight between the measurements,
+ * with a small dot on each: monotone smoothing over a handful of daily or
+ * weekly buckets invented a trend between them and hid where the real points
+ * were (MO-6).
+ */
+const SMOOTH_MIN_POINTS = 60
+const POINT_DOTS_MAX_POINTS = 30
+
+type CurveType = 'linear' | 'monotone'
+
+function curveFor(pointCount: number): CurveType {
+  return pointCount > SMOOTH_MIN_POINTS ? 'monotone' : 'linear'
+}
+
+/** Flag the partial first/last buckets and split the series around them (MO-5). */
+function markPartialBuckets(points: ChartDataPoint[], partial: PartialWindow) {
+  for (const point of points) point.solid_count = point.count
+  const first = points[0]
+  const last = points[points.length - 1]
+  if (partial.first && first) {
+    first.partial_from = partial.first
+    first.solid_count = null
+    first.partial_count = first.count
+    const next = points[1]
+    if (next) next.partial_count = next.count
+  }
+  if (partial.last && last) {
+    last.partial_through = partial.last
+    last.solid_count = null
+    last.partial_count = last.count
+    const previous = points[points.length - 2]
+    if (previous) previous.partial_count = previous.count
+  }
 }
 
 // Exported for unit tests only — recharts never paints in jsdom, so the band
@@ -264,6 +329,7 @@ export function buildChartData(
   forecast: ForecastPoint[] = [],
   sigmaThreshold: number = DEFAULT_SIGMA_THRESHOLD,
   nonNegative = false,
+  partial?: PartialWindow,
 ): ChartDataPoint[] {
   // Robust to a missing/invalid served threshold: fall back to the default.
   const k = Number.isFinite(sigmaThreshold) && sigmaThreshold > 0
@@ -276,30 +342,35 @@ export function buildChartData(
       return { ...point }
     }
     const offset = k * point.stddev
+    const band: [number, number] = [floor(point.expected_count - offset), point.expected_count + offset]
     return {
       ...point,
-      band: [floor(point.expected_count - offset), point.expected_count + offset],
+      band,
+      // The normal range as a whisker on the expected point: the backend only
+      // scores flagged buckets, so the band is usually one isolated point that
+      // an area cannot paint (MO-1).
+      expected_error: [point.expected_count - band[0], band[1] - point.expected_count],
     }
   })
 
-  // Anchor the dashed forecast line to the last actual count so the
-  // preview visibly extends *from* the chart instead of floating.
-  const anchor = points[points.length - 1]
-  if (forecast.length > 0 && anchor) {
-    anchor.forecast_expected = anchor.count ?? undefined
-    if (anchor.stddev != null && anchor.count != null) {
-      const anchorOffset = k * anchor.stddev
-      anchor.forecast_band = [floor(anchor.count - anchorOffset), anchor.count + anchorOffset]
-    }
+  if (partial?.first || partial?.last) markPartialBuckets(points, partial)
+
+  // The forecast is its own hollow point with a whisker for its range, not a
+  // dashed line from the last actual: drawn from a spike, that line fell
+  // steeply at the right edge and read as "then it crashed" (MO-7).
+  if (points.length > 0) {
     for (const point of forecast) {
       const offset = k * point.stddev
+      const expected = nonNegative ? Math.max(0, point.expected_count) : point.expected_count
+      const band: [number, number] = [floor(point.expected_count - offset), point.expected_count + offset]
       points.push({
         bucket: point.bucket,
         count: null,
         expected_count: null,
         stddev: null,
-        forecast_expected: nonNegative ? Math.max(0, point.expected_count) : point.expected_count,
-        forecast_band: [floor(point.expected_count - offset), point.expected_count + offset],
+        forecast_expected: expected,
+        forecast_band: band,
+        forecast_error: [Math.max(0, expected - band[0]), Math.max(0, band[1] - expected)],
         is_forecast: true,
       })
     }
@@ -372,7 +443,6 @@ export function CustomTooltip({
   seriesLabel,
   valueFormatter: axisFormatter,
   tooltipFormatter,
-  sigmaThreshold = DEFAULT_SIGMA_THRESHOLD,
 }: {
   active?: boolean
   payload?: Array<{ value: number; dataKey?: string; payload: ChartDataPoint }>
@@ -381,33 +451,29 @@ export function CustomTooltip({
   seriesLabel: SeriesNoun
   valueFormatter?: (value: number) => string
   tooltipFormatter?: (value: number) => string
+  /**
+   * Accepted for callers; the tooltip no longer prints "±Nσ band" (MO-38).
+   * The legend names the band's width instead.
+   */
   sigmaThreshold?: number
 }) {
   const point = payload?.[0]?.payload
   if (!active || !point) return null
   const valueFormatter = tooltipFormatter ?? axisFormatter
-  const sigmaLabel = Number.isFinite(sigmaThreshold) && sigmaThreshold > 0
-    ? sigmaThreshold
-    : DEFAULT_SIGMA_THRESHOLD
-  // A caller-provided formatter carries its own unit (e.g. '8%'), so the
-  // secondary lines route through it instead of the default whole-number
-  // rounding (which would collapse fractional metric values to 0).
-  const formatSecondary = (value: number) =>
-    valueFormatter ? valueFormatter(value) : formatNumber(Math.round(value))
+  const heading = formatTooltipHeading(String(label ?? ''), granularity)
 
   if (point.is_forecast && point.forecast_expected != null) {
     return (
       <div className="rounded-card border border-dashed bg-popover text-popover-foreground px-3 py-2 shadow-md">
-        <p className="text-body-sm text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
+        <p className="text-body-sm text-muted-foreground">{heading} · forecast</p>
         <p className="text-body font-semibold">
           ~{valueFormatter
             ? valueFormatter(point.forecast_expected)
             : formatSeriesValue(Math.round(point.forecast_expected), seriesLabel)}
         </p>
-        <p className="text-body-sm text-muted-foreground">Forecast (next bucket)</p>
         {point.forecast_band && (
           <p className="text-body-sm text-muted-foreground">
-            ±{sigmaLabel}σ band: {formatSecondary(point.forecast_band[0])}–{formatSecondary(point.forecast_band[1])}
+            Likely {formatValueRange(point.forecast_band, valueFormatter)}
           </p>
         )}
       </div>
@@ -418,7 +484,7 @@ export function CustomTooltip({
   if (point.count == null && point.expected_count == null) {
     return (
       <div className="rounded-card border bg-popover text-popover-foreground px-3 py-2 shadow-md">
-        <p className="text-body-sm text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
+        <p className="text-body-sm text-muted-foreground">{heading}</p>
         <p className="text-body-sm text-muted-foreground">No data for this bucket</p>
       </div>
     )
@@ -426,33 +492,127 @@ export function CustomTooltip({
 
   const expectedCount = point.expected_count
   const count = point.count ?? 0
-  const deviation = expectedCount === null ? null : count - expectedCount
+  // A flagged value that rounds onto its own band edge ("37, normal 27–37")
+  // read as inside the band; one more decimal separates them (MO-38).
+  const extraDigit = !valueFormatter && point.band != null
+    && point.band.some(edge => Math.round(edge) === Math.round(count) && edge !== count)
+  const formatPlain = (value: number) =>
+    extraDigit
+      ? formatNumber(Math.round(value * 10) / 10)
+      : formatNumber(Math.round(value))
+  const formatSecondary = (value: number) => (valueFormatter ? valueFormatter(value) : formatPlain(value))
+  const partialNote = partialBucketNote(point, granularity)
 
+  // Three lines at most (MO-38): the bucket, the value, what was expected with
+  // its normal range, and for a flagged bucket which way and how far.
   return (
     <div className="rounded-card border bg-popover text-popover-foreground px-3 py-2 shadow-md">
-      <p className="text-body-sm text-muted-foreground">{formatTooltipLabel(String(label ?? ''), granularity)}</p>
+      <p className="text-body-sm text-muted-foreground">{heading}</p>
       <p className="text-body font-semibold">
         {valueFormatter ? valueFormatter(count) : formatSeriesValue(count, seriesLabel)}
       </p>
       {expectedCount !== null && (
         <p className="text-body-sm text-muted-foreground">
-          Expected: {formatSecondary(expectedCount)}
-        </p>
-      )}
-      {point.band && (
-        <p className="text-body-sm text-muted-foreground">
-          ±{sigmaLabel}σ band: {formatSecondary(point.band[0])}–{formatSecondary(point.band[1])}
-        </p>
-      )}
-      {deviation !== null && (
-        <p className={cn('text-body-sm', point.is_anomaly ? 'text-destructive' : 'text-muted-foreground')}>
-          Deviation: {deviation > 0 ? '+' : ''}{formatSecondary(deviation)}
+          Expected {formatSecondary(expectedCount)}
+          {point.band && ` (normal ${formatValueRange(point.band, valueFormatter ?? formatPlain)})`}
         </p>
       )}
       {point.is_anomaly && (
-        <AnomalyTooltipLine direction={point.anomaly_direction} zScore={point.z_score} />
+        <AnomalyEffectLine
+          direction={point.anomaly_direction}
+          actual={count}
+          expected={expectedCount}
+          zScore={point.z_score}
+        />
       )}
+      {partialNote && <p className="text-body-sm text-muted-foreground">{partialNote}</p>}
     </div>
+  )
+}
+
+/**
+ * The tooltip's bucket label. A sub-day bucket is an instant in the viewer's
+ * zone, so it names the zone ("Sep 22, 06:00 PM GMT+3", MO-38); calendar
+ * buckets are UTC days and keep the plain label.
+ */
+function formatTooltipHeading(bucket: string, granularity: MetricsGranularity): string {
+  const text = formatTooltipLabel(bucket, granularity)
+  if (!isSubDayGranularity(granularity)) return text
+  const date = new Date(bucket)
+  if (Number.isNaN(date.getTime())) return text
+  const zone = new Intl.DateTimeFormat(APP_LOCALE, { timeZoneName: 'short' })
+    .formatToParts(date)
+    .find(part => part.type === 'timeZoneName')?.value
+  return zone ? `${text} ${zone}` : text
+}
+
+/** "27–37" with the unit once, at the end: "3–7%", not "3%–7%" (MO-38). */
+function formatValueRange(
+  [low, high]: [number, number],
+  format: ((value: number) => string) | undefined,
+): string {
+  const fmt = format ?? ((value: number) => formatNumber(Math.round(value)))
+  const lowText = fmt(low)
+  const highText = fmt(high)
+  const suffix = /[^\d]*$/.exec(highText)?.[0] ?? ''
+  const trimmedLow = suffix && lowText.endsWith(suffix) ? lowText.slice(0, -suffix.length) : lowText
+  return `${trimmedLow}–${highText}`
+}
+
+const PARTIAL_BUCKET_NOUN: Record<MetricsGranularity, string> = {
+  '15min': '15 minutes',
+  hour: 'hour',
+  '6h': '6 hours',
+  day: 'day',
+  week: 'week',
+  month: 'month',
+}
+
+function partialBucketNote(point: ChartDataPoint, granularity: MetricsGranularity): string | null {
+  const noun = PARTIAL_BUCKET_NOUN[granularity]
+  if (point.partial_through) return `Partial ${noun}: data through ${formatDateTime(point.partial_through)}`
+  if (point.partial_from) return `Partial ${noun}: data from ${formatDateTime(point.partial_from)}`
+  return null
+}
+
+/**
+ * A flagged bucket in words: which way it moved and by how much against the
+ * expectation ("▲ Spike, +16% above expected"), not a z-score (MO-38 / MO-2).
+ * The z-score stays only when there is no expectation to compare against.
+ */
+function AnomalyEffectLine({
+  direction,
+  actual,
+  expected,
+  zScore,
+}: {
+  direction?: 'spike' | 'drop' | null
+  actual: number
+  expected: number | null
+  zScore?: number | null
+}) {
+  const glyph = direction === 'drop' ? '▼' : direction === 'spike' ? '▲' : '●'
+  const word = direction === 'drop' ? 'Drop' : direction === 'spike' ? 'Spike' : 'Anomaly'
+  const delta = expected === null ? null : ratioDelta(actual, expected)
+  let detail = ''
+  if (direction === 'drop' && actual === 0) {
+    detail = ' to zero'
+  } else if (delta !== null) {
+    detail = delta >= 0
+      ? `, +${Math.round(delta)}% above expected`
+      : `, ${Math.abs(Math.round(delta))}% below expected`
+  } else if (zScore != null && Number.isFinite(zScore)) {
+    detail = ` (z=${zScore.toFixed(1)})`
+  }
+  return (
+    <p
+      className="text-body-sm font-medium"
+      style={{ color: direction ? signalDirectionColor(direction) : 'var(--danger)' }}
+    >
+      <span aria-hidden="true">{glyph} </span>
+      {word}
+      {detail}
+    </p>
   )
 }
 
@@ -525,11 +685,18 @@ export function MultiSeriesTooltip({
 function snapAnnotationsToBuckets(
   annotations: ChartAnnotation[] | undefined,
   data: ChartDataPoint[],
+  windowEnd?: string,
 ): Array<{ id: string; bucket: string; label: string; color: string }> {
   if (!annotations?.length || !data.length) return []
   // Categorical x-axis only renders ReferenceLine for x values that exist
-  // on rendered points, so snap each annotation to the closest bucket in
-  // the visible data. Annotations outside the window simply drop.
+  // on rendered points, so snap each annotation to the bucket that CONTAINS
+  // it: the latest bucket whose start is <= the annotation. Nearest-start
+  // snapping put an 18:00 signal on the next day at day granularity (F25).
+  // Annotations before the window drop. One past the newest point but still
+  // inside the requested window (`windowEnd`, i.e. "now" for live ranges)
+  // lands on the newest bucket: the form defaults to "now", and with
+  // collection lag that instant is hours past the last bucket, so "mark the
+  // deploy I just did" silently drew nothing (MO-8).
   const buckets = data.map(point => ({
     bucket: point.bucket,
     time: new Date(point.bucket).getTime(),
@@ -537,25 +704,28 @@ function snapAnnotationsToBuckets(
   const first = buckets[0]
   const last = buckets[buckets.length - 1]
   if (!first || !last) return []
+  const previous = buckets[buckets.length - 2]
+  const lastSpan = previous ? Math.max(0, last.time - previous.time) : 0
+  const windowEndTime = windowEnd ? new Date(windowEnd).getTime() : Number.NaN
+  const upperBound = Number.isNaN(windowEndTime)
+    ? last.time + lastSpan
+    : Math.max(last.time + lastSpan, windowEndTime)
   return annotations
     .map(annotation => {
       const annotationTime = new Date(annotation.bucket).getTime()
       if (Number.isNaN(annotationTime)) return null
-      if (annotationTime < first.time || annotationTime > last.time) {
+      if (annotationTime < first.time || annotationTime > upperBound) {
         return null
       }
-      let closest = first
-      let closestDelta = Math.abs(annotationTime - first.time)
+      let containing = first
       for (const candidate of buckets) {
-        const delta = Math.abs(annotationTime - candidate.time)
-        if (delta < closestDelta) {
-          closestDelta = delta
-          closest = candidate
+        if (candidate.time <= annotationTime && candidate.time >= containing.time) {
+          containing = candidate
         }
       }
       return {
         id: annotation.id,
-        bucket: closest.bucket,
+        bucket: containing.bucket,
         label: annotation.label,
         color: annotationDisplayColor(annotation.color),
       }
@@ -578,6 +748,8 @@ export function MetricsChart({
   nonNegative,
   from,
   to,
+  partial,
+  legend = false,
 }: MetricsChartProps) {
   const { chartStyle } = useTheme()
   const chartColor = color || SINGLE_SERIES_COLOR
@@ -587,15 +759,15 @@ export function MetricsChart({
   const chartData = useMemo(
     () =>
       padChartData(
-        buildChartData(data, forecast, sigmaThreshold, clampAtZero),
+        buildChartData(data, forecast, sigmaThreshold, clampAtZero, partial),
         { from, to: forecast?.length ? undefined : to },
         granularity,
       ),
-    [data, forecast, sigmaThreshold, clampAtZero, from, to, granularity],
+    [data, forecast, sigmaThreshold, clampAtZero, partial, from, to, granularity],
   )
   const snappedAnnotations = useMemo(
-    () => snapAnnotationsToBuckets(annotations, chartData),
-    [annotations, chartData],
+    () => snapAnnotationsToBuckets(annotations, chartData, to),
+    [annotations, chartData, to],
   )
   const { ref: containerRef, ready: containerReady } = useChartContainerReady()
   const yAxisWidth = useMemo(
@@ -619,14 +791,21 @@ export function MetricsChart({
   const anomalyBuckets = data.filter(point => point.is_anomaly).map(point => point.bucket)
   const anomalyCount = anomalyBuckets.length
   const forecastBuckets = (forecast ?? []).map(point => point.bucket)
+  const hasPartial = Boolean(partial?.first || partial?.last)
+  const curve = curveFor(data.length)
+  const expectedCount = data.filter(point => point.expected_count != null).length
+  const hasBand = chartData.some(point => point.band)
+  const sigmaLabel = Number.isFinite(sigmaThreshold) && sigmaThreshold > 0
+    ? sigmaThreshold
+    : DEFAULT_SIGMA_THRESHOLD
 
-  return (
+  const chart = (
     <div
       ref={containerRef}
       role="img"
       aria-label={`${seriesNounPlural(seriesLabel)} over time`}
       aria-describedby={descId}
-      className={cn('w-full', className)}
+      className={cn('w-full', !legend && className)}
       style={{ height }}
     >
       <div id={descId} className="sr-only">
@@ -648,6 +827,18 @@ export function MetricsChart({
             {' '}
             <span data-testid="forecast-point">
               {summarizeForecastRange(forecastBuckets, granularity)}.
+            </span>
+          </>
+        )}
+        {hasPartial && (
+          <>
+            {' '}
+            <span data-testid="partial-buckets">
+              {partial?.first && partial?.last
+                ? 'The first and last buckets are partial.'
+                : partial?.first
+                  ? 'The first bucket is partial.'
+                  : 'The last bucket is partial.'}
             </span>
           </>
         )}
@@ -706,61 +897,101 @@ export function MetricsChart({
                 seriesLabel={seriesLabel}
                 valueFormatter={valueFormatter}
                 tooltipFormatter={tooltipFormatter}
-                sigmaThreshold={sigmaThreshold}
               />
             }
           />
-          {/* Confidence band — recharts renders a 2-tuple dataKey as a vertical range area. */}
+          {/* Normal range — recharts renders a 2-tuple dataKey as a vertical
+              range area, a soft fill where consecutive buckets carry one. */}
           <Area
-            type="monotone"
+            type={curve}
             dataKey="band"
             stroke="none"
-            fill="var(--muted-foreground)"
-            fillOpacity={0.12}
+            fill="var(--fg-faint)"
+            fillOpacity={0.1}
             isAnimationActive={false}
             connectNulls={false}
             activeDot={false}
             legendType="none"
           />
+          {/* Expected value: dashed where buckets run together, and a hollow
+              point with its normal-range whisker where only an isolated,
+              flagged bucket carries one — which is every bucket today, since
+              the backend scores flagged buckets only (MO-1). */}
           <Line
-            type="monotone"
+            type={curve}
             dataKey="expected_count"
-            stroke="var(--muted-foreground)"
+            stroke="var(--fg-subtle)"
             strokeDasharray="4 4"
             strokeWidth={1.5}
-            dot={false}
-            connectNulls={false}
-          />
-          {/* Forecast preview: same dashed style as `expected_count` but in the
-              series color so it visibly extends from the chart edge. */}
-          <Area
-            type="monotone"
-            dataKey="forecast_band"
-            stroke="none"
-            fill={chartColor}
-            fillOpacity={0.08}
-            isAnimationActive={false}
-            connectNulls
+            dot={expectedCount <= POINT_DOTS_MAX_POINTS
+              ? { r: 3, fill: 'var(--background)', stroke: 'var(--fg-subtle)', strokeWidth: 1.5 }
+              : false}
             activeDot={false}
-            legendType="none"
-          />
-          <Line
-            type="monotone"
-            dataKey="forecast_expected"
-            stroke={chartColor}
-            strokeDasharray="6 4"
-            strokeWidth={1.75}
-            strokeOpacity={0.7}
-            dot={false}
             isAnimationActive={false}
-            connectNulls
-          />
+            connectNulls={false}
+          >
+            <ErrorBar dataKey="expected_error" width={6} stroke="var(--fg-subtle)" strokeWidth={1.5} direction="y" />
+          </Line>
           {renderCountSeries({
             chartStyle,
             chartColor,
             gradientId,
             mini: false,
+            curve,
+            dataKey: hasPartial ? 'solid_count' : 'count',
+            pointDots: data.length <= POINT_DOTS_MAX_POINTS,
           })}
+          {/* A partial first/last bucket: dashed, with a hollow point, so a
+              day that is only half over does not read as a drop (MO-5). */}
+          {hasPartial && chartStyle !== 'bar' && (
+            <Line
+              type="linear"
+              dataKey="partial_count"
+              stroke={chartColor}
+              strokeDasharray="4 3"
+              strokeWidth={2}
+              isAnimationActive={false}
+              connectNulls={false}
+              dot={(props: { cx?: number; cy?: number; payload?: ChartDataPoint }) => {
+                const point = props.payload
+                if (!point || (!point.partial_from && !point.partial_through)) return <></>
+                if (point.is_anomaly) {
+                  return (
+                    <AnomalyMark cx={props.cx} cy={props.cy} direction={point.anomaly_direction} mini={false} />
+                  )
+                }
+                if (props.cx === undefined || props.cy === undefined) return <></>
+                return (
+                  <circle
+                    cx={props.cx}
+                    cy={props.cy}
+                    r={3.5}
+                    fill="var(--background)"
+                    stroke={chartColor}
+                    strokeWidth={2}
+                    data-testid="partial-point"
+                  />
+                )
+              }}
+              activeDot={{ r: 4, strokeWidth: 0 }}
+              legendType="none"
+            />
+          )}
+          {/* Forecast: a hollow point with a whisker for its likely range, in
+              a neutral ink, not a line from the last actual (MO-7). */}
+          <Line
+            type="linear"
+            dataKey="forecast_expected"
+            stroke="var(--fg-subtle)"
+            strokeDasharray="2 3"
+            strokeWidth={1.25}
+            dot={{ r: 3.5, fill: 'var(--background)', stroke: 'var(--fg-subtle)', strokeWidth: 1.5 }}
+            activeDot={{ r: 4, fill: 'var(--fg-subtle)', strokeWidth: 0 }}
+            isAnimationActive={false}
+            connectNulls={false}
+          >
+            <ErrorBar dataKey="forecast_error" width={6} stroke="var(--fg-subtle)" strokeWidth={1.25} direction="y" />
+          </Line>
           {snappedAnnotations.map(annotation => (
             <ReferenceLine
               key={annotation.id}
@@ -788,6 +1019,100 @@ export function MetricsChart({
         </ResponsiveContainer>
       ) : null}
     </div>
+  )
+
+  if (!legend) return chart
+  return (
+    <div className={cn('w-full', className)}>
+      {chart}
+      <ChartLegend
+        color={chartColor}
+        expected={expectedCount > 0}
+        band={hasBand ? sigmaLabel : null}
+        anomaly={anomalyCount > 0}
+        partial={hasPartial}
+        forecast={forecastBuckets.length > 0}
+      />
+    </div>
+  )
+}
+
+/**
+ * What each mark on a volume chart means (MO-1), listing only the marks this
+ * chart draws: "— Actual · - - Expected · ┃ Normal range (±4σ) · ▲ Anomaly".
+ */
+// Exported for unit tests only.
+export function ChartLegend({
+  color,
+  expected,
+  band,
+  anomaly,
+  partial,
+  forecast,
+}: {
+  color: string
+  expected: boolean
+  /** The sigma multiplier of the normal range, or null when none is drawn. */
+  band: number | null
+  anomaly: boolean
+  partial: boolean
+  forecast: boolean
+}) {
+  return (
+    <ul
+      aria-label="Chart legend"
+      data-testid="chart-legend"
+      className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted-foreground"
+    >
+      <li className="inline-flex items-center gap-1.5">
+        <LegendSwatch stroke={color} />
+        Actual
+      </li>
+      {expected && (
+        <li className="inline-flex items-center gap-1.5">
+          <LegendSwatch stroke="var(--fg-subtle)" dash="3 3" />
+          Expected
+        </li>
+      )}
+      {band !== null && (
+        <li className="inline-flex items-center gap-1.5">
+          <svg aria-hidden="true" width="14" height="10" className="shrink-0">
+            <line x1="7" y1="1" x2="7" y2="9" stroke="var(--fg-subtle)" strokeWidth="1.5" />
+            <line x1="4" y1="1" x2="10" y2="1" stroke="var(--fg-subtle)" strokeWidth="1.5" />
+            <line x1="4" y1="9" x2="10" y2="9" stroke="var(--fg-subtle)" strokeWidth="1.5" />
+          </svg>
+          Normal range (±{band}σ)
+        </li>
+      )}
+      {anomaly && (
+        <li className="inline-flex items-center gap-1.5">
+          <span aria-hidden="true" style={{ color: 'var(--danger)' }}>▲</span>
+          Anomaly
+        </li>
+      )}
+      {partial && (
+        <li className="inline-flex items-center gap-1.5">
+          <LegendSwatch stroke={color} dash="4 3" />
+          Partial bucket
+        </li>
+      )}
+      {forecast && (
+        <li className="inline-flex items-center gap-1.5">
+          <svg aria-hidden="true" width="14" height="10" className="shrink-0">
+            <circle cx="7" cy="5" r="3" fill="var(--background)" stroke="var(--fg-subtle)" strokeWidth="1.5" />
+          </svg>
+          Forecast (next bucket)
+        </li>
+      )}
+    </ul>
+  )
+}
+
+function LegendSwatch({ stroke, dash }: { stroke: string; dash?: string }) {
+  return (
+    <svg aria-hidden="true" width="16" height="10" className="shrink-0">
+      <line x1="1" y1="5" x2="15" y2="5" stroke={stroke} strokeWidth="2" strokeDasharray={dash} />
+    </svg>
   )
 }
 
@@ -905,7 +1230,7 @@ export function MetricsMultiSeriesChart({
           {chartSeries.map(item => (
             <Line
               key={item.key}
-              type="monotone"
+              type={curveFor(chartData.length)}
               dataKey={item.key}
               name={item.label}
               stroke={item.color}
@@ -957,14 +1282,27 @@ export function renderCountSeries({
   chartColor,
   gradientId,
   mini,
+  curve = 'monotone',
+  dataKey = 'count',
+  pointDots = false,
 }: {
   chartStyle: ChartStyle
   chartColor: string
   gradientId: string
   mini: boolean
+  /** `linear` for a coarse or sparse series (MO-6). */
+  curve?: CurveType
+  /** `solid_count` when a partial bucket is split off onto its own dashed line (MO-5). */
+  dataKey?: 'count' | 'solid_count'
+  /** A small dot on every measured point of a sparse series (MO-6). */
+  pointDots?: boolean
 }) {
-  const anomalyDot = (props: { cx?: number; cy?: number; payload?: EventMetricPoint }) => {
-    if (!props.payload?.is_anomaly) return <></>
+  const anomalyDot = (props: { cx?: number | null; cy?: number | null; payload?: ChartDataPoint }) => {
+    if (props.cx == null || props.cy == null) return <></>
+    if (!props.payload?.is_anomaly) {
+      if (!pointDots || props.payload?.count == null) return <></>
+      return <circle cx={props.cx} cy={props.cy} r={2} fill={chartColor} data-testid="point-dot" />
+    }
     return (
       <AnomalyMark
         cx={props.cx}
@@ -976,6 +1314,7 @@ export function renderCountSeries({
   }
 
   if (chartStyle === 'bar') {
+    // Bars keep every bucket: a partial one is drawn faded instead (MO-5).
     return (
       <Bar
         dataKey="count"
@@ -990,8 +1329,8 @@ export function renderCountSeries({
   if (chartStyle === 'line-only') {
     return (
       <Line
-        type="monotone"
-        dataKey="count"
+        type={curve}
+        dataKey={dataKey}
         stroke={chartColor}
         strokeWidth={2}
         isAnimationActive={false}
@@ -1003,8 +1342,8 @@ export function renderCountSeries({
 
   return (
     <Area
-      type="monotone"
-      dataKey="count"
+      type={curve}
+      dataKey={dataKey}
       stroke={chartColor}
       fill={`url(#${gradientId})`}
       strokeWidth={2}
@@ -1069,7 +1408,7 @@ type AnomalyBarProps = {
   y?: number
   width?: number
   height?: number
-  payload?: EventMetricPoint
+  payload?: ChartDataPoint
 }
 
 function AnomalyBar({
@@ -1084,7 +1423,21 @@ function AnomalyBar({
     return <g />
   }
   if (!payload?.is_anomaly) {
-    return <rect x={x} y={y} width={width} height={height} fill={chartColor} rx={2} ry={2} />
+    const partial = Boolean(payload?.partial_from || payload?.partial_through)
+    return (
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        fill={chartColor}
+        fillOpacity={partial ? 0.35 : undefined}
+        stroke={partial ? chartColor : undefined}
+        strokeDasharray={partial ? '3 2' : undefined}
+        rx={2}
+        ry={2}
+      />
+    )
   }
   // Fill AND an outline in the direction's colour: a changed fill alone was the
   // only cue, and at a bar's width a red and an amber fill are hard to tell

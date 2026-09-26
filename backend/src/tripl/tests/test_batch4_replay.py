@@ -753,7 +753,7 @@ async def _seed_project_total_replay(
     scope, so unlike the four drift-shaped ones it runs through the NUMERIC
     branch of ``rule_matches_anomaly``. The thresholds are still left at their
     saved defaults — the seeded spike clears them on its own numbers, 4800
-    against 1200 being 300% where ``DEFAULT_MIN_PERCENT_DELTA`` asks 100 — so a
+    against 1200 being 300% where ``DEFAULT_MIN_PERCENT_DELTA`` asks 30 — so a
     rule that stopped admitting this row would still be visible here.
 
     ``scope_ref`` is the SCAN CONFIG's id, which is what ``detect`` writes for
@@ -1096,7 +1096,7 @@ async def _seed_cadence_replay(
     between ``matched_before_cooldown`` and ``firings`` is the limiter's own
     fingerprint rather than anything about matching. The numbers clear the saved
     thresholds unaided — 4800 against 1200 is 300% where
-    ``DEFAULT_MIN_PERCENT_DELTA`` asks 100 — so nothing here depends on the rule
+    ``DEFAULT_MIN_PERCENT_DELTA`` asks 30 — so nothing here depends on the rule
     being loosened for the test.
 
     ``cron`` is the only thing that differs between the two projects seeded

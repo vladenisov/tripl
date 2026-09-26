@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { DndContext } from '@dnd-kit/core'
 import { SortableContext } from '@dnd-kit/sortable'
 import type {
@@ -16,6 +16,7 @@ import type {
 } from '@/types'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { BranchContext } from '@/components/branch-context-internal'
+import { formatDateTime } from '@/lib/datetime'
 import { EventRow } from './EventRow'
 import { resolveFieldValue, resolveFieldValueRow } from './useEventsFiltering'
 
@@ -139,6 +140,7 @@ function renderRow(
 ) {
   return render(
     <MemoryRouter>
+      <RowLocationProbe />
       <BranchContext.Provider value={{ branchId, setBranchId, slug: 'proj-1' }}>
       <TooltipProvider>
         <DndContext>
@@ -181,6 +183,16 @@ function renderRow(
       </TooltipProvider>
       </BranchContext.Provider>
     </MemoryRouter>,
+  )
+}
+
+/** Where a row click navigated to. */
+function RowLocationProbe() {
+  const location = useLocation()
+  return (
+    <span data-testid="row-location" hidden>
+      {location.pathname}
+    </span>
   )
 }
 
@@ -239,8 +251,11 @@ describe('EventRow Δ · 24h and Signal cells', () => {
     renderRow(makeEvent(), lagging)
 
     // recent = 22 * 2400 = 52,800 vs prior = 24 * 2000 = 48,000 → +10%.
+    // Marked with a dotted underline, not an asterisk on every row (EV-7).
     const cell = screen.getByText('+10%')
-    expect(cell).toHaveTextContent('+10%*')
+    expect(cell).not.toHaveTextContent('*')
+    expect(cell).toHaveAttribute('data-partial', 'true')
+    expect(cell).toHaveClass('decoration-dotted')
     const title = cell.getAttribute('title') ?? ''
     expect(title).toContain('Last 24h 52,800 vs 48,000 in the 24h before it')
     expect(title).toContain('the last 24h are covered to 22 of 24 hours')
@@ -250,9 +265,34 @@ describe('EventRow Δ · 24h and Signal cells', () => {
     expect(screen.queryByTitle(/No prior 24h window/)).not.toBeInTheDocument()
   })
 
-  it('shows a Monitored chip when the event has alert-rule coverage', () => {
+  it('keeps a small move muted (EV-7)', () => {
+    // prior 240 vs recent 216 → -10%.
+    renderRow(makeEvent(), windowSeries(10, 9))
+    expect(screen.getByText('-10%')).toHaveStyle({ color: 'var(--fg-muted)' })
+  })
+
+  it('tones the delta by its own sign and size, not by the row signal (EV-7)', () => {
+    // A spike signal beside a -10% figure: the figure stays muted instead of
+    // turning the signal's colour and contradicting it.
+    const { unmount } = renderRow(makeEvent(), windowSeries(10, 9), makeSignal())
+    expect(screen.getByText('-10%')).toHaveStyle({ color: 'var(--fg-muted)' })
+    unmount()
+    // A halving reads as a possible tracking break, signal or not.
+    renderRow(makeEvent(), windowSeries(20, 10))
+    expect(screen.getByText('-50%')).toHaveStyle({ color: 'var(--danger)' })
+  })
+
+  it('tones a doubling as warning (EV-7)', () => {
+    renderRow(makeEvent(), windowSeries(10, 20))
+    expect(screen.getByText('+100%')).toHaveStyle({ color: 'var(--warning)' })
+  })
+
+  it('keeps a covered but quiet row to a dash, with the coverage in its title (EV-6)', () => {
     renderRow(makeEvent({ monitored: true }), windowSeries(10, 20))
-    expect(screen.getByText('Monitored')).toBeInTheDocument()
+    expect(screen.queryByText('Monitored')).not.toBeInTheDocument()
+    expect(
+      screen.getByTitle('No open signal. A monitor (alert rule) covers this event.'),
+    ).toBeInTheDocument()
   })
 
   it('shows an em-dash Signal cell when the event is not covered', () => {
@@ -343,7 +383,7 @@ describe('EventRow name and type cells', () => {
 })
 
 describe('EventRow template token rendering', () => {
-  it('keeps known variable tokens accented and tints unknown tokens amber', () => {
+  it('keeps known variable tokens quiet and tints unknown tokens amber', () => {
     renderRow(
       makeEvent({
         field_values: [{ id: 'fv-1', field_definition_id: TEMPLATE_FIELD.id, value: '${variant}/${missing}' }],
@@ -359,6 +399,8 @@ describe('EventRow template token rendering', () => {
 
     expect(screen.getByText('${variant}')).not.toHaveClass('text-warning')
     expect(screen.getByText('${missing}')).toHaveClass('text-warning')
+    // A quiet code token, not accent-coloured mono that reads as a link (EV-13).
+    expect(screen.getByText('${variant}')).toHaveAttribute('data-slot', 'code-token')
   })
 })
 
@@ -492,8 +534,8 @@ describe('EventRow single saturated signal indicator', () => {
     renderRow(makeEvent({ monitored: true }), withAnomaly)
 
     expect(screen.queryByText('Open')).not.toBeInTheDocument()
-    // Covered but quiet still reads as "Monitored" (a monitor exists), not a signal.
-    expect(screen.getByText('Monitored')).toBeInTheDocument()
+    // Covered but quiet is a dash, not a signal (EV-6).
+    expect(screen.queryByText('Monitored')).not.toBeInTheDocument()
   })
 })
 
@@ -579,5 +621,62 @@ describe('EventRow name typography (DS-17 / EV-10)', () => {
     const link = screen.getByRole('link', { name: 'Home Screen View' })
     expect(link).not.toHaveClass('mono')
     expect(link).not.toHaveClass('font-mono')
+  })
+})
+
+describe('EventRow last seen (EV-8)', () => {
+  it('reads the 48h series when last_seen_at is unset, instead of "never"', () => {
+    renderRow(makeEvent({ last_seen_at: null }), windowSeries(10, 20))
+    expect(screen.getByTitle(/Latest volume in the collected 48h series/)).toBeInTheDocument()
+    expect(screen.queryByTitle('Never observed in collected metrics')).not.toBeInTheDocument()
+  })
+
+  it('humanizes the instant in the title instead of printing raw ISO (DS-25)', () => {
+    const { unmount } = renderRow(makeEvent({ last_seen_at: null }), windowSeries(10, 20))
+    const fallback = screen.getByTitle(/Latest volume in the collected 48h series/)
+    expect(fallback.getAttribute('title')).not.toMatch(/\d{4}-\d{2}-\d{2}T/)
+    unmount()
+    renderRow(makeEvent({ last_seen_at: '2026-06-10T18:00:00Z' }), windowSeries(10, 20))
+    expect(screen.queryByTitle('2026-06-10T18:00:00Z')).not.toBeInTheDocument()
+    expect(screen.getByTitle(formatDateTime('2026-06-10T18:00:00Z'))).toBeInTheDocument()
+  })
+})
+
+describe('EventRow row click (EV-27)', () => {
+  it('opens the detail page from anywhere on the row, not only the name', () => {
+    renderRow(makeEvent({ name: 'Home Screen View' }), [])
+    fireEvent.click(screen.getByRole('link', { name: 'Home Screen View' }).closest('tr')!.querySelector('td:last-child')!)
+    // The row's own cells are plain text; a click there follows the name's link.
+    expect(screen.getByTestId('row-location')).toHaveTextContent('/p/proj-1/monitoring/event/')
+  })
+
+  it('keeps a click that misses the checkbox inside its cell from opening the event', () => {
+    renderRow(makeEvent({ name: 'Home Screen View' }), [])
+    const before = screen.getByTestId('row-location').textContent
+    const checkboxCell = screen.getByRole('checkbox', { name: 'Select Home Screen View' }).closest('td')!
+    fireEvent.click(checkboxCell)
+    expect(screen.getByTestId('row-location').textContent).toBe(before)
+  })
+
+  it('ignores clicks inside a portaled popover opened from a cell', () => {
+    const field = { ...TEMPLATE_FIELD }
+    const valueRow: EventFieldValue = {
+      id: 'fv-variant',
+      field_definition_id: field.id,
+      value: 'short',
+      variable_values: [OBSERVED_PAGES],
+    }
+    renderRow(makeEvent({ name: 'Home Screen View' }), [], undefined, {
+      fieldColumns: [field],
+      getFieldValue: () => 'short',
+      getFieldValueRow: () => valueRow,
+    })
+    const before = screen.getByTestId('row-location').textContent
+    fireEvent.click(screen.getByRole('button', { name: 'Observed variable values' }))
+    const dialog = screen.getByRole('dialog')
+    // Plain text inside the popover, not a control: it bubbles to the row
+    // through the React tree but is not in the row's DOM.
+    fireEvent.click(dialog)
+    expect(screen.getByTestId('row-location').textContent).toBe(before)
   })
 })

@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback } from 'react'
 import type { ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Check, GripVertical, Pencil } from 'lucide-react'
@@ -18,6 +18,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { TableCell, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Chip } from '@/components/primitives/chip'
+import { CodeToken } from '@/components/primitives/code-token'
 import { Dot } from '@/components/primitives/dot'
 import { EVENT_STATUS_DOT_TONE, EVENT_STATUS_LABELS } from '@/lib/eventStatus'
 import type { EventStatus } from '@/lib/eventStatus'
@@ -46,6 +47,7 @@ import {
   splitTemplateValue,
 } from './utils'
 import { useCanWriteProject } from '@/lib/permissions'
+import { formatDateTime } from '@/lib/datetime'
 
 /** The one action a row dispatches; the table has no per-row menu. */
 export type RowAction = 'edit'
@@ -53,23 +55,63 @@ export type RowAction = 'edit'
 function renderTemplateValue(value: string, variables?: Variable[]): ReactNode {
   const parts = splitTemplateValue(value, variables)
   if (parts.length === 1 && !parts[0]?.token) return value
+  // A token reads as data, not a link: the quiet sunken CodeToken instead of
+  // saturated accent mono, which was the brightest text in the table (EV-13).
   return parts.map((part, i) =>
     part.token ? (
       part.known === false ? (
         // Warning tone = the ${token} resolves to no variable (name,
         // source_name or binding) — it will never receive observed values.
-        <span key={i} className="mono text-warning" title="Unknown variable token">
+        <CodeToken key={i} className="text-warning" title="Unknown variable token">
           {part.text}
-        </span>
+        </CodeToken>
       ) : (
-        <span key={i} className="mono" style={{ color: 'var(--accent)' }}>
+        <CodeToken key={i} className="text-fg-secondary" title="Variable: filled in from observed values">
           {part.text}
-        </span>
+        </CodeToken>
       )
     ) : (
       <Fragment key={i}>{part.text}</Fragment>
     ),
   )
+}
+
+/** Clicks on these inside a row keep their own meaning; the rest open the event. */
+const ROW_INTERACTIVE = 'a, button, input, label, select, textarea, [role="checkbox"], [role="button"], [data-no-row-click]'
+
+/**
+ * The newest bucket with volume, for a row whose `last_seen_at` is unset but
+ * whose 48h series has events: "never" beside thousands of events broke trust
+ * in the whole row (EV-8).
+ */
+function lastBucketWithVolume(points: EventMetricPoint[]): string | null {
+  let latest: string | null = null
+  let latestAt = Number.NEGATIVE_INFINITY
+  for (const point of points) {
+    if (!(point.count > 0)) continue
+    const at = Date.parse(point.bucket)
+    if (Number.isFinite(at) && at > latestAt) {
+      latestAt = at
+      latest = point.bucket
+    }
+  }
+  return latest
+}
+
+/** A drop at least this deep reads as a possible tracking break. */
+const DELTA_DROP_PCT = -50
+/** A rise at least this large (volume doubled) is worth a second look. */
+const DELTA_RISE_PCT = 100
+
+/**
+ * The Δ figure's colour from its own sign and size. Small moves stay muted, so
+ * the column does not read "everything is dropping"; a halving is danger (the
+ * classic sign of a broken integration) and a doubling is warning.
+ */
+function deltaColor(pct: number): string {
+  if (pct <= DELTA_DROP_PCT) return 'var(--danger)'
+  if (pct >= DELTA_RISE_PCT) return 'var(--warning)'
+  return 'var(--fg-muted)'
 }
 
 // A muted em-dash placeholder for a cell with no value. The `title` keeps the
@@ -103,6 +145,9 @@ export type EventRowProps = {
   rowSignal: MonitoringSignal | undefined
   windowTotal: number | undefined
   windowData: EventMetricPoint[]
+  /** The 48h metrics for this row have not answered yet: its cells show a
+   *  placeholder, not the "—" that means "no data" (EV-20). */
+  metricsPending?: boolean
   /** Field id → every value this row holds for it, in API order. */
   metaValueMap: Map<string, string[]> | undefined
   getFieldValue: (ev: EventListItem, f: FieldDefinition) => string
@@ -143,6 +188,7 @@ export const EventRow = memo(function EventRow({
   rowSignal,
   windowTotal,
   windowData,
+  metricsPending = false,
   metaValueMap,
   getFieldValue,
   getFieldValueRow,
@@ -211,10 +257,29 @@ export const EventRow = memo(function EventRow({
     activeBranchId,
   )
 
-  // The edit affordance is hover-revealed like the drag handle, but the row the
-  // coached scenario points at must not hide its own click target — so it stays
-  // visible while the edit-event chapter's mark is on it (context bypasses the
-  // memo, and outside a demo the inert context never matches).
+  // The whole row opens the event's detail page, not just the name (EV-27).
+  // The name stays the real anchor (new tab, copy link); a click on anything
+  // interactive in the row, or one that ends a text selection, keeps its own
+  // meaning.
+  const navigate = useNavigate()
+  const onRowClick = (event: React.MouseEvent<HTMLTableRowElement>) => {
+    if (event.defaultPrevented || event.button !== 0) return
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    // React bubbles a click through a portal along the component tree, so a
+    // click inside a cell's popover (rendered under <body>) reaches this row
+    // too. Only a click on the row's own DOM opens the event.
+    if (!(event.target instanceof Node) || !event.currentTarget.contains(event.target)) return
+    const target = event.target as HTMLElement
+    if (target.closest(ROW_INTERACTIVE)) return
+    if (window.getSelection()?.toString()) return
+    detailLink.onClick()
+    void navigate(detailLink.to)
+  }
+
+  // The edit affordance is dimmed until the row is hovered, but the row the
+  // coached scenario points at shows it at full strength while the edit-event
+  // chapter's mark is on it (context bypasses the memo, and outside a demo the
+  // inert context never matches).
   const { active: scenarioActive, step: scenarioStep, hintsMuted } = useDemoScenario()
   const coachEdit =
     scenarioActive &&
@@ -228,9 +293,12 @@ export const EventRow = memo(function EventRow({
       data-index={virtualIndex}
       style={dragStyle}
       data-state={selected ? 'selected' : undefined}
-      className={`group/row ${PHONE_ROW}`}
+      className={`group/row cursor-pointer ${PHONE_ROW}`}
+      onClick={onRowClick}
     >
-      <TableCell className="w-8 px-1">
+      {/* The handle and checkbox cells are hit targets of their own: a click
+          that misses the small control inside must not open the event. */}
+      <TableCell className="w-8 px-1" data-no-row-click={canWrite || undefined}>
         {canWrite && reorderable && (
           // Hover-revealed only where the pointer can hover: on a touch screen
           // an invisible handle cannot be found at all (EVT-21).
@@ -245,7 +313,7 @@ export const EventRow = memo(function EventRow({
           </button>
         )}
       </TableCell>
-      <TableCell className="tripl-pin-l w-10 pl-5">
+      <TableCell className="tripl-pin-l w-10 pl-5" data-no-row-click={canWrite || undefined}>
         {canWrite && (
           <Checkbox
             checked={selected}
@@ -267,14 +335,16 @@ export const EventRow = memo(function EventRow({
           className={`flex items-center gap-2 align-middle ${PHONE_NAME_CONTENT}`}
           style={{ maxWidth: PINNED_EVENT_CONTENT_MAX_WIDTH }}
         >
-          {/* Named only when the Status column is hidden: otherwise the chip
-              in that column already says it, and a second reading is noise. */}
-          <Dot
-            tone={statusTone}
-            pulse={false}
-            size={6}
-            label={hideStatus ? `Status: ${EVENT_STATUS_LABELS[(ev.status as EventStatus) ?? 'draft'] ?? ev.status}` : undefined}
-          />
+          {/* Only when the Status column is hidden: beside it the dot said the
+              same thing again, in colours close to the type colours (EV-9). */}
+          {hideStatus && (
+            <Dot
+              tone={statusTone}
+              pulse={false}
+              size={6}
+              label={`Status: ${EVENT_STATUS_LABELS[(ev.status as EventStatus) ?? 'draft'] ?? ev.status}`}
+            />
+          )}
           <Tooltip>
             <TooltipTrigger asChild>
               {/* A real anchor, not a button: triaging a 2641-event catalog
@@ -336,16 +406,127 @@ export const EventRow = memo(function EventRow({
                 type="button"
                 onClick={() => onRowAction('edit', ev)}
                 aria-label={`Edit ${nameLabel}`}
-                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 ${
-                  coachEdit ? 'opacity-100' : 'opacity-0'
+                // Always there, quiet until the row is hovered or focused: a
+                // hover-only pencil was the one way to the edit form (EV-27).
+                className={`flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-opacity hover:bg-muted focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 ${
+                  coachEdit ? 'opacity-100' : 'opacity-40'
                 }`}
               >
-                <Pencil className="h-3 w-3" aria-hidden="true" />
+                <Pencil className="size-3" aria-hidden="true" />
               </button>
             </ScenarioCoachMark>
           )}
         </div>
       </TableCell>
+      {!hideMonitor && (
+        <TableCell>
+          {/* "Open"/"Recent", never "Live": Live is the lifecycle status in
+              green one column over, and one word must map to one tone
+              (EV-5 / DS-7). The label comes from SIGNAL_LEVEL. With no open
+              signal the cell is a faint dash: a "Monitored" pill on 16 of 17
+              rows drowned the one chip the column exists for (EV-6); the
+              coverage stays in the dash's title. */}
+          {rowSignal ? (
+            <Chip tone={signalLevel?.tone ?? 'danger'} size="xs">
+              {signalLevel?.label ?? SIGNAL_LEVEL.firing.label}
+            </Chip>
+          ) : (
+            <NoData
+              title={
+                ev.monitored
+                  ? 'No open signal. A monitor (alert rule) covers this event.'
+                  : 'No open signal, and no monitor (alert rule) covers this event'
+              }
+            />
+          )}
+        </TableCell>
+      )}
+      <TableCell className="w-32 text-right">
+        <div className="flex items-center justify-end align-middle">
+          <EventWindowMetricsCell
+            eventName={nameLabel}
+            color={eventType?.color}
+            totalCount={windowTotal}
+            data={windowData}
+            anomalyIdx={sparklineAnomalyIdx}
+            signalTone={null}
+            pending={metricsPending}
+          />
+        </div>
+      </TableCell>
+      {!hideDelta && (
+        // Kept on a phone card, beside the count: it is the row's trend (EV-28).
+        <TableCell className="tnum text-right text-caption">
+          {(() => {
+            if (metricsPending) {
+              return (
+                <span
+                  aria-hidden="true"
+                  className="ml-auto block h-3 w-8 animate-pulse rounded-sm bg-surface-hover motion-reduce:animate-none"
+                />
+              )
+            }
+            const delta = computeWindowDelta(windowData)
+            // One sentence for every outcome, naming what was compared and how
+            // much of each 24h window was there to compare (tripl-oooj).
+            const title = describeWindowDelta(delta)
+            const pct = delta.pct
+            if (pct == null) {
+              return <NoData title={title} />
+            }
+            // Coloured by the figure itself, never by the row's signal: a
+            // spike signal beside a -5% figure painted the -5% red and made
+            // the two contradict louder (EV-7). Volume change is not good or
+            // bad by itself, so only a large move is toned.
+            const color = deltaColor(pct)
+            return (
+              <span
+                style={{ color }}
+                title={title}
+                // A window the series does not fully cover is marked with a
+                // dotted underline and explained by the title, instead of an
+                // asterisk on nearly every row (EV-7).
+                className={delta.partial ? 'underline decoration-dotted underline-offset-2' : undefined}
+                data-partial={delta.partial || undefined}
+              >
+                {pct >= 0 ? '+' : ''}
+                {pct.toFixed(0)}%
+              </span>
+            )
+          })()}
+        </TableCell>
+      )}
+      {!hideLastSeen && (() => {
+        // Unset `last_seen_at` next to 48h volume said "never" beside thousands
+        // of events: the two come from different sources. Fall back to the
+        // newest bucket of the series the 48h column draws (EV-8).
+        const seenInSeries = ev.last_seen_at ? null : lastBucketWithVolume(windowData)
+        const seenAt = ev.last_seen_at ?? seenInSeries
+        return (
+          <TableCell
+            className={`text-caption tnum ${PHONE_DROPPED_CELL}`}
+            style={{ color: seenAt ? 'var(--fg-subtle)' : 'var(--fg-faint)' }}
+            // Humanized like every other instant in the app (DS-25), not the
+            // raw ISO string.
+            title={
+              ev.last_seen_at
+                ? formatDateTime(ev.last_seen_at)
+                : seenInSeries
+                  ? `Latest volume in the collected 48h series: ${formatDateTime(seenInSeries)}`
+                  : 'Never observed in collected metrics'
+            }
+          >
+            {formatRelativeTime(seenAt)}
+          </TableCell>
+        )
+      })()}
+      {!hideStatus && (
+        <TableCell>
+          <Chip tone={statusTone} size="xs">
+            {EVENT_STATUS_LABELS[(ev.status as EventStatus) ?? 'draft'] ?? ev.status}
+          </Chip>
+        </TableCell>
+      )}
       {!hideType && (
         <TableCell>
           {/* display_name, not `name`: the sidebar, the page heading and
@@ -366,17 +547,10 @@ export const EventRow = memo(function EventRow({
           </Chip>
         </TableCell>
       )}
-      {!hideStatus && (
-        <TableCell>
-          <Chip tone={statusTone} size="xs">
-            {EVENT_STATUS_LABELS[(ev.status as EventStatus) ?? 'draft'] ?? ev.status}
-          </Chip>
-        </TableCell>
-      )}
       {!hideReviewed && (
         <TableCell
           className={`text-center ${PHONE_DROPPED_CELL}`}
-          aria-label={ev.reviewed ? 'Reviewed' : 'Not reviewed'}
+          aria-label={ev.reviewed ? 'Verified' : 'Not verified'}
         >
           {ev.reviewed ? (
             <Check
@@ -389,84 +563,13 @@ export const EventRow = memo(function EventRow({
               aria-hidden="true"
               className="text-caption"
               style={{ color: 'var(--fg-faint)' }}
-              title="Not reviewed"
+              title="Not verified"
             >
               —
             </span>
           )}
         </TableCell>
       )}
-      {!hideMonitor && (
-        <TableCell>
-          {/* "Open"/"Recent", never "Live": Live is the lifecycle status in
-              green one column over, and one word must map to one tone
-              (EV-5 / DS-7). The label comes from SIGNAL_LEVEL. */}
-          {rowSignal ? (
-            <Chip tone={signalLevel?.tone ?? 'danger'} size="xs">
-              {signalLevel?.label ?? SIGNAL_LEVEL.firing.label}
-            </Chip>
-          ) : ev.monitored ? (
-            <Chip
-              tone="neutral"
-              variant="outline"
-              size="xs"
-              title="No open signal. A monitor (alert rule) covers this event."
-            >
-              Monitored
-            </Chip>
-          ) : (
-            <NoData title="No open signal, and no monitor (alert rule) covers this event" />
-          )}
-        </TableCell>
-      )}
-      {!hideDelta && (
-        <TableCell className={`tnum text-right text-caption ${PHONE_DROPPED_CELL}`}>
-          {(() => {
-            const delta = computeWindowDelta(windowData)
-            // One sentence for every outcome, naming what was compared and how
-            // much of each 24h window was there to compare. The blanket "No
-            // prior 24h window to compare against" this replaces was false on
-            // the fresh demo, where the prior window held 45,812 events and the
-            // cell still showed a dash (tripl-oooj).
-            const title = describeWindowDelta(delta)
-            const pct = delta.pct
-            if (pct == null) {
-              return <NoData title={title} />
-            }
-            const color =
-              Math.abs(pct) < 1
-                ? 'var(--fg-subtle)'
-                : pct >= 0
-                  ? 'var(--success)'
-                  : 'var(--danger)'
-            return (
-              <span style={{ color }} title={title}>
-                {pct >= 0 ? '+' : ''}
-                {pct.toFixed(0)}%
-                {/* The window is short of its 48h — on the demo, 46.0h of it,
-                    because collection ends ~2h before now. The number is still
-                    the best available answer, so it is printed and flagged
-                    rather than withheld; the title states the real coverage. */}
-                {delta.partial && (
-                  <span aria-hidden="true" style={{ color: 'var(--fg-faint)' }}>*</span>
-                )}
-              </span>
-            )
-          })()}
-        </TableCell>
-      )}
-      <TableCell className="w-32 text-right">
-        <div className="flex items-center justify-end align-middle">
-          <EventWindowMetricsCell
-            eventName={nameLabel}
-            color={eventType?.color}
-            totalCount={windowTotal}
-            data={windowData}
-            anomalyIdx={sparklineAnomalyIdx}
-            signalTone={null}
-          />
-        </div>
-      </TableCell>
       {!hideTags && (
         <TableCell>
           <div className="flex flex-wrap gap-1">
@@ -475,15 +578,6 @@ export const EventRow = memo(function EventRow({
             ))}
             {ev.tags.length === 0 && <NoData title="No tags" />}
           </div>
-        </TableCell>
-      )}
-      {!hideLastSeen && (
-        <TableCell
-          className={`text-caption tnum ${PHONE_DROPPED_CELL}`}
-          style={{ color: ev.last_seen_at ? 'var(--fg-subtle)' : 'var(--fg-faint)' }}
-          title={ev.last_seen_at ?? 'Never observed in collected metrics'}
-        >
-          {formatRelativeTime(ev.last_seen_at)}
         </TableCell>
       )}
       {!hideOwner && (

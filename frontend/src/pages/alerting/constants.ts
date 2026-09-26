@@ -85,18 +85,23 @@ export const FILTER_FIELD_OPTIONS: { value: AlertRuleFilterField; label: string 
   { value: 'event_type', label: 'Event type' },
   { value: 'event', label: 'Event' },
   { value: 'direction', label: 'Direction' },
+  // A catalog metric, by its definition id (JR-15). Only catalog-metric signals
+  // carry one, so every other signal passes a metric filter through.
+  { value: 'metric', label: 'Metric' },
 ]
 
+// Words, not SQL: a filter row reads as a sentence — "Event type · is one
+// of · Checkout started" — where "IN" / "!=" asked a PM to read a query (AL-39).
 export const FILTER_OPERATOR_OPTIONS: { value: AlertRuleFilterOperator; label: string }[] = [
-  { value: 'eq', label: '=' },
-  { value: 'ne', label: '!=' },
-  { value: 'in', label: 'IN' },
-  { value: 'not_in', label: 'NOT IN' },
+  { value: 'eq', label: 'is' },
+  { value: 'ne', label: 'is not' },
+  { value: 'in', label: 'is one of' },
+  { value: 'not_in', label: 'is not one of' },
 ]
 
 export const DIRECTION_VALUE_OPTIONS = [
-  { value: 'up', label: 'up' },
-  { value: 'down', label: 'down' },
+  { value: 'up', label: 'Spike (up)' },
+  { value: 'down', label: 'Drop (down)' },
 ]
 
 export function isSingleValueOperator(operator: AlertRuleFilterOperator) {
@@ -344,6 +349,16 @@ export function isDefaultItemsTemplate(
 // project" needs a sentinel in the picker even though the wire value is null.
 export const ALL_SCANS_OPTION = 'all'
 
+/**
+ * Said wherever project-wide detection is off (AL-45): on Detection settings
+ * and above Alerting's rules, which cannot fire while it is.
+ */
+export const DETECTION_OFF_MESSAGE =
+  'Detection is off for this project. No new signals are raised, so no alert rule can fire.'
+
+/** The percent gate a new rule starts at (AL-2); see `defaultRuleForm`. */
+export const DEFAULT_RULE_MIN_PERCENT_DELTA = 30
+
 export function defaultRuleForm(): RuleFormState {
   return {
     name: '',
@@ -360,11 +375,13 @@ export function defaultRuleForm(): RuleFormState {
     notify_on_spike: true,
     notify_on_drop: true,
     ai_explanation_enabled: false,
-    // Matches the server default — DEFAULT_MIN_PERCENT_DELTA in
-    // backend/src/tripl/models/alert_rule.py. A new rule watches moves of at
-    // least double or at most half, not every deviation; a form that opened at
-    // 0 would quietly disagree with the API.
-    min_percent_delta: '100',
+    // 30, not the server's old 100 (AL-2). The gate is
+    // |actual − expected| / expected × 100, so a DROP can reach at most 100% —
+    // and only when volume falls to zero. At 100 the obvious "tell me when X
+    // drops" rule ignored a 50% or a 90% fall. 30% is a move worth hearing
+    // about in either direction; the backend default is the same
+    // (DEFAULT_MIN_PERCENT_DELTA = 30 in backend/src/tripl/models/alert_rule.py).
+    min_percent_delta: String(DEFAULT_RULE_MIN_PERCENT_DELTA),
     min_absolute_delta: '0',
     min_expected_count: '0',
     cooldown_minutes: '1440',
@@ -487,7 +504,7 @@ function numberProblem(text: string, { integer, min }: { integer: boolean; min: 
   if (trimmed === '') return 'Enter a number.'
   const value = Number(trimmed)
   if (!Number.isFinite(value)) return 'Enter a number.'
-  if (integer && !Number.isInteger(value)) return 'Enter a whole number of minutes.'
+  if (integer && !Number.isInteger(value)) return 'Enter a whole number of minutes (or pick a larger unit).'
   if (value < min) return min === 0 ? 'Enter 0 or more.' : `Enter ${min} or more.`
   return null
 }
@@ -633,6 +650,174 @@ export function formatCooldown(minutes: number) {
   if (minutes % 1440 === 0) return `${minutes / 1440}d`
   if (minutes % 60 === 0) return `${minutes / 60}h`
   return `${minutes}m`
+}
+
+/** "1 day", "6 hours", "45 minutes" — the cooldown in words, for sentences. */
+export function formatCooldownLong(minutes: number): string {
+  const unit = COOLDOWN_UNITS.find(option => minutes > 0 && minutes % option.minutes === 0)
+    ?? COOLDOWN_UNITS[COOLDOWN_UNITS.length - 1]!
+  const amount = minutes / unit.minutes
+  return `${amount} ${amount === 1 ? unit.singular : unit.value}`
+}
+
+export type CooldownUnit = 'days' | 'hours' | 'minutes'
+
+/** Largest first: `splitCooldown` picks the largest unit that divides evenly. */
+export const COOLDOWN_UNITS: readonly {
+  value: CooldownUnit
+  singular: string
+  minutes: number
+}[] = [
+  { value: 'days', singular: 'day', minutes: 1440 },
+  { value: 'hours', singular: 'hour', minutes: 60 },
+  { value: 'minutes', singular: 'minute', minutes: 1 },
+]
+
+/**
+ * The cooldown as the editor shows it: an amount and a unit, instead of the
+ * raw "1440" the API stores (AL-6). The form keeps `cooldown_minutes` as the
+ * text that ships, so these two must round-trip: `joinCooldown(splitCooldown(x))`
+ * is `x` for every string, a half-typed or invalid one included — the dialog
+ * re-derives its amount/unit pair whenever the two disagree, and a pair that
+ * did not round-trip would re-derive forever.
+ */
+export function splitCooldown(minutesText: string): { amount: string; unit: CooldownUnit } {
+  // Only a canonical positive integer is converted; anything else ('', '0',
+  // ' 45 ', '1.5', 'abc') stays verbatim in minutes, where joining is identity.
+  if (!/^[1-9]\d*$/.test(minutesText)) return { amount: minutesText, unit: 'minutes' }
+  const minutes = Number(minutesText)
+  const unit = COOLDOWN_UNITS.find(option => minutes % option.minutes === 0)!
+  return { amount: String(minutes / unit.minutes), unit: unit.value }
+}
+
+export function joinCooldown(amount: string, unit: CooldownUnit): string {
+  if (unit === 'minutes') return amount
+  const trimmed = amount.trim()
+  const value = Number(trimmed)
+  // Left as typed when it is not a number: `ruleFormProblems` names it.
+  if (trimmed === '' || !Number.isFinite(value)) return amount
+  const factor = COOLDOWN_UNITS.find(option => option.value === unit)!.minutes
+  return String(Math.round(value * factor * 1000) / 1000)
+}
+
+type RuleScopeFlags = Pick<
+  RuleFormState,
+  | 'include_project_total'
+  | 'include_event_types'
+  | 'include_events'
+  | 'include_metrics'
+  | 'include_schema_drifts'
+  | 'include_distribution_drifts'
+  | 'include_variable_value_drifts'
+  | 'include_release_regressions'
+>
+
+/**
+ * The two kinds of signal a rule listens to (AL-38): volume changes, by the
+ * level they are measured at, and the drift detectors. One list feeds the
+ * editor's checkboxes, the rule list's condition line and the monitor page's
+ * "Watching" chips, so the three cannot name one scope three ways.
+ */
+export const RULE_SIGNAL_GROUPS: readonly {
+  id: 'volume' | 'drift'
+  label: string
+  hint: string
+  scopes: readonly { key: keyof RuleScopeFlags; label: string; short: string; hint: string }[]
+}[] = [
+  {
+    id: 'volume',
+    label: 'Volume changes in',
+    hint: 'A spike or drop in how often something is tracked.',
+    scopes: [
+      { key: 'include_project_total', label: 'Project total', short: 'project total', hint: 'Every event in the project, counted together.' },
+      { key: 'include_event_types', label: 'Event types', short: 'event types', hint: 'Each event type on its own.' },
+      { key: 'include_events', label: 'Events', short: 'events', hint: 'Each event on its own.' },
+      { key: 'include_metrics', label: 'Metrics', short: 'metrics', hint: 'Catalog metrics. Project-wide, not tied to a scan.' },
+    ],
+  },
+  {
+    id: 'drift',
+    label: 'Also alert on',
+    hint: 'Changes in what the data looks like, not how much of it there is.',
+    scopes: [
+      { key: 'include_schema_drifts', label: 'Schema drift', short: 'schema drift', hint: 'A field appears, disappears or changes type.' },
+      { key: 'include_distribution_drifts', label: 'Distribution drift', short: 'distribution drift', hint: 'The mix of values in a watched column shifts.' },
+      { key: 'include_variable_value_drifts', label: 'Value drift', short: 'value drift', hint: 'A variable takes a value outside its documented list.' },
+      { key: 'include_release_regressions', label: 'Release regressions', short: 'release regressions', hint: 'A new app version tracks less than the one before.' },
+    ],
+  },
+]
+
+/** The scopes a rule has switched on, by group, in the words the editor uses. */
+export function ruleSignalLabels(rule: RuleScopeFlags): { volume: string[]; drift: string[] } {
+  const pick = (id: 'volume' | 'drift') =>
+    RULE_SIGNAL_GROUPS.find(group => group.id === id)!.scopes
+      .filter(scope => rule[scope.key])
+      .map(scope => scope.label)
+  return { volume: pick('volume'), drift: pick('drift') }
+}
+
+/** "Spikes & drops", "Spikes", "Drops" — or null when neither is on. */
+export function directionPhrase(rule: Pick<RuleFormState, 'notify_on_spike' | 'notify_on_drop'>): string | null {
+  if (rule.notify_on_spike && rule.notify_on_drop) return 'Spikes & drops'
+  if (rule.notify_on_spike) return 'Spikes'
+  if (rule.notify_on_drop) return 'Drops'
+  return null
+}
+
+/**
+ * The rule list's condition as a sentence (AL-11, JR-15): "Spikes & drops
+ * ≥ 30% · 1d cooldown", and on a second line what it watches — so a rule that
+ * only watches metrics no longer reads exactly like every other rule.
+ */
+export function ruleConditionSummary(rule: AlertRule): { condition: string; watches: string } {
+  const condition = [
+    directionPhrase(rule),
+    rule.min_percent_delta > 0 ? `≥ ${rule.min_percent_delta}%` : null,
+  ].filter(Boolean).join(' ')
+  const labels = ruleSignalLabels(rule)
+  const scopes = [...labels.volume, ...labels.drift]
+  const watches = [
+    scopes.length > 0 ? scopes.join(', ') : 'No signals',
+    rule.filters.length > 0 ? countFilters(rule.filters.length) : null,
+  ].filter(Boolean).join(' · ')
+  return {
+    condition: [condition || 'No direction', `${formatCooldown(rule.cooldown_minutes)} cooldown`].join(' · '),
+    watches,
+  }
+}
+
+function countFilters(count: number): string {
+  return count === 1 ? '1 filter' : `${count} filters`
+}
+
+/**
+ * One line above the rule editor's footer saying what Create will set up
+ * (AL-1): "Sends to Alerts when any of project total, event types, events
+ * spikes or drops by at least 30%, then waits 1 day before alerting on the
+ * same scope again."
+ */
+export function ruleDraftSummary(ruleForm: RuleFormState, destinationName: string | null): string | null {
+  if (!destinationName) return null
+  const direction = ruleForm.notify_on_spike && ruleForm.notify_on_drop
+    ? 'spikes or drops'
+    : ruleForm.notify_on_spike ? 'spikes' : ruleForm.notify_on_drop ? 'drops' : null
+  if (!direction) return null
+  const labels = ruleSignalLabels(ruleForm)
+  const scopes = [...labels.volume, ...labels.drift].map(label => label.toLowerCase())
+  if (scopes.length === 0) return null
+  const subject = ruleForm.filters.length > 0
+    ? `a matching ${scopes.length === 1 ? scopes[0] : 'signal'}`
+    : scopes.length === 1 ? `one of your ${scopes[0]}` : `any of ${scopes.join(', ')}`
+  const percent = Number(ruleForm.min_percent_delta.trim())
+  const threshold = ruleForm.min_percent_delta.trim() !== '' && Number.isFinite(percent) && percent > 0
+    ? ` by at least ${percent}%`
+    : ''
+  const cooldown = Number(ruleForm.cooldown_minutes.trim())
+  const cadence = Number.isInteger(cooldown) && cooldown >= 1
+    ? `, then waits ${formatCooldownLong(cooldown)} before alerting on the same scope again`
+    : ''
+  return `Sends to ${destinationName} when ${subject} ${direction}${threshold}${cadence}.`
 }
 
 export function scopeSummary(rule: AlertRule) {

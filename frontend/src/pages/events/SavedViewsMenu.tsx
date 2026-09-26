@@ -1,4 +1,4 @@
-import { Bookmark, Check, Save, Trash2 } from 'lucide-react'
+import { Bookmark, Check, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { IconButton } from '@/components/ui/icon-button'
 import { Input } from '@/components/ui/input'
@@ -50,24 +50,28 @@ export function SavedViewsMenu({
             onKeyDown={event => {
               if (event.key === 'Enter') onSave()
             }}
-            placeholder="Current filters as..."
+            placeholder="Name this view…"
           />
-          <IconButton
+          {/* A labelled button, not a lone floppy-disk icon (EV-29). */}
+          <Button
             type="button"
             variant="outline"
-            className="h-8 w-8"
+            size="sm"
+            className="h-8 shrink-0"
             onClick={onSave}
             disabled={!draftName.trim()}
-            label="Save current view"
           >
-            <Save className="h-3.5 w-3.5" />
-          </IconButton>
+            Save
+          </Button>
         </div>
 
         {views.length === 0 ? (
-          <div className="rounded-sm border border-dashed px-2 py-3 text-center text-body-sm text-muted-foreground">
-            No saved views
-          </div>
+          // Says what a view keeps and who sees it: views live in this
+          // browser's storage (savedViews.ts), so they are personal (EV-29).
+          <p className="px-1 py-1 text-caption text-fg-tertiary">
+            Save the current search, filters and sort to come back to them. Views are kept in this
+            browser and only you see them.
+          </p>
         ) : (
           <div className="max-h-64 overflow-auto">
             {views.map(view => {

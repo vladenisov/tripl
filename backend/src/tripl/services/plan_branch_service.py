@@ -32,7 +32,7 @@ from tripl.models.plan_branch_approval import PlanBranchApproval
 from tripl.models.plan_branch_comment import PlanBranchComment
 from tripl.models.plan_branch_merge_resolution import PlanBranchMergeResolution
 from tripl.models.plan_branch_reviewer import PlanBranchReviewer
-from tripl.models.plan_revision import PlanRevision
+from tripl.models.plan_revision import PlanRevision, PlanRevisionKind
 from tripl.models.project import Project
 from tripl.models.user import User
 from tripl.models.variable import Variable
@@ -1032,6 +1032,7 @@ async def _copy_main_into_new_branch(
         project_id=project_id,
         created_by=user_id,
         summary=f"Base snapshot for branch '{data.name}'",
+        kind=PlanRevisionKind.branch_base.value,
         payload=base_payload,
     )
     session.add(base_revision)
@@ -1048,6 +1049,9 @@ async def _copy_main_into_new_branch(
     )
     session.add(branch)
     await session.flush()
+    # The revision is written before the branch exists, so its link back is
+    # stamped here, after the branch row has an id (PL-21).
+    base_revision.branch_id = branch.id
 
     await deep_copy_plan_to_branch(
         session,

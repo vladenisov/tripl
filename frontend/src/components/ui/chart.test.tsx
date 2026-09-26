@@ -25,6 +25,7 @@ import type { EventMetricPoint, EventMetricsResponse } from '@/types'
 import {
   AnomalyMark,
   buildChartData,
+  ChartLegend,
   CustomTooltip,
   MetricsChart,
   MetricsMultiSeriesChart,
@@ -67,7 +68,7 @@ describe('MetricsChart', () => {
     expect(screen.getByTestId('anomaly-dot')).toBeInTheDocument()
   })
 
-  it('snaps annotations to the nearest bucket and exposes them for screen readers', () => {
+  it('snaps annotations to the bucket that contains them and exposes them for screen readers', () => {
     render(
       <MetricsChart
         granularity="hour"
@@ -97,7 +98,8 @@ describe('MetricsChart', () => {
             project_id: 'proj',
             scope_type: null,
             scope_ref: null,
-            // Closer to the 11:00 bucket than the 10:00 one — should snap to 11:00.
+            // Closer to the 11:00 start, but inside the 10:00 bucket — the
+            // containing bucket wins (F25).
             bucket: '2026-01-01T10:45:00Z',
             label: 'v1.4 deploy',
             description: null,
@@ -111,9 +113,136 @@ describe('MetricsChart', () => {
 
     const marker = screen.getByTestId('chart-annotation')
     // Humanized like the rest of the summary, never the raw ISO instant (DS-25).
-    expect(marker.textContent).toContain(formatTooltipLabel('2026-01-01T11:00:00Z', 'hour'))
-    expect(marker.textContent).not.toContain('2026-01-01T11:00:00Z')
+    expect(marker.textContent).toContain(formatTooltipLabel('2026-01-01T10:00:00Z', 'hour'))
+    expect(marker.textContent).not.toContain('2026-01-01T10:00:00Z')
     expect(marker.textContent).toContain('v1.4 deploy')
+  })
+
+  // MO-8: the annotation form defaults to "now", which is past the newest
+  // bucket's start; it used to be dropped without a trace.
+  it('draws an annotation inside the newest bucket on that bucket', () => {
+    const bucket = (instant: string, count: number): EventMetricPoint => ({
+      bucket: instant,
+      count,
+      expected_count: null,
+      stddev: null,
+      is_anomaly: false,
+      anomaly_direction: null,
+      z_score: null,
+    })
+    const annotation = {
+      project_id: 'proj',
+      scope_type: null,
+      scope_ref: null,
+      description: null,
+      color: '#ef4444',
+      created_by_user_id: null,
+      created_at: '2026-01-01T09:00:00Z',
+    }
+    render(
+      <MetricsChart
+        granularity="hour"
+        data={[bucket('2026-01-01T10:00:00Z', 10), bucket('2026-01-01T11:00:00Z', 12)]}
+        annotations={[
+          { ...annotation, id: 'now', bucket: '2026-01-01T11:40:00Z', label: 'Deploy' },
+          // Beyond the newest bucket's span: still outside the chart.
+          { ...annotation, id: 'later', bucket: '2026-01-01T12:30:00Z', label: 'Later' },
+        ]}
+      />,
+    )
+
+    const markers = screen.getAllByTestId('chart-annotation')
+    expect(markers).toHaveLength(1)
+    expect(at(markers, 0).textContent).toContain(formatTooltipLabel('2026-01-01T11:00:00Z', 'hour'))
+    expect(at(markers, 0).textContent).toContain('Deploy')
+  })
+
+  // F25: at day granularity an 18:00 instant belongs to its own day, not to
+  // the next day whose midnight start happens to be closer.
+  it('puts an evening annotation on its own day at day granularity', () => {
+    const bucket = (instant: string, count: number): EventMetricPoint => ({
+      bucket: instant,
+      count,
+      expected_count: null,
+      stddev: null,
+      is_anomaly: false,
+      anomaly_direction: null,
+      z_score: null,
+    })
+    render(
+      <MetricsChart
+        granularity="day"
+        data={[
+          bucket('2026-01-01T00:00:00Z', 10),
+          bucket('2026-01-02T00:00:00Z', 12),
+          bucket('2026-01-03T00:00:00Z', 11),
+        ]}
+        annotations={[
+          {
+            id: 'evening',
+            project_id: 'proj',
+            scope_type: null,
+            scope_ref: null,
+            bucket: '2026-01-01T18:00:00Z',
+            label: 'Spike',
+            description: null,
+            color: '#ef4444',
+            created_by_user_id: null,
+            created_at: '2026-01-01T18:00:00Z',
+          },
+        ]}
+      />,
+    )
+
+    const marker = screen.getByTestId('chart-annotation')
+    expect(marker.textContent).toContain(formatTooltipLabel('2026-01-01T00:00:00Z', 'day'))
+    expect(marker.textContent).not.toContain(formatTooltipLabel('2026-01-02T00:00:00Z', 'day'))
+  })
+
+  // MO-8: with collection lag, "now" is hours past the forecast bucket; it
+  // still lands on the newest bucket while it is inside the requested window.
+  it('clamps an annotation past the data but inside the window onto the newest bucket', () => {
+    const bucket = (instant: string, count: number): EventMetricPoint => ({
+      bucket: instant,
+      count,
+      expected_count: null,
+      stddev: null,
+      is_anomaly: false,
+      anomaly_direction: null,
+      z_score: null,
+    })
+    const annotation = {
+      project_id: 'proj',
+      scope_type: null,
+      scope_ref: null,
+      description: null,
+      color: '#ef4444',
+      created_by_user_id: null,
+      created_at: '2026-01-01T18:45:00Z',
+    }
+    render(
+      <MetricsChart
+        granularity="hour"
+        data={[bucket('2026-01-01T15:00:00Z', 10), bucket('2026-01-01T16:00:00Z', 12)]}
+        forecast={[
+          {
+            bucket: '2026-01-01T17:00:00Z',
+            expected_count: 12,
+            stddev: 2,
+          },
+        ]}
+        to="2026-01-01T19:00:00Z"
+        annotations={[
+          { ...annotation, id: 'now', bucket: '2026-01-01T18:45:00Z', label: 'Deploy' },
+          // Past the requested window: still outside the chart.
+          { ...annotation, id: 'future', bucket: '2026-01-01T21:00:00Z', label: 'Future' },
+        ]}
+      />,
+    )
+
+    const markers = screen.getAllByTestId('chart-annotation')
+    expect(markers).toHaveLength(1)
+    expect(at(markers, 0).textContent).toContain('Deploy')
   })
 
   it('separates annotations in the screen-reader summary (DS-25)', () => {
@@ -348,10 +477,12 @@ describe('CustomTooltip', () => {
     )
 
     expect(screen.getByText('0.08 %')).toBeInTheDocument()
-    expect(screen.getByText('Expected: 0')).toBeInTheDocument()
+    // 0.08 rounds onto the band's 0.07 edge, so the secondary values keep one
+    // more decimal instead of reading "inside the band" (MO-38).
+    expect(screen.getByText('Expected 0.1 (normal 0–0.1)')).toBeInTheDocument()
   })
 
-  it('routes value, expected, band, and deviation through valueFormatter', () => {
+  it('routes value, expected and the normal range through valueFormatter', () => {
     render(
       <CustomTooltip
         active
@@ -364,27 +495,51 @@ describe('CustomTooltip', () => {
     )
 
     expect(screen.getByText('8%')).toBeInTheDocument()
-    expect(screen.getByText('Expected: 5%')).toBeInTheDocument()
-    // Default sigma threshold is 4 when none is served — the detector's own
-    // ProjectAnomalySettings default (tripl-0zpq.299).
-    expect(screen.getByText('±4σ band: 3%–7%')).toBeInTheDocument()
-    expect(screen.getByText('Deviation: +3%')).toBeInTheDocument()
+    // The unit once, after the range; no σ jargon or raw deviation (MO-38).
+    expect(screen.getByText('Expected 5% (normal 3–7%)')).toBeInTheDocument()
+    expect(screen.queryByText(/σ band|Deviation/)).toBeNull()
   })
 
-  it('labels the band with the served sigma threshold', () => {
-    render(
+  it('names the zone of a sub-day bucket and not of a calendar day (MO-38)', () => {
+    const { rerender } = render(
       <CustomTooltip
         active
         payload={[{ value: 0.08, payload: point }]}
         label="2026-01-01T10:00:00Z"
         granularity="hour"
         seriesLabel="%"
-        valueFormatter={metricAxisFormatter('%')}
-        sigmaThreshold={2.5}
+      />,
+    )
+    // getByText collapses whitespace (ICU may emit a narrow no-break space).
+    const hourLabel = formatTooltipLabel('2026-01-01T10:00:00Z', 'hour')
+      .replace(/\s+/g, ' ')
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    expect(screen.getByText(new RegExp(`^${hourLabel} \\S+`))).toBeInTheDocument()
+
+    rerender(
+      <CustomTooltip
+        active
+        payload={[{ value: 0.08, payload: point }]}
+        label="2026-01-01T00:00:00Z"
+        granularity="day"
+        seriesLabel="%"
+      />,
+    )
+    expect(screen.getByText(formatTooltipLabel('2026-01-01T00:00:00Z', 'day'))).toBeInTheDocument()
+  })
+
+  it('says a partial bucket is partial (MO-5)', () => {
+    render(
+      <CustomTooltip
+        active
+        payload={[{ value: 5, payload: { ...point, count: 5, expected_count: null, band: undefined, partial_through: '2026-01-01T18:00:00Z' } }]}
+        label="2026-01-01T00:00:00Z"
+        granularity="day"
+        seriesLabel="events"
       />,
     )
 
-    expect(screen.getByText('±2.5σ band: 3%–7%')).toBeInTheDocument()
+    expect(screen.getByText(/^Partial day: data through /)).toBeInTheDocument()
   })
 
   // DS-31 / MET-40: the axis formatter leaves a trailing unit off; the tooltip
@@ -403,7 +558,7 @@ describe('CustomTooltip', () => {
     )
 
     expect(screen.getByText('$1,234')).toBeInTheDocument()
-    expect(screen.getByText('Expected: $1,000')).toBeInTheDocument()
+    expect(screen.getByText('Expected $1,000')).toBeInTheDocument()
     expect(screen.queryByText(/1,234 \$/)).not.toBeInTheDocument()
   })
 })
@@ -644,8 +799,98 @@ describe('buildChartData forecast floor (MON-21)', () => {
       true,
     )
     expect(at(built, 0).band).toEqual([0, 6])
-    expect(at(built, 0).forecast_band).toEqual([0, 5])
     expect(at(built, 1).forecast_band).toEqual([0, 5])
+    // The whisker's offsets from the forecast value.
+    expect(at(built, 1).forecast_error).toEqual([1, 4])
+  })
+
+  // MO-7: a dashed line from a spiking last actual down to the forecast read
+  // as a crash; the forecast is its own point now.
+  it('does not anchor the forecast to the last actual', () => {
+    const last: EventMetricPoint = {
+      bucket: '2026-01-02T10:00:00Z',
+      count: 900,
+      expected_count: 100,
+      stddev: 10,
+      is_anomaly: true,
+      anomaly_direction: 'spike',
+      z_score: 80,
+    }
+    const built = buildChartData(
+      [last],
+      [{ bucket: '2026-01-02T11:00:00Z', expected_count: 110, stddev: 10 }],
+      4,
+      true,
+    )
+    expect(at(built, 0).forecast_expected).toBeUndefined()
+    expect(at(built, 0).forecast_band).toBeUndefined()
+    expect(at(built, 1).forecast_expected).toBe(110)
+  })
+})
+
+describe('buildChartData partial buckets (MO-5)', () => {
+  const day = (bucket: string, count: number): EventMetricPoint => ({
+    bucket,
+    count,
+    expected_count: null,
+    stddev: null,
+    is_anomaly: false,
+    anomaly_direction: null,
+    z_score: null,
+  })
+  const days = [
+    day('2026-01-01T00:00:00Z', 15),
+    day('2026-01-02T00:00:00Z', 110),
+    day('2026-01-03T00:00:00Z', 105),
+    day('2026-01-04T00:00:00Z', 60),
+  ]
+
+  it('splits the partial first and last buckets onto the dashed series', () => {
+    const built = buildChartData(days, [], 4, true, {
+      first: '2026-01-01T14:00:00Z',
+      last: '2026-01-04T18:00:00Z',
+    })
+    expect(built.map(point => point.solid_count)).toEqual([null, 110, 105, null])
+    expect(built.map(point => point.partial_count)).toEqual([15, 110, 105, 60])
+    expect(at(built, 0).partial_from).toBe('2026-01-01T14:00:00Z')
+    expect(at(built, 3).partial_through).toBe('2026-01-04T18:00:00Z')
+  })
+
+  it('leaves the series alone without a partial window', () => {
+    const built = buildChartData(days, [], 4, true)
+    expect(built.every(point => point.solid_count === undefined && point.partial_count === undefined))
+      .toBe(true)
+  })
+})
+
+describe('ChartLegend (MO-1)', () => {
+  it('lists only the marks the chart draws', () => {
+    render(
+      <ChartLegend color="red" expected band={2.5} anomaly partial={false} forecast={false} />,
+    )
+    const legend = screen.getByRole('list', { name: 'Chart legend' })
+    expect(legend).toHaveTextContent('Actual')
+    expect(legend).toHaveTextContent('Expected')
+    expect(legend).toHaveTextContent('Normal range (±2.5σ)')
+    expect(legend).toHaveTextContent('Anomaly')
+    expect(legend).not.toHaveTextContent('Forecast')
+    expect(legend).not.toHaveTextContent('Partial')
+  })
+
+  it('renders under MetricsChart only when asked', () => {
+    const point: EventMetricPoint = {
+      bucket: '2026-01-01T10:00:00Z',
+      count: 10,
+      expected_count: null,
+      stddev: null,
+      is_anomaly: false,
+      anomaly_direction: null,
+      z_score: null,
+    }
+    const { rerender } = render(<MetricsChart granularity="day" data={[point]} />)
+    expect(screen.queryByTestId('chart-legend')).toBeNull()
+    rerender(<MetricsChart granularity="day" data={[point]} legend />)
+    expect(screen.getByTestId('chart-legend')).toHaveTextContent('Actual')
   })
 })
 
@@ -674,7 +919,36 @@ describe('anomaly marks and tooltip lines (MON-17)', () => {
       />,
     )
 
-    expect(screen.getByText('Anomaly: drop (z=-5.0)')).toBeInTheDocument()
+    // In words and against the expectation, not a z-score (MO-38).
+    expect(screen.getByText(/Drop to zero$/)).toBeInTheDocument()
+    expect(screen.queryByText(/z=/)).toBeNull()
+  })
+
+  it('states how far above expected a spike went', () => {
+    render(
+      <CustomTooltip
+        active
+        payload={[
+          {
+            value: 37,
+            payload: {
+              bucket: '2026-01-02T10:00:00Z',
+              count: 37,
+              expected_count: 32,
+              stddev: 1,
+              is_anomaly: true,
+              anomaly_direction: 'spike',
+              z_score: 5,
+            },
+          },
+        ]}
+        label="2026-01-02T10:00:00Z"
+        granularity="day"
+        seriesLabel="events"
+      />,
+    )
+
+    expect(screen.getByText(/Spike, \+16% above expected$/)).toBeInTheDocument()
   })
 
   it('names the series an anomaly belongs to in the multi-series tooltip', () => {

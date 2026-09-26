@@ -15,23 +15,7 @@ import type {
   PlanDiffKind,
 } from '@/types'
 
-export const STATUS_LABEL: Record<PlanBranchStatus, string> = {
-  draft: 'Draft',
-  ready_for_review: 'Ready for review',
-  changes_requested: 'Changes requested',
-  approved: 'Approved',
-  merged: 'Merged',
-  closed: 'Closed',
-}
-
-export const STATUS_TONE: Record<PlanBranchStatus, ChipTone> = {
-  draft: 'neutral',
-  ready_for_review: 'info',
-  changes_requested: 'danger',
-  approved: 'success',
-  merged: 'neutral',
-  closed: 'neutral',
-}
+export { STATUS_LABEL, STATUS_TONE } from '@/lib/branchStatus'
 
 export const ALLOWED_TRANSITIONS: Record<PlanBranchStatus, PlanBranchTransitionAction[]> = {
   draft: ['submit', 'close'],
@@ -172,4 +156,75 @@ export function entityEditPath(
     default:
       return null
   }
+}
+
+/** Branch names read like refs everywhere they appear (mono, in the switcher,
+ * in `?branch=` links): a letter or digit first, then letters, digits and
+ * `- _ / .`, at most 64 characters so the switcher can show them. Upper case
+ * stays allowed: production branches are named after their tracker ticket
+ * (`WND-4770`, see lib/branchTicket). */
+const BRANCH_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9/_.-]*$/
+export const BRANCH_NAME_MAX = 64
+export const BRANCH_NAME_HINT = 'Letters, numbers and - _ / . only, e.g. checkout/paywall-copy or WND-4770.'
+
+/** Why a new branch name cannot be used, or null when it can (PL-5). Empty is
+ * the caller's "Required", shown only after a submit. */
+export function branchNameProblem(name: string, existing: readonly string[]): string | null {
+  const trimmed = name.trim()
+  if (!trimmed) return null
+  if (trimmed.length > BRANCH_NAME_MAX) return `Use at most ${BRANCH_NAME_MAX} characters.`
+  if (!BRANCH_NAME_RE.test(trimmed)) {
+    return /\s/.test(trimmed)
+      ? 'Branch names cannot contain spaces.'
+      : 'Start with a letter or number, and use only letters, numbers and - _ / .'
+  }
+  const lower = trimmed.toLowerCase()
+  if (existing.some((other) => other.trim().toLowerCase() === lower)) {
+    return 'A branch with this name already exists.'
+  }
+  return null
+}
+
+/** A usable name close to what was typed ("Bad name with spaces!!" →
+ * "bad-name-with-spaces"), or null when nothing usable is left. */
+export function suggestBranchName(name: string): string | null {
+  const slug = name
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^A-Za-z0-9/_.-]/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[^A-Za-z0-9]+|[-_/.]+$/g, '')
+    .slice(0, BRANCH_NAME_MAX)
+  const hasUpperKey = /^[A-Z][A-Z0-9]+-\d+/.test(slug)
+  const suggestion = hasUpperKey ? slug : slug.toLowerCase()
+  return suggestion && suggestion !== name.trim() ? suggestion : null
+}
+
+/** Readable labels for the entity keys a diff's full state carries (PL-12).
+ * Keys missing here are humanised ("sunset_at" → "Sunset at"). */
+const STATE_KEY_LABEL: Record<string, string> = {
+  event_type_name: 'Event type',
+  sunset_at: 'Sunset date',
+  superseded_by: 'Superseded by',
+  metric_breakdown_columns: 'Metric breakdowns',
+  field_values: 'Field values',
+  meta_values: 'Meta fields',
+  source_name: 'Source',
+  variable_type: 'Variable type',
+}
+
+export function stateKeyLabel(key: string): string {
+  const known = STATE_KEY_LABEL[key]
+  if (known) return known
+  const words = key.replace(/_/g, ' ').trim()
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : key
+}
+
+/** A state value that says nothing: null, empty text, an empty list or map. */
+export function isEmptyStateValue(value: unknown): boolean {
+  if (value === null || value === undefined) return true
+  if (typeof value === 'string') return value.trim() === ''
+  if (Array.isArray(value)) return value.length === 0
+  if (typeof value === 'object') return Object.keys(value as object).length === 0
+  return false
 }

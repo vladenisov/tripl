@@ -216,6 +216,10 @@ class AlertRuleFilterField(enum.StrEnum):
     event_type = "event_type"
     event = "event"
     direction = "direction"
+    # A catalog metric (MetricDefinition id). Only a ``metric``-scope signal
+    # carries one; every other signal passes a metric filter through, the way a
+    # project-total signal passes an ``event`` filter (JR-15).
+    metric = "metric"
 
 
 class AlertRuleFilterOperator(enum.StrEnum):

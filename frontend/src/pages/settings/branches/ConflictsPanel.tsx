@@ -9,6 +9,7 @@ import { getErrorMessage } from '@/lib/utils'
 import type { PlanBranchConflictField, PlanBranchSummary, ResolutionChoice } from '@/types'
 import { DiffValue } from '../DiffValue'
 import { planBranchConflictsKey } from '@/lib/queryKeys'
+import { ENTITY_LABEL } from './branchMeta'
 
 /**
  * The backend's `ours` is main as it is now and `theirs` is this branch
@@ -16,8 +17,14 @@ import { planBranchConflictsKey } from '@/lib/queryKeys'
  * word reaches the screen (PLAN-6).
  */
 const CHOICE_LABEL: Record<ResolutionChoice, string> = {
-  theirs: "Use this branch's value",
-  ours: "Use main's value",
+  theirs: "Keep this branch's value",
+  ours: "Keep main's value",
+}
+
+/** "Event type" for `event_type`; the raw type only when it is not a known one. */
+function entityTypeLabel(type: string): string {
+  const label = (ENTITY_LABEL as Record<string, string | undefined>)[type]
+  return label ? label.charAt(0).toUpperCase() + label.slice(1) : type
 }
 const CHOSEN_TEXT: Record<ResolutionChoice, string> = {
   theirs: "Resolved: this branch's value",
@@ -73,11 +80,15 @@ export function ConflictsPanel({ slug, branch }: { slug: string; branch: PlanBra
           <div
             // Two entity types may share a name; the type is part of the identity.
             key={`${entity.entity_type}:${entity.name}`}
-            className="rounded-md border p-2"
+            className="rounded-card border p-3"
             style={{ borderColor: 'var(--border-subtle)' }}
           >
-            <div className="mono mb-1 text-body-sm font-medium" style={{ color: 'var(--fg)' }}>
-              {entity.entity_type}: {entity.name}
+            {/* "Event type checkout", not the wire's `event_type: checkout` (PL-20). */}
+            <div className="mb-1 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
+              {entityTypeLabel(entity.entity_type)}{' '}
+              <span className="mono font-medium" style={{ color: 'var(--fg)' }}>
+                {entity.name}
+              </span>
             </div>
             <div className="space-y-2">
               {entity.fields.map((field) => (
@@ -135,21 +146,21 @@ function ConflictFieldRow({
         </span>
       </div>
       {/* Stacked below `sm`: three monospace columns squeezed to ~100px each
-          on a phone. */}
+          on a phone. In time order, the two sides being chosen between last:
+          main when the branch opened, main now, this branch (PL-20). */}
       <div className="mono mt-1 grid grid-cols-1 gap-1 sm:grid-cols-3 sm:gap-2">
-        <ConflictValue label="Main (base)" value={field.base} />
+        <ConflictValue label="Was (when the branch opened)" value={field.base} />
+        <ConflictValue label="Main now" value={field.ours} />
         <ConflictValue label="This branch" value={field.theirs} />
-        <ConflictValue label="Main (now)" value={field.ours} />
       </div>
       {onResolve && (
-        <div className="mt-1 flex flex-wrap gap-1.5">
-          {(['theirs', 'ours'] as const).map((choice) => (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {(['ours', 'theirs'] as const).map((choice) => (
             <Button
               key={choice}
               type="button"
               size="sm"
               variant={field.choice === choice ? 'default' : 'outline'}
-              className="h-6 px-2 text-caption"
               aria-pressed={field.choice === choice}
               disabled={pending}
               onClick={() => onResolve(choice)}

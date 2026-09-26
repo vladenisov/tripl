@@ -172,6 +172,13 @@ describe('AuthPage', () => {
     expect(screen.queryByText(/no account/i)).not.toBeInTheDocument()
   })
 
+  it('opens the reset-request form from ?mode=forgot, the session dialog link (SH-35)', () => {
+    mockAuthFetch({ emailConfigured: true })
+    renderAuth('/auth?mode=forgot')
+
+    expect(screen.getByRole('button', { name: 'Send reset link' })).toBeInTheDocument()
+  })
+
   it('falls back to the contact-owner copy when the instance has no email configured', async () => {
     mockAuthFetch({ emailConfigured: false })
     renderAuth()

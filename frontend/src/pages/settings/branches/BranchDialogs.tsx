@@ -3,19 +3,23 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { branchSettingsApi } from '@/api/branchSettings'
 import { ErrorState } from '@/components/error-state'
+import { ReadOnlyDefinition, ReadOnlyNotice } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogBody,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Checkbox } from '@/components/ui/checkbox'
 import { FieldError } from '@/components/forms/FieldError'
 import { REQUIRED_MESSAGE, focusFirstInvalid, invalidAria } from '@/components/forms/validation'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -23,6 +27,11 @@ import { ownerOnlyReason, useIsOwner } from '@/lib/permissions'
 import { getErrorMessage } from '@/lib/utils'
 import type { ProjectBranchSettings } from '@/types'
 import { parseMinApprovals } from './branchDiffModel'
+import {
+  BRANCH_NAME_HINT,
+  branchNameProblem,
+  suggestBranchName,
+} from './branchMeta'
 import { branchSettingsKey } from '@/lib/queryKeys'
 
 interface MergePolicyDialogProps {
@@ -66,7 +75,13 @@ export function MergePolicyDialog({ slug, open, onOpenChange }: MergePolicyDialo
             onRetry={() => void settingsQuery.refetch()}
           />
         ) : (
-          <p className="py-4 text-body text-muted-foreground">Loading policy…</p>
+          // The two rows' shape, not a sentence (#237).
+          <div role="status" className="space-y-3 py-4">
+            <span className="sr-only">Loading the merge policy…</span>
+            <Skeleton className="h-4 w-32" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-4 w-40" />
+          </div>
         )}
       </DialogContent>
     </Dialog>
@@ -106,12 +121,44 @@ function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
     },
   })
 
+  // Everyone but an owner reads the policy as values, not as a form of
+  // disabled controls (#237 MT-28 / ST-17).
+  if (!canEdit) {
+    return (
+      <div className="grid gap-4 py-4">
+        <ReadOnlyNotice>{ownerOnlyReason('change the merge policy')}</ReadOnlyNotice>
+        <ReadOnlyDefinition
+          items={[
+            {
+              label: 'Required approvals',
+              value:
+                settings.min_approvals === 0
+                  ? 'None: a branch can merge without approval'
+                  : String(settings.min_approvals),
+            },
+            {
+              label: 'Block self-approval',
+              value: settings.block_self_approval
+                ? 'On: authors cannot approve their own branch'
+                : 'Off',
+            },
+          ]}
+        />
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </div>
+    )
+  }
+
   return (
     <form
       noValidate
       onSubmit={(event) => {
         event.preventDefault()
-        if (canEdit && parsedMinApprovals !== null) saveMut.mutate(parsedMinApprovals)
+        if (parsedMinApprovals !== null) saveMut.mutate(parsedMinApprovals)
       }}
     >
       <div className="grid gap-4 py-4">
@@ -126,7 +173,6 @@ function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
             step={1}
             value={minApprovals}
             onChange={(event) => setMinApprovals(event.target.value)}
-            disabled={!canEdit}
             aria-invalid={minApprovalsInvalid || undefined}
             aria-describedby={
               minApprovalsInvalid ? `${minApprovalsErrorId} ${minApprovalsHintId}` : minApprovalsHintId
@@ -152,7 +198,6 @@ function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
             id={blockSelfId}
             checked={blockSelf}
             onCheckedChange={setBlockSelf}
-            disabled={!canEdit}
           />
         </div>
         {saveMut.isError && (
@@ -160,21 +205,14 @@ function MergePolicyForm({ slug, settings, onClose }: MergePolicyFormProps) {
             {getErrorMessage(saveMut.error)}
           </p>
         )}
-        {!canEdit && (
-          <p className="text-body-sm text-muted-foreground">
-            {ownerOnlyReason('change the merge policy')}
-          </p>
-        )}
       </div>
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onClose}>
-          {canEdit ? 'Cancel' : 'Close'}
+          Cancel
         </Button>
-        {canEdit && (
-          <Button type="submit" disabled={saveMut.isPending || minApprovalsInvalid}>
-            Save
-          </Button>
-        )}
+        <Button type="submit" disabled={saveMut.isPending || minApprovalsInvalid}>
+          Save
+        </Button>
       </DialogFooter>
     </form>
   )
@@ -186,6 +224,11 @@ interface CreateBranchDialogProps {
   description: string
   pending: boolean
   error: string | null
+  /** Names already taken, checked before submit (PL-5). */
+  existingNames: readonly string[]
+  /** "Switch to this branch now" (PL-4). */
+  switchAfterCreate: boolean
+  onSwitchAfterCreate: (value: boolean) => void
   onName: (value: string) => void
   onDescription: (value: string) => void
   onOpenChange: (open: boolean) => void
@@ -198,17 +241,27 @@ export function CreateBranchDialog({
   description,
   pending,
   error,
+  existingNames,
+  switchAfterCreate,
+  onSwitchAfterCreate,
   onName,
   onDescription,
   onOpenChange,
   onSubmit,
 }: CreateBranchDialogProps) {
   const nameId = useId()
+  const nameHintId = useId()
   const descriptionId = useId()
+  const switchId = useId()
   // "Required" under an empty name once Create was pressed, instead of the
-  // browser's bubble (AU-4).
+  // browser's bubble (AU-4). A malformed or taken name is said while typing:
+  // "Bad name with spaces!!" used to be accepted (PL-5).
   const [submitted, setSubmitted] = useState(false)
-  const nameError = submitted && !name.trim() ? REQUIRED_MESSAGE : null
+  const nameProblem = branchNameProblem(name, existingNames)
+  const nameError = nameProblem ?? (submitted && !name.trim() ? REQUIRED_MESSAGE : null)
+  const suggestion = nameProblem ? suggestBranchName(name) : null
+  const usableSuggestion =
+    suggestion !== null && branchNameProblem(suggestion, existingNames) === null ? suggestion : null
   return (
     <Dialog
       open={open}
@@ -224,7 +277,7 @@ export function CreateBranchDialog({
           onSubmit={(event) => {
             event.preventDefault()
             setSubmitted(true)
-            if (!name.trim()) {
+            if (!name.trim() || nameProblem) {
               const form = event.currentTarget
               requestAnimationFrame(() => focusFirstInvalid(form))
               return
@@ -234,6 +287,11 @@ export function CreateBranchDialog({
         >
           <DialogHeader>
             <DialogTitle>New branch</DialogTitle>
+            {/* What is about to happen, before anyone commits to it (PL-4). */}
+            <DialogDescription>
+              A branch is a private copy of the plan as it is now. Edit events on it, ask for a
+              review, then merge to make the changes live.
+            </DialogDescription>
           </DialogHeader>
           <DialogBody className="grid gap-4">
             <div className="grid gap-2">
@@ -242,11 +300,28 @@ export function CreateBranchDialog({
                 id={nameId}
                 aria-required
                 value={name}
+                autoComplete="off"
+                spellCheck={false}
                 onChange={(event) => onName(event.target.value)}
-                placeholder="e.g. feature-checkout-v2"
+                placeholder="e.g. checkout/paywall-copy"
+                className="mono"
                 {...invalidAria(nameId, nameError)}
+                aria-describedby={nameError ? `${nameId}-error ${nameHintId}` : nameHintId}
               />
               <FieldError inputId={nameId} message={nameError} />
+              {usableSuggestion ? (
+                <button
+                  type="button"
+                  onClick={() => onName(usableSuggestion)}
+                  className="w-fit text-caption font-medium underline underline-offset-2"
+                  style={{ color: 'var(--accent)' }}
+                >
+                  Use <span className="mono">{usableSuggestion}</span>
+                </button>
+              ) : null}
+              <p id={nameHintId} className="text-caption text-fg-tertiary">
+                {BRANCH_NAME_HINT}
+              </p>
             </div>
             <div className="grid gap-2">
               <Label htmlFor={descriptionId} optional>Description</Label>
@@ -258,14 +333,24 @@ export function CreateBranchDialog({
                 placeholder="What is this branch for?"
               />
             </div>
-            {error && <p className="text-body" style={{ color: 'var(--danger)' }}>{error}</p>}
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id={switchId}
+                checked={switchAfterCreate}
+                onCheckedChange={(value) => onSwitchAfterCreate(value === true)}
+              />
+              <Label htmlFor={switchId} className="font-normal">
+                Switch to this branch now
+              </Label>
+            </div>
+            {error && <p role="alert" className="text-body" style={{ color: 'var(--danger)' }}>{error}</p>}
           </DialogBody>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
             <Button type="submit" disabled={pending}>
-              Create
+              Create branch
             </Button>
           </DialogFooter>
         </form>

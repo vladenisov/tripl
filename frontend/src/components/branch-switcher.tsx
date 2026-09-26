@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Check, ChevronDown, GitBranch, GitCompare, Plus } from 'lucide-react'
+import { Check, ChevronDown, GitBranch, GitCompare, Plus, Settings2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { planBranchesApi } from '@/api/planBranches'
 import { useBranchContext } from '@/hooks/useBranch'
 import { requestPageLeave } from '@/hooks/useUnsavedChangesGuard'
@@ -9,6 +10,7 @@ import { Chip } from '@/components/primitives/chip'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { PlanBranchSummary } from '@/types'
 import { planBranchesKey } from '@/lib/queryKeys'
+import { STATUS_LABEL, STATUS_TONE } from '@/lib/branchStatus'
 
 export function BranchSwitcher({ slug, compact = false }: { slug: string; compact?: boolean }) {
   const { branchId, setBranchId } = useBranchContext()
@@ -38,14 +40,29 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
   // Switching branch swaps the data under the page without a navigation, so a
   // form with a draft would be remounted empty. Ask the page's unsaved-changes
   // guard first; the popover closes either way.
+  // The switch is said out loud: it changes where every edit goes, and the
+  // rail is not where the eye is (PL-1).
   const switchTo = (id: string | null) => {
     setOpen(false)
-    requestPageLeave(() => setBranchId(id))
+    if (id === branchId) return
+    const target = id ? branches.find((b) => b.id === id) : null
+    requestPageLeave(() => {
+      setBranchId(id)
+      toast(
+        target
+          ? `Switched to ${target.name} — edits stay on this branch until it merges`
+          : 'Switched to main — edits now change the live plan',
+        { id: 'branch-switched' },
+      )
+    })
   }
 
-  const goToBranches = () => {
+  // "New branch" opens the create dialog on the branches page (`?new=1`)
+  // rather than only landing on the list, where it had to be found again
+  // (PL-13 / JR-11). Managing the list is its own item.
+  const goToBranches = (create: boolean) => {
     setOpen(false)
-    navigate(`/p/${slug}/settings/branches`)
+    navigate(`/p/${slug}/settings/branches${create ? '?new=1' : ''}`)
   }
 
   return (
@@ -71,22 +88,33 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
             )}
           </button>
         ) : (
+        // On a branch the trigger wears the info edge the shell's branch strip
+        // uses, the full name in its title (the label truncates), and the
+        // branch's status instead of a "feature" chip that said nothing (PL-1).
         <button
           type="button"
-          title="Switch branch"
-          className="flex h-7 w-full items-center gap-1.5 rounded-md border px-2 text-caption transition-colors hover:bg-sidebar-hover"
-          style={{ background: 'transparent', borderColor: 'var(--border-subtle)' }}
+          title={`Switch branch (current: ${activeLabel})`}
+          className="flex h-7 w-full items-center gap-1.5 rounded-control border px-2 text-caption transition-colors hover:bg-sidebar-hover"
+          style={{
+            background: 'transparent',
+            borderColor: 'var(--border-subtle)',
+            ...(onMain ? null : { borderLeft: '2px solid var(--info)' }),
+          }}
         >
-          <GitBranch className="h-3 w-3 shrink-0" style={{ color: 'var(--accent)' }} />
+          <GitBranch
+            className="size-3 shrink-0"
+            style={{ color: onMain ? 'var(--accent)' : 'var(--info)' }}
+            aria-hidden="true"
+          />
           <span className="mono min-w-0 flex-1 truncate text-left" style={{ color: 'var(--fg)' }}>
             {activeLabel}
           </span>
-          {!onMain && (
-            <Chip tone="info" size="xs">
-              feature
+          {!onMain && active ? (
+            <Chip tone={STATUS_TONE[active.status]} size="xs" className="shrink-0">
+              {STATUS_LABEL[active.status]}
             </Chip>
-          )}
-          <ChevronDown className="h-3 w-3 shrink-0" style={{ color: 'var(--fg-subtle)' }} />
+          ) : null}
+          <ChevronDown className="size-3 shrink-0" style={{ color: 'var(--fg-subtle)' }} aria-hidden="true" />
         </button>
         )}
       </PopoverTrigger>
@@ -130,12 +158,21 @@ export function BranchSwitcher({ slug, compact = false }: { slug: string; compac
         >
           <button
             type="button"
-            onClick={goToBranches}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)]"
+            onClick={() => goToBranches(true)}
+            className="flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)]"
             style={{ color: 'var(--fg-muted)' }}
           >
-            <Plus className="h-3 w-3 shrink-0" />
+            <Plus className="size-3 shrink-0" aria-hidden="true" />
             New branch from main
+          </button>
+          <button
+            type="button"
+            onClick={() => goToBranches(false)}
+            className="flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)]"
+            style={{ color: 'var(--fg-muted)' }}
+          >
+            <Settings2 className="size-3 shrink-0" aria-hidden="true" />
+            Manage branches
           </button>
         </div>
       </PopoverContent>
@@ -158,15 +195,25 @@ function BranchRow({
     <button
       type="button"
       onClick={onSelect}
-      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)]"
+      title={branch.name}
+      aria-current={active ? 'true' : undefined}
+      className="flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--surface-hover)]"
       style={{ color: active ? 'var(--fg)' : 'var(--fg-muted)' }}
     >
       <Icon
-        className="h-3 w-3 shrink-0"
+        className="size-3 shrink-0"
         style={{ color: isMain ? 'var(--accent)' : 'var(--fg-subtle)' }}
+        aria-hidden="true"
       />
       <span className="mono min-w-0 flex-1 truncate">{branch.name}</span>
-      {active && <Check className="h-3 w-3 shrink-0" style={{ color: 'var(--accent)' }} />}
+      {/* Which branch waits for review and which is approved, so the right
+          one can be picked from here (JR-11). */}
+      {!isMain && (
+        <Chip tone={STATUS_TONE[branch.status]} size="xs" className="shrink-0">
+          {STATUS_LABEL[branch.status]}
+        </Chip>
+      )}
+      {active && <Check className="size-3 shrink-0" style={{ color: 'var(--accent)' }} aria-hidden="true" />}
     </button>
   )
 }

@@ -63,7 +63,9 @@ export interface AlertRule {
   updated_at: string
 }
 
-export type AlertRuleFilterField = 'event_type' | 'event' | 'direction'
+// `metric` matches a catalog metric's signal by its MetricDefinition id — a
+// catalog signal's scope_ref (JR-15). Every other signal passes it through.
+export type AlertRuleFilterField = 'event_type' | 'event' | 'direction' | 'metric'
 export type AlertRuleFilterOperator = 'eq' | 'ne' | 'in' | 'not_in'
 
 export interface AlertRuleFilter {
@@ -511,6 +513,26 @@ export interface MonitorsSummaryResponse {
   scope_readiness: AlertScopeReadiness
 }
 
+/**
+ * One scope of a monitor that is firing now (MO-36).
+ *
+ * Chosen by the same horizon test as `firing_scope_count`, so the list and the
+ * count cannot disagree. `scope_name`, `event_id` and `direction` come from the
+ * delivery that last notified the scope, and all three are null for a scope the
+ * rule has not notified yet (a cooldown or a mute can hold the first message
+ * back while the state is already open).
+ */
+export interface MonitorFiringScope {
+  scope_type: MetricScopeType
+  scope_ref: string
+  scan_config_id: string | null
+  scope_name: string | null
+  event_id: string | null
+  direction: 'spike' | 'drop' | null
+  last_anomaly_bucket: string
+  last_notified_at: string | null
+}
+
 /** A single monitor with the extra context a drill-in detail view needs. */
 export interface MonitorDetail extends MonitorSummaryItem {
   // Raw enable flags (the summary `enabled` is the AND of these two).
@@ -545,4 +567,6 @@ export interface MonitorDetail extends MonitorSummaryItem {
   // The same block the monitors list carries, under the same name: both screens
   // render the same two toggles and must not disagree about what feeds them.
   scope_readiness: AlertScopeReadiness
+  /** The scopes behind `firing_scope_count`, for the "Firing now" panel. */
+  firing_scopes: MonitorFiringScope[]
 }

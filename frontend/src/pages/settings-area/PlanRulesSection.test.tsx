@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 import PlanRulesSection from './PlanRulesSection'
 
@@ -36,8 +37,26 @@ describe('Project · Plan rules states that none of it is built', () => {
     for (const group of ['Naming conventions', 'Governance', 'PII & compliance']) {
       expect(screen.getByRole('region', { name: group })).toBeInTheDocument()
     }
+    // The approval gate that exists today is the merge policy, not a plan
+    // rule; the planned list no longer duplicates it (PL-26).
+    expect(screen.queryByText(/Require an approval/)).not.toBeInTheDocument()
     // Written as what the rule would do, never as a policy in force.
     expect(screen.queryByDisplayValue('1 approval')).not.toBeInTheDocument()
     expect(screen.queryByDisplayValue('90 days')).not.toBeInTheDocument()
+  })
+})
+
+describe('Project · Plan rules points at what exists today (PL-26)', () => {
+  it('links the merge policy for the project', () => {
+    render(
+      <MemoryRouter>
+        <PlanRulesSection slug="demo" />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByRole('link', { name: 'Plan branches › Merge policy' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/branches',
+    )
   })
 })

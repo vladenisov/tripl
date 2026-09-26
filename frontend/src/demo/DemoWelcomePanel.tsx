@@ -105,7 +105,7 @@ export function DemoWelcomePanel({ project }: { project: Project }) {
         <>
           <p className="mt-2 max-w-2xl text-body-sm leading-[1.55]" style={{ color: 'var(--fg-muted)' }}>
             Everything here runs on a local, synthetic warehouse — no external systems are touched.
-            Explore real scans, metrics, monitors and alerts against generated data, then reset or delete
+            Explore real scans, metrics and alert rules against generated data, then reset or delete
             the demo whenever you like.
           </p>
 

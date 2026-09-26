@@ -809,7 +809,7 @@ describe('EventTypeDetail across a branch switch (PLAN-44)', () => {
       expect(screen.getByTestId('path')).toHaveTextContent('/p/demo/settings/event-types/type-9'),
     )
     expect(screen.getByRole('heading', { name: 'Checkout' })).toBeInTheDocument()
-    expect(screen.queryByText(/does not exist/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/does not exist|Event type not found/)).not.toBeInTheDocument()
   })
 })
 

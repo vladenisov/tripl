@@ -5,6 +5,7 @@ import { Label } from '@/components/ui/label'
 import { FilterBar, FilterSelect } from '@/components/ui/filter-bar'
 import { formatIsoDate } from '@/lib/datetime'
 import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice, SectionSkeleton } from '@/components/states'
 import { countOf } from '@/lib/plural'
 import type {
   AlertDeliveryDetail,
@@ -142,11 +143,8 @@ export function AlertAuditPanel({
     // page's rows while a new one is in flight: with `keepPreviousData` the
     // reader should keep reading, not watch the table blink to "Loading…".
     if (isLoading && !deliveries && !pinnedDelivery) {
-      return (
-        <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
-          Loading deliveries…
-        </div>
-      )
+      // Row-shaped, not a sentence in a dashed box (#237).
+      return <SectionSkeleton variant="list" rows={4} label="Loading deliveries…" />
     }
     if (strandedPastEnd && !pinnedDelivery) {
       return (
@@ -209,9 +207,7 @@ export function AlertAuditPanel({
             share one message.
           </p>
           {!canWrite && (
-            <p className="rounded-md border border-dashed p-3 text-body-sm text-muted-foreground">
-              {VIEWER_READ_ONLY_NOTICE}
-            </p>
+            <ReadOnlyNotice>{VIEWER_READ_ONLY_NOTICE}</ReadOnlyNotice>
           )}
           {/* The app's one filter bar (DS-15), the same as the Inbox's beside
               it: "{Label}: {value}" chips that apply instantly, then "Clear

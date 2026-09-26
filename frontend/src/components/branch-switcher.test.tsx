@@ -84,7 +84,7 @@ describe('BranchSwitcher', () => {
 
     renderSwitcher()
 
-    const trigger = await screen.findByTitle('Switch branch')
+    const trigger = await screen.findByTitle(/^Switch branch/)
     expect(within(trigger).getByText('main')).toBeInTheDocument()
   })
 
@@ -95,7 +95,7 @@ describe('BranchSwitcher', () => {
 
     renderSwitcher()
 
-    const trigger = await screen.findByTitle('Switch branch')
+    const trigger = await screen.findByTitle(/^Switch branch/)
     expect(within(trigger).getByText('loading…')).toBeInTheDocument()
     expect(within(trigger).queryByText('main')).not.toBeInTheDocument()
 
@@ -108,11 +108,25 @@ describe('BranchSwitcher', () => {
 
     renderSwitcher()
 
-    fireEvent.click(await screen.findByTitle('Switch branch'))
+    fireEvent.click(await screen.findByTitle(/^Switch branch/))
 
     expect(await screen.findByText('Plan branches')).toBeInTheDocument()
     expect(screen.getByText('checkout-v2')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /New branch from main/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Manage branches/i })).toBeInTheDocument()
+    // Each working branch says where its review stands (JR-11).
+    expect(screen.getByText('Approved')).toBeInTheDocument()
+  })
+
+  it('shows the active branch status, not a "feature" chip, and names it in full (PL-1)', async () => {
+    branchState.id = FEATURE.id
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
+
+    renderSwitcher()
+
+    const trigger = await screen.findByTitle('Switch branch (current: checkout-v2)')
+    expect(within(trigger).getAllByText('Approved')).toHaveLength(1)
+    expect(within(trigger).queryByText('feature')).not.toBeInTheDocument()
   })
 
   it('selects a feature branch via setBranchId', async () => {
@@ -120,7 +134,7 @@ describe('BranchSwitcher', () => {
 
     renderSwitcher()
 
-    fireEvent.click(await screen.findByTitle('Switch branch'))
+    fireEvent.click(await screen.findByTitle(/^Switch branch/))
     fireEvent.click(await screen.findByText('checkout-v2'))
 
     expect(setBranchId).toHaveBeenCalledWith('feat-1')
@@ -136,7 +150,7 @@ describe('BranchSwitcher', () => {
 
     renderSwitcher()
 
-    fireEvent.click(await screen.findByTitle('Switch branch'))
+    fireEvent.click(await screen.findByTitle(/^Switch branch/))
     await screen.findByText('Plan branches')
 
     expect(screen.getByText('checkout-v2')).toBeInTheDocument()
@@ -150,7 +164,7 @@ describe('BranchSwitcher', () => {
     renderSwitcher({ withForm: true })
     fireEvent.change(screen.getByLabelText('Draft'), { target: { value: 'draft' } })
 
-    fireEvent.click(await screen.findByTitle('Switch branch'))
+    fireEvent.click(await screen.findByTitle(/^Switch branch/))
     fireEvent.click(await screen.findByText('checkout-v2'))
 
     await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
@@ -159,7 +173,7 @@ describe('BranchSwitcher', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(setBranchId).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByTitle('Switch branch'))
+    fireEvent.click(screen.getByTitle(/^Switch branch/))
     fireEvent.click(await screen.findByText('checkout-v2'))
     fireEvent.click(await screen.findByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(setBranchId).toHaveBeenCalledWith('feat-1'))
@@ -169,7 +183,7 @@ describe('BranchSwitcher', () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
 
     renderSwitcher({ withForm: true })
-    fireEvent.click(await screen.findByTitle('Switch branch'))
+    fireEvent.click(await screen.findByTitle(/^Switch branch/))
     fireEvent.click(await screen.findByText('checkout-v2'))
 
     expect(setBranchId).toHaveBeenCalledWith('feat-1')

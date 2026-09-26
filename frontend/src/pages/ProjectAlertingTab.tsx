@@ -15,6 +15,7 @@ import { eventTypesApi } from '@/api/eventTypes'
 import { projectsApi } from '@/api/projects'
 import { scansApi } from '@/api/scans'
 import { ErrorState } from '@/components/error-state'
+import { SectionSkeleton, type SectionSkeletonVariant } from '@/components/states'
 import { useConfirm } from '@/hooks/useConfirm'
 import {
   ALERT_INBOX_STATUSES,
@@ -53,7 +54,7 @@ import {
   type InboxFilterState,
 } from './alerting/inboxFilters'
 import { CHANNEL_META } from './alerting/channelMeta'
-import { PageHead, Panel } from '@/components/settings/kit'
+import { PageHead } from '@/components/settings/kit'
 import { PageContainer } from '@/components/primitives/page-container'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { DestinationChannel } from './alerting/constants'
@@ -79,35 +80,61 @@ import { lazyWithReload } from '@/lib/lazyWithReload'
 // behind Monitors, the incident cards behind the Inbox and the delivery rows
 // behind the log load when their tab is opened. The page itself keeps the
 // state they share, so switching tabs loses nothing.
+const loadMonitorsSection = () => import('./alerting/MonitorsSection')
+const loadDestinationsSection = () => import('./alerting/DestinationsSection')
+const loadAlertingInbox = () => import('./alerting/AlertingInbox')
+const loadAlertAuditPanel = () => import('./alerting/AlertAuditPanel')
 const MonitorsSection = lazyWithReload(() =>
-  import('./alerting/MonitorsSection').then((m) => ({ default: m.MonitorsSection })),
+  loadMonitorsSection().then((m) => ({ default: m.MonitorsSection })),
 )
 const DestinationsSection = lazyWithReload(() =>
-  import('./alerting/DestinationsSection').then((m) => ({ default: m.DestinationsSection })),
+  loadDestinationsSection().then((m) => ({ default: m.DestinationsSection })),
 )
 const AlertingInbox = lazyWithReload(() =>
-  import('./alerting/AlertingInbox').then((m) => ({ default: m.AlertingInbox })),
+  loadAlertingInbox().then((m) => ({ default: m.AlertingInbox })),
 )
 const InboxBulkActionBar = lazyWithReload(() =>
   import('./alerting/InboxBulkActionBar').then((m) => ({ default: m.InboxBulkActionBar })),
 )
 const AlertAuditPanel = lazyWithReload(() =>
-  import('./alerting/AlertAuditPanel').then((m) => ({ default: m.AlertAuditPanel })),
+  loadAlertAuditPanel().then((m) => ({ default: m.AlertAuditPanel })),
 )
 
 /**
- * Inside the tabpanel, not around it: the selected tab's `aria-controls` must
- * name a panel that exists while the section's chunk is still on its way.
+ * Each section's chunk, fetched ahead when the reader points at or focuses its
+ * tab (AL-22): switching tabs took 3–8s of "Loading…" in dev, and the pointer
+ * is on the tab well before the click lands. `import()` is cached by the module
+ * graph, so a second call costs nothing.
  */
-function SectionSuspense({ children }: { children: ReactNode }) {
+const SECTION_PREFETCH: Record<AlertingSection, () => Promise<unknown>> = {
+  inbox: loadAlertingInbox,
+  monitors: loadMonitorsSection,
+  destinations: loadDestinationsSection,
+  audit: loadAlertAuditPanel,
+}
+
+/** What each section's first load looks like: its own shape, not a sentence (AL-22). */
+const SECTION_SKELETON: Record<AlertingSection, { variant: SectionSkeletonVariant; label: string }> = {
+  inbox: { variant: 'list', label: 'Loading inbox…' },
+  monitors: { variant: 'table', label: 'Loading alert rules…' },
+  destinations: { variant: 'cards', label: 'Loading destinations…' },
+  audit: { variant: 'table', label: 'Loading delivery log…' },
+}
+
+function SectionFallback({ section }: { section: AlertingSection }) {
+  const { variant, label } = SECTION_SKELETON[section]
+  return <SectionSkeleton variant={variant} label={label} />
+}
+
+/**
+ * Inside the tabpanel, not around it: the selected tab's `aria-controls` must
+ * name a panel that exists while the section's chunk is still on its way. The
+ * page header and the tab strip stay outside it, so the title never waits for
+ * a chunk (#237 rule 1).
+ */
+function SectionSuspense({ section, children }: { section: AlertingSection; children: ReactNode }) {
   return (
-    <Suspense
-      fallback={
-        <p role="status" aria-live="polite" className="text-body text-muted-foreground">
-          Loading…
-        </p>
-      }
-    >
+    <Suspense fallback={<SectionFallback section={section} />}>
       {children}
     </Suspense>
   )
@@ -130,7 +157,10 @@ type AlertingSection = (typeof ALERTING_SECTIONS)[number]
 
 const SECTION_LABELS: Record<AlertingSection, string> = {
   inbox: 'Inbox',
-  monitors: 'Monitors',
+  // "Rules", not "Monitors" (JR-28): the tab, its "Add rule", the "New alert
+  // rule" dialog and the list's "N alert rules" named one object three ways.
+  // The section KEY stays `monitors` — deep links already carry it.
+  monitors: 'Rules',
   destinations: 'Destinations',
   // "Delivery log", not "Audit": the sidebar already has an "Audit log" meaning
   // something else entirely (who changed what), and this list is the messages
@@ -189,6 +219,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
   // created. Cleared the moment the card consumes it, so it cannot re-open the
   // dialog the reader has just closed (tripl-oxkt.15).
   const [autoOpenRuleForDestinationId, setAutoOpenRuleForDestinationId] =
+    useState<string | null>(null)
+  const [autoOpenRuleDestinationName, setAutoOpenRuleDestinationName] =
     useState<string | null>(null)
   // Section lives in a QUERY param, not a path segment. The second segment of
   // /p/:slug/settings/:tab/:itemId is the delivery id an alert link carries, and
@@ -561,6 +593,9 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
     // reproduce the original bug with a different tab.
     selectSection('monitors')
     setAutoOpenRuleForDestinationId(created.id)
+    setAutoOpenRuleDestinationName(created.name)
+    // The hand-off used to happen without a word that step 2 worked (AL-34).
+    toast.success(`Destination "${created.name}" created — now choose what should alert`)
   }
 
   const handleDeleteDestination = async (destination: AlertDestination) => {
@@ -1072,9 +1107,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
       onRetry={() => void destinationsQuery.refetch()}
     />
   ) : destinationsQuery.isPending ? (
-    <p role="status" aria-live="polite" className="text-body text-muted-foreground">
-      Loading…
-    </p>
+    // The section's own shape while its data is on the way (AL-22).
+    <SectionFallback section={section} />
   ) : null
   // A refresh that failed while a list is on screen keeps the list (and any
   // editor open over it) and says so in one line, instead of replacing it.
@@ -1132,6 +1166,8 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
               // mounted at a time, and an aria-controls naming an id that is not
               // in the document is a broken reference, not a hint.
               {...(section === value ? {} : { 'aria-controls': undefined })}
+              onPointerEnter={() => void SECTION_PREFETCH[value]().catch(() => {})}
+              onFocus={() => void SECTION_PREFETCH[value]().catch(() => {})}
             >
               {SECTION_LABELS[value]}
             </TabsTrigger>
@@ -1141,22 +1177,18 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
 
       {showGuidedSetup ? (
         <>
+          {/* No empty "Delivery log" panel under the setup any more (AL-33):
+              guided state requires zero deliveries, so it could only ever say
+              "No deliveries yet" — the tab strip brings it back with the first
+              destination. */}
           <AlertingGuidedSetup
+            slug={slug}
             channels={CHANNEL_META}
+            // Unknown until the project answers: no step 0 rather than a
+            // wrong one.
+            hasScans={(project?.summary?.scan_count ?? 1) > 0}
             onPickChannel={type => openDestinationDialog({ mode: 'create', type, handOffToRule: true })}
           />
-          {/* Keep the delivery log reachable before anything is configured so
-              the surface stays discoverable. Guided state requires zero
-              deliveries, so it is always empty here — render just the panel +
-              empty state, without the (equally empty) filter bar
-              (tripl-7l83.14). Title matches AlertAuditPanel's: a reader who
-              configures a destination must not watch the panel rename itself
-              (tripl-oxkt.18). */}
-          <Panel title="Delivery log" subtitle="0 deliveries">
-            <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
-              No deliveries yet.
-            </div>
-          </Panel>
         </>
       ) : (
       <>
@@ -1165,7 +1197,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           the page's own stack (tripl-oxkt.19). */}
       {section === 'monitors' && (
         <TabsContent value="monitors" className="space-y-6">
-        <SectionSuspense>
+        <SectionSuspense section="monitors">
         {destinationsRefreshFailed}
         {destinationsUnavailable ?? (
         <MonitorsSection
@@ -1178,7 +1210,11 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
           scansFailed={scansFailed}
           canWrite={canWrite}
           autoOpenRuleForDestinationId={autoOpenRuleForDestinationId}
-          onAutoOpenRuleConsumed={() => setAutoOpenRuleForDestinationId(null)}
+          autoOpenRuleDestinationName={autoOpenRuleDestinationName}
+          onAutoOpenRuleConsumed={() => {
+            setAutoOpenRuleForDestinationId(null)
+            setAutoOpenRuleDestinationName(null)
+          }}
           onGoToDestinations={() => selectSection('destinations')}
         />
         )}
@@ -1188,7 +1224,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
 
       {section === 'destinations' && (
         <TabsContent value="destinations" className="space-y-6">
-        <SectionSuspense>
+        <SectionSuspense section="destinations">
         {destinationsRefreshFailed}
         {destinationsUnavailable ?? (
         <DestinationsSection
@@ -1209,7 +1245,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
 
       {section === 'inbox' && (
         <TabsContent value="inbox" className="space-y-6">
-        <SectionSuspense>
+        <SectionSuspense section="inbox">
         {/* The Inbox does not need the destinations list to show incidents,
             but its "No rules yet" gate reads it — so while it is missing the
             gate asserts nothing (below) and the failure is said here rather
@@ -1285,7 +1321,7 @@ export default function ProjectAlertingTab({ slug, focusDeliveryId, focusItemKey
 
       {section === 'audit' && (
         <TabsContent value="audit" className="space-y-6">
-        <SectionSuspense>
+        <SectionSuspense section="audit">
         <AlertAuditPanel
           slug={slug}
           deliveries={deliveries}

@@ -5,9 +5,10 @@ import { useQuery } from '@tanstack/react-query'
 import { projectsQueryOptions } from '@/lib/queryKeys'
 import { useAuth } from '@/components/auth-context'
 import { ErrorState } from '@/components/error-state'
-import { SCard } from '@/components/settings/kit'
+import { SCard, SHeader } from '@/components/settings/kit'
 import { SettingsLayout } from '@/components/settings/SettingsLayout'
-import { SETTINGS_STORAGE_KEY } from '@/components/settings/nav'
+import { SETTINGS_STORAGE_KEY, sectionLabel } from '@/components/settings/nav'
+import { ReadOnlyNotice, SectionSkeleton } from '@/components/states'
 import { LEAVE_CONFIRMED } from '@/components/settings/unsaved-changes'
 import type { Project } from '@/types'
 import { isOwner as isOwnerRole } from '@/lib/permissions'
@@ -58,8 +59,26 @@ function useSettingsSlug(pickedSlug: string | null): string | undefined {
   return undefined
 }
 
-function SectionFallback() {
-  return <div className="text-body" style={{ color: 'var(--fg-subtle)' }}>Loading…</div>
+/**
+ * A section's chunk loading. Every section draws its own `SHeader`, which is
+ * lazy with the rest of it, so on a cold load the page had no title at all,
+ * only "Loading…" at the top left (#237 ST-35). The fallback names the page
+ * from the rail's label and draws the cards' shape under it.
+ */
+function SectionFallback({ section }: { section: string }) {
+  const title = sectionLabel(section)
+  return (
+    <div>
+      {title && <SHeader title={title} />}
+      <SectionSkeleton variant="form" label={title ? `Loading ${title}…` : 'Loading…'} />
+    </div>
+  )
+}
+
+/** The page title above a state that is not the section itself (ST-36). */
+function StateHeader({ section }: { section: string }) {
+  const title = sectionLabel(section)
+  return title ? <SHeader title={title} /> : null
 }
 
 /**
@@ -142,7 +161,7 @@ export default function SettingsArea({ section }: { section: string }) {
           }}
         />
       )}
-      <Suspense fallback={<SectionFallback />}>
+      <Suspense fallback={<SectionFallback section={section} />}>
         {renderSection({
           section,
           slug,
@@ -203,7 +222,7 @@ function renderSection({
   if (section === 'profile') return <ProfileSection />
   if (section === 'security') return <SecuritySection />
   if (section.startsWith('instance/')) {
-    if (!isOwner) return <OwnerOnly />
+    if (!isOwner) return <OwnerOnly section={section} />
     // Audit is the one Instance section that is not a settings form, so it does
     // not go through InstanceSection — that component's whole job is to frame a
     // ServiceSettingsPage section, and this reads a feed instead. It shares the
@@ -214,16 +233,19 @@ function renderSection({
   // Everything below is project-scoped. Never guess which project that is.
   if (!slug) {
     return (
-      <NoProjectSelected
-        projects={projects}
-        status={projectsStatus}
-        onPick={onPickProject}
-        error={projectsError}
-        onRetry={onRetryProjects}
-      />
+      <div>
+        <StateHeader section={section} />
+        <NoProjectSelected
+          projects={projects}
+          status={projectsStatus}
+          onPick={onPickProject}
+          error={projectsError}
+          onRetry={onRetryProjects}
+        />
+      </div>
     )
   }
-  if (section === 'project/plan-rules') return <PlanRulesSection />
+  if (section === 'project/plan-rules') return <PlanRulesSection slug={slug} />
   return <ProjectGeneralSection slug={slug} onSlugChanged={onSlugChanged} />
 }
 
@@ -251,7 +273,7 @@ function NoProjectSelected({
   // ['projects'] cache on a /settings/* route — these routes mount outside
   // Layout — so on a cold load every owner of five projects was told they had
   // none for the length of the GET, and offered "Create one in the workspace".
-  if (status === 'pending') return <SectionFallback />
+  if (status === 'pending') return <SectionSkeleton variant="list" rows={3} label="Loading projects…" />
 
   // A retry in place, not "reload the page": a reload throws away whatever
   // else the user had open for a GET the query can simply repeat.
@@ -308,13 +330,26 @@ function NoProjectSelected({
   )
 }
 
-function OwnerOnly() {
+/**
+ * An Instance section opened by a non-owner (a shared link, a bookmark). The
+ * rail hides the Instance group from them, so the page has to say where they
+ * are itself: the section's title, the one read-only notice, and a way out
+ * (#237 ST-17 / ST-36).
+ */
+function OwnerOnly({ section }: { section: string }) {
   return (
-    <div
-      className="rounded-xl p-6 text-body"
-      style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--fg-subtle)' }}
-    >
-      Owner role is required to view or change instance-level settings.
+    <div>
+      <StateHeader section={section} />
+      <ReadOnlyNotice
+        action={
+          <Link to="/settings/profile" className="text-body-sm font-medium text-accent no-underline hover:underline">
+            Go to Profile
+          </Link>
+        }
+      >
+        Owner role is required to view or change instance-level settings. Ask an owner, or go to
+        Profile.
+      </ReadOnlyNotice>
     </div>
   )
 }

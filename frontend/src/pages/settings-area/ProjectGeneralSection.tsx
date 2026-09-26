@@ -43,7 +43,7 @@ import { canManageProject, canWrite, canWriteProject, isOwner } from '@/lib/perm
 import { SLUG_ERROR, SLUG_HINT, isValidSlug } from '@/lib/slug'
 import { forgetDemoLocalState } from '@/demo/demoLocalState'
 import { deleteProjectConfirmation } from '@/lib/projectDeletion'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { QueryErrorState, ReadOnlyNotice, SectionSkeleton } from '@/components/states'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import {
   RESET_PERIODS,
@@ -408,7 +408,9 @@ function ProjectGeneralBody({
               size="sm"
               onClick={() => navigate(`/p/${slug}/settings/event-types`)}
             >
-              Project operations
+              {/* Named for what it opens: event types, meta fields, alerting…
+                  "Project operations" described none of them (#238 ST-5). */}
+              Tracking plan &amp; alerting
             </Button>
             <Button variant="outline" size="sm" onClick={() => navigate(`/p/${slug}/events`)}>
               View project
@@ -417,15 +419,17 @@ function ProjectGeneralBody({
         }
       />
 
-      {projectQuery.isLoading && (
-        <p className="text-body" style={{ color: 'var(--fg-subtle)' }}>
-          Loading project…
-        </p>
-      )}
+      {/* The two cards' shape while the project loads, and a retry (or the
+          way back, for a project that no longer exists) when it fails
+          (#237 ST-35 / SH-33). */}
+      {projectQuery.isLoading && <SectionSkeleton variant="form" rows={5} label="Loading project…" />}
       {projectQuery.isError && (
-        <p className="text-body" style={{ color: 'var(--danger)' }}>
-          Failed to load project.
-        </p>
+        <QueryErrorState
+          error={projectQuery.error}
+          title="Could not load this project"
+          onRetry={() => void projectQuery.refetch()}
+          notFound={{ title: 'Project not found', back: { to: '/workspace', label: 'Back to all projects' } }}
+        />
       )}
 
       {projectQuery.data && (

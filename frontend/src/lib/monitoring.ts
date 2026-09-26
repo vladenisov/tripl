@@ -1,4 +1,7 @@
 import type { MetricScopeType } from '@/types'
+import { APP_LOCALE } from '@/lib/format'
+import { ratioDelta } from '@/lib/percentDelta'
+import { relativeEffect, signalMagnitudeWord } from '@/lib/signalMagnitude'
 
 // The subset of scopes that map to a monitoring detail route / API scope.
 // `metric` is the catalog-metric drilldown (its series/versions/breakdowns
@@ -255,4 +258,50 @@ export function formatSignalSeverity(signal: SignalSeverityInput): string {
     return 'dropped to zero'
   }
   return `z=${signal.z_score.toFixed(1)}`
+}
+
+/** What {@link formatSignalEffect} reads; `relative_effect` is the server's. */
+export interface SignalEffectInput extends SignalSeverityInput {
+  relative_effect?: number | null
+}
+
+/**
+ * A signal's size as a signed % change from expected: "+203%", "−64%", or
+ * "dropped to zero" / "up from zero" where a percentage says nothing (MO-2).
+ *
+ * The primary severity on every signal row. A z-score means nothing to most
+ * readers and "3,846 vs 1,268" makes them do the arithmetic; the event hero
+ * already said "+203% vs. baseline", and now the lists say it too.
+ *
+ * The figure is {@link ratioDelta}, the same unfloored |actual − expected| /
+ * |expected| the event hero and the monitoring detail page print, so one
+ * signal reads one number everywhere. It used to be {@link relativeEffect},
+ * whose count-shaped denominator is floored at 1: expected 0.4 and actual 5
+ * read "+460%" in the lists and "+1150%" on the hero. The floor stays where it
+ * belongs, in the Significant / Major gate; it only ever shrinks the gated
+ * value, so a row listed under "≥50%" still never reads below 50%.
+ * `relativeEffect` remains the fallback for a baseline `ratioDelta` refuses.
+ */
+export function formatSignalEffect(signal: SignalEffectInput): string {
+  if (signal.direction === 'drop' && signal.actual_count === 0) return 'dropped to zero'
+  if (signal.direction !== 'drop' && signal.expected_count <= 0) return 'up from zero'
+  const delta = ratioDelta(signal.actual_count, signal.expected_count)
+  const pct = delta === null ? relativeEffect(signal) * 100 : Math.abs(delta)
+  // Whole percent from 10% up; one decimal below, where rounding "4.6" to "5"
+  // would move a row across a reader's mental threshold.
+  const digits = pct >= 10 ? 0 : 1
+  const figure = pct.toLocaleString(APP_LOCALE, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+  // A real minus sign (U+2212), not a hyphen, so "+" and "−" line up.
+  return `${signal.direction === 'drop' ? '\u2212' : '+'}${figure}%`
+}
+
+/**
+ * The secondary line for {@link formatSignalEffect}: the word bucket and the
+ * z-score, for a tooltip or a screen reader — "Major · z=40.7" (JR-31).
+ */
+export function formatSignalEffectDetail(signal: SignalEffectInput): string {
+  return `${signalMagnitudeWord(signal)} · z=${signal.z_score.toFixed(1)}`
 }

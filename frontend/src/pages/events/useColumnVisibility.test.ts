@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { useColumnVisibility } from './useColumnVisibility'
+import type { EventType, FieldDefinition } from '@/types'
+import {
+  shownColumnKey,
+  typeSpecificFieldKeys,
+  useColumnVisibility,
+  withDefaultHidden,
+} from './useColumnVisibility'
 
 const STORAGE_KEY = 'tripl.eventsHiddenCols'
 const DEFAULT_HIDDEN = ['owner', 'reviewed', 'tags']
@@ -52,5 +58,29 @@ describe('useColumnVisibility lean default', () => {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as string[]
     expect(saved).not.toContain('tags')
     expect(saved).toEqual(expect.arrayContaining(['owner', 'reviewed']))
+  })
+})
+
+describe('type-specific field columns on the All tab (EV-11)', () => {
+  const field = (id: string, name: string) => ({ id, name }) as unknown as FieldDefinition
+  const type = (names: string[]) =>
+    ({ field_definitions: names.map((name, i) => field(`${name}-${i}`, name)) }) as unknown as EventType
+
+  it('marks the fields that not every event type defines', () => {
+    const columns = [field('f-platform', 'platform'), field('f-amount', 'amount')]
+    const keys = typeSpecificFieldKeys([type(['platform', 'amount']), type(['platform'])], columns)
+    expect([...keys]).toEqual(['f:f-amount'])
+  })
+
+  it('marks nothing with a single event type', () => {
+    expect(typeSpecificFieldKeys([type(['amount'])], [field('f-amount', 'amount')]).size).toBe(0)
+  })
+
+  it('hides a default-hidden column until the reader opts into it', () => {
+    const defaults = new Set(['f:f-amount'])
+    expect(withDefaultHidden(new Set(), defaults).has('f:f-amount')).toBe(true)
+    expect(
+      withDefaultHidden(new Set([shownColumnKey('f:f-amount')]), defaults).has('f:f-amount'),
+    ).toBe(false)
   })
 })

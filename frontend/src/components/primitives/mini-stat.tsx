@@ -52,6 +52,11 @@ const TONE_DOT: Record<MiniStatTone, DotTone> = {
  * `tnum` figure, with an optional toned delta. Page stats go in a
  * `MiniStatStrip`; the bordered sentence-case `StatCard` tiles and the
  * Card-wrapped stat grids it replaces are gone.
+ *
+ * While the figure is still loading, pass `<StatValueSkeleton />` (from
+ * `@/components/states`) as `value` and leave `delta` and `tone` off: a `?? 0`
+ * fallback flashed "0" and "quiet" before the data arrived, which read as a
+ * real answer (#237 DS-25).
  */
 export function MiniStat({
   label,

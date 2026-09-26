@@ -10,7 +10,7 @@ import { useBranchLinkProps } from '@/hooks/useBranch'
 import type { PlanDiffEntry, PlanDiffKind } from '@/types'
 import { DiffValue } from '../DiffValue'
 import { PlanFieldChangeList } from '../PlanFieldChangeList'
-import { diffEntryDetail, housekeepingLine } from './branchDiffModel'
+import { changeSummary, housekeepingLine } from './branchDiffModel'
 import {
   ENTITY_LABEL,
   KIND_META,
@@ -18,7 +18,13 @@ import {
   entityEditPath,
   entityPath,
   eventTitle,
+  isEmptyStateValue,
+  stateKeyLabel,
 } from './branchMeta'
+
+// Row actions get a 40px hit area on touch screens (PL-17); the 11px links
+// were well under any tap target.
+const ROW_ACTION_TOUCH = 'pointer-coarse:min-h-10 pointer-coarse:px-2'
 
 const REVERT_LABEL: Record<PlanDiffKind, string> = {
   added: 'Discard this addition',
@@ -65,6 +71,10 @@ export function ChangeRow({
   reverting,
 }: ChangeRowProps) {
   const [open, setOpen] = useState(false)
+  // For a modification the change is the point; the entity's whole state is
+  // context, one click further (PL-12).
+  const [stateOpen, setStateOpen] = useState(false)
+  const stateId = useId()
   const detailId = useId()
   const branchLink = useBranchLinkProps()
   const { notifyStepCompleted } = useDemoScenarioActions()
@@ -153,13 +163,22 @@ export function ChangeRow({
             flex item defaults to `min-width:auto` and refuses to shrink below
             its content, so an entry touching many fields stretched this row —
             and with it the panel and the page. `truncate` keeps the collapsed
-            summary to one line; the full before/after is a click away. */}
+            summary to one line; the full before/after is a click away. The
+            summary names the fields that changed, so the cut falls after the
+            difference, not inside a long quote (PL-9). Below `sm` only the
+            count of changed fields fits. */}
         <span
-          className="min-w-0 flex-1 truncate text-right text-caption"
+          className="hidden min-w-0 flex-1 truncate text-right text-caption sm:inline"
           style={{ color: 'var(--fg-subtle)' }}
         >
-          {renamedTo ? `→ ${renamedTo}` : diffEntryDetail(entry)}
+          {renamedTo ? `→ ${renamedTo}` : changeSummary(entry)}
         </span>
+        <span className="flex-1 sm:hidden" aria-hidden="true" />
+        {!renamedTo && hasFieldChanges ? (
+          <span className="shrink-0 text-caption tnum sm:hidden" style={{ color: 'var(--fg-subtle)' }}>
+            {fieldChanges.length === 1 ? '1 field' : `${fieldChanges.length} fields`}
+          </span>
+        ) : null}
         <Chip tone={meta.tone} size="xs">
           {meta.label}
         </Chip>
@@ -169,7 +188,7 @@ export function ChangeRow({
         <Link
           {...editLink}
           aria-label={`Edit ${renamedTo ?? entry.name}`}
-          className="flex shrink-0 items-center gap-1 pl-1 pr-4 text-caption transition-colors hover:underline"
+          className="flex shrink-0 items-center gap-1 pl-1 pr-4 text-caption transition-colors hover:underline pointer-coarse:min-w-10"
           style={{ color: 'var(--accent)' }}
         >
           <Pencil className="size-3" aria-hidden="true" />
@@ -219,7 +238,7 @@ export function ChangeRow({
                   type="button"
                   disabled={reverting}
                   onClick={() => onRevert(entry)}
-                  className="flex items-center gap-1 text-caption hover:underline disabled:opacity-50"
+                  className={`flex items-center gap-1 text-caption hover:underline disabled:opacity-50 ${ROW_ACTION_TOUCH}`}
                   style={{ color: 'var(--fg-muted)' }}
                 >
                   <Undo2 className="size-3" aria-hidden="true" />
@@ -229,7 +248,7 @@ export function ChangeRow({
               {link ? (
                 <Link
                   {...link}
-                  className="flex items-center gap-1 text-caption hover:underline"
+                  className={`flex items-center gap-1 text-caption hover:underline ${ROW_ACTION_TOUCH}`}
                   style={{ color: 'var(--accent)' }}
                 >
                   {entry.kind === 'removed'
@@ -261,7 +280,7 @@ export function ChangeRow({
                           disabled={reverting}
                           onClick={() => onRevert(entry, change.field)}
                           aria-label={`Revert ${change.field}`}
-                          className="flex items-center gap-1 text-caption hover:underline disabled:opacity-50"
+                          className={`flex items-center gap-1 text-caption hover:underline disabled:opacity-50 ${ROW_ACTION_TOUCH}`}
                           style={{ color: 'var(--fg-muted)' }}
                         >
                           <Undo2 className="size-3" aria-hidden="true" />
@@ -273,8 +292,28 @@ export function ChangeRow({
               />
             </DetailSection>
           ) : null}
-          {hasState ? (
+          {/* One toggle in both states, so the full state closes again the way
+              it opened. */}
+          {hasState && entry.kind === 'changed' && hasFieldChanges ? (
+            <button
+              type="button"
+              onClick={() => setStateOpen((open) => !open)}
+              aria-expanded={stateOpen}
+              aria-controls={stateOpen ? stateId : undefined}
+              className={`flex w-fit items-center gap-1 text-caption hover:underline ${ROW_ACTION_TOUCH}`}
+              style={{ color: 'var(--fg-muted)' }}
+            >
+              <ChevronRight
+                className={`size-3 transition-transform ${stateOpen ? 'rotate-90' : ''}`}
+                aria-hidden="true"
+              />
+              {stateOpen ? 'Hide' : 'Show'} full {ENTITY_LABEL[entry.entity_type]} (
+              {Object.keys(fullState).length} properties)
+            </button>
+          ) : null}
+          {hasState && (entry.kind !== 'changed' || !hasFieldChanges || stateOpen) ? (
             <DetailSection
+              id={stateId}
               title={
                 renamedTo
                   ? 'State before the rename'
@@ -350,9 +389,9 @@ function RevertBlockedNote({
   )
 }
 
-function DetailSection({ title, children }: { title: string; children: ReactNode }) {
+function DetailSection({ id, title, children }: { id?: string; title: string; children: ReactNode }) {
   return (
-    <div>
+    <div id={id}>
       <div
         className="mb-1.5 micro-label"
         style={{ color: 'var(--fg-subtle)' }}
@@ -365,20 +404,29 @@ function DetailSection({ title, children }: { title: string; children: ReactNode
 }
 
 function StateView({ state }: { state: Record<string, unknown> }) {
-  const keys = Object.keys(state)
   const uid = useId()
+  // Empty properties say nothing and used to take most of the rows ("sunset_at
+  // ⌀", "superseded_by ⌀"); they are counted and shown on request (PL-12).
+  const [showEmpty, setShowEmpty] = useState(false)
+  const allKeys = Object.keys(state)
+  const emptyKeys = allKeys.filter((key) => isEmptyStateValue(state[key]))
+  const keys = showEmpty ? allKeys : allKeys.filter((key) => !isEmptyStateValue(state[key]))
   return (
-    <dl className="grid grid-cols-[minmax(0,140px)_1fr] gap-x-3 gap-y-1.5">
+    <>
+    {/* Stacked below `sm`, key over value, so a long value is not squeezed
+        into a column beside a truncated key. */}
+    <dl className="grid grid-cols-1 gap-x-3 gap-y-1.5 sm:grid-cols-[minmax(0,140px)_1fr]">
       {keys.map((key) => (
         <Fragment key={key}>
           <dt
             id={`${uid}-${key}`}
-            className="mono truncate text-caption"
+            className="truncate text-caption"
             style={{ color: 'var(--fg-subtle)' }}
+            title={key}
           >
-            {key}
+            {stateKeyLabel(key)}
           </dt>
-          <dd className="min-w-0">
+          <dd className="min-w-0 break-words">
             {/* Full state is the only thing an event *created* on the branch
                 shows — the backend builds an added entry with no field_changes —
                 so this is where a collection has to be readable. `table` is
@@ -390,6 +438,19 @@ function StateView({ state }: { state: Record<string, unknown> }) {
         </Fragment>
       ))}
     </dl>
+    {emptyKeys.length > 0 ? (
+      <button
+        type="button"
+        onClick={() => setShowEmpty((v) => !v)}
+        className={`mt-1.5 text-caption hover:underline ${ROW_ACTION_TOUCH}`}
+        style={{ color: 'var(--fg-faint)' }}
+      >
+        {showEmpty
+          ? 'Hide empty properties'
+          : `${emptyKeys.length === 1 ? '1 empty property' : `${emptyKeys.length} empty properties`} hidden · Show`}
+      </button>
+    ) : null}
+    </>
   )
 }
 

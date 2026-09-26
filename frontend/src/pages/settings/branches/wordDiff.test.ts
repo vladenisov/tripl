@@ -20,6 +20,22 @@ describe('wordDiff', () => {
     )
   })
 
+  it('merges both sides into one paragraph in reading order (PL-10)', () => {
+    const result = wordDiff(
+      'Fired when the user completes a purchase on the web checkout',
+      'Fired when the user completes a purchase on the mobile checkout page',
+    )
+
+    expect(result!.inline.filter((s) => s.kind !== 'same')).toEqual([
+      { text: 'web', kind: 'removed' },
+      { text: 'mobile', kind: 'added' },
+      { text: ' page', kind: 'added' },
+    ])
+    expect(result!.inline.filter((s) => s.kind !== 'added').map((s) => s.text).join('')).toBe(
+      'Fired when the user completes a purchase on the web checkout',
+    )
+  })
+
   it('leaves short values alone', () => {
     expect(wordDiff('USD', 'EUR')).toBeNull()
   })

@@ -18,6 +18,8 @@ interface PaletteRow {
   value: string
   label: string
   hint: string
+  /** Extra words that find the row ("timezone" -> General), never shown. */
+  keywords?: readonly string[]
   icon: PaletteIcon
   active?: boolean
   onSelect: () => void
@@ -28,11 +30,17 @@ interface PaletteGroup {
   rows: PaletteRow[]
 }
 
-/** Substring, not a score: nothing here is ranked, a row shows or it does not. */
+/**
+ * Substring, not a score: nothing here is ranked, a row shows or it does not.
+ * Every word of the query has to appear somewhere in the row (label, hint or
+ * keywords), so "api key" and "dark mode" find their section instead of
+ * failing on the space (#238 JR-19).
+ */
 function matchesQuery(query: string, row: PaletteRow): boolean {
-  const needle = query.trim().toLowerCase()
-  if (!needle) return true
-  return row.label.toLowerCase().includes(needle) || row.hint.toLowerCase().includes(needle)
+  const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (tokens.length === 0) return true
+  const haystack = [row.label, row.hint, ...(row.keywords ?? [])].join(' ').toLowerCase()
+  return tokens.every(token => haystack.includes(token))
 }
 
 /**
@@ -171,6 +179,7 @@ export function SettingsCommandPalette({
       value: `section:${item.path}`,
       label: item.label,
       hint: `/settings/${item.path}`,
+      keywords: item.keywords,
       icon: item.icon,
       active: item.path === activePath,
       onSelect: () => run(() => onLeave(`/settings/${item.path}`)),

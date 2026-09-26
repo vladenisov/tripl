@@ -322,7 +322,7 @@ export function DemoBanner({
     const ok = await confirm({
       title: 'Reset demo workspace',
       message:
-        'Re-seed this demo from scratch. All current events, metrics, monitors and alerts in the demo are replaced with a fresh synthetic dataset. ' +
+        'Re-seed this demo from scratch. All current events, metrics and alert rules in the demo are replaced with a fresh synthetic dataset. ' +
         `This runs in one go and takes ${DEMO_PROVISION_ESTIMATE}. It cannot be undone.`,
       confirmLabel: 'Reset demo',
       variant: 'primary',
@@ -462,6 +462,10 @@ export function DemoBanner({
               <BannerLabel>Tour &amp; chapters</BannerLabel>
             </Button>
 
+            {/* Reset and Delete stay in the row, ahead of the page in DOM order
+                (#238 JR-21, won't do): the layout's "Skip to main content" link
+                already jumps past the banner, both open a confirm first, and
+                hiding them in a menu costs the demo's owner a click each. */}
             {canManage && (
               <>
                 <Button

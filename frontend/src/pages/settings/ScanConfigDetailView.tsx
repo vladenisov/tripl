@@ -16,6 +16,7 @@ import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ErrorState } from '@/components/error-state'
+import { EntityNotFound } from '@/components/states'
 import { Skeleton } from '@/components/ui/skeleton'
 import { getErrorMessage } from '@/lib/utils'
 import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
@@ -129,12 +130,14 @@ export function ScanConfigDetail({ slug, scanConfigId }: { slug: string; scanCon
       </div>
     )
   }
+  // A deleted or unknown scan: the not-found state with the way back, not a
+  // grey sentence (#237 SH-33).
   if (scansLoaded && !sc) {
     return (
-      <div className="space-y-4">
-        <BackLink onClick={goBack} />
-        <p className="text-body text-muted-foreground">Scan not found.</p>
-      </div>
+      <EntityNotFound
+        title="Scan not found"
+        back={{ to: `/p/${slug}/scans`, label: 'Back to Scans' }}
+      />
     )
   }
   // Still loading — a skeleton, never a blank render (tripl-2su6.9).

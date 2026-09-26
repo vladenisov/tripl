@@ -909,4 +909,23 @@ describe('ScansTab — data layer and feedback (batch 4)', () => {
     expect(screen.queryByText('No data sources')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /New scan/ })).not.toBeDisabled()
   })
+
+  it('says why New scan is off as visible text, not a hidden title (#237 DA-9)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/data-sources')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/projects/demo/scans')) return mockJsonResponse([scanConfig])
+      if (url.endsWith('/api/v1/projects/demo/scans/activity')) return mockJsonResponse(activityResponse())
+      if (url.includes('/scans/scan-1/jobs')) return mockJsonResponse([])
+      if (url.includes('/eventTypes') || url.includes('/event-types')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+    renderTab()
+
+    expect(await screen.findByText('No data sources')).toBeInTheDocument()
+    const newScan = screen.getByRole('button', { name: /New scan/ })
+    expect(newScan).toBeDisabled()
+    expect(newScan).not.toHaveAttribute('title')
+    expect(newScan).toHaveAccessibleDescription('Add a data source first.')
+  })
 })

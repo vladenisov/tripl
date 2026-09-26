@@ -24,7 +24,8 @@ const UNBUILT = [
 ] as const
 
 /**
- * Account · Security.
+ * Account · Password & sessions (was "Security"; renamed apart from Instance ·
+ * Security & access, #238 JR-26).
  *
  * There is no signed-in change-password endpoint, but the email reset flow
  * exists and works, so the password card runs it for the signed-in address in
@@ -47,7 +48,10 @@ export default function SecuritySection() {
 
   return (
     <div>
-      <SHeader title="Security" description="Protect your account." />
+      <SHeader
+        title="Password & sessions"
+        description="Your password and the places you are signed in."
+      />
 
       <SCard
         title="Password"

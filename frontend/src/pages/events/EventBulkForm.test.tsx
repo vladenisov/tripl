@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
@@ -16,6 +16,11 @@ vi.mock('@/api/events', () => ({
   },
 }))
 vi.mock('@/api/eventTypes', () => ({ eventTypesApi: { list: vi.fn() } }))
+vi.mock('@/api/users', () => ({
+  usersApi: {
+    list: vi.fn().mockResolvedValue([{ id: 'u-1', name: 'Ann Analyst', email: 'ann@example.com' }]),
+  },
+}))
 
 // The rule arrives ON the type, resolved by the server — not read off the scan
 // list by event_type_id, which a branch copy of the type never matches
@@ -209,6 +214,51 @@ describe('EventBulkForm', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/needs platform/)
     expect(screen.queryByLabelText('Events to create')).not.toBeInTheDocument()
+  })
+
+  it('offers the two ways out of a type it cannot fill, and no dead Create (AU-19)', async () => {
+    vi.mocked(eventTypesApi.list).mockResolvedValue([
+      {
+        ...SE_TYPE,
+        field_definitions: [
+          ...SE_TYPE.field_definitions,
+          { id: 'f-plat', name: 'platform', display_name: 'Platform', field_type: 'string', is_required: true, order: 3 },
+        ],
+      } as unknown as EventType,
+    ])
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+
+    const callout = await screen.findByRole('alert')
+    expect(within(callout).getByRole('link', { name: 'Add one at a time' })).toHaveAttribute(
+      'href',
+      '/p/demo/events/all/new',
+    )
+    expect(within(callout).getByRole('link', { name: 'Edit Structured Event fields' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/event-types/et-se',
+    )
+    expect(screen.queryByRole('button', { name: /^Create/ })).toBeNull()
+  })
+
+  it('sets the owner on every event of the batch when one is picked (AU-20)', async () => {
+    render(createElement(EventBulkForm), { wrapper })
+    await chooseType()
+    await screen.findByRole('option', { name: 'Ann Analyst' })
+    fireEvent.change(screen.getByLabelText('Owner'), { target: { value: 'u-1' } })
+    fireEvent.change(await screen.findByLabelText('Events to create'), {
+      target: { value: 'settings\tunit_change\twind_speed' },
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create 1 event' })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Create 1 event' }))
+
+    await waitFor(() =>
+      expect(eventsApi.bulkCreate).toHaveBeenCalledWith(
+        'demo',
+        [expect.objectContaining({ name: 'settings:unit_change:wind_speed', owner_id: 'u-1' })],
+        null,
+      ),
+    )
   })
 
   it('preselects the type the route names, once (tripl-kjhi.13)', async () => {

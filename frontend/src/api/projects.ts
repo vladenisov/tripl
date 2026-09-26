@@ -1,4 +1,4 @@
-import { api } from './client'
+import { api, withBranch } from './client'
 import type { Project } from '../types'
 import type { components } from '../types/api.gen'
 
@@ -40,7 +40,11 @@ export interface DriftResetCounts {
 
 export const projectsApi = {
   list: (signal?: AbortSignal) => api.get<Project[]>('/projects', signal),
-  get: (slug: string, signal?: AbortSignal) => api.get<Project>(`/projects/${slug}`, signal),
+  // `branchId` scopes the summary's plan counters (event types, events,
+  // variables) to that working branch, so the Overview's KPIs agree with the
+  // branch's own lists (SH-11). Omitted, they are main's.
+  get: (slug: string, signal?: AbortSignal, branchId?: string | null) =>
+    api.get<Project>(withBranch(`/projects/${slug}`, branchId), signal),
   create: (data: { name: string; slug: string; description?: string }) =>
     api.post<Project>('/projects', data),
   // Demo lifecycle (tripl-2su6). Create BLOCKS while seeding (for about

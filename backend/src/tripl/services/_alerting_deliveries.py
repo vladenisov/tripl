@@ -1773,3 +1773,92 @@ async def apply_alert_inbox_bulk_action(
         # for this route. See ``AlertInboxBulkActionResponse``.
         overrides_written=None,
     )
+
+
+# (scan_config_id, scope_type, scope_ref, bucket) — a signal's identity as the
+# Anomalies page holds it. ``scan_config_id`` is None for a catalog metric.
+SignalKey = tuple[uuid.UUID | None, str, str, datetime]
+
+
+@dataclass(frozen=True)
+class SignalIncidentRef:
+    correlation_group_id: uuid.UUID
+    status: str
+
+
+async def incident_refs_for_signals(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    keys: Iterable[SignalKey],
+) -> dict[SignalKey, SignalIncidentRef]:
+    """The inbox incident each signal was routed into, if any (JR-6).
+
+    A signal becomes an incident only when a rule matched it and a delivery item
+    was written for the same scope and bucket, so the lookup reads those items
+    — the newest one wins when a scope was re-delivered — and resolves the
+    group's status the way the inbox does (``_effective_inbox_status``: a lapsed
+    mute is open again). A key with no item is simply absent from the result.
+
+    ``bucket`` is compared in Python after UTC normalisation rather than with an
+    ``IN`` on the column: SQLite hands back naive datetimes, and the SQL bound
+    is a range over the wanted buckets that keeps the scan to recent deliveries
+    (``ix_alert_delivery_project_created``).
+    """
+    wanted = {
+        (scan_config_id, str(scope_type), scope_ref, _as_utc(bucket))
+        for scan_config_id, scope_type, scope_ref, bucket in keys
+    }
+    if not wanted:
+        return {}
+    buckets = [key[3] for key in wanted]
+    rows = (
+        await session.execute(
+            select(
+                AlertDelivery.scan_config_id,
+                AlertDeliveryItem.scope_type,
+                AlertDeliveryItem.scope_ref,
+                AlertDeliveryItem.bucket,
+                AlertDeliveryItem.correlation_group_id,
+            )
+            .join(AlertDelivery, AlertDelivery.id == AlertDeliveryItem.delivery_id)
+            .where(
+                AlertDelivery.project_id == project_id,
+                AlertDelivery.created_at >= min(buckets),
+                AlertDeliveryItem.bucket >= min(buckets),
+                AlertDeliveryItem.bucket <= max(buckets),
+                AlertDeliveryItem.correlation_group_id.is_not(None),
+            )
+            .order_by(AlertDelivery.created_at.asc(), AlertDelivery.id.asc())
+        )
+    ).all()
+
+    group_by_key: dict[SignalKey, uuid.UUID] = {}
+    for scan_config_id, scope_type, scope_ref, bucket, group_id in rows:
+        # A catalog-metric signal carries no scan, whatever the delivery row
+        # was filed under; match it on scope and bucket alone.
+        signal_scan = None if scope_type == MetricScopeType.metric.value else scan_config_id
+        key = (signal_scan, str(scope_type), scope_ref, _as_utc(bucket))
+        if key in wanted and group_id is not None:
+            group_by_key[key] = group_id  # ascending order: the newest wins
+    if not group_by_key:
+        return {}
+
+    states = {
+        state.correlation_group_id: state
+        for state in (
+            await session.execute(
+                select(AlertCorrelationState).where(
+                    AlertCorrelationState.project_id == project_id,
+                    AlertCorrelationState.correlation_group_id.in_(set(group_by_key.values())),
+                )
+            )
+        ).scalars()
+    }
+    now = datetime.now(UTC)
+    return {
+        key: SignalIncidentRef(
+            correlation_group_id=group_id,
+            status=_effective_inbox_status(states.get(group_id), now),
+        )
+        for key, group_id in group_by_key.items()
+    }
