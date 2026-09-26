@@ -215,12 +215,19 @@ ResolutionChoice = MergeResolutionChoice
 
 
 class ConflictField(BaseModel):
-    """A single field that diverged on both sides of the merge.
+    """A single field that diverged on both sides.
 
-    ``base`` is the value when the branch was created; ``ours`` is main's
-    current value; ``theirs`` is the branch's current value. The reviewer
-    picks ``choice`` to drive the merge for this field; ``None`` means
-    unresolved (merge stays blocked).
+    ``base`` is the value when the branch was created (or last updated from
+    main); ``ours`` is main's current value; ``theirs`` is the branch's current
+    value. ``choice`` names the value to END with — ``ours`` takes main's,
+    ``theirs`` keeps the branch's — for the merge and for "Update from main"
+    alike; ``None`` means unresolved.
+
+    ``field`` is ``@presence`` when one side deleted the entity and the other
+    changed it: ``base``/``ours``/``theirs`` are then ``"present"`` or
+    ``"absent"``. ``dependents`` counts, for an event type main deleted, the
+    fields, events and relations this branch added or edited under it — what
+    taking main's side removes with it (PL-8).
     """
 
     field: str
@@ -228,23 +235,44 @@ class ConflictField(BaseModel):
     ours: Any | None
     theirs: Any | None
     choice: ResolutionChoice | None = None
+    dependents: int = 0
 
 
 class ConflictEntity(BaseModel):
-    entity_type: str
+    entity_type: PlanEntityType
+    # The dotted name the conflict and its resolution are keyed by, e.g.
+    # ``track.purchase`` for an event or ``a.f->b.g`` for a relation.
     name: str
+    # The event type a field definition or event belongs to; None otherwise.
+    parent: str | None = None
+    # The entity's own name for display, without its parent.
+    label: str = ""
     fields: list[ConflictField]
 
 
 class BranchConflictsResponse(BaseModel):
     entities: list[ConflictEntity]
     unresolved_count: int
+    # Main changed since the branch's base — the same test as the list's
+    # ``behind_base`` (PL-8).
+    behind: bool = False
+    # How many distinct entities both sides changed (the rows above).
+    overlap_count: int = 0
+    # Whether ``POST /merge`` would refuse today on a conflict the inline
+    # event-type resolutions cannot settle. Such a branch is brought level with
+    # "Update from main", after which there is nothing left to refuse.
+    merge_blocked: bool = False
+    # Whether "Update from main" can run on this branch at all: False for a
+    # branch whose base predates complete merge baselines. What else would stop
+    # an update is the preview's ``blockers``.
+    updatable: bool = True
 
 
 class ResolutionCreate(BaseModel):
-    entity_type: str
-    entity_name: str
-    field_name: str
+    entity_type: PlanEntityType
+    # Bounded to the columns of ``plan_branch_merge_resolutions``.
+    entity_name: str = Field(min_length=1, max_length=255)
+    field_name: str = Field(min_length=1, max_length=80)
     choice: ResolutionChoice
 
 
@@ -259,3 +287,63 @@ class ResolutionResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# --- "Update from main" (PL-8) ------------------------------------------------
+
+
+class EntityChangeCount(BaseModel):
+    """How many entities of one type a side added, changed, removed or renamed."""
+
+    entity_type: PlanEntityType
+    added: int = 0
+    changed: int = 0
+    removed: int = 0
+    renamed: int = 0
+
+
+class UpdateBlocker(BaseModel):
+    """Something that stops an update whatever is chosen, and what to do about it.
+
+    ``kind``: ``incomplete_base_snapshot`` (the base predates complete merge
+    baselines), ``ambiguous`` (main changed a row this branch holds more than
+    once under one name, on a branch opened before origin ids) or
+    ``identity_clash`` (a row of main's and one of the branch's own would share
+    a name or ``source_name``; rename the branch's one).
+    """
+
+    kind: Literal["incomplete_base_snapshot", "ambiguous", "identity_clash"]
+    entity_type: PlanEntityType | None = None
+    name: str | None = None
+    message: str
+
+
+class UpdateFromMainPreview(BaseModel):
+    behind: bool
+    # False while ``blockers`` is non-empty: ``POST`` would refuse.
+    updatable: bool = True
+    blockers: list[UpdateBlocker] = Field(default_factory=list)
+    base_revision_id: uuid.UUID | None
+    # ``plan_snapshot_hash`` of main as this preview read it. Sent back as
+    # ``expected_main_hash`` so an update never applies changes nobody saw.
+    main_hash: str
+    main_changes: list[EntityChangeCount]
+    conflicts: BranchConflictsResponse
+
+
+class UpdateFromMainRequest(BaseModel):
+    # The preview's ``main_hash``. Without it only the inline ``resolutions``
+    # count: a choice stored earlier was made against main as it was then, and
+    # is honoured only by a caller who previewed main as it is now.
+    expected_main_hash: str | None = Field(default=None, max_length=128)
+    # Upserted into the branch's stored resolutions inside the update's own
+    # transaction, so one call is enough; rolled back with it on a refusal.
+    resolutions: list[ResolutionCreate] = Field(default_factory=list, max_length=5000)
+
+
+class UpdateFromMainResult(BaseModel):
+    updated: bool
+    branch: PlanBranchDetailResponse
+    applied: list[EntityChangeCount]
+    previous_base_revision_id: uuid.UUID | None
+    base_revision_id: uuid.UUID | None

@@ -257,6 +257,12 @@ async def _rename_main_variables(
         variable.name = new_name
 
 
+# Nothing in it is main-specific — it renames whichever rows it is handed — so
+# "Update from main" moves a branch's variables through the same parking pass
+# when main renamed them, cycles included (PL-8).
+rename_variables_with_parking = _rename_main_variables
+
+
 async def _load_variables(
     session: AsyncSession, project_id: uuid.UUID, branch_id: uuid.UUID
 ) -> list[Variable]:

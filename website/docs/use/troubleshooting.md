@@ -620,15 +620,18 @@ out.
 | --- | --- | --- |
 | `400 Branch is already merged` | The branch was merged previously. | Nothing to do; open a new branch for further changes. |
 | `409 Branch must be approved before merging` | The branch isn't in the approved state. | Get the required approvals first. |
-| `409 incomplete_base_snapshot` | The branch was created before complete merge baselines were available, so a safe three-way merge is impossible. | Recreate the branch from current main and reapply the intended changes. |
-| `409 conflicts` | Both sides changed the same state differently, or one side deleted a parent while the other added/changed a child. These are **hard blockers** unless listed as field-level resolutions. | Reconcile manually: recreate the branch from current main, or remove the conflicting change. |
-| `409 unresolved_field_conflicts` | An event-type **field** was changed on both branch and main relative to the base. | Resolve each field inline (choose **ours**/**theirs**) in the conflict view, then merge again. |
+| `409 incomplete_base_snapshot` | The branch was created before complete merge baselines were available, so a safe three-way merge is impossible — and **Update from main** cannot help either. | Copy the intended changes to a new branch opened from current main. |
+| `409 conflicts` | Both sides changed the same state differently, or one side deleted a parent while the other added/changed a child. | Click **Update from main** on the branch, choose **Keep this branch** or **Take main** for each overlap, then merge again. |
+| `409 unresolved_field_conflicts` | An event-type **field** was changed on both branch and main relative to the base. | Resolve each field in the Conflicts panel (**Take main** or **Keep this branch**), then merge again. |
 | `409 missing_owner_approvals` | The branch touches an **owned** event type without that owner's approval. | Request approval from the listed owner(s) before merging. |
+| Update from main: "This update cannot run yet" (`409 update_blocked`) | Either a row main added or renamed and a row this branch added or renamed would end up with the same name or source name, or main changed an event or relation this branch holds twice under one name (a branch opened before origin tracking). | For a clash, rename the branch's own row and update again. For a namesake, copy the intended changes to a new branch opened from current main. |
 
 **Fix.** Field-level (modify/modify) conflicts on event types are resolvable
-through the inline resolution flow. Entity-level add/remove conflicts and
-conflicts on other entity kinds are not covered by inline resolution — rebase
-the branch onto current main and redo the change, or drop it.
+through the inline resolution flow. Every other conflict — other entity kinds,
+and one side deleting what the other edited — is resolved by **Update from
+main**: it brings main's changes into the branch, you choose **Keep this
+branch** or **Take main** for each overlap, and the next merge has nothing left
+to refuse.
 
 ---
 

@@ -11,6 +11,9 @@ import type {
   PlanBranchTransitionAction,
   PlanDiffEntityType,
   ResolutionChoice,
+  UpdateFromMainPreview,
+  UpdateFromMainRequest,
+  UpdateFromMainResult,
 } from '../types'
 
 /**
@@ -122,6 +125,22 @@ export const planBranchesApi = {
   getConflicts: (slug: string, branchId: string) =>
     api.get<PlanBranchConflicts>(
       `/projects/${slug}/branches/${branchId}/conflicts`,
+    ),
+
+  /** What "Update from main" would bring in, and the overlaps to decide
+   * first. Read-only (PL-8). */
+  getUpdatePreview: (slug: string, branchId: string) =>
+    api.get<UpdateFromMainPreview>(
+      `/projects/${slug}/branches/${branchId}/update-from-main`,
+    ),
+
+  /** Three-way merge of main INTO the branch. Refuses with 409
+   * `{unresolved_conflicts, conflicts}` while an overlap has no choice, and
+   * with `{main_moved}` when `expected_main_hash` is stale. */
+  updateFromMain: (slug: string, branchId: string, data: UpdateFromMainRequest) =>
+    api.post<UpdateFromMainResult>(
+      `/projects/${slug}/branches/${branchId}/update-from-main`,
+      data,
     ),
 
   saveResolution: (

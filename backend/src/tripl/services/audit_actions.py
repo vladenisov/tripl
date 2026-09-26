@@ -92,6 +92,7 @@ PROJECT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             *_family("plan_branch", BranchTransitionAction),
             "plan_branch.merge",
             "plan_branch.revert",
+            "plan_branch.update_from_main",
             "plan_branch.add_reviewer",
             "plan_branch.remove_reviewer",
             "plan_branch.comment_create",

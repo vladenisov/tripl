@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from '@/api/client'
-import type { PlanBranchDiffSummary, PlanDiffEntry } from '@/types'
+import type { PlanBranchConflicts, PlanBranchDiffSummary, PlanDiffEntry } from '@/types'
 import {
+  INCOMPLETE_BASE_MESSAGE,
+  MERGE_BLOCKED_BY_MAIN,
+  behindNote,
   changeSummary,
+  conflictChoiceKey,
   describeBranchActionError,
+  describeUpdateFromMainError,
   diffView,
+  entityChangeLines,
+  entityChangeTotal,
+  isMainMovedRefusal,
+  unresolvedUpdateConflicts,
+  updateBlockedMessage,
   entryRowKey,
   housekeepingLine,
   isConflictRefusal,
@@ -184,6 +194,10 @@ describe('mergePrompt', () => {
     expect(prompt.message).toContain('removes 1 variable from main: variant')
     expect(prompt.message).toContain('Main has moved on')
     expect(prompt.message).toContain('2 fields you changed were also changed there')
+    // An action to take, not "recreate the branch" (PL-8).
+    expect(prompt.message).toContain('Pick the value to keep for each in the Conflicts panel below')
+    expect(prompt.message).toContain('or update from main')
+    expect(prompt.message).not.toMatch(/recreate/i)
   })
 
   it('says nothing about main having moved on when nothing overlaps (PL-8)', () => {
@@ -206,9 +220,131 @@ describe('describeBranchActionError', () => {
   it("prefers this page's wording, then the gate's own message, then the status", () => {
     expect(
       describeBranchActionError(conflict({ branch_behind_base: true, message: 'raw' })),
-    ).toMatch(/Recreate the branch from current main/)
+    ).toBe(MERGE_BLOCKED_BY_MAIN)
     expect(describeBranchActionError(conflict({ other: true, message: 'Do this.' }))).toBe('Do this.')
     expect(describeBranchActionError(new Error('boom'))).toBe('boom')
+  })
+})
+
+describe('describeBranchActionError after PL-8', () => {
+  it('points a main-side refusal at Update from main, never at recreating the branch', () => {
+    expect(describeBranchActionError(conflict({ conflicts: [{}] }))).toBe(
+      'Merge blocked: main changed the same entities. Update the branch from main, then merge.',
+    )
+    // Field conflicts still say to resolve them below.
+    expect(
+      describeBranchActionError(conflict({ unresolved_field_conflicts: [{}], conflicts: [{}] })),
+    ).toBe('Merge blocked: resolve the field conflicts below first.')
+    expect(
+      describeBranchActionError(conflict({ incomplete_base_snapshot: true, message: 'Recreate it.' })),
+    ).toBe(INCOMPLETE_BASE_MESSAGE)
+    expect(INCOMPLETE_BASE_MESSAGE).toMatch(/Copy your changes to a new branch/)
+    expect(MERGE_BLOCKED_BY_MAIN).not.toMatch(/recreate/i)
+  })
+})
+
+describe('behindNote', () => {
+  const base: PlanBranchConflicts = { entities: [], unresolved_count: 0 }
+
+  it('is nothing while the branch has everything on main', () => {
+    expect(behindNote({ ...base, behind: false }, true)).toEqual({ kind: 'none' })
+    expect(behindNote(undefined, false)).toEqual({ kind: 'none' })
+  })
+
+  it('is neutral when main moved on elsewhere only', () => {
+    expect(behindNote({ ...base, behind: true, overlap_count: 0, merge_blocked: false }, false)).toEqual({
+      kind: 'safe',
+    })
+  })
+
+  it('counts the overlapping entities', () => {
+    expect(behindNote({ ...base, behind: true, overlap_count: 2, merge_blocked: true }, false)).toEqual({
+      kind: 'overlap',
+      count: 2,
+    })
+  })
+
+  it('says the merge would refuse even with no overlap row', () => {
+    expect(behindNote({ ...base, behind: true, overlap_count: 0, merge_blocked: true }, false)).toEqual({
+      kind: 'blocked',
+    })
+  })
+
+  it("falls back to the diff's behind_base for an older instance, never saying safe", () => {
+    expect(behindNote(base, true)).toEqual({ kind: 'moved' })
+  })
+
+  it('never says safe while the overlap check is loading or failed', () => {
+    expect(behindNote(undefined, true)).toEqual({ kind: 'moved' })
+  })
+
+  it('says a legacy base cannot be updated', () => {
+    expect(
+      behindNote(
+        { ...base, behind: true, overlap_count: 0, merge_blocked: true, updatable: false },
+        false,
+      ),
+    ).toEqual({ kind: 'legacy' })
+  })
+})
+
+describe('entityChangeLines', () => {
+  it('writes one line per touched entity type, zero kinds left out', () => {
+    const counts = [
+      { entity_type: 'event' as const, added: 1, changed: 3, removed: 0, renamed: 0 },
+      { entity_type: 'variable' as const, added: 0, changed: 0, removed: 0, renamed: 0 },
+      { entity_type: 'meta_field' as const, added: 0, changed: 0, removed: 2, renamed: 1 },
+    ]
+    expect(entityChangeLines(counts)).toEqual([
+      'Events: 3 changed, 1 added',
+      'Meta fields: 2 removed, 1 renamed',
+    ])
+    expect(entityChangeTotal(counts)).toBe(7)
+  })
+})
+
+describe('update-from-main refusals', () => {
+  it('reads the conflicts off an unresolved refusal', () => {
+    const conflicts: PlanBranchConflicts = {
+      entities: [{ entity_type: 'variable', name: 'plan', fields: [] }],
+      unresolved_count: 1,
+    }
+    expect(
+      unresolvedUpdateConflicts(conflict({ unresolved_conflicts: [{}], conflicts })),
+    ).toEqual(conflicts)
+    expect(unresolvedUpdateConflicts(conflict({ main_moved: true }))).toBeNull()
+  })
+
+  it('words a blocked update from its blockers', () => {
+    const error = conflict({
+      update_blocked: [{ kind: 'identity_clash', message: 'Rename the branch one.' }],
+      message: 'Rename the branch one.',
+    })
+    expect(updateBlockedMessage(error)).toBe('Rename the branch one.')
+    expect(describeUpdateFromMainError(error)).toBe('Rename the branch one.')
+    expect(updateBlockedMessage(conflict({ main_moved: true }))).toBeNull()
+  })
+
+  it('recognises main having moved', () => {
+    expect(isMainMovedRefusal(conflict({ main_moved: true }))).toBe(true)
+    expect(isMainMovedRefusal(new Error('x'))).toBe(false)
+  })
+
+  it('words the other refusals', () => {
+    expect(describeUpdateFromMainError(conflict({ incomplete_base_snapshot: true }))).toBe(
+      INCOMPLETE_BASE_MESSAGE,
+    )
+    expect(
+      describeUpdateFromMainError(conflict({ update_constraint_violation: true, message: 'Rename x.' })),
+    ).toBe('Rename x.')
+    expect(describeUpdateFromMainError(new Error('boom'))).toBe('boom')
+  })
+
+  it('keys a choice by entity type, name and field', () => {
+    const entity = { entity_type: 'event', name: 'a', fields: [] }
+    expect(conflictChoiceKey(entity, 'description')).not.toBe(
+      conflictChoiceKey({ ...entity, entity_type: 'variable' }, 'description'),
+    )
   })
 })
 

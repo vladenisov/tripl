@@ -78,22 +78,101 @@ export interface PlanBranchApproval {
 export type ResolutionChoice = 'ours' | 'theirs'
 
 export interface PlanBranchConflictField {
+  /** A field of the entity, or `@presence` when one side deleted the entity
+   * (or its parent) while the other edited or added it; `base`/`ours`/`theirs`
+   * are then `"present"` or `"absent"` (PL-8). */
   field: string
   base: unknown
   ours: unknown
   theirs: unknown
   choice: ResolutionChoice | null
+  /** On a presence row whose "take main" deletes an event type: how many
+   * fields, events and relations this branch added or edited under it go with
+   * it. 0 everywhere else (the backend's `ConflictField.dependents`). */
+  dependents: number
 }
 
 export interface PlanBranchConflictEntity {
   entity_type: string
   name: string
+  /** The owning entity's name — the event type of a field definition, for
+   * one. Absent on responses from an older instance. */
+  parent?: string | null
+  /** A display name for the row ("checkout.amount"). Absent on responses from
+   * an older instance; fall back to `name`. */
+  label?: string
   fields: PlanBranchConflictField[]
 }
 
 export interface PlanBranchConflicts {
   entities: PlanBranchConflictEntity[]
   unresolved_count: number
+  /** Main changed since the branch's base: the same test as the list's
+   * `behind_base`. Absent on responses from an older instance (PL-8). */
+  behind?: boolean
+  /** Distinct entities changed both here and on main. */
+  overlap_count?: number
+  /** The merge would refuse as things stand — main changed an entity this
+   * branch also changes in a way no field choice resolves for the merge.
+   * Update from main clears it. */
+  merge_blocked?: boolean
+  /** Whether "Update from main" can run at all: false for a branch whose base
+   * predates complete merge baselines. Anything else that would stop an
+   * update is the preview's `blockers`. Absent on older instances (true). */
+  updatable?: boolean
+}
+
+/** Something that stops an update whatever is chosen (the preview's `blockers`). */
+export interface UpdateBlocker {
+  kind: 'incomplete_base_snapshot' | 'ambiguous' | 'identity_clash'
+  entity_type: PlanDiffEntityType | null
+  name: string | null
+  message: string
+}
+
+/** What main brought (preview) or what an update applied, per entity type. */
+export interface EntityChangeCount {
+  entity_type: PlanDiffEntityType
+  added: number
+  changed: number
+  removed: number
+  renamed: number
+}
+
+/** `GET /branches/{id}/update-from-main`: a read-only look at the update. */
+export interface UpdateFromMainPreview {
+  behind: boolean
+  /** False while `blockers` is non-empty: the update would refuse. */
+  updatable: boolean
+  blockers: UpdateBlocker[]
+  base_revision_id: string | null
+  /** Main's plan hash as the preview saw it; sent back so the update refuses
+   * (409 `main_moved`) if main changed in between. */
+  main_hash: string
+  main_changes: EntityChangeCount[]
+  conflicts: PlanBranchConflicts
+}
+
+export interface UpdateFromMainResolution {
+  entity_type: PlanDiffEntityType
+  entity_name: string
+  field_name: string
+  choice: ResolutionChoice
+}
+
+export interface UpdateFromMainRequest {
+  /** The preview's `main_hash`. Choices stored earlier count only with it. */
+  expected_main_hash?: string | null
+  resolutions?: UpdateFromMainResolution[]
+}
+
+export interface UpdateFromMainResult {
+  /** False when the branch already had everything on main: nothing written. */
+  updated: boolean
+  branch: PlanBranchDetail
+  applied: EntityChangeCount[]
+  previous_base_revision_id: string | null
+  base_revision_id: string | null
 }
 
 export interface PlanBranchMergeResolution {
