@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Link, Navigate, useLocation, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { FileQuestion, Plus } from 'lucide-react'
+import { FileQuestion, ListPlus, Plus, Radar } from 'lucide-react'
 import { toast } from 'sonner'
 import { usersApi } from '@/api/users'
 import { useConfirm } from '@/hooks/useConfirm'
@@ -12,6 +12,7 @@ import { ErrorState } from '@/components/error-state'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import { EVENT_STATUS_LABELS, type EventStatus } from '@/lib/eventStatus'
 import { getErrorMessage } from '@/lib/utils'
+import { getMonitoringPath } from '@/lib/monitoring'
 import type { EventListItem } from '@/types'
 
 import { BulkActionBar } from './events/BulkActionBar'
@@ -26,7 +27,12 @@ import {
   eventsCsvFilename,
   toCsv,
 } from './events/eventsCsv'
-import { useColumnVisibility } from './events/useColumnVisibility'
+import {
+  shownColumnKey,
+  typeSpecificFieldKeys,
+  useColumnVisibility,
+  withDefaultHidden,
+} from './events/useColumnVisibility'
 import { useEventsBulkDelete } from './events/useEventsBulkDelete'
 import { useEventsDndSensors } from './events/useEventsDndSensors'
 import {
@@ -54,7 +60,7 @@ import { useEventsViewState } from './events/useEventsViewState'
 import { useSavedViews } from './events/useSavedViews'
 import { unappliedChartFilters } from './events/utils'
 import { useCanWriteProject } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { ReadOnlyNotice } from '@/components/states'
 import { usersKey } from '@/lib/queryKeys'
 
 interface EventsPageProps {
@@ -71,10 +77,22 @@ interface EventsPageProps {
  * before the list mounts: rendered inside the page it ran after every list,
  * tag, count, signal and metrics query had already been sent, all thrown away
  * by the navigation (EVT-50).
+ *
+ * A viewer cannot edit, so the same link takes them to the event's read view,
+ * the monitoring detail page, instead of an editable-looking form (EV-34).
  */
 export default function EventsPage(props: EventsPageProps = {}) {
   const { slug, tab, eventId } = useParams<{ slug: string; tab?: string; eventId?: string }>()
   const { search } = useLocation()
+  const canWrite = useCanWriteProject()
+  if (slug && eventId && !canWrite) {
+    return (
+      <Navigate
+        to={`${getMonitoringPath(slug, { scope_type: 'event', scope_ref: eventId })}${search}`}
+        replace
+      />
+    )
+  }
   if (slug && eventId) {
     const activeTab = props.lockType || tab || 'all'
     // Carry the query string through. `?branch=` is the one that matters: the
@@ -126,7 +144,13 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
   // render below redirects, so both authoring surfaces are reached the one way.
   const [showBulk, setShowBulk] = useState(false)
   const [expandedCell, setExpandedCell] = useState<string | null>(null)
-  const { hiddenColumns, toggleColumn, colMenuOpen, setColMenuOpen } = useColumnVisibility()
+  const {
+    hiddenColumns: storedHiddenColumns,
+    toggleColumn: toggleStoredColumn,
+    updateColumns,
+    colMenuOpen,
+    setColMenuOpen,
+  } = useColumnVisibility()
   const { confirm, dialog } = useConfirm()
   const {
     savedViews,
@@ -143,6 +167,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     metaFields,
     allTags,
     inReviewCount,
+    inReviewCountPending,
     dataError,
     refetchPageData,
   } = useEventsPageData({ slug, branchId })
@@ -181,7 +206,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     fetchAllMatching,
   } = useEventsQuery({ slug, activeTab, eventTypes, eventTypesLoaded, branchId })
 
-  const { projectTotalSignal, eventTypeSignals } = useEventsSignals({ slug })
+  const { projectTotalSignal, eventTypeSignals, signalsPending } = useEventsSignals({ slug })
 
   const activeEt = useMemo(
     () => eventTypes.find(e => e.name === activeTab) ?? null,
@@ -206,6 +231,36 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     debouncedMetaFilters,
   })
 
+  // On the All and queue tabs, a field only some types define starts hidden:
+  // it was a column of dashes for every other type (EV-11). The Columns menu
+  // still lists it, and ticking it there is remembered like any other choice.
+  // A column with an active filter (an `f.<name>` from a link or saved view)
+  // stays out of that default: hiding its header, where the filter is shown
+  // and edited, left the rows narrowed by something the reader could not see.
+  const typeSpecificFields = useMemo(() => {
+    if (activeEt) return new Set<string>()
+    const keys = typeSpecificFieldKeys(eventTypes, fieldColumns)
+    for (const column of fieldColumns) {
+      if ((fieldFilters[column.name] ?? '') !== '') keys.delete(`f:${column.id}`)
+    }
+    return keys
+  }, [activeEt, eventTypes, fieldColumns, fieldFilters])
+  const hiddenColumns = useMemo(
+    () => withDefaultHidden(storedHiddenColumns, typeSpecificFields),
+    [storedHiddenColumns, typeSpecificFields],
+  )
+  const toggleColumn = useCallback(
+    (key: string) => {
+      if (!typeSpecificFields.has(key)) {
+        toggleStoredColumn(key)
+        return
+      }
+      if (hiddenColumns.has(key)) updateColumns([shownColumnKey(key)], [key])
+      else updateColumns([], [shownColumnKey(key)])
+    },
+    [hiddenColumns, toggleStoredColumn, typeSpecificFields, updateColumns],
+  )
+
   const {
     activeTabLabel,
     activeTabSignal,
@@ -224,6 +279,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     visibleFieldColumns,
     visibleMetaFields,
   } = useEventsViewState({
+    slug: slug ?? '',
     activeTab,
     activeEt,
     eventTypeSignals,
@@ -406,7 +462,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
   }, [runBulkUpdate])
 
   const handleBulkMarkReviewed = useCallback(() => {
-    void runBulkUpdate({ reviewed: true }, 'Mark reviewed')
+    void runBulkUpdate({ reviewed: true }, 'Mark as verified')
   }, [runBulkUpdate])
 
   // `null` is a value here, not an absence: the bulk patch keys off which fields
@@ -525,7 +581,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
     visibleMetaFields,
   ])
 
-  const { eventWindowMetricsByEvent, eventRowSignals } = useEventRowMetrics({
+  const { eventWindowMetricsByEvent, eventRowSignals, rowMetricsSettled } = useEventRowMetrics({
     slug,
     events,
     eventSignals,
@@ -545,8 +601,8 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
   const blockingError = eventsQuery.error ?? dataError
 
   // A project with no events yet has nothing to filter, sort, column, or chart,
-  // so we collapse the toolbar to just the "New event" action and hide the empty
-  // "<Tab> Dynamics" card until events exist. Guard on the *unfiltered* result:
+  // so the page is a first-run empty state instead: no toolbar, no stat strip,
+  // no volume card and no table frame (EV-18). Guard on the *unfiltered* result:
   // an active filter or search that merely matches nothing on a populated
   // project must keep the full toolbar so the user can still clear it.
   //
@@ -600,6 +656,8 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
 
   return (
     <div
+      // The table's scroller measures itself against this root (EV-4).
+      data-events-page=""
       className={embedded ? 'flex min-h-[420px] flex-col' : 'flex min-h-[calc(100vh-7rem)] flex-col'}
       // Room for the floating bulk bar, so it never sits over the table's last
       // rows and footer while a selection is open (EVT-5).
@@ -610,15 +668,20 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
       {!embedded && (
         <EventsHeader
           total={total}
+          totalPending={eventsQuery.isPending}
           columnFilter={
             isClientFiltered ? { matching: events.length, checked: rawEvents.length } : null
           }
           inReviewCount={inReviewCount}
+          inReviewPending={inReviewCountPending}
           projectTotalSignal={projectTotalSignal}
           eventTypeSignals={eventTypeSignals}
+          signalsPending={signalsPending}
           activeType={activeEt}
+          activeTab={activeTab}
           slug={slug}
           typeDrifts={shownTypeDrifts}
+          hideStats={hasNoEvents}
         />
       )}
       {/* The embedded table (an event type's detail view) has no header, and
@@ -632,8 +695,8 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
 
       {blockingError && (
         <ErrorState
-          title="Failed to load events"
-          description="The events page could not fetch the required data from the backend."
+          title="Could not load events"
+          description="The event catalog did not load. Check your connection and try again."
           error={blockingError}
           onRetry={retryLoad}
         />
@@ -643,15 +706,41 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
         <>
           {!canWrite && <ReadOnlyNotice className="mb-3" />}
           {hasNoEvents ? (
-            // Empty project: keep creating an event reachable, drop the rest.
-            // Mirrors the toolbar's own primary action (EventsToolbar.tsx) — the
-            // lane for this fix cannot add a "minimal" mode to that component.
-            canWrite && <div className="mb-3 flex justify-end">
-              <Button onClick={openNewEvent} size="sm">
-                <Plus />
-                New event
-              </Button>
-            </div>
+            // First run (EV-18): no stat strip of zeroes, no table frame with
+            // column headers over nothing, and one place to start — including
+            // the scan path, which is how most events arrive.
+            <EmptyState
+              icon={ListPlus}
+              title="No events yet"
+              description="Define events by hand, paste a list, or let a warehouse scan discover them."
+              action={
+                <div className="flex flex-col items-center gap-3">
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {canWrite && (
+                      <Button onClick={openNewEvent} size="sm">
+                        <Plus />
+                        New event
+                      </Button>
+                    )}
+                    <Button asChild size="sm" variant="outline">
+                      <Link to={`/p/${slug}/scans`}>
+                        <Radar />
+                        Import from a scan
+                      </Link>
+                    </Button>
+                  </div>
+                  {canWrite && (
+                    <button
+                      type="button"
+                      onClick={() => setShowBulk(true)}
+                      className="text-body-sm text-primary underline-offset-4 hover:underline"
+                    >
+                      Add many events…
+                    </button>
+                  )}
+                </div>
+              }
+            />
           ) : (
             <EventsToolbar
               search={search}
@@ -738,6 +827,7 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
             />
           )}
 
+          {!hasNoEvents && (
           <div
             className="rounded-card border overflow-hidden"
             style={{ borderColor: 'var(--border)' }}
@@ -807,8 +897,13 @@ function EventsListPage({ lockType, embedded = false }: EventsPageProps) {
                 typeLabel: activeEt?.display_name,
               }}
               onNewEvent={canWrite ? openNewEvent : undefined}
+              onClearFilters={clearAllFilters}
+              sortOrder={sort}
+              onSortOrderChange={setSort}
+              rowMetricsSettled={rowMetricsSettled}
             />
           </div>
+          )}
         </>
       )}
     </div>

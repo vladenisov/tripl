@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 
 import { invitationsApi, type Invitation, type InvitationCreated } from '@/api/invitations'
 import { usersApi } from '@/api/users'
 import { useAuth } from '@/components/auth-context'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { ReadOnlyNotice } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Input } from '@/components/ui/input'
@@ -69,6 +71,21 @@ function InviteMemberCard() {
   const linkRef = useRef<HTMLInputElement>(null)
   const { state: copyState, copy, reset: resetCopy } = useCopyToClipboard(linkRef)
   const { confirm, dialog } = useConfirm()
+
+  // `?invite=1` is where the command palette's "Invite member" lands: bring
+  // the email field into view and focus it, then drop the param so a reload or
+  // Back does not do it again. Same shape as the Branches tab's `?new=1`.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const wantsInvite = searchParams.get('invite') === '1'
+  useEffect(() => {
+    if (!wantsInvite) return
+    const input = document.getElementById('invite-email')
+    input?.scrollIntoView?.({ block: 'center' })
+    input?.focus({ preventScroll: true })
+    const next = new URLSearchParams(searchParams)
+    next.delete('invite')
+    setSearchParams(next, { replace: true })
+  }, [wantsInvite, searchParams, setSearchParams])
 
   // "Copied" is a moment, not a state: it went on saying so forever, so a
   // second click could not tell whether it had worked again.
@@ -451,11 +468,9 @@ export default function UsersPage() {
           each other and a reader had to work out whether they named two
           different scopes (tripl-h3bb). All that is left is the one fact the
           header does not carry, and only for the people it applies to. */}
-      {!isOwner && (
-        <p className="text-body" style={{ color: 'var(--fg-subtle)' }}>
-          Only owners can change roles.
-        </p>
-      )}
+      {/* The one read-only notice, not a loose paragraph larger than the
+          section description (#237 ST-17). */}
+      {!isOwner && <ReadOnlyNotice>Only owners can change roles or invite people.</ReadOnlyNotice>}
 
       {isOwner && <InviteMemberCard />}
 

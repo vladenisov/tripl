@@ -131,6 +131,26 @@ describe('SeasonalityHeatmap', () => {
     expect(screen.getByText(/Thu 14:00 UTC — 800 events/)).toBeInTheDocument()
   })
 
+  // MO-30: a native title was the only way to read a cell, and touch has none.
+  it('spells out the hovered or tapped slot under the grid', async () => {
+    vi.mocked(eventMetricsApi.getSeasonalityHeatmap).mockResolvedValue(
+      heatmap([
+        cell({ weekday: 0, hour: 0, count: 50 }),
+        cell({ weekday: 3, hour: 14, count: 800 }),
+      ]),
+    )
+    renderHeatmap()
+
+    await screen.findByText('Hour × weekday heatmap')
+    const detail = screen.getByTestId('heatmap-slot-detail')
+    expect(detail).toHaveTextContent('Hover or tap a cell for its count.')
+
+    const slot = screen.getByText(/Thu 14:00 UTC — 800 events/).closest('td')!
+    expect(slot).not.toHaveAttribute('title')
+    fireEvent.click(slot)
+    expect(detail).toHaveTextContent('Thu 14:00 UTC — 800 events')
+  })
+
   it('says the ramp is a rank scale, not a linear count scale (tripl-jfm3.127)', async () => {
     vi.mocked(eventMetricsApi.getSeasonalityHeatmap).mockResolvedValue(
       heatmap([

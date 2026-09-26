@@ -149,7 +149,7 @@ describe('ActivityPanel', () => {
     expect(await screen.findByText('No recent activity')).toBeInTheDocument()
   })
 
-  it('labels the rail as recent activity rather than a live stream', async () => {
+  it('labels the rail as activity rather than a live stream', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
       const url = String(input)
       if (url.endsWith('/api/v1/activity/projects/demo?limit=20')) {
@@ -173,7 +173,8 @@ describe('ActivityPanel', () => {
 
     renderActivityPanel('demo')
 
-    expect(await screen.findByText('Recent activity')).toBeInTheDocument()
+    // Named as the top-bar toggle names it (#238 SH-8).
+    expect(await screen.findByText('Activity')).toBeInTheDocument()
     // The old copy sold the rail as a live/streaming feed; make sure it is gone.
     expect(screen.queryByText('live')).not.toBeInTheDocument()
     expect(screen.queryByText(/streaming/i)).not.toBeInTheDocument()
@@ -277,3 +278,46 @@ describe('ActivityPanel', () => {
   })
 })
 
+
+describe('ActivityPanel copy and controls (#238 SH-22)', () => {
+  function eventItem(id: string, title: string, occurredAt: string) {
+    return { ...implementedEvent(id, occurredAt), id: `event:${id}`, title }
+  }
+
+  function renderWith(items: unknown[], props: { slug?: string; onClose?: () => void } = {}) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => mockJsonResponse(items))
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ActivityPanel open slug={props.slug ?? 'demo'} onClose={props.onClose} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('pluralises the verb of a collapsed burst', async () => {
+    const at = new Date().toISOString()
+    renderWith([
+      eventItem('a', 'Event needs review: A', at),
+      eventItem('b', 'Event needs review: B', at),
+      eventItem('c', 'Event needs review: C', at),
+    ])
+    expect(await screen.findByText('3 events need review')).toBeInTheDocument()
+  })
+
+  it('shows a scan signature by its values, not raw key=value pairs', async () => {
+    renderWith([
+      eventItem('x', 'Event implemented: event_name=Home Screen View | screen_name=Home', new Date().toISOString()),
+    ])
+    expect(await screen.findByText('Event implemented: Home Screen View · Home')).toBeInTheDocument()
+    expect(screen.queryByText(/event_name=/)).toBeNull()
+  })
+
+  it('offers a Close button in drawer mode', async () => {
+    const onClose = vi.fn()
+    renderWith([], { onClose })
+    fireEvent.click(await screen.findByRole('button', { name: 'Close activity' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})

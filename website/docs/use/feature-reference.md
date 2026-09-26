@@ -30,24 +30,29 @@ The project sidebar groups every surface into three job-based areas:
 
 | Area | Surfaces |
 |------|----------|
-| **Plan** | Events, Event types, Schema & fields, Variables, Relations, Plan branches |
-| **Observe** | Live activity, Monitors, Metrics, Anomalies, Alerting |
+| **Plan** | Events (with one entry per event type under it), Event types, Meta fields, Variables, Relations, Plan branches, Plan history |
+| **Observe** | Overview, Metrics, Anomalies, Alerting |
 | **Govern** | Reconciliation, Coverage, Scans, Audit log |
 
 Above the groups sit the **project switcher**, the **branch switcher** (shown
-only inside a project), and the **Search or jump** button (⌘K). Below the groups
-is a **Project settings** link; the footer adds **Concepts** (the in-app domain
-primer), an **Appearance** button (theme, accent, density, chart style), a
-**Workspace settings** gear, and **Sign out**. Collapsed to an icon rail, the
+only inside a project), and the **Search or jump** button (⌘K). The pinned
+footer holds **Project settings** and **Concepts** (the in-app domain primer),
+then your user row: the whole row opens the **account menu** (Profile,
+**Workspace settings**, **Appearance**, **Sign out**). While the pages read a
+plan branch, a **branch strip** under the top bar names the branch and its
+status and offers the way back to main. The top bar's **Activity** button opens
+and closes the activity rail. The **Search or jump** palette also finds every
+settings section by what it holds ("timezone", "api key", "dark mode") and
+offers create actions. Collapsed to an icon rail, the
 sidebar keeps the project and branch switchers, Project settings, Concepts and an
 account menu, with each icon named in a tooltip. Below 1024px the sidebar is a
 drawer opened from the top bar, and below 1600px the activity rail is too. Badge counts come from
 the cheap project summary: Events (active events), Event types, Variables,
-Monitors (only when one or more is firing, rendered in red), Anomalies (the count
-of significant open monitoring signals — the same number the Anomalies page shows —
-in red when any are open), and Alerting (only when
-one or more destinations exist). Schema & fields, Relations, Metrics, Plan
-branches, Coverage, Scans, and Audit log carry no count.
+Anomalies (the open monitoring signals — the same number the Anomalies page
+shows — when any are open), and Alerting (open incidents, in solid red, when any
+are open). The Plan counts describe main, so they are hidden while a branch is
+active. Meta fields, Relations, Metrics, Plan branches, Coverage, Scans, and
+Audit log carry no count.
 
 ---
 
@@ -65,8 +70,9 @@ every row of it; the events table on an event type's settings page shows that
 type's badge above its toolbar. Under a per-column field or meta filter the
 heading's **Total** becomes **Matching**: the matches among the rows checked so
 far, as the table footer counts them. Controls include free-text search, status and tag filters, a
-"silent since N days" filter, a **Reviewed** filter (Any / Reviewed / Not
-reviewed, carried in the URL as `?reviewed=true|false`), per-column field-value
+"silent since N days" filter, a **Verified** filter (Any / Yes / No,
+carried in the URL as `?reviewed=true|false`; **Verified** is a flag of its own,
+separate from the **In review** status), per-column field-value
 and meta-value filters,
 saved views, column visibility, bulk actions, and a per-tab aggregate metrics
 chart. The review queue can sort **Busiest first**, collapse similar-name
@@ -80,8 +86,9 @@ or reviewed change offers **Undo** in its toast when every changed row was
 loaded. Undo restores the values the table showed, and leaves any selection you
 have made since alone. Drag-to-reorder is off while the list is sorted **Busiest first**,
 because the rows are not in catalog order then.
-The **Reviewed** column is hidden by default in the column picker but is forced
-visible on the review tab (`/events/review`).
+The **Verified** column is hidden by default in the column picker but is forced
+visible on the review tab (`/events/review`). Bulk **Mark as verified** sets the
+flag; it does not move an event out of the review queue.
 
 An event whose name is blank renders as *(unnamed event)* rather than as nothing
 at all, so the row keeps a click target and an accessible name — the one event
@@ -133,7 +140,21 @@ of fields the new type has under the same name, and asks first when some values
 have nowhere to go.
 For a series of similar events, **Save and add another** creates the current
 event, says what it created, and keeps the entered form values in place for the
-next one — change what differs and save again.
+next one — change what differs and save again. It will not save the same name
+twice in a row: an unchanged name is flagged before anything is sent. On an
+event type with no scan naming rule, an existing event of the same name is a
+warning rather than a refusal. Creating an event confirms with a toast (with
+**Open**, or on a branch **View changes**), and on a branch the form says the
+event is added to that branch and reaches main when the branch merges.
+
+A **viewer** who opens an event's edit address is taken to the event's page
+(its monitoring detail), where the spec and the **Discussion** are readable; the
+**New event** and **Add many events** addresses take a viewer to the list. A main
+event opened while a branch is active (or a branch event opened on main) is
+shown read-only, with a **Switch to …** button in place of **Save**.
+**Add many events** sets **Owner** and **Tags** once for every row, and for a
+type it cannot fill in bulk offers **Add one at a time** and **Edit &lt;type&gt;
+fields**.
 
 The **app version column** is deliberately absent from the breakdown picker, and
 adding it by hand is refused: app versions are already collected as their own
@@ -393,8 +414,9 @@ land, and a file that is not an image is listed as not uploaded rather than drop
 silently. So is a file larger than the instance's size limit, which the page reads
 from the server (`GET /api/v1/settings/photo-limits`, open to every signed-in user).
 If the limit cannot be read, the file uploads and the server decides. An image type the
-instance does not allow comes back as a failed upload with the server's reason. You can also attach a
-**Figma spec** by URL with an optional title (rendered as an embedded frame with
+instance does not allow comes back as a failed upload with the server's reason. The drop zone
+outlines only while a file is dragged over it, and an empty panel is a single line. You can also attach a
+**Figma spec** from the **Attach Figma link** button, by URL with an optional title (rendered as an embedded frame with
 an "Open in Figma" link), delete a photo or detach a spec, and hold a **threaded
 comment** discussion (top-level comments plus one level of replies) per
 attachment. On an event of a merged branch, or of a closed one until it is
@@ -511,8 +533,15 @@ wrong here costs a silent collection outage.
 
 ### Meta fields
 
-**Where:** Plan › Schema & fields. Project-scoped attributes applied across all
-events (name, type, enum options, optional link template). Create, edit, delete.
+**Where:** Plan › Meta fields (it used to be called *Schema & fields*).
+Project-scoped attributes every event carries whatever its type — owner team,
+Jira ticket, review date (name, type, enum options, optional link template).
+Per-type fields live on each event type. Create, edit, delete.
+
+A link template must contain `${value}` where the key goes (`{value}` is
+accepted and saved as `${value}`); the create and edit dialogs show a live
+preview of the resulting link and keep **Save** disabled until the template is
+valid.
 
 A meta field with a **link template** (`https://tracker.example.com/browse/${value}`)
 stores the bare key. Paste a full link that matches the template and the form
@@ -628,10 +657,30 @@ branch's diff, **Switch to** on an event from that branch) shows it read-only
 instead. Merging an owned event type re-checks ownership (see
 [Event types](#event-types)).
 
-The list is split into **Active** and **Merged** tabs, each showing its count, so
-landed work stops burying branches still in flight. `main` stays on Active — it
-is the base you work from, notwithstanding that it is stored as a merged branch.
-Opening a link to a merged branch selects the Merged tab for you.
+The list is split into **Open** and **Closed** tabs, each showing its count, so
+landed work stops burying branches still in flight. `main` is listed on Open but
+not counted — it is the base you work from, notwithstanding that it is stored as
+a merged branch. **Closed** holds both merged and closed branches, each row
+chipped with which. Opening a link to a merged branch selects the Closed tab for
+you. **New branch** checks the name as you type, can switch you onto the branch
+as soon as it is created (on by default), and also opens from the branch
+switcher's **New branch from main**. A branch name must start with a letter or
+digit, use only letters, digits and `-` `_` `/` `.`, and be at most 64
+characters; the API refuses any other name with a `422`.
+
+A branch's detail shows its name as the page heading (the breadcrumb reads
+**Plan › Plan branches › &lt;name&gt;**), a **Draft · In review · Approved ·
+Merged** progress line with a sentence naming the next step, and **Work on this
+branch**, which switches you onto it. **Merge** sits in the action row with the
+other transitions; **Reopen** on an approved branch reads **Move back to
+draft**, and **Submit for review** is disabled while the branch has no changes.
+A viewer gets no **Edit** on change rows. Conflicts offer **Keep main's value**
+and **Keep this branch's value**, and list the values in the order **Was → Main
+now → This branch**. The note that main has moved on since the branch was cut
+turns amber only when main's changes overlap the branch's, and in the merge
+confirmation it appears only when main changed fields the branch also changed.
+Once your own approval stands, **Approve** is no longer the primary button. A long text change is
+shown as one paragraph with the edits marked, not as two full copies.
 
 The selected branch is part of the route (`/p/:slug/settings/branches/:branchId`),
 so a review is linkable. Each diff row expands to its field-level changes;
@@ -769,14 +818,19 @@ it. The list is at
 **Where:** Workspace settings › Project › **Plan rules** (in the full-takeover
 Settings area, route `/settings/project/plan-rules`). Not built yet: the page is
 a single **Coming later** card that lists the planned naming, governance and PII
-rules. It has no controls, because no backend contract exists for any of them.
+rules. It has no controls, because no backend contract exists for any of them,
+and its rail entry carries a **Soon** tag.
 The working branch-review controls live under **Plan → Plan branches → Merge
 policy** (`min_approvals`, `block_self_approval`). Scan **Event name format** is
 the working naming rule for scan-targeted event types.
 
 ### Project general & danger zone
 
-**Where:** Workspace settings › Project › **General**. Edit the project name,
+**Where:** Workspace settings › Project › **General**. The rail's Project group
+also has **Tracking plan & alerting**, which leaves the settings area for the
+project's event types, alerting and the rest of its plan pages; the settings
+search (⌘K inside Settings) finds a section by what it holds, such as
+"timezone" or "delete project". Edit the project name,
 slug, description and timezone (picked from the IANA zones the browser knows;
 alert delivery schedules are read in it); set the project-wide number of app releases retained as
 explicit version series; rebuild its search index; or use owner-only destructive
@@ -824,61 +878,91 @@ it needs an owner signed in through the browser.
 
 **Where:** Plan › **Plan history** in the sidebar (route
 `/p/<slug>/settings/history`). Named plan revisions (snapshots): create a
-revision, list them, and diff any two. Distinct from per-event history and the
-workspace audit log.
+revision, list them, and diff any two. Each revision is labelled with its kind,
+branch openings are folded together, and a diff is grouped by entity and can be
+filtered. A merge or a branch opening links to its branch's review by id and
+shows the branch's current name; a revision whose branch has since been deleted
+shows the name it was created under, with no link. Distinct from per-event
+history and the workspace audit log.
 
 ---
 
 ## Observe
 
-### Live activity
+### Overview
 
-**Where:** Observe › Live activity (the project overview, route
-`/p/<slug>/overview`). Panels: a 14-day **new events** KPI series (events added to
-the plan per day on the main branch — not a history of the active-events stat
-beside it) and a plan-coverage stat, a **volume** card charted from a single scan
-and titled with that scan's name, top events over the last 48h summed
-across every scan, active anomaly signals (the biggest few, with a **View all**
-link to the Anomalies page carrying the full count), recent activity, and source
-health. While the activity rail is open beside the page (wide screens), the
+**Where:** Observe › Overview (the project's home page, route
+`/p/<slug>/overview`; it used to be called *Live activity*). A status line under
+the title sums up the project in one sentence — open signals, open incidents,
+failing scans, broken alert channels (enabled destinations whose latest delivery
+failed) and source trouble, each linking to where it is worked on. Below
+it a KPI strip shows Active events, Implemented, **In review**, **Open signals**
+and **Coverage** (on a working branch the plan counts are that branch's, so they
+agree with its Events list); the last three are links to the review queue, the Anomalies
+page and Coverage. Values show a placeholder while they load rather than a
+"0". **Active signals** sits directly under the KPIs (the biggest few, with a
+**View all** link to the Anomalies page carrying the full count). The **volume**
+card, charted from a single scan and titled with that scan's name, leads with
+the last 24 hours' total and its change against the 24 hours before, over a
+dated axis with any anomaly marked, and an **Open chart** link to the full
+monitoring detail. Then come a 14-day **new events** series (events added to the
+plan per day on the main branch — not a history of the active-events stat),
+**Top events · 48h** summed across every scan (each row opens its event and
+shows its share of the project's volume in the same window; the shares need not
+add up to 100%, since unmatched traffic counts in the total),
+**Recent activity**, and **Source health**, whose rows carry a status chip and
+link to the data source. A project that has never been scanned shows one
+**Overview fills in after your first scan** state instead of empty panels, and
+each panel loads with its own skeleton. While the activity rail is open beside the page (wide screens), the
 page's own Recent activity panel is hidden rather than listing the same items
 twice. Recent activity reads the **main branch** too, like the KPI series: an
 open working branch holds its own copy of every event, and those copies are not
 listed as separate entries. A row whose target has since been deleted is shown
-without a link rather than linking to a page that no longer resolves. The volume card and the Events page's "&lt;Tab&gt; Dynamics" chart both
+without a link rather than linking to a page that no longer resolves. The volume card and the Events page's **Event volume** chart both
 start from the same default scan — the most recently *created* one, so
-editing an unrelated scan never re-points them. The Dynamics chart departs from
+editing an unrelated scan never re-points them. The Event volume chart departs from
 it in exactly one case: when the tab's event type has no volume under that scan,
 it charts the scan that *does* have volume for that tab rather than rendering an
 empty card. A project whose event types are split across several scans — one per
 event type is a common shape — would otherwise show nothing on every tab but the
 default scan's own. Either way the chart names the scan it charted, so the two
-surfaces never disagree silently. On a working branch the Dynamics chart applies
+surfaces never disagree silently. On a working branch the Event volume chart applies
 the page's tag, status and search filters to the branch's own events — the ones
 the table lists — and charts the volume their main-branch counterparts collected,
 so a tag or status changed on the branch selects the same events in the chart as
 in the table. A new project also shows a **Get started**
-checklist (Plan → Observe → Govern) that ticks steps off automatically from real
+checklist (Plan → Observe → Govern, with a **What is this?** link to Concepts)
+that ticks steps off automatically from real
 project state and hides itself once you are set up. It is role-aware: connecting a
 data source is owner-only, so for an editor that step is shown as **Owner only**
 with an ask-an-owner hint and is excluded from progress — a non-owner's checklist
 can still reach done without it. Dismissing it offers **Undo**, and the command
 palette's **Show getting started** row brings a dismissed checklist back.
 
-### Monitors
+### Alert rules
 
-**Where:** Observe › Alerting › **Monitors** (route
-`/p/<slug>/settings/alerting?section=monitors`). Every alert **rule** in the
+**Where:** Observe › Alerting › **Rules** (route
+`/p/<slug>/settings/alerting?section=monitors`; the tab used to be called
+*Monitors*, and the `section=` key kept its old name so saved links still work). Every alert **rule** in the
 project, across all destinations, in one list: the **condition** it watches for
 (spike/drop direction, threshold, cooldown), the **destination** it routes to,
 its **state** (firing / warning / healthy), when it **last fired**, and its
 delivery health (`115 deliveries · 57 incidents · last 3h ago · sent`, or *Never
 delivered*). A firing/warning/healthy rollup sits above the list. Each row
 expands to the full labelled settings — scan binding, scopes, direction,
-cooldown, thresholds, message template, filters — and carries its own controls:
-enable, **mute** (**1h / 24h / 7d**, the duration written on the button),
-**replay**, edit, delete.
-Open a rule for its detail page, which adds the fired history.
+cooldown, thresholds, message template, filters. The enable switch stays on the
+row; **replay**, **mute** (**1h / 24h / 7d**), edit and delete sit behind the
+row's **…** menu, and opening **replay** runs it straight away. Saving, muting
+and deleting confirm with a toast.
+Open a rule for its detail page, which adds the fired history; its breadcrumb
+reads **Observe › Alerting › Rules › &lt;rule&gt;** and the browser tab
+**&lt;rule&gt; · Alert rule**.
+
+The rule editor is four numbered steps — **What to watch**, **When**, **Where**,
+and a collapsed **Customize message** — with an **Advanced** section after them.
+A new rule alerts when the change is at least **30%**. The cooldown is entered
+as an amount and a unit (minutes, hours, days) and saved in minutes. The guided
+setup that creates a first rule includes a step for choosing the scan.
 
 The rule editor and the monitor detail also mark an enabled drift scope whose
 source data does not exist anywhere in the project — value drift with no
@@ -912,8 +996,9 @@ row.
 
 **Where:** reached from an event, an event signal, or a catalog row. Renders
 per-scope metrics for an `event`, `event_type`, or `project_total` scope, with
-tabs: **Volume** (series plus the latest signal — bucket / actual / expected /
-band), **By version** with version-adoption (only when the scan defines an
+tabs: **Volume** (series plus the latest signal as a strip — Flagged bucket /
+Change / Actual / Expected / Deviation — and the forecast as a hollow point with
+a likely-range whisker), **By version** with version-adoption (only when the scan defines an
 app-version column), **Heatmap** (7×24 seasonality), **Distribution** (drift
 bands), and **Breakdowns**. The page also surfaces top movers and release
 regressions, plus chart annotations on the Volume tab.
@@ -927,7 +1012,9 @@ additionally renders variable-value drift review and the Photos & specs panel.
 An event that is not yet `live` also gets a **Spec** card ahead of the charts:
 the scan identity with a copy button, the fields with their required and
 **names the event** marks, documented variable values, an example payload, and
-**Copy as JSON** / **Copy as Markdown** for pasting into a ticket.
+**Copy as JSON** / **Copy as Markdown** for pasting into a ticket. Optional
+fields with no value are folded away on the card and left out of both copies.
+The event's **Discussion** thread is on this page too.
 For ratios, averages, and other non-count catalog metrics, the version legend
 shows each version's latest observed value rather than a sum of daily values.
 The range picker defaults to 7 days (30 for a catalog metric); when the scope's
@@ -953,8 +1040,9 @@ reordering, uniform bulk status changes, duplicate-as-draft, manual **Collect
 now**, archive/restore, and delete. Collecting a fact metric refreshes every
 active metric that depends on the same fact table through the shared batch path:
 compatible aggregates are folded into one warehouse query instead of rerunning
-the fact-table SQL once per metric. The create/edit form picks a **kind** and
-then reveals kind-specific config:
+the fact-table SQL once per metric. A viewer who opens a metric's edit address
+lands on the metric's page instead of a disabled form. The create/edit form
+picks a **kind** and then reveals kind-specific config:
 
 - **SQL** — a data source, a read-only `SELECT` or top-level `WITH ... SELECT`
   returning one value per bucket, a time column, and a collection interval.
@@ -1023,7 +1111,9 @@ effective filters are combined with `AND`. Structured values retain their
 column type, so numeric conditions compile as numbers rather than quoted strings.
 A ratio can combine two fact
 operands, including operands from different fact tables. Fact tables and metrics
-are indexed by global search and are not copied into plan branches.
+are indexed by global search and are not copied into plan branches. A viewer
+opening a fact table sees its definition read-only (query, timestamp column,
+columns and filters as labelled values) rather than the editor.
 
 A fact table that metrics still read cannot be pulled out from under them.
 **Deleting** it, **unbinding its data source**, **removing or renaming a named
@@ -1115,18 +1205,19 @@ cross-event list of every open monitoring signal, biggest first by
 **relative effect** (`relative_effect`, with `|z|` only breaking ties) — the same
 order the Overview's Active signals panel and the top-bar bell use, so a quiet
 scope with an inflated z-score does not lead the list. A rollup shows open-signal,
-spike, and drop counts; each row shows the spike/drop direction, scope (project
-total / event type / event / metric), actual vs expected values (in the metric's
-unit when the signal carries one), the z-score, and the **bucket** it fired in —
-shown relative, with the bucket's absolute start time and your time zone on
-hover. On a daily or weekly scan that start can be days before the detection
-itself, so the row also says when the detector caught it ("detected 5m ago",
-absolute time on hover). Each row is a link to the monitoring detail for that scope, so it can be
-opened in a new tab. The scan and magnitude filters are radio groups: Tab reaches
-the selected option and the arrow keys move the selection; on a narrow screen
-the options wrap onto more lines. When a series drops all the way to zero, the severity
-column reads **dropped to zero** instead of the clamped z-score, since every such
-signal would otherwise show an identical, low-information value. A scope that
+spike, and drop counts. The list has four columns: **Anomaly** (spike/drop
+direction and scope — project total / event type / event / metric), **Change**
+(the % change from expected with **Minor** / **Significant** / **Major** beside
+it; the z-score is on hover), **Actual / expected** (in the metric's unit when
+the signal carries one), and **When** — the absolute start of the bucket it
+fired in, and under it when the detector found it ("found 16m ago"). On a daily
+or weekly scan that start can be days before the detection itself. On a phone
+each row folds onto two lines. Each row is a link to the monitoring detail for
+that scope, so it can be opened in a new tab. The scan and magnitude filters
+are dropdowns in the filter bar. When a series drops all the way to zero, the
+Change column reads **dropped to zero** instead of a percentage. A project where
+no monitoring scan has collected yet shows **Monitoring isn’t running yet**
+rather than an empty list. A scope that
 dropped to zero and has not emitted since stays on this list for as long as it is
 down, rather than ageing out of the open-signal window after a day — the outage
 is announced once, so tripl re-checks whether it is still down instead of judging
@@ -1140,10 +1231,11 @@ bucket that had neither an expectation nor any traffic. Those rows sit below the
 default **Significant** magnitude filter, so what this changes is the rollup's
 count rather than the list under it.
 When one incident trips several scopes on the same bucket,
-the child rows (event type / event) are still shown and tagged `part of total`
-rather than folded into the project-total row. A **magnitude filter**
-(All / Significant / Major, defaulting to **Significant**) trims the list by
-relative effect (`|actual − expected| / max(expected, 1)`). A **scan filter** sits
+the child rows (event type / event) are still shown and tagged `within total
+spike` or `within total drop`, following the direction, rather than folded into
+the project-total row. A **magnitude filter**
+(All / **Significant (≥50%)** / **Major (≥100%)**, defaulting to **Significant**)
+trims the list by relative effect (`|actual − expected| / max(expected, 1)`). A **scan filter** sits
 beside it whenever signals come from more than one scan, with a count on each
 option, so a large legacy scan cannot bury a smaller live one purely by watching
 more events; catalog metrics are project-wide rather than scan-bound and get
@@ -1179,7 +1271,7 @@ the chart and deletable.
 
 ### Alerting
 
-**Where:** Observe › Alerting (Inbox, Monitors, Destinations, Delivery log). Destination channels:
+**Where:** Observe › Alerting (Inbox, Rules, Destinations, Delivery log). Destination channels:
 **Slack**, **Telegram**, **Webhook**, **Email**, **Jira**, **Linear**. Routing
 rules carry a **cooldown** (minutes); an optional **Scan** binding
 (`scan_config_id`, default **All scans**) that narrows a rule to one scan
@@ -1399,7 +1491,7 @@ this and simply goes quiet.
 **Where:** Govern › Coverage (route `/p/<slug>/coverage`). A read-only
 plan-coverage overview, complementary to Reconciliation's data-match view. The
 rollup leads with **plan coverage** — the canonical share of active events that
-are implemented — alongside active, implemented, awaiting-review, and archived
+are implemented — alongside active, implemented, **In review**, and archived
 counts, plus an implemented-vs-not-implemented bar. The bar's remainder is
 labelled "not implemented" rather than "pending" because it is the arithmetic
 remainder (active − implemented) and therefore includes draft and ready-for-dev
@@ -1747,8 +1839,12 @@ sentences lead, the counters follow.
 ### Audit log
 
 **Where:** Govern › Audit log — **owners only**; the nav item is hidden from
-everyone else. A record of mutating actions across the whole instance,
-filterable by action, user, project, and time range. Each entry also records the
+everyone else. A record of mutating actions on **this project**, filterable by
+action, user and time range; actions that belong to no project (members, API
+keys, a project's deletion) are in **Settings › Instance › Audit log**. Entries
+are grouped under day headers, each reads as a sentence with chips for the
+actor and the object, and an expanded entry shows its payload as labelled values
+with a **Raw JSON** toggle. Each entry also records the
 **plan branch** the write was scoped to, so two contradictory edits to the same
 object on two branches are told apart. The rule is exact:
 
@@ -1896,8 +1992,16 @@ across events, event types, fields, meta fields, variables, relations, tags,
 metrics, fact tables, scans and alert rules, each with a
 confidence badge — the keyword answer is shown as soon as it lands and the
 semantic re-ranking replaces it when that arrives; **Ask AI** (when AI is
-enabled and the query is at least 8 characters, with cited sources); and **Sign
-out**.
+enabled and the query is at least 8 characters, with cited sources); an
+**Actions** group; and **Sign out**.
+
+The **Actions** group starts common tasks rather than going to a page. Editors
+get **New event**, **New metric** and **New branch** (which opens the
+create-branch dialog on the Branches page) for the current project. Inside a
+project there is one **Switch to** *branch name* row for main and for every open
+branch you are not on; until the branch list has loaded, a single **Switch
+branch…** row opens the Branches page instead. Owners get **Invite member**, which opens the Members page with the
+invite form's email field focused. Everyone gets the light/dark theme toggle.
 
 Inside the Settings takeover (`/settings/*`) ⌘K opens a **different, narrower
 palette**. Those routes carry no project in scope, so this one offers only what
@@ -1968,9 +2072,10 @@ the same statement as "there is nothing there". When a query matches no menu row
 and is too short to search on (one character), the list simply reads **No
 matches.**
 
-### Activity feed ("Now")
+### Activity feed
 
-A toggleable live panel (header label "Now") of recent activity for the project,
+A toggleable live panel titled **Activity** (opened and closed from the top
+bar's **Activity** button; it used to read "Now") of recent activity for the project,
 or workspace-wide when no project is in scope. It shows up to 20 items of type
 `anomaly`, `scan`, `alert`, or `event`, severity-colored, auto-refreshing roughly
 every 60 seconds, with a manual refresh. An `anomaly` item, from a scan or a

@@ -13,8 +13,14 @@ export interface PlanRevisionSummary {
   summary: string
   created_at: string
   created_by: string | null
+  /** What produced it: a user snapshot, a branch's merge base, or a merge (PL-21). */
+  kind: PlanRevisionKind
+  /** The branch behind a `branch_base` or `merge`; null once that branch is deleted. */
+  branch_id: string | null
   entity_counts: PlanRevisionEntityCounts
 }
+
+export type PlanRevisionKind = 'snapshot' | 'branch_base' | 'merge'
 
 export interface PlanRevisionDetail extends PlanRevisionSummary {
   payload: Record<string, unknown>

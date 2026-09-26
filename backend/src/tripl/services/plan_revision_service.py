@@ -728,6 +728,8 @@ def _summary_from_counted_row(row: Any) -> PlanRevisionSummary:
         summary=row.summary,
         created_at=row.created_at,
         created_by=row.created_by,
+        kind=row.kind,
+        branch_id=row.branch_id,
         entity_counts={
             "event_types": row.count_event_types,
             "fields": row.count_fields,
@@ -1543,6 +1545,8 @@ async def create_revision(
         summary=revision.summary,
         created_at=revision.created_at,
         created_by=revision.created_by,
+        kind=revision.kind,
+        branch_id=revision.branch_id,
         entity_counts=_entity_counts(payload),
         payload=_public_snapshot_payload(payload),
     )
@@ -1571,6 +1575,8 @@ async def list_revisions(
                 PlanRevision.summary,
                 PlanRevision.created_at,
                 PlanRevision.created_by,
+                PlanRevision.kind,
+                PlanRevision.branch_id,
                 *_entity_count_columns(session.get_bind().dialect.name),
             )
             .where(PlanRevision.project_id == project.id)
@@ -1602,6 +1608,8 @@ async def get_revision(
         summary=revision.summary,
         created_at=revision.created_at,
         created_by=revision.created_by,
+        kind=revision.kind,
+        branch_id=revision.branch_id,
         entity_counts=_entity_counts(revision.payload or {}),
         payload=_public_snapshot_payload(revision.payload or {}),
     )

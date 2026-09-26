@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from tripl.models.domain_enums import (
+    AlertInboxStatus,
     AnomalyDirection,
     DistributionDriftBand,
     MetricScopeType,
@@ -96,6 +97,13 @@ class MetricSignalResponse(BaseModel):
     # to a bucket that began an hour earlier (MON-40). NULL only on a path that
     # did not build the signal from a stored anomaly row.
     detected_at: datetime | None = None
+    # The Alerting Inbox incident (correlation group) this signal was routed
+    # into, and its effective status there, so the Anomalies row can link to
+    # the incident card (JR-6). Both NULL when no rule delivered it. Filled on
+    # the EXPANDED list only, and after the signals cache: triage changes an
+    # incident's status without touching any signal.
+    incident_id: uuid.UUID | None = None
+    incident_status: AlertInboxStatus | None = None
 
 
 class SeasonalityCell(BaseModel):
@@ -375,6 +383,12 @@ class TopEventResponse(BaseModel):
     name: str
     event_type_id: uuid.UUID
     total_count: int
+    # The PROJECT's volume over the same window — identical on every row — so a
+    # row can show its event's share without a second request (MO-25). Counted
+    # the project-total way (type-level rows only; see
+    # ``metrics_service.get_top_events_by_volume``), so unmatched traffic is in
+    # the denominator and the shares need not add up to 100%.
+    window_total_count: int = 0
 
 
 class OverviewKpiSeriesResponse(BaseModel):

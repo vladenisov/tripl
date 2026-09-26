@@ -12,6 +12,7 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
   data,
   anomalyIdx,
   signalTone,
+  pending = false,
 }: {
   eventName: string
   /** The event type's colour; unset falls back to the fixed single-series hue. */
@@ -20,7 +21,28 @@ export const EventWindowMetricsCell = memo(function EventWindowMetricsCell({
   data: EventMetricPoint[]
   anomalyIdx?: number | null
   signalTone?: 'danger' | 'warning' | null
+  /** Metrics not answered yet: a pulsing placeholder, never the "—" that
+   *  means "no data" (EV-20). */
+  pending?: boolean
 }) {
+  if (pending) {
+    return (
+      <span
+        role="img"
+        aria-label={`${eventName} metrics: loading`}
+        className="grid w-[106px] grid-cols-[60px_38px] items-center gap-2"
+      >
+        <span
+          aria-hidden="true"
+          className="block h-3 w-[60px] animate-pulse rounded-sm bg-surface-hover motion-reduce:animate-none"
+        />
+        <span
+          aria-hidden="true"
+          className="ml-auto block h-3 w-6 animate-pulse rounded-sm bg-surface-hover motion-reduce:animate-none"
+        />
+      </span>
+    )
+  }
   const noData = totalCount == null
   // A no-data cell ("—") and a real zero both recede; only a populated count
   // carries the regular muted weight so live volume stands out.

@@ -52,6 +52,7 @@ import {
 } from '@/components/data-sources/connection-settings'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { StatValueSkeleton } from '@/components/states'
 import { Skeleton } from '@/components/ui/skeleton'
 import { SyntheticSourceBadge } from '@/demo/capabilityBadges'
 import { Chip } from '@/components/primitives/chip'
@@ -495,17 +496,21 @@ function ConnectionsTab({ openDsId }: { openDsId?: string }) {
           and "Connections" read as "TIONS" (DATA-35 / LIVE-4). */}
       <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
         <MiniStatStrip boxed>
-          <MiniStat label="Connections" value={statsPending ? '—' : String(dataSources.length)} />
+          {/* Pending values are a skeleton with no tone (#237 DS-25). */}
+          <MiniStat
+            label="Connections"
+            value={statsPending ? <StatValueSkeleton /> : String(dataSources.length)}
+          />
           <MiniStat
             label="Healthy"
-            value={statsPending ? '—' : String(healthyCount)}
+            value={statsPending ? <StatValueSkeleton /> : String(healthyCount)}
             delta={!statsPending && healthyCount > 0 ? 'up' : undefined}
-            tone="success"
+            tone={statsPending ? undefined : 'success'}
             pulse={!statsPending && healthyCount > 0}
           />
           <MiniStat
             label="Warnings"
-            value={statsPending ? '—' : String(warningCount)}
+            value={statsPending ? <StatValueSkeleton /> : String(warningCount)}
             tone={!statsPending && warningCount > 0 ? 'danger' : 'neutral'}
           />
         </MiniStatStrip>

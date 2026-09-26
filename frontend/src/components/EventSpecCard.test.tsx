@@ -186,4 +186,40 @@ describe('EventSpecCard spec fields table (DS-5)', () => {
       screen.getAllByRole('columnheader').map(header => header.textContent),
     ).toEqual(['Field', 'Type', 'Value', 'Documented values'])
   })
+
+  it('folds unset optional fields and lists only the variables a value names (EV-32)', () => {
+    const eventType = {
+      ...EVENT_TYPE,
+      field_definitions: [
+        ...EVENT_TYPE.field_definitions,
+        { id: 'f-amount', event_type_id: 'et-se', name: 'amount', display_name: 'Amount', description: '', field_type: 'number', is_required: false, order: 4, sensitivity: 'none' },
+      ],
+    } as unknown as EventType
+    const event = {
+      ...EVENT,
+      field_values: EVENT.field_values.map(fv =>
+        fv.field_definition_id === 'f-label'
+          ? {
+              ...fv,
+              // `models_guide` names no variable, so a context riding on it is noise.
+              variable_values: [
+                { id: 'ctx-user', variable_id: 'var-user', variable_name: 'user_id', source_column: 'user_id', value_kind: 'high', observed_count: 2, values: ['u_001', 'u_002'] },
+              ],
+            }
+          : fv,
+      ),
+    } as unknown as Event
+    render(
+      <MemoryRouter>
+        <EventSpecCard slug="demo" event={event} eventType={eventType} metaFieldMap={META_FIELDS} />
+      </MemoryRouter>,
+    )
+
+    expect(screen.queryByRole('link', { name: '${user_id}' })).toBeNull()
+    expect(screen.queryByText('amount')).toBeNull()
+    const disclosure = screen.getByRole('button', { name: '+1 optional field not set' })
+    fireEvent.click(disclosure)
+    expect(screen.getByText('amount')).toBeInTheDocument()
+    expect(JSON.parse(screen.getByTestId('spec-payload').textContent ?? '{}')).not.toHaveProperty('amount')
+  })
 })

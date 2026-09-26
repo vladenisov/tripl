@@ -33,7 +33,13 @@ const DIST = path.resolve(import.meta.dirname, '..', 'dist')
 // on-demand chunks the refactor created (IconButton, the anchored combobox
 // list, the kit form row used by the event forms, lib/format) in every lazy
 // route that imports them (entry 134 119).
-const ENTRY_BUDGET = 140_800
+// Raised for the design review batches 5-12 (#237-#244): the shell now draws
+// what used to be a blank screen or a page-level gap on first load: route
+// skeletons shaped like each page (the Suspense fallbacks must be synchronous),
+// the account menu in the sidebar footer, and the branch strip under the top
+// bar. The activity rail moved out of the entry to pay for part of it
+// (entry 145 367).
+const ENTRY_BUDGET = 152_600
 const CRITICAL_PATH_BUDGET = 761_000
 
 // Chunks that are split out so that only the pages using them pay for them:

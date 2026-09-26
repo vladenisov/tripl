@@ -153,7 +153,7 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('Project portfolio')).toBeInTheDocument()
     expect(screen.getByText('Landing coverage and funnel events.')).toBeInTheDocument()
     expect(screen.getByText('66.7% implemented')).toBeInTheDocument()
-    expect(screen.getByText('2 pending review')).toBeInTheDocument()
+    expect(screen.getByText('2 in review')).toBeInTheDocument()
     expect(screen.getByText('Latest scan')).toBeInTheDocument()
     expect(screen.getByText('Production scan')).toBeInTheDocument()
     expect(screen.getByText('Latest scan signal')).toBeInTheDocument()
@@ -184,7 +184,7 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('in 1 of 1 project')).toBeInTheDocument()
     expect(screen.queryByText('1 covered')).not.toBeInTheDocument()
     // UX-10: action-needed metrics each appear once, distinct from STATE metrics.
-    expect(screen.getByText('Review queue')).toBeInTheDocument()
+    expect(screen.getByText('In review', { selector: 'dt' })).toBeInTheDocument()
     // Settled vocabulary: an execution is a "run" on every web-UI surface, and
     // /projects is the first screen after login (tripl-3y7z).
     expect(screen.getByText('Failed runs')).toBeInTheDocument()
@@ -372,7 +372,7 @@ describe('ProjectsPage', () => {
     // Every other supporting status chip renders calm/muted so it does not compete.
     expect(chipOf('99.1% implemented')).toHaveAttribute('data-tone', 'neutral')
     expect(chipOf('1 scan configured')).toHaveAttribute('data-tone', 'neutral')
-    expect(chipOf('1 pending review')).toHaveAttribute('data-tone', 'neutral')
+    expect(chipOf('1 in review')).toHaveAttribute('data-tone', 'neutral')
   })
 
   it('surfaces the latest scan result with rows scanned (UX-18)', async () => {
@@ -801,14 +801,14 @@ describe('ProjectsPage', () => {
     // The workspace total is a readout: there is no workspace-wide review queue
     // to open, so the tile no longer opens one project's while naming them all.
     expect(
-      screen.queryByRole('link', { name: /review queue: 1 event/i }),
+      screen.queryByRole('link', { name: /^In review: 1 event/i }),
     ).not.toBeInTheDocument()
     // The card's own count carries the link, and says whose queue it opens.
     const reviewLink = screen.getByRole('link', {
-      name: 'Review queue for Beta: 1 pending event',
+      name: 'In review in Beta: 1 event',
     })
     expect(reviewLink).toHaveAttribute('href', '/p/beta/events/review')
-    expect(reviewLink).toHaveTextContent('1 pending review')
+    expect(reviewLink).toHaveTextContent('1 in review')
   })
 
   function mockPendingReviewProjects() {
@@ -873,7 +873,7 @@ describe('ProjectsPage', () => {
     expect(await screen.findByText('Windy Web')).toBeInTheDocument()
 
     // The tile still totals the workspace...
-    const reviewTile = screen.getByText('Review queue').closest('dl')
+    const reviewTile = screen.getByText('In review', { selector: 'dt' }).closest('dl')
     expect(reviewTile).not.toBeNull()
     expect(reviewTile).toHaveTextContent('1496')
     // ...and now says where those events actually are, biggest queue first,
@@ -885,10 +885,10 @@ describe('ProjectsPage', () => {
     // recently updated project (Windy Android, 55) and left the other 1441
     // unreachable from anywhere on the page.
     expect(
-      screen.getByRole('link', { name: 'Review queue for Windy Web: 1441 pending events' }),
+      screen.getByRole('link', { name: 'In review in Windy Web: 1441 events' }),
     ).toHaveAttribute('href', '/p/windy-web/events/review')
     expect(
-      screen.getByRole('link', { name: 'Review queue for Windy Android: 55 pending events' }),
+      screen.getByRole('link', { name: 'In review in Windy Android: 55 events' }),
     ).toHaveAttribute('href', '/p/windy-android/events/review')
   })
 
@@ -1044,7 +1044,7 @@ describe('ProjectsPage', () => {
     expect(screen.getAllByRole('button', { name: /New project/i })).toHaveLength(1)
     // The all-zero stat band is hidden until the first project exists.
     expect(screen.queryByText('Coverage')).not.toBeInTheDocument()
-    expect(screen.queryByText('Review queue')).not.toBeInTheDocument()
+    expect(screen.queryByText('In review', { selector: 'dt' })).not.toBeInTheDocument()
     expect(screen.queryByText('Scans')).not.toBeInTheDocument()
     // The old bare EmptyState copy is retired in favour of the hero.
     expect(screen.queryByText('No projects yet')).not.toBeInTheDocument()
@@ -1093,9 +1093,34 @@ describe('ProjectsPage', () => {
     expect(screen.queryByText('Keep your product analytics honest')).not.toBeInTheDocument()
     // Stat band is back.
     expect(screen.getByText('Coverage')).toBeInTheDocument()
-    expect(screen.getByText('Review queue')).toBeInTheDocument()
+    expect(screen.getByText('In review', { selector: 'dt' })).toBeInTheDocument()
     // Header CTA pair is back — one instance of each, in the header only.
     expect(screen.getAllByRole('button', { name: /Generate demo project/i })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: /New project/i })).toHaveLength(1)
+  })
+})
+
+describe('ProjectsPage ?new=1 (#238 SH-15)', () => {
+  it('opens the create dialog when the switcher sends the user here to create one', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url.endsWith('/api/v1/projects') || url.endsWith('/api/v1/data-sources')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`))
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={authValue('owner')}>
+          <MemoryRouter initialEntries={['/workspace?new=1']}>
+            <Routes>
+              <Route path="/workspace" element={<ProjectsPage />} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByLabelText(/project name/i)).toBeInTheDocument()
   })
 })

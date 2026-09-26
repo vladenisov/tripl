@@ -67,6 +67,36 @@ describe('SettingsLayout signposting', () => {
     expect(back).toHaveAttribute('href', '/p/demo/events')
   })
 
+  it('links the bound project\'s tracking plan and alerting from the Project group (#238 ST-5)', () => {
+    render(
+      <RouterProvider
+        router={dataRouter(
+          <SettingsLayout activePath="project/general" backHref="/p/demo/events" projectSlug="demo">
+            <div>content</div>
+          </SettingsLayout>,
+        )}
+      />,
+    )
+
+    expect(screen.getByRole('link', { name: 'Tracking plan & alerting' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/event-types',
+    )
+  })
+
+  it('tags the unbuilt Plan rules section "Soon" without renaming its link (ST-5 / PL-26)', () => {
+    renderSettings('members')
+
+    const planRules = screen.getByRole('link', { name: 'Plan rules' })
+    expect(planRules).toHaveTextContent('Soon')
+  })
+
+  it('offers no tracking-plan link while no project is bound', () => {
+    renderSettings('members')
+
+    expect(screen.queryByRole('link', { name: 'Tracking plan & alerting' })).toBeNull()
+  })
+
   it('shows a short descriptor for each visible nav group', () => {
     renderSettings('members')
 

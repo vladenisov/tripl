@@ -111,7 +111,7 @@ export function AttentionStat({
 
 const STATUS_TONE: Readonly<Record<ProjectStatusLabel, StatTone>> = {
   'Set up': 'neutral',
-  'Needs review': 'warning',
+  'In review': 'warning',
   Ready: 'success',
   'In progress': 'info',
 }
@@ -227,20 +227,20 @@ export function ProjectCard({
           {needsReview ? (
             <Link
               to={`/p/${project.slug}/events/review`}
-              aria-label={`Review queue for ${project.name}: ${pluralize(
+              aria-label={`In review in ${project.name}: ${pluralize(
                 project.summary.review_pending_event_count,
-                '1 pending event',
-                `${project.summary.review_pending_event_count} pending events`,
+                '1 event',
+                `${project.summary.review_pending_event_count} events`,
               )}`}
               className="rounded-full no-underline"
             >
               <Chip tone={attention === 'review' ? 'warning' : 'neutral'} size="xs">
-                {project.summary.review_pending_event_count} pending review
+                {project.summary.review_pending_event_count} in review
               </Chip>
             </Link>
           ) : (
             <Chip tone="neutral" size="xs">
-              Review queue clear
+              None in review
             </Chip>
           )}
           <Chip tone="neutral" size="xs">
@@ -547,11 +547,12 @@ function LatestSignalSummary({
 }
 
 // Sentence case, like every other label in the shell (SH-28).
-type ProjectStatusLabel = 'Set up' | 'Needs review' | 'Ready' | 'In progress'
+// "In review" is the status name used everywhere else (JR-27).
+type ProjectStatusLabel = 'Set up' | 'In review' | 'Ready' | 'In progress'
 
 function getProjectStatus(summary: ProjectSummary): { label: ProjectStatusLabel } {
   if (summary.active_event_count === 0) return { label: 'Set up' }
-  if (summary.review_pending_event_count > 0) return { label: 'Needs review' }
+  if (summary.review_pending_event_count > 0) return { label: 'In review' }
   if (summary.implemented_event_count === summary.active_event_count) return { label: 'Ready' }
   return { label: 'In progress' }
 }

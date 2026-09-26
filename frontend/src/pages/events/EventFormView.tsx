@@ -37,7 +37,7 @@ import { ErrorState } from '@/components/error-state'
 import { validateJsonWithVars } from './jsonTemplate'
 import { applyEventNameFormat, nameFormatBaseColumns } from './utils'
 import { EvField, EvInput, EvTextarea, SelectControl, SurfCard } from './eventFormLayout'
-import { ChevronLeft, Loader2, Plus, Save, Sparkles } from 'lucide-react'
+import { CheckCircle2, ChevronLeft, Loader2, Plus, Save, Sparkles } from 'lucide-react'
 import { branchTicket } from '@/lib/branchTicket'
 import {
   branchEventIdentityProbesKey,
@@ -50,7 +50,7 @@ import {
 } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { ReadOnlyNotice } from '@/components/states'
 import {
   carryFieldValues,
   isNumberFieldValue,
@@ -78,6 +78,9 @@ export function EventForm({
   onCreated,
   hasOtherUnsavedInput = false,
   beforeActions,
+  banner,
+  lockedReason,
+  lockedAction,
 }: {
   slug: string
   eventTypes: EventType[]
@@ -99,12 +102,26 @@ export function EventForm({
    *  Create — and left the page — before reaching it (EVT-44). Outside the
    *  fieldset and not part of the payload. */
   beforeActions?: ReactNode
+  /** Rendered under the page title, as part of the page: the branch banner. */
+  banner?: ReactNode
+  /**
+   * Why this event cannot be saved from here even by an editor — a main event
+   * opened while a branch is active (AU-1 / PL-2). The form turns read-only,
+   * the reason takes Save's place on the action bar, and `lockedAction` (the
+   * banner's "Switch to main") takes the button's. It used to render a form
+   * with no type and no field values whose Save answered "Event not found".
+   */
+  lockedReason?: ReactNode
+  lockedAction?: ReactNode
 }) {
   const qc = useQueryClient()
   const branchId = useActiveBranchId()
   // A viewer reaching this page (a shared link, Back) gets the event read-only:
   // every control disabled and no Save, instead of a form whose Save is a 403.
   const canWrite = useCanWriteProject()
+  // What the controls, the leave guard and the action row follow: a viewer
+  // and a locked event are read the same way.
+  const editable = canWrite && !lockedReason
   const aiEnabled = useAiStatus(slug)
   const { step: scenarioStep } = useDemoScenario()
   const { notifyStepCompleted } = useDemoScenarioActions()
@@ -179,10 +196,11 @@ export function EventForm({
     queryFn: () => planBranchesApi.list(slug),
     enabled: isNew && branchId !== null,
   })
-  const ticket = useMemo(() => {
-    const branch = branchesQuery.data?.items.find(b => b.id === branchId)
-    return branchTicket(branch?.name, metaFields)
-  }, [branchesQuery.data, branchId, metaFields])
+  const activeBranchName = branchesQuery.data?.items.find(b => b.id === branchId)?.name
+  const ticket = useMemo(
+    () => branchTicket(activeBranchName, metaFields),
+    [activeBranchName, metaFields],
+  )
   const ticketPrefilled = useRef(false)
   // What the prefill wrote, so the unsaved-changes check below does not count
   // the form's own suggestion as the author's input.
@@ -361,14 +379,28 @@ export function EventForm({
 
   const completedName =
     generatedName && generatedName.missing.length === 0 ? generatedName.name : null
+  // A typed name is probed too (AU-2): the check used to run only for a name a
+  // scan rule composes, so on any other type "Save and add another" followed
+  // by an unchanged Create made a byte-identical second event.
+  const typedName = !generatedName && isNew ? name.trim() : ''
   const identityTaken = useEventIdentityProbe({
     slug,
     branchId,
     eventTypeId: etId,
-    completedName,
+    completedName: generatedName ? completedName : typedName || null,
     enabled: isNew,
     createdHere,
   })
+  // Under a scan rule the composed name IS the scan identity, and the server
+  // refuses a second holder (409): a hard block, as before. Without one the
+  // backend allows namesakes on purpose (models/event.py), so an existing
+  // namesake is a warning — but repeating a name this form has just created is
+  // a second press, never a plan, and blocks until the name changes.
+  const identityBlocks = !!generatedName && identityTaken !== null
+  const repeatsCreated =
+    typedName !== ''
+    && createdHere.some(item => item.name === typedName && item.eventTypeId === etId)
+  const namesake = !generatedName && !repeatsCreated ? identityTaken : null
 
   // Adjust-during-render with an equality guard — this repo's idiom for state
   // that has to follow a computed value (see the comments in
@@ -411,7 +443,7 @@ export function EventForm({
   const [savedSnapshot, setSavedSnapshot] = useState(draftSnapshot)
   // A viewer's form is disabled and so never dirty.
   const unsaved = useUnsavedChangesGuard(
-    canWrite && (draftSnapshot !== savedSnapshot || hasOtherUnsavedInput),
+    editable && (draftSnapshot !== savedSnapshot || hasOtherUnsavedInput),
   )
 
   const toggleBreakdown = (column: string) => {
@@ -590,7 +622,8 @@ export function EventForm({
   const cannotSave =
     saveMut.isPending
     || (generatedName?.missing.length ?? 0) > 0
-    || identityTaken !== null
+    || identityBlocks
+    || repeatsCreated
     || invalidJsonFieldLabels.length > 0
     || invalidNumberFieldLabels.length > 0
 
@@ -682,7 +715,9 @@ export function EventForm({
         <PageHeader
           className="mb-[18px]"
           eyebrow="Plan · Event"
-          title={isNew ? 'New event' : canWrite ? 'Edit event' : 'Event'}
+          // A viewer is told what they are looking at, not handed a generic
+          // "Event" (JR-18).
+          title={isNew ? 'New event' : canWrite ? 'Edit event' : event!.name}
           back={
             <button
               type="button"
@@ -694,12 +729,13 @@ export function EventForm({
             </button>
           }
         />
+        {banner}
         {!canWrite && <ReadOnlyNotice className="mb-[18px]" />}
 
         {/* `disabled` on a fieldset reaches every native control inside it, so
             the read-only view needs no per-field flag. `contents` keeps it out
             of the layout. */}
-        <fieldset disabled={!canWrite} className="contents">
+        <fieldset disabled={!editable} className="contents">
 
           <SurfCard title="Details">
             <EvField
@@ -776,7 +812,25 @@ export function EventForm({
                       This event type names its events from the scan rule, so “{name.trim()}” is not used.
                     </p>
                   )}
-                  {identityTaken && (
+                  {repeatsCreated && (
+                    <p className="mt-1 text-body-sm text-(--danger)">
+                      This form has just created “{typedName}”. Change at least the name before
+                      saving the next one.
+                    </p>
+                  )}
+                  {namesake && (
+                    <p className="mt-1 text-body-sm text-warning">
+                      An event of this type is already named “{namesake.name}”:{' '}
+                      <Link
+                        to={`/p/${slug}/monitoring/event/${namesake.id}`}
+                        className="underline underline-offset-2"
+                      >
+                        open it
+                      </Link>
+                      . Creating another splits the events that match between the two.
+                    </p>
+                  )}
+                  {identityBlocks && identityTaken && (
                     <p className="mt-1 text-body-sm text-(--danger)" role="alert">
                       An event already answers to this name and would take every scan update:{' '}
                       <Link
@@ -803,7 +857,11 @@ export function EventForm({
                 value={generatedName ? generatedName.name : name}
                 onChange={e => setName(e.target.value)}
                 // No example to offer once the rule writes this box (tripl-u2h9.9).
-                placeholder={generatedName ? undefined : 'e.g. checkout:completed'}
+                // Not a sample name either: "e.g. checkout:completed" suggested a
+                // convention next to catalogs that use another one (AU-41), and
+                // the one rule that holds everywhere is that it must match what
+                // the app sends.
+                placeholder={generatedName ? undefined : 'The exact name the app sends'}
                 aria-required
                 readOnly={!!generatedName}
                 aria-readonly={generatedName ? 'true' : undefined}
@@ -911,6 +969,7 @@ export function EventForm({
                 eventId={event.id}
                 value={supersededBy}
                 onChange={setSupersededBy}
+                eventTypes={eventTypes}
               />
             )}
           </SurfCard>
@@ -934,6 +993,7 @@ export function EventForm({
             event={event}
             fields={sortedFields}
             typeLabel={typeLabel}
+            eventTypeId={selectedEt?.id}
             nameFormat={nameFormat}
             namingColumns={namingColumns}
             fieldValues={fieldValues}
@@ -949,6 +1009,7 @@ export function EventForm({
           />
 
           <MetaFieldsCard
+            slug={slug}
             metaFields={metaFields}
             metaValues={metaValues}
             onMetaValuesChange={(id, next) => setMetaValues(current => ({ ...current, [id]: next }))}
@@ -969,15 +1030,35 @@ export function EventForm({
             last "Save and add another" created. */}
         <SaveBar
           status={
+            lockedReason ??
             blockingSummary ??
             (justCreated !== null ? (
+              // Success-toned, with a check (AU-21): a grey line was easy to
+              // miss, and missing it is how a second press happened.
+              <span className="inline-flex items-start gap-1.5">
+                <CheckCircle2 className="mt-[3px] size-3.5 shrink-0" aria-hidden="true" />
+                <span>
+                  Created {justCreated}. The values below are still the ones it was made
+                  from — change what differs and save the next one.
+                </span>
+              </span>
+            ) : isNew && activeBranchName ? (
+              // Where this lands, beside the button that lands it (AU-25).
               <>
-                Created {justCreated}. The values below are still the ones it was made
-                from — change what differs and save the next one.
+                Adds to branch <span className="font-medium">{activeBranchName}</span>; it
+                reaches main when the branch is merged.
               </>
             ) : null)
           }
-          statusTone={blockingSummary ? 'danger' : 'muted'}
+          statusTone={
+            lockedReason
+              ? 'warning'
+              : blockingSummary
+                ? 'danger'
+                : justCreated !== null
+                  ? 'success'
+                  : 'muted'
+          }
           onStatusClick={
             blockingSummary
               ? () => {
@@ -987,9 +1068,10 @@ export function EventForm({
           }
         >
           <Button type="button" variant="ghost" onClick={onClose}>
-            {canWrite ? 'Cancel' : 'Close'}
+            {editable ? 'Cancel' : 'Close'}
           </Button>
-          {canWrite && isNew && (
+          {canWrite && lockedAction}
+          {editable && isNew && (
             <Button
               type="button"
               variant="outline"
@@ -1002,7 +1084,7 @@ export function EventForm({
               Save and add another
             </Button>
           )}
-          {canWrite && (
+          {editable && (
             <ScenarioCoachMark step="edit-event/save" when={!isNew}>
               <Button type="submit" disabled={cannotSave}>
                 {saveMut.isPending

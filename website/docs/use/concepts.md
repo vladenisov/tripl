@@ -13,6 +13,11 @@ If you're impatient: tripl helps you **write down what your product should
 track**, **check it against what's really happening**, and **get told when the
 two stop matching**.
 
+Inside a project the same glossary is one click away: a small info icon
+beside the Scans, Coverage, Reconciliation and Anomalies headings (and beside
+Metrics while the Fact tables tab is open) shows the term's one-line
+definition on hover and opens its entry on the in-app Concepts page.
+
 ---
 
 ## The big picture

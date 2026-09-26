@@ -92,6 +92,43 @@ describe('EventDriftBadge', () => {
     expect(screen.queryByRole('button', { name: 'Snooze' })).not.toBeInTheDocument()
   })
 
+  it('shows a paused note, not a red auth failure, when the drift list 401s under the sign-in dialog (SH-35)', async () => {
+    vi.mocked(eventTypesApi.listDrifts).mockRejectedValue(new ApiError('Authentication required', 401))
+
+    // The paused note is for a 401 while the session-expired dialog is up.
+    const expired: AuthContextValue = {
+      user: null,
+      status: 'authenticated',
+      error: null,
+      isLoggingOut: false,
+      logout: async () => {},
+      refresh: () => {},
+      sessionExpired: true,
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={expired}>
+          <EventDriftBadge slug="demo" eventTypeId="et-1" count={1} />
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '1 schema drift on this event type' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Waiting for you to sign in again')
+    expect(screen.queryByText('Authentication required')).not.toBeInTheDocument()
+  })
+
+  it('shows a load failure through ErrorState', async () => {
+    vi.mocked(eventTypesApi.listDrifts).mockRejectedValue(new ApiError('Server exploded', 500))
+
+    renderBadge()
+    fireEvent.click(screen.getByRole('button', { name: '1 schema drift on this event type' }))
+
+    expect(await screen.findByRole('heading', { name: 'Failed to load drifts' })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Server exploded')
+  })
+
   it('renders the backend 409 verbatim when the accept is blocked', async () => {
     // Without this the guard is invisible: the button just stops pending and the
     // drift stays open with no explanation (tripl-3mmh).

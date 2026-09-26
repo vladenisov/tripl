@@ -300,19 +300,22 @@ describe('BranchesTab', () => {
     renderTab()
 
     // Active by default: the in-flight branch is listed, the merged one is not.
+    // Scoped to the list: main's pane names the last merged branch (PL-15).
     expect(await screen.findByText('checkout-v2')).toBeInTheDocument()
-    expect(screen.queryByText('checkout-v3')).not.toBeInTheDocument()
+    const list = screen.getByRole('region', { name: 'Branches' })
+    expect(within(list).queryByText('checkout-v3')).not.toBeInTheDocument()
     // main is status 'merged' but kind 'main' — it must stay on the active tab,
     // or the base branch disappears from the list a status-only filter produces.
     expect(screen.getAllByText('main').length).toBeGreaterThan(0)
 
-    // Counts are on the tabs themselves: main + checkout-v2 active, one merged.
-    expect(screen.getByRole('button', { name: 'Active 2' })).toBeInTheDocument()
+    // Counts are on the tabs themselves: main is listed but is not open work
+    // (PL-15), so one open branch and one closed.
+    expect(screen.getByRole('button', { name: 'Open 1' })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Merged 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Closed 1' }))
 
-    expect(await screen.findByText('checkout-v3')).toBeInTheDocument()
-    expect(screen.queryByText('checkout-v2')).not.toBeInTheDocument()
+    expect(await within(list).findByText('checkout-v3')).toBeInTheDocument()
+    expect(within(list).queryByText('checkout-v2')).not.toBeInTheDocument()
   })
 
   it('opens on the merged tab when the route points at a merged branch', async () => {
@@ -325,7 +328,7 @@ describe('BranchesTab', () => {
     // Two matches on purpose: the list row and the detail header — which is
     // itself the proof the row is rendered rather than only the detail pane.
     expect((await screen.findAllByText('checkout-v3')).length).toBeGreaterThan(1)
-    expect(screen.getByRole('button', { name: 'Merged 1' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: 'Closed 1' })).toHaveAttribute(
       'aria-pressed',
       'true',
     )
@@ -744,7 +747,9 @@ describe('BranchesTab', () => {
       'href',
       '/p/demo/events/all/new?branch=feat-1',
     )
-    expect(screen.getByRole('link', { name: 'Events on this branch' })).toHaveAttribute(
+    // One explicit "work on this branch" action, which carries the branch
+    // (PL-11).
+    expect(screen.getByRole('link', { name: 'Work on this branch' })).toHaveAttribute(
       'href',
       '/p/demo/events?branch=feat-1',
     )
@@ -1023,12 +1028,28 @@ describe('BranchesTab', () => {
     fireEvent.click(row)
 
     expect(row).toHaveAttribute('aria-expanded', 'true')
-    // Field-level diff and full state both surface once expanded.
+    // The field-level diff surfaces once expanded; for a modification the full
+    // state is one more click, so it no longer dominates the row (PL-12).
     expect(await screen.findByText('Field changes')).toBeInTheDocument()
+    expect(screen.queryByText('Full state')).not.toBeInTheDocument()
+    const fullToggle = screen.getByRole('button', { name: 'Show full variable (2 properties)' })
+    expect(fullToggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(fullToggle)
     expect(screen.getByText('Full state')).toBeInTheDocument()
+    // The same toggle closes it again.
+    expect(fullToggle).toHaveAttribute('aria-expanded', 'true')
+    expect(fullToggle).toHaveAccessibleName('Hide full variable (2 properties)')
+    // Keys read as labels, with the raw key kept in the title.
+    expect(screen.getByText('Variable type')).toHaveAttribute('title', 'variable_type')
     // The before value of the changed field renders (the 'string' → 'enum' move).
     expect(screen.getByText('string')).toBeInTheDocument()
     expect(screen.getAllByText('variable_type').length).toBeGreaterThan(0)
+    // The collapsed summary names the field in words, not its key (PL-12).
+    expect(screen.getByText('Variable type string → enum')).toBeInTheDocument()
+
+    fireEvent.click(fullToggle)
+    expect(fullToggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Full state')).not.toBeInTheDocument()
 
     // Clicking again collapses the detail.
     fireEvent.click(row)
@@ -1055,7 +1076,7 @@ describe('BranchesTab', () => {
     const mergeBtn = await screen.findByRole('button', { name: /Merge to main/i })
     fireEvent.click(mergeBtn)
     // Never one click: the confirm names what lands on main (PLAN-8).
-    expect(await screen.findByText(/Merge 0 changes \(\+0 ~0 −0\) into main\?/)).toBeInTheDocument()
+    expect(await screen.findByText(/Merge 0 changes into main\?/)).toBeInTheDocument()
     expect(planBranchesApi.merge).not.toHaveBeenCalled()
     await confirmMerge()
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
@@ -1137,7 +1158,10 @@ describe('BranchesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: /New branch/i }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('New branch')).toBeInTheDocument()
-    expect(within(dialog).getByPlaceholderText(/feature-checkout-v2/i)).toBeInTheDocument()
+    expect(within(dialog).getByPlaceholderText(/checkout\/paywall-copy/i)).toBeInTheDocument()
+    // What a branch is, before anyone creates one (PL-4).
+    expect(within(dialog).getByText(/private copy of the plan/)).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Switch to this branch now')).toBeChecked()
   })
 
   it('opens the merge policy dialog and saves the settings', async () => {
@@ -1174,8 +1198,10 @@ describe('BranchesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /Merge policy/i }))
     const dialog = await screen.findByRole('dialog')
-    expect(await within(dialog).findByLabelText('Required approvals')).toBeDisabled()
-    expect(within(dialog).getByText('Only an owner can change the merge policy.')).toBeInTheDocument()
+    // Values to read, not a form of disabled controls (#237 MT-28).
+    expect(await within(dialog).findByText('Only an owner can change the merge policy.')).toBeInTheDocument()
+    expect(within(dialog).getByText('Required approvals')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('spinbutton')).not.toBeInTheDocument()
     expect(within(dialog).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
   })
 
@@ -1184,11 +1210,14 @@ describe('BranchesTab', () => {
     renderTab(FEATURE.id, 'viewer')
 
     expect(await screen.findByRole('note')).toHaveTextContent(/viewer role/)
-    await screen.findByRole('link', { name: 'Events on this branch' })
+    await screen.findByRole('link', { name: 'View events on this branch' })
     expect(screen.queryByRole('button', { name: /New branch/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'New event on this branch' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete branch' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Approve|Request changes|Merge to main/ })).not.toBeInTheDocument()
+    // Anchored: a list row's name carries its "Approved" status chip (PL-15).
+    expect(
+      screen.queryByRole('button', { name: /^(Approve|Request changes|Merge to main)\b/ }),
+    ).not.toBeInTheDocument()
   })
 
   it('shows the approvals chip against the required quota', async () => {
@@ -1514,7 +1543,7 @@ describe('BranchesTab', () => {
     // The plain confirm, not the deletion warning: the paired row keeps its
     // id, and with it the observed values, overrides and drift history the
     // warning is about.
-    expect(await screen.findByText(/renamed 1\) into main\?/)).toBeInTheDocument()
+    expect(await screen.findByText(/1 renamed\)\?/)).toBeInTheDocument()
     await confirmMerge()
     await waitFor(() => expect(planBranchesApi.merge).toHaveBeenCalledWith('demo', 'feat-1'))
     expect(screen.queryByText('Merge deletes variables from main')).not.toBeInTheDocument()
@@ -2112,11 +2141,11 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
     renderTab('feat-1')
 
     expect(await screen.findByText('This branch:')).toBeInTheDocument()
-    expect(screen.getByText('Main (now):')).toBeInTheDocument()
-    expect(screen.getByText('Main (base):')).toBeInTheDocument()
+    expect(screen.getByText('Main now:')).toBeInTheDocument()
+    expect(screen.getByText('Was (when the branch opened):')).toBeInTheDocument()
     expect(screen.getByText("Resolved: this branch's value")).toBeInTheDocument()
-    const branchSide = screen.getByRole('button', { name: "Use this branch's value" })
-    const mainSide = screen.getByRole('button', { name: "Use main's value" })
+    const branchSide = screen.getByRole('button', { name: "Keep this branch's value" })
+    const mainSide = screen.getByRole('button', { name: "Keep main's value" })
     expect(branchSide).toHaveAttribute('aria-pressed', 'true')
     expect(mainSide).toHaveAttribute('aria-pressed', 'false')
     expect(screen.queryByText(/\bours\b|\btheirs\b/)).not.toBeInTheDocument()
@@ -2190,7 +2219,8 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
     renderTab('feat-merged')
 
     await waitFor(() => expect(planBranchesApi.diff).toHaveBeenCalledWith('demo', 'feat-merged'))
-    expect(await screen.findByText('Merged')).toBeInTheDocument()
+    // The detail header's status chip and the list row's.
+    expect((await screen.findAllByText('Merged')).length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: 'Delete branch' })).not.toBeInTheDocument()
   })
 
@@ -2243,13 +2273,11 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
 
     expect(await screen.findByText('No changes in this branch.')).toBeInTheDocument()
     const approve = await screen.findByRole('button', { name: 'Approve' })
-    await waitFor(() =>
-      expect(approve).toHaveAttribute(
-        'title',
-        'Authors cannot approve their own branch (merge policy)',
-      ),
-    )
-    expect(approve).toBeDisabled()
+    // The reason is written next to the button, where a `title` on a disabled
+    // button never showed (#237 DA-9), and the button points at it.
+    const reason = await screen.findByText("Authors can't approve their own branch (merge policy).")
+    await waitFor(() => expect(approve).toBeDisabled())
+    expect(approve.getAttribute('aria-describedby')).toBe(reason.parentElement?.id)
   })
 
   it('keeps expanded rows open when a row above them is reverted (PLAN-15, PLAN-16)', async () => {
@@ -2474,6 +2502,31 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
     expect(countedCalls()).toBe(1)
   })
 
+  it('stops making Approve the primary once your own approval stands (PL-7)', async () => {
+    const ready = makeBranch({
+      id: 'feat-r',
+      name: 'ready-one',
+      kind: 'working',
+      status: 'ready_for_review',
+      created_by: 'u-maya',
+    })
+    mockBranchDetailQueries([MAIN, ready])
+    vi.mocked(branchSettingsApi.get).mockResolvedValue(makeSettings({ min_approvals: 2 }))
+    vi.mocked(planBranchesApi.get).mockResolvedValue({
+      ...ready,
+      reviewers: [],
+      approvals: [{ user_id: 'owner-1', approved_at: '2026-01-02T00:00:00Z', stale: false }],
+    })
+
+    renderTab('feat-r')
+
+    await screen.findByText('Approvals 1/2')
+    const approve = await screen.findByRole('button', { name: 'Approve' })
+    // Filled means "your next step"; with your approval in, it is not.
+    expect(approve).toHaveClass('border-input')
+    expect(approve).not.toHaveClass('bg-accent-solid')
+  })
+
   it('switches the shell back to main when the active branch is deleted (PLAN-58)', async () => {
     vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, FEATURE], total: 2 })
     vi.mocked(planBranchesApi.delete).mockResolvedValue(undefined as never)
@@ -2555,5 +2608,79 @@ describe('BranchesTab review flows (frontend review batch 14)', () => {
     for (const shared of screen.getAllByText(/Fired when the user completes/)) {
       expect(shared.closest('del, ins')).toBeNull()
     }
+  })
+})
+
+describe('BranchesTab — creating a branch and starting work on it (PL-4, PL-5, PL-13)', () => {
+  function ActiveBranch() {
+    return <output aria-label="active branch">{useActiveBranchId() ?? 'main'}</output>
+  }
+
+  function renderAt(path: string) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={authAs('owner')}>
+          <MemoryRouter initialEntries={[path]}>
+            <BranchProvider slug="demo">
+              <ActiveBranch />
+              <Routes>
+                <Route path="/p/:slug/settings/branches" element={<BranchesTabRoute />} />
+                <Route path="/p/:slug/settings/branches/:branchId" element={<BranchesTabRoute />} />
+              </Routes>
+            </BranchProvider>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it("opens the New branch dialog from the switcher's ?new=1", async () => {
+    mockBranchDetailQueries([MAIN, FEATURE])
+    renderAt('/p/demo/settings/branches?new=1')
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('New branch')).toBeInTheDocument()
+  })
+
+  it('refuses a name with spaces, offers a usable one, and a taken one', async () => {
+    mockBranchDetailQueries([MAIN, FEATURE])
+    renderAt('/p/demo/settings/branches?new=1')
+
+    const dialog = await screen.findByRole('dialog')
+    const name = within(dialog).getByLabelText('Name')
+    fireEvent.change(name, { target: { value: 'Bad name with spaces!!' } })
+    expect(within(dialog).getByText('Branch names cannot contain spaces.')).toBeInTheDocument()
+    expect(name).toHaveAttribute('aria-invalid', 'true')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Use bad-name-with-spaces' }))
+    expect(name).toHaveValue('bad-name-with-spaces')
+    expect(name).not.toHaveAttribute('aria-invalid')
+
+    fireEvent.change(name, { target: { value: 'checkout-v2' } })
+    expect(within(dialog).getByText('A branch with this name already exists.')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create branch' }))
+    expect(planBranchesApi.create).not.toHaveBeenCalled()
+  })
+
+  it('switches to the new branch by default and says so', async () => {
+    mockBranchDetailQueries([MAIN])
+    const created = makeBranch({ id: 'feat-new', name: 'paywall-copy', kind: 'working', status: 'draft' })
+    vi.mocked(planBranchesApi.create).mockResolvedValue(created)
+    const success = vi.spyOn(toast, 'success')
+    renderAt('/p/demo/settings/branches')
+
+    // The empty project's pane teaches the flow and offers the first branch.
+    expect(await screen.findByText('Propose plan changes safely')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create a branch' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByLabelText('Switch to this branch now')).toBeChecked()
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'paywall-copy' } })
+    // The refetch after the create lists it, as the server would.
+    vi.mocked(planBranchesApi.list).mockResolvedValue({ items: [MAIN, created], total: 2 })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create branch' }))
+
+    await waitFor(() => expect(screen.getByRole('status', { name: 'active branch' })).toHaveTextContent('feat-new'))
+    expect(success).toHaveBeenCalledWith(expect.stringContaining('Switched to paywall-copy'))
   })
 })

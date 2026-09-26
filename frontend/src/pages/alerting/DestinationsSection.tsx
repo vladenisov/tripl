@@ -4,6 +4,7 @@ import { Trash2, Webhook } from 'lucide-react'
 import { CountBadge } from '@/components/primitives/count-badge'
 import { Button } from '@/components/ui/button'
 import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice } from '@/components/states'
 import type { AlertDestination } from '@/types'
 
 import { CHANNEL_META } from './channelMeta'
@@ -94,9 +95,7 @@ export function DestinationsSection({
         rather than a tooltip on each of the switches, pencils and bins that
         are simply absent below. */}
     {!canWrite && (
-      <p className="rounded-md border border-dashed p-3 text-body-sm text-muted-foreground">
-        {VIEWER_READ_ONLY_NOTICE}
-      </p>
+      <ReadOnlyNotice>{VIEWER_READ_ONLY_NOTICE}</ReadOnlyNotice>
     )}
     <div className="grid gap-6">
       <div className="min-w-0 space-y-4">

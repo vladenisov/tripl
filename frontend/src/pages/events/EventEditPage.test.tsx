@@ -3,13 +3,19 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { toast } from 'sonner'
+
+import { ApiError } from '@/api/client'
 import { eventCommentsApi } from '@/api/eventComments'
 import { eventsApi } from '@/api/events'
 import { planBranchesApi } from '@/api/planBranches'
+import { AuthContext, type AuthContextValue } from '@/components/auth-context'
 import { BranchContext } from '@/components/branch-context-internal'
 import type { EventType } from '@/types'
 
 import EventEditPage from './EventForm'
+
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 
 vi.mock('@/api/events', () => ({
   eventsApi: {
@@ -176,6 +182,46 @@ describe('EventEditPage — a question raised while the event is being authored'
 })
 
 describe('EventEditPage layout and exits', () => {
+  it('says the event was created, with a way to open it (AU-21)', async () => {
+    renderAtNew()
+    await screen.findByLabelText(/posted as the first comment/i)
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'checkout:completed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create event' }))
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        'Created checkout:completed',
+        expect.objectContaining({ action: expect.objectContaining({ label: 'Open' }) }),
+      ),
+    )
+  })
+
+  it('shows the form taking shape while it loads, not a sentence (AU-43)', async () => {
+    const { eventTypesApi } = await import('@/api/eventTypes')
+    vi.mocked(eventTypesApi.list).mockImplementation(() => new Promise(() => {}))
+    renderAtNew()
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Loading the event form…')
+  })
+
+  it('says a missing event is not found, with the way back, and no retry (SH-33)', async () => {
+    vi.mocked(eventsApi.get).mockRejectedValue(new ApiError('Event not found', 404))
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/events/all/ev-gone/edit']}>
+          <Routes>
+            <Route path="/p/:slug/events/:tab/:eventId/edit" element={<EventEditPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Event not found' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to Events' })).toHaveAttribute('href', '/p/demo/events')
+    expect(screen.queryByRole('button', { name: /try again/i })).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('puts the draft discussion note above the Create button (EVT-44)', async () => {
     renderAtNew()
 
@@ -257,5 +303,121 @@ describe('EventEditPage branch banner (EVT-42)', () => {
     renderBranchEdit(null)
     const link = await screen.findByRole('link', { name: 'View main plan' })
     expect(link).toHaveAttribute('href', '/p/demo/events')
+  })
+})
+
+describe('EventEditPage on the wrong branch (AU-1 / PL-2)', () => {
+  it('shows a main event opened on a branch read-only, with the switch in place of Save', async () => {
+    vi.mocked(planBranchesApi.list).mockResolvedValue({
+      total: 2,
+      items: [
+        { id: 'main-id', project_id: 'p', name: 'main', kind: 'main', status: 'merged' },
+        { id: 'br-1', project_id: 'p', name: 'WND-1', kind: 'working', status: 'draft' },
+      ],
+    } as never)
+    vi.mocked(eventsApi.get).mockResolvedValue({ ...CREATED, id: 'ev-main', branch_id: 'main-id' } as never)
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/events/all/ev-main/edit']}>
+          <BranchContext.Provider value={{ branchId: 'br-1', setBranchId: vi.fn(), slug: 'demo' }}>
+            <Routes>
+              <Route path="/p/:slug/events/:tab/:eventId/edit" element={<EventEditPage />} />
+            </Routes>
+          </BranchContext.Provider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText(/cannot be saved from here/)).toBeInTheDocument()
+    // A save from here answered "Event not found" and lost the edit.
+    expect(screen.queryByRole('button', { name: 'Save event' })).toBeNull()
+    expect(document.querySelector('fieldset')).toBeDisabled()
+    const switches = screen.getAllByRole('link', { name: 'Switch to main' })
+    expect(switches.length).toBeGreaterThan(0)
+    for (const link of switches) expect(link).toHaveAttribute('href', '/p/demo/events/all/ev-main/edit')
+  })
+
+  function renderMainEventOnBranch() {
+    vi.mocked(eventsApi.get).mockResolvedValue({ ...CREATED, id: 'ev-main', branch_id: 'main-id' } as never)
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/p/demo/events/all/ev-main/edit']}>
+          <BranchContext.Provider value={{ branchId: 'br-1', setBranchId: vi.fn(), slug: 'demo' }}>
+            <Routes>
+              <Route path="/p/:slug/events/:tab/:eventId/edit" element={<EventEditPage />} />
+            </Routes>
+          </BranchContext.Provider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('holds the form back until the branch list says whether it may be saved', async () => {
+    // The list never answers: the form used to render editable, Save live, in
+    // the meantime.
+    vi.mocked(planBranchesApi.list).mockReturnValue(new Promise(() => {}) as never)
+    renderMainEventOnBranch()
+
+    await waitFor(() => expect(planBranchesApi.list).toHaveBeenCalled())
+    expect(screen.getByText('Loading event…')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save event' })).toBeNull()
+  })
+
+  it('still locks a row from elsewhere when the branch list fails', async () => {
+    vi.mocked(planBranchesApi.list).mockRejectedValue(new Error('boom'))
+    renderMainEventOnBranch()
+
+    expect(
+      await screen.findByText('This event lives outside the branch being edited, so it cannot be saved from here.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save event' })).toBeNull()
+    expect(document.querySelector('fieldset')).toBeDisabled()
+  })
+})
+
+describe('EventEditPage for a viewer (#237 AU-33 / JR-18)', () => {
+  const VIEWER: AuthContextValue = {
+    user: {
+      id: 'viewer-1',
+      email: 'viewer@example.com',
+      name: 'Viewer',
+      role: 'viewer',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    status: 'authenticated',
+    error: null,
+    isLoggingOut: false,
+    logout: async () => {},
+    refresh: () => {},
+  }
+
+  function renderAsViewer(entry: string) {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AuthContext.Provider value={VIEWER}>
+          <MemoryRouter initialEntries={[entry]}>
+            <Routes>
+              <Route path="/p/:slug/events/:tab/new" element={<EventEditPage />} />
+              <Route path="/p/:slug/events/:tab/:eventId/edit" element={<EventEditPage />} />
+              <Route path="/p/:slug/events" element={<div>events list</div>} />
+              <Route path="/p/:slug/monitoring/event/:eventId" element={<div>event detail</div>} />
+            </Routes>
+          </MemoryRouter>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  it('opens the event page built for reading instead of a disabled form', async () => {
+    renderAsViewer('/p/demo/events/all/ev-1/edit')
+    expect(await screen.findByText('event detail')).toBeInTheDocument()
+    expect(document.querySelector('fieldset')).toBeNull()
+  })
+
+  it('returns a viewer from the create form to the list, saying why', async () => {
+    renderAsViewer('/p/demo/events/all/new')
+    expect(await screen.findByText('events list')).toBeInTheDocument()
+    expect(toast.info).toHaveBeenCalledWith('Only editors can add events.', expect.anything())
   })
 })

@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { Chip } from '@/components/primitives/chip'
 import { SCard, SHeader } from '@/components/settings/kit'
 
@@ -16,7 +17,9 @@ const PLANNED_RULES: ReadonlyArray<{ title: string; items: readonly string[] }> 
   {
     title: 'Governance',
     items: [
-      'Require an approval, or a minimum number of them, before an event moves to live.',
+      // Not "require an approval": approving plan CHANGES already exists, as the
+      // merge policy (PL-26). This is a gate on an event's own status.
+      'Event status gates: require a sign-off before an event’s status moves to live.',
       'Require every event to name a responsible person.',
       'Flag events that have had no volume for a sustained window.',
     ],
@@ -40,7 +43,7 @@ const PLANNED_RULES: ReadonlyArray<{ title: string; items: readonly string[] }> 
  * (WS-37). What is left is one card that says what the rules will cover, with
  * no control that could be mistaken for a setting.
  */
-export default function PlanRulesSection() {
+export default function PlanRulesSection({ slug }: { slug?: string } = {}) {
   return (
     <div>
       <SHeader
@@ -48,6 +51,23 @@ export default function PlanRulesSection() {
         description="Guardrails for the tracking plan. None of them run today: no event name is checked, and nothing is required before an event goes live."
         actions={<Chip tone="warning" size="md">Not built yet</Chip>}
       />
+
+      {/* What exists today, so the page is not a dead end (PL-26). */}
+      <p className="mb-4 text-body-sm" style={{ color: 'var(--fg-secondary)' }}>
+        Approvals for plan changes already work: they are set in{' '}
+        {slug ? (
+          <Link
+            to={`/p/${slug}/settings/branches`}
+            className="font-medium underline underline-offset-2"
+            style={{ color: 'var(--accent)' }}
+          >
+            Plan branches › Merge policy
+          </Link>
+        ) : (
+          <span className="font-medium">Plan branches › Merge policy</span>
+        )}
+        .
+      </p>
 
       <SCard
         title="Coming later"

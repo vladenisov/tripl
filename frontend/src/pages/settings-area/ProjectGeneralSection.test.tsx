@@ -204,7 +204,7 @@ describe('ProjectGeneralSection', () => {
       .forEach((select) => expect(select).not.toBeDisabled())
   })
 
-  it('cross-links to the in-app Project operations surface', async () => {
+  it('cross-links to the in-app tracking plan and alerting (#238 ST-5)', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo')) return jsonResponse(PROJECT)
@@ -214,7 +214,7 @@ describe('ProjectGeneralSection', () => {
     renderSection()
 
     expect(
-      await screen.findByRole('button', { name: /Project operations/i }),
+      await screen.findByRole('button', { name: 'Tracking plan & alerting' }),
     ).toBeInTheDocument()
   })
 
@@ -646,7 +646,7 @@ describe('ProjectGeneralSection — #207', () => {
 
     await waitFor(() => expect(onSlugChanged).toHaveBeenCalledWith('demo-renamed'))
     expect(await screen.findByText('Saved')).toBeInTheDocument()
-    expect(screen.queryByText('Failed to load project.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Could not load this project|Project not found/)).not.toBeInTheDocument()
     expect(screen.getByLabelText('Slug')).toHaveValue('demo-renamed')
     // The dead address is never asked for again once the rename lands.
     const patchIndex = requested.findIndex((entry) => entry.startsWith('PATCH '))

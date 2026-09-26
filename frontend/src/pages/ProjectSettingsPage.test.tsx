@@ -82,7 +82,7 @@ describe('ProjectSettingsPage', () => {
     expect(await screen.findByText('Takeover general')).toBeInTheDocument()
   })
 
-  it('signposts the surface and cross-links to the takeover settings area', async () => {
+  it('shows a page skeleton while the surface loads and no "settings" signpost (#238 JR-25)', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJsonResponse([]))
 
     const queryClient = new QueryClient({
@@ -102,11 +102,10 @@ describe('ProjectSettingsPage', () => {
       </QueryClientProvider>,
     )
 
-    expect(
-      await screen.findByText('Project operations — the day-to-day tracking-plan surfaces.'),
-    ).toBeInTheDocument()
-    const link = screen.getByRole('link', { name: /Workspace settings/i })
-    expect(link).toHaveAttribute('href', '/settings')
+    // The chunk is lazy, so the first paint is the page-shaped skeleton.
+    expect(screen.getByRole('status')).toHaveTextContent('Loading page…')
+    expect(screen.queryByText(/Project operations/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Workspace settings/i })).not.toBeInTheDocument()
   })
 
   it('loads and updates shared monitoring settings on the monitoring tab', async () => {
@@ -174,6 +173,11 @@ describe('ProjectSettingsPage', () => {
     expect(screen.getByDisplayValue('36')).toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText('Toggle signal detection'))
+    // Turning detection off is confirmed first: it stops every new signal and
+    // alert in the project.
+    const confirmOff = await screen.findByRole('alertdialog', { name: 'Stop detecting anomalies in this project?' })
+    fireEvent.click(within(confirmOff).getByRole('button', { name: 'Turn off detection' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
     // Numeric settings commit on blur, not per keystroke: saving as you type
     // persisted every intermediate value ("168" wrote 1, then 16, then 168) as a
     // live detection setting (tripl-jfm3.105). Toggles still save immediately.
@@ -741,6 +745,8 @@ describe('ProjectSettingsPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Add rule/ }))
 
     const dialog = await screen.findByRole('dialog')
+    // The templates are collapsed by default (AL-1).
+    fireEvent.click(within(dialog).getByRole('button', { name: /Customize message/ }))
     const templateField = within(dialog)
       .getAllByRole('combobox')
       .find(element => element instanceof HTMLTextAreaElement)
@@ -995,7 +1001,7 @@ describe('ProjectSettingsPage', () => {
       'aria-selected',
       'true',
     )
-    for (const name of ['Monitors', 'Destinations', 'Delivery log']) {
+    for (const name of ['Rules', 'Destinations', 'Delivery log']) {
       expect(screen.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'false')
     }
   })
@@ -1171,7 +1177,7 @@ describe('ProjectSettingsPage', () => {
     expect(await screen.findByText('Link: https://tracker.example.com/issues/${value}')).toBeInTheDocument()
   })
 
-  it('titles the meta-fields panel to match the "Schema & fields" sidebar entry', async () => {
+  it('titles the meta-fields page to match the "Meta fields" sidebar entry (AU-10)', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
       if (url.endsWith('/api/v1/projects/demo/meta-fields') && (!init || !init.method || init.method === 'GET')) {
@@ -1196,8 +1202,9 @@ describe('ProjectSettingsPage', () => {
     )
 
     // The heading confirms the destination to the user who clicked the
-    // "Schema & fields" sidebar item, rather than the old "Meta fields" label.
-    expect(await screen.findByText('Schema & fields')).toBeInTheDocument()
+    // "Meta fields" sidebar item; "Schema & fields" promised a type's schema.
+    expect(await screen.findByRole('heading', { level: 1, name: 'Meta fields' })).toBeInTheDocument()
+    expect(screen.queryByText('Schema & fields')).not.toBeInTheDocument()
   })
 
   it('creates a scan config from preview-driven picks', async () => {

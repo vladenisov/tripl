@@ -65,7 +65,7 @@ describe('useDocumentTitle', () => {
 describe('resolveTitleFromPath', () => {
   it('labels a project-scoped surface and carries its slug', () => {
     expect(resolveTitleFromPath('/p/acme/anomalies')).toEqual({ label: 'Anomalies', slug: 'acme' })
-    expect(resolveTitleFromPath('/p/acme/overview')).toEqual({ label: 'Live activity', slug: 'acme' })
+    expect(resolveTitleFromPath('/p/acme/overview')).toEqual({ label: 'Overview', slug: 'acme' })
     // A bare project path lands on Events (the default surface).
     expect(resolveTitleFromPath('/p/acme')).toEqual({ label: 'Events', slug: 'acme' })
   })
@@ -116,7 +116,7 @@ describe('resolveTitleFromPath', () => {
       slug: 'acme',
     })
     expect(resolveTitleFromPath('/p/acme/settings/meta-fields')).toEqual({
-      label: 'Schema & fields',
+      label: 'Meta fields',
       slug: 'acme',
     })
     expect(resolveTitleFromPath('/p/acme/metrics/fact-tables')).toEqual({
@@ -212,7 +212,7 @@ describe('resolveTitleFromPath', () => {
     ].map((section) => resolveTitleFromPath(`/settings/instance/${section}`).label)
     expect(new Set(instanceTitles).size).toBe(instanceTitles.length)
     // The account-level Security section keeps its own, different name.
-    expect(resolveTitleFromPath('/settings/security')).toEqual({ label: 'Security' })
+    expect(resolveTitleFromPath('/settings/security')).toEqual({ label: 'Password & sessions' })
   })
 
   it('keeps the rail label on a route deeper than its rail entry', () => {

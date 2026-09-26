@@ -218,6 +218,24 @@ describe('ScanConfigDetail — header status wording', () => {
   })
 })
 
+describe('ScanConfigDetail — a scan that does not exist (#237 SH-33)', () => {
+  it('says "Scan not found" with the way back to Scans, not an error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/projects/demo/scans')) return mockJsonResponse([])
+      if (url.includes('/data-sources')) return mockJsonResponse([])
+      if (url.includes('event-types') || url.includes('eventTypes')) return mockJsonResponse([])
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderDetail(demoProject({ is_demo: false }))
+
+    expect(await screen.findByRole('heading', { name: 'Scan not found' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to Scans' })).toHaveAttribute('href', '/p/demo/scans')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
 describe('ScanConfigDetail — coached demo scenario', () => {
   it('binds the scenario to the ScanJob the run POST returned', async () => {
     const runCalls: { method: string; url: string }[] = []

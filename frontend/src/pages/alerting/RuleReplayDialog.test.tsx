@@ -118,7 +118,7 @@ describe('RuleReplayDialog responsive results', () => {
       ],
     })
     renderDialog()
-    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
+    // Runs on open (AL-35).
     expect(await screen.findByText('iOS primary')).toBeInTheDocument()
     expect(screen.getByText('iOS backup')).toBeInTheDocument()
   })
@@ -126,8 +126,6 @@ describe('RuleReplayDialog responsive results', () => {
   it('confines wide replay data to the result viewport without widening the dialog', async () => {
     vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
     renderDialog()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
 
     const scope = await screen.findByText(LONG_SCOPE)
     const dialog = screen.getByRole('dialog')
@@ -144,9 +142,11 @@ describe('RuleReplayDialog responsive results', () => {
     expect(table?.parentElement?.parentElement).toBe(firingRegion)
     expect(table?.parentElement).not.toHaveClass('overflow-x-auto')
     expect(firingRegion).toHaveClass('min-w-0', 'max-w-full', 'overflow-x-auto')
-    expect(within(table as HTMLTableElement).getByText(/Jul 19, 2026/)).toHaveClass(
-      'whitespace-nowrap',
-    )
+    // Short and in sans with tabular figures, so it no longer runs into
+    // Scope (AL-36).
+    const when = within(table as HTMLTableElement).getByText(/^Jul 19, \d\d:\d\d$/)
+    expect(when).toHaveClass('whitespace-nowrap', 'tnum')
+    expect(when).not.toHaveClass('mono')
 
     // Both count columns are grouped by the same formatter, so one row cannot
     // read "5780" beside "3,529".
@@ -178,8 +178,9 @@ describe('RuleReplayDialog threshold overrides', () => {
         Promise.resolve(overrides?.minPercentDelta === undefined ? RESULT : stricter),
       )
     renderDialog()
+    await screen.findByText('Saved thresholds')
 
-    fireEvent.change(screen.getByLabelText('Minimum percent delta override'), {
+    fireEvent.change(screen.getByLabelText('Min change (%)'), {
       target: { value: '300' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
@@ -207,21 +208,24 @@ describe('RuleReplayDialog threshold overrides', () => {
     // screen saying why (flagged on PR #108).
     const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
     renderDialog()
+    await screen.findByText('Saved thresholds')
 
-    fireEvent.change(screen.getByLabelText('Sigma threshold override'), {
+    fireEvent.change(screen.getByLabelText('Sigma threshold'), {
       target: { value },
     })
 
     expect(screen.getByRole('alert')).toHaveTextContent(/Between 0 and 10/)
     expect(screen.getByRole('button', { name: 'Replay' })).toBeDisabled()
-    expect(simulate).not.toHaveBeenCalled()
+    // Only the saved-threshold run on open went out; never the bad sigma.
+    expect(simulate.mock.calls.every(call => call[4] === undefined)).toBe(true)
   })
 
   it('replays a sigma inside the range', async () => {
     const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
     renderDialog()
+    await screen.findByText('Saved thresholds')
 
-    fireEvent.change(screen.getByLabelText('Sigma threshold override'), {
+    fireEvent.change(screen.getByLabelText('Sigma threshold'), {
       target: { value: '4.5' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
@@ -237,8 +241,6 @@ describe('RuleReplayDialog threshold overrides', () => {
     const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
     renderDialog()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
-
     // `Number('')` is 0, so an unguarded parse would replay every blank field as
     // the most permissive threshold there is and call it the saved behaviour.
     expect(await screen.findByText('Saved thresholds')).toBeInTheDocument()
@@ -250,8 +252,6 @@ describe('RuleReplayDialog threshold overrides', () => {
   it('captions the preview with the format it was rendered in', async () => {
     vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
     renderDialog()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
 
     // The caption used to read "as it would render to destination" or
     // "…to Slack/Telegram" depending on whether the FIRST firing happened to
@@ -281,8 +281,6 @@ describe('RuleReplayDialog threshold overrides', () => {
     })
     renderDialog()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
-
     const table = (await screen.findByText(LONG_SCOPE)).closest('table') as HTMLTableElement
     expect(within(table).getByText('0.04')).toBeInTheDocument()
     expect(within(table).getByText('0.12')).toBeInTheDocument()
@@ -291,25 +289,27 @@ describe('RuleReplayDialog threshold overrides', () => {
 })
 
 describe('RuleReplayDialog cooldown override bounds (ALR-13)', () => {
-  it.each(['1.5', '20000', '-5'])('refuses %s before sending it', (value) => {
+  it.each(['1.5', '20000', '-5'])('refuses %s before sending it', async (value) => {
     const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
     renderDialog()
+    await screen.findByText('Saved thresholds')
 
-    const input = screen.getByLabelText('Cooldown override in minutes')
+    const input = screen.getByLabelText('Cooldown (minutes)')
     fireEvent.change(input, { target: { value } })
 
     expect(input).toHaveAttribute('aria-invalid', 'true')
     expect(screen.getByRole('alert')).toHaveTextContent(/Whole minutes from 0 to 10080/)
     expect(screen.getByRole('button', { name: 'Replay' })).toBeDisabled()
-    expect(simulate).not.toHaveBeenCalled()
+    expect(simulate.mock.calls.every(call => call[4] === undefined)).toBe(true)
   })
 
   it.each([
-    ['Minimum percent delta override'],
-    ['Minimum expected count override'],
-  ])('refuses a negative %s instead of reading it as blank', (label) => {
+    ['Min change (%)'],
+    ['Min expected count'],
+  ])('refuses a negative %s instead of reading it as blank', async (label) => {
     const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
     renderDialog()
+    await screen.findByText('Saved thresholds')
 
     const input = screen.getByLabelText(label)
     fireEvent.change(input, { target: { value: '-5' } })
@@ -317,13 +317,15 @@ describe('RuleReplayDialog cooldown override bounds (ALR-13)', () => {
     expect(input).toHaveAttribute('aria-invalid', 'true')
     expect(screen.getByRole('alert')).toHaveTextContent(/0 or more/)
     expect(screen.getByRole('button', { name: 'Replay' })).toBeDisabled()
-    expect(simulate).not.toHaveBeenCalled()
+    expect(simulate.mock.calls.every(call => call[4] === undefined)).toBe(true)
   })
 
-  it('accepts a whole number in range', () => {
+  it('accepts a whole number in range', async () => {
+    vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
     renderDialog()
+    await screen.findByText('Saved thresholds')
 
-    fireEvent.change(screen.getByLabelText('Cooldown override in minutes'), { target: { value: '60' } })
+    fireEvent.change(screen.getByLabelText('Cooldown (minutes)'), { target: { value: '60' } })
 
     expect(screen.getByRole('button', { name: 'Replay' })).toBeEnabled()
     expect(screen.queryByRole('alert')).toBeNull()
@@ -335,11 +337,10 @@ describe('RuleReplayDialog stale results (ALR-12)', () => {
     vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
     renderDialog()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
     await screen.findByText(/Considered/)
     expect(screen.queryByText(/Settings changed since this replay/)).toBeNull()
 
-    fireEvent.change(screen.getByLabelText('Minimum percent delta override'), { target: { value: '300' } })
+    fireEvent.change(screen.getByLabelText('Min change (%)'), { target: { value: '300' } })
     expect(screen.getByText(/Settings changed since this replay/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
@@ -372,17 +373,34 @@ describe('RuleReplayDialog with unsaved edits (ALR-12)', () => {
     )
 
     expect(screen.getByRole('heading', { name: /with your unsaved edits/ })).toBeInTheDocument()
-    // The overrides are compared with the EDITED thresholds.
-    expect(screen.getByLabelText('Cooldown override in minutes')).toHaveAttribute('placeholder', 'edited: 60')
+    // The overrides are compared with the EDITED thresholds, named as helper
+    // text rather than a placeholder that truncated (AL-35).
+    expect(screen.getByLabelText('Cooldown (minutes)')).toHaveAccessibleDescription('Edited: 1h')
+    expect(screen.getByLabelText('Cooldown (minutes)')).not.toHaveAttribute('placeholder')
 
-    fireEvent.change(screen.getByLabelText('Sigma threshold override'), { target: { value: '4.5' } })
+    // The edits are replayed on open…
+    await screen.findByText('Your edits')
+    fireEvent.change(screen.getByLabelText('Sigma threshold'), { target: { value: '4.5' } })
     fireEvent.click(screen.getByRole('button', { name: 'Replay' }))
 
-    await waitFor(() => expect(simulate).toHaveBeenCalledTimes(2))
+    // …and again with the override, beside a fresh run of the edits alone.
+    await waitFor(() => expect(simulate).toHaveBeenCalledTimes(3))
     expect(simulate).toHaveBeenCalledWith('demo', 'destination-1', 'rule-1', 7, undefined, draft)
     expect(simulate).toHaveBeenCalledWith(
       'demo', 'destination-1', 'rule-1', 7, { sigmaThreshold: 4.5 }, draft,
     )
     expect(await screen.findByText('Your edits')).toBeInTheDocument()
+  })
+})
+
+describe('RuleReplayDialog opens on an answer (AL-35)', () => {
+  it('replays the saved rule on open and says what replay does', async () => {
+    const simulate = vi.spyOn(alertingApi, 'simulateRule').mockResolvedValue(RESULT)
+    renderDialog()
+
+    expect(screen.getByText(/Nothing is sent or saved/)).toBeInTheDocument()
+    await waitFor(() => expect(simulate).toHaveBeenCalledWith('demo', 'destination-1', 'rule-1', 7))
+    expect(simulate).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('Saved thresholds')).toBeInTheDocument()
   })
 })

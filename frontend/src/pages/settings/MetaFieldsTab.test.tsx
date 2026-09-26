@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MetaFieldDefinition, Project } from '@/types'
 import { AuthContext, type AuthContextValue } from '@/components/auth-context'
@@ -48,7 +49,10 @@ function renderTab(
       <AuthContext.Provider value={auth}>
         {/* What the app shell provides once it has resolved the URL's project. */}
         <ActiveProjectContext.Provider value={project}>
-          <MetaFieldsTab slug="demo" />
+          {/* The header links to Event types. */}
+          <MemoryRouter>
+            <MetaFieldsTab slug="demo" />
+          </MemoryRouter>
         </ActiveProjectContext.Provider>
       </AuthContext.Provider>
     </QueryClientProvider>,
@@ -230,6 +234,55 @@ describe('MetaFieldsTab — inline validation (AU-4)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove option high' }))
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Remove option high' })).not.toBeInTheDocument(),
+    )
+  })
+})
+
+describe('MetaFieldsTab — naming (#238 AU-10)', () => {
+  it('is titled "Meta fields" and points per-type fields at Event types', async () => {
+    renderTab()
+
+    expect(screen.getByRole('heading', { level: 1, name: 'Meta fields' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'event type' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/event-types',
+    )
+  })
+})
+
+describe('MetaFieldsTab — link template (#244 AU-9)', () => {
+  function openCreateWithLink(template: string) {
+    fireEvent.click(screen.getByRole('button', { name: /New meta field/i }))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'jira' } })
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Jira' } })
+    fireEvent.click(screen.getByLabelText('Display as link'))
+    fireEvent.change(screen.getByLabelText('Link template'), { target: { value: template } })
+  }
+
+  it('refuses a template with no ${value} and says where the key goes', async () => {
+    renderTab()
+    openCreateWithLink('https://jira.example.com/browse/')
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    expect(await screen.findByText(/where the key goes/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Link template')).toHaveAttribute('aria-invalid', 'true')
+    expect(metaFieldsApi.create).not.toHaveBeenCalled()
+  })
+
+  it('reads {value} as ${value}, previews the link and saves it normalised', async () => {
+    vi.mocked(metaFieldsApi.create).mockResolvedValue(metaField({ id: 'mf-1', name: 'jira' }))
+    renderTab()
+    openCreateWithLink('https://jira.example.com/{value}')
+
+    expect(screen.getByText('https://jira.example.com/WND-1234')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() =>
+      expect(metaFieldsApi.create).toHaveBeenCalledWith(
+        'demo',
+        expect.objectContaining({ link_template: 'https://jira.example.com/${value}' }),
+        null,
+      ),
     )
   })
 })

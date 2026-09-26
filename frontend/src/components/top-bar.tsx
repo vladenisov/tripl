@@ -6,6 +6,7 @@ import {
   Bell,
   CheckCircle2,
   ChevronRight,
+  GitBranch,
   Loader2,
   Menu,
   RotateCcw,
@@ -14,6 +15,9 @@ import {
   XCircle,
 } from 'lucide-react'
 import { alertingApi } from '@/api/alerting'
+import { planBranchesApi } from '@/api/planBranches'
+import { useBranchContext } from '@/hooks/useBranch'
+import { requestPageLeave } from '@/hooks/useUnsavedChangesGuard'
 import { useExpandedSignals } from '@/hooks/useExpandedSignals'
 import { formatIncidentCount } from '@/lib/alertStatus'
 import {
@@ -22,7 +26,7 @@ import {
   unnamedScopeLabel,
 } from '@/lib/signalScope'
 import { getErrorMessage } from '@/lib/utils'
-import { formatSignalSeverity, getMonitoringPath } from '@/lib/monitoring'
+import { formatSignalEffect, formatSignalEffectDetail, getMonitoringPath } from '@/lib/monitoring'
 import { selectSignificantSignals } from '@/lib/signalMagnitude'
 import { commandPaletteShortcutLabel } from '@/lib/platform'
 import {
@@ -30,7 +34,6 @@ import {
   preloadCommandPalette,
   useCommandPalette,
 } from '@/components/command-palette-context'
-import { Kbd } from '@/components/primitives/kbd'
 import { Dot } from '@/components/primitives/dot'
 import { Chip } from '@/components/primitives/chip'
 import { CountBadge } from '@/components/primitives/count-badge'
@@ -38,12 +41,20 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDelivery, MonitoringSignal } from '@/types'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { alertDeliveriesKey, topbarDeliveriesKey } from '@/lib/queryKeys'
+import { alertDeliveriesKey, planBranchesKey, topbarDeliveriesKey } from '@/lib/queryKeys'
+// The branch pages' own status words, so the strip cannot drift from them.
+import { STATUS_LABEL } from '@/lib/branchStatus'
 
 type TopBarProps = {
   title: string
   crumbs?: string[]
   projectSlug?: string
+  /**
+   * The project's display name. Below `sm` the crumbs are hidden, so it rides
+   * as a muted line under the title: with three look-alike projects a phone
+   * user could not tell which one they were in (#238 SH-14).
+   */
+  projectName?: string
   activityOpen?: boolean
   onToggleActivity?: () => void
   onOpenMobileNav?: () => void
@@ -58,6 +69,7 @@ export function TopBar({
   title,
   crumbs = [],
   projectSlug,
+  projectName,
   activityOpen,
   onToggleActivity,
   onOpenMobileNav,
@@ -84,19 +96,30 @@ export function TopBar({
           className="-ml-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-md sm:h-8 sm:w-8 transition-colors hover:bg-[var(--surface-active)] lg:hidden"
           style={{ color: 'var(--fg-muted)' }}
         >
-          <Menu className="h-4 w-4" aria-hidden="true" />
+          <Menu className="size-4" aria-hidden="true" />
         </button>
       )}
       <div className="flex min-w-0 items-center gap-1.5 text-body-sm">
         {crumbs.map((c, i) => (
           <div key={`${c}-${i}`} className="hidden items-center gap-1.5 sm:flex">
             <span style={{ color: 'var(--fg-muted)' }}>{c}</span>
-            <ChevronRight className="h-3 w-3" style={{ color: 'var(--fg-faint)' }} />
+            <ChevronRight className="size-3" style={{ color: 'var(--fg-faint)' }} aria-hidden="true" />
           </div>
         ))}
-        <span className="truncate font-semibold" style={{ color: 'var(--fg)' }}>
-          {title}
-        </span>
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate font-semibold" style={{ color: 'var(--fg)' }}>
+            {title}
+          </span>
+          {projectName && (
+            <span
+              data-testid="topbar-project"
+              className="truncate text-caption sm:hidden"
+              style={{ color: 'var(--fg-subtle)' }}
+            >
+              {projectName}
+            </span>
+          )}
+        </div>
       </div>
       <div className="flex-1" />
       <div className="flex items-center gap-1.5">
@@ -105,17 +128,19 @@ export function TopBar({
         <button
           type="button"
           aria-label="Command palette"
+          title={`Search or jump — ${commandPaletteShortcutLabel()}`}
           {...{ [COMMAND_PALETTE_TRIGGER_ATTR]: '' }}
           onClick={() => palette.setOpen(true)}
           onPointerEnter={preloadCommandPalette}
           onFocus={preloadCommandPalette}
-          className="flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-md px-2 transition-colors hover:bg-[var(--surface-active)] sm:h-8 sm:min-w-8"
+          // One search entry point per viewport (#238 SH-21): from lg the
+          // pinned sidebar carries "Search or jump… Ctrl K", and a second
+          // trigger with the same shortcut beside it was noise. Below lg the
+          // sidebar is a drawer, so the magnifier here is the way in.
+          className="flex h-9 w-9 items-center justify-center rounded-md transition-colors hover:bg-[var(--surface-active)] sm:h-8 sm:w-8 lg:hidden"
           style={{ color: 'var(--fg-muted)' }}
         >
-          <Search className="h-4 w-4" aria-hidden="true" />
-          <span className="hidden sm:inline-flex">
-            <Kbd>{commandPaletteShortcutLabel()}</Kbd>
-          </span>
+          <Search className="size-4" aria-hidden="true" />
         </button>
         {onToggleActivity && (
           <>
@@ -123,7 +148,9 @@ export function TopBar({
             <button
               type="button"
               onClick={onToggleActivity}
-              aria-label="Toggle activity panel"
+              // One name for the feed everywhere (#238 SH-8): the toggle said
+              // "Now" and opened a rail titled "Recent activity".
+              aria-label="Toggle activity feed"
               aria-pressed={activityOpen}
               className="flex h-9 items-center gap-1.5 rounded-md px-2 text-body-sm font-medium transition-colors sm:h-8"
               style={{
@@ -132,13 +159,83 @@ export function TopBar({
                 border: activityOpen ? '1px solid var(--border)' : '1px solid transparent',
               }}
             >
-              <Activity className="h-4 w-4" aria-hidden="true" />
-              Now
+              <Activity className="size-4" aria-hidden="true" />
+              <span className="hidden sm:inline">Activity</span>
             </button>
           </>
         )}
       </div>
     </header>
+  )
+}
+
+/**
+ * The shell's "you are on a branch" strip (#243 PL-1 / SH-11), under the top
+ * bar whenever the pages read a working branch. The only cue used to be the
+ * sidebar pill, which sits in the drawer on phones and is a 6px dot on the
+ * collapsed rail, so a PM could edit the plan believing it was main, or the
+ * reverse. One line at every width: the branch, its status, "not live until
+ * merged", and the two ways out.
+ */
+export function BranchStrip({ slug }: { slug: string | undefined }) {
+  const { branchId, setBranchId } = useBranchContext()
+  const branchesQuery = useQuery({
+    // The switcher's key: the list is already cached, so no second request.
+    queryKey: planBranchesKey(slug),
+    queryFn: () => planBranchesApi.list(slug!),
+    enabled: !!slug && !!branchId,
+    meta: SILENT_ERROR_META,
+  })
+  if (!slug || !branchId) return null
+  const branch = branchesQuery.data?.items.find((b) => b.id === branchId)
+  // An id that names main, or a branch the settled list no longer has, is not
+  // "working on a branch".
+  if (branch?.kind === 'main') return null
+  if (!branch && !branchesQuery.isPending) return null
+  return (
+    <div
+      role="region"
+      aria-label="Plan branch"
+      data-testid="branch-strip"
+      className="flex min-h-8 flex-shrink-0 items-center gap-2 border-b px-3 py-1 text-caption sm:px-4"
+      style={{
+        background: 'var(--info-soft)',
+        borderColor: 'var(--border)',
+        color: 'var(--fg-secondary)',
+      }}
+    >
+      <GitBranch className="size-3.5 shrink-0" style={{ color: 'var(--info)' }} aria-hidden="true" />
+      <span className="min-w-0 truncate">
+        Working on{' '}
+        <strong className="font-semibold" style={{ color: 'var(--fg)' }} title={branch?.name}>
+          {branch?.name ?? 'a plan branch'}
+        </strong>
+        {branch && (
+          <span className="hidden md:inline">
+            {' · '}
+            {STATUS_LABEL[branch.status]} · changes are not live until merged
+          </span>
+        )}
+      </span>
+      <div className="flex-1" />
+      <Link
+        to={`/p/${slug}/settings/branches/${branchId}`}
+        className="hidden shrink-0 font-medium underline-offset-2 hover:underline sm:inline"
+        style={{ color: 'var(--fg)' }}
+      >
+        Review changes
+      </Link>
+      <button
+        type="button"
+        // Switching swaps the data under the page; ask the unsaved-changes
+        // guard first, as the sidebar switcher does.
+        onClick={() => requestPageLeave(() => setBranchId(null))}
+        className="shrink-0 rounded-sm font-medium underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        style={{ color: 'var(--fg)' }}
+      >
+        Back to main
+      </button>
+    </div>
   )
 }
 
@@ -366,9 +463,15 @@ function SignalNotification({
         <div className="truncate text-body-sm font-medium" title={title}>
           {verb} on {scopeLabel ?? unnamedScopeLabel(signal)}
         </div>
-        <div className="tnum mt-0.5 text-micro" style={{ color: 'var(--fg-subtle)' }}>
+        {/* The % change, not `z=40.7`; the z-score stays in the tooltip for
+            whoever wants it (MO-2 / JR-31). */}
+        <div
+          className="tnum mt-0.5 text-micro"
+          style={{ color: 'var(--fg-subtle)' }}
+          title={formatSignalEffectDetail(signal)}
+        >
           {signal.actual_count.toLocaleString()} actual vs{' '}
-          {formatIncidentCount(signal.expected_count)} expected · {formatSignalSeverity(signal)}
+          {formatIncidentCount(signal.expected_count)} expected · {formatSignalEffect(signal)}
         </div>
       </div>
     </Link>

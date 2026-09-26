@@ -340,8 +340,18 @@ describe('MetricsCatalog — filters keep the rows while they load (MET-11)', ()
       ),
     )
     expect(screen.getByText('Signups')).toBeInTheDocument()
-    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+    expect(screen.queryByText('Loading metrics…')).not.toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'Metrics' })).toHaveAttribute('aria-busy', 'true')
+  })
+})
+
+describe('MetricsCatalog — first load (#237 MT-33 / DS-25)', () => {
+  it('draws skeleton rows and skeleton stat values, never "—" or a toned 0', async () => {
+    vi.mocked(metricsCatalogApi.list).mockImplementation(() => new Promise(() => {}))
+    renderCatalog(NOT_A_DEMO)
+
+    expect(await screen.findByText('Loading metrics…')).toBeInTheDocument()
+    expect(screen.queryByText('—')).not.toBeInTheDocument()
   })
 })
 

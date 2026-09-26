@@ -32,6 +32,7 @@ import {
   unmuteName,
 } from '@/lib/mutePresets'
 import { VIEWER_READ_ONLY_NOTICE, useCanWriteProject } from '@/lib/permissions'
+import { ReadOnlyNotice, SectionSkeleton } from '@/components/states'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import type {
@@ -388,9 +389,7 @@ export function AlertingInbox({
       {/* Once, at the head of the section — not on each of the cards, which is
           the same sentence up to fifty times for one fact about the account. */}
       {!canWrite && (
-        <p className="rounded-md border border-dashed p-3 text-body-sm text-muted-foreground">
-          {VIEWER_READ_ONLY_NOTICE}
-        </p>
+        <ReadOnlyNotice>{VIEWER_READ_ONLY_NOTICE}</ReadOnlyNotice>
       )}
       {/* Without a rule nothing can correlate, so an empty list here would
           read as "no incidents" when the truth is "nothing can produce
@@ -398,13 +397,13 @@ export function AlertingInbox({
       {!hasRules && (
         <Panel title="Inbox" subtitle="0 groups">
           <p className="p-4 text-body text-muted-foreground">
-            No rules yet, so nothing can raise an incident. Add one under{' '}
+            No alert rules yet, so nothing can raise an incident. Add one under{' '}
             <button
               type="button"
               onClick={onGoToMonitors}
               className="underline underline-offset-2"
             >
-              Monitors
+              Rules
             </button>
             .
           </p>
@@ -477,9 +476,8 @@ export function AlertingInbox({
             </p>
           )}
           {isLoading ? (
-            <div className="rounded-lg border border-dashed p-4 text-body text-muted-foreground">
-              Loading incidents…
-            </div>
+            // Card-shaped, not a sentence in a dashed box (#237).
+            <SectionSkeleton variant="list" rows={3} label="Loading incidents…" />
           ) : isError ? (
             <p role="alert" className="rounded-lg border border-dashed p-4 text-body text-destructive">
               Could not load the inbox: {getErrorMessage(loadError)}

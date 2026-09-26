@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { AlertTriangle, History } from 'lucide-react'
 
@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -26,7 +27,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import type { AlertMessageFormat, AlertRule, AlertRuleSimulateResponse, ScanConfig } from '@/types'
 import { getErrorMessage } from '@/lib/utils'
 import { formatIncidentCount, scopeKindLabel } from '@/lib/alertStatus'
-import { formatDateTime } from '@/lib/datetime'
+import { APP_LOCALE } from '@/lib/format'
 import { formatPercentDelta } from '@/lib/percentDelta'
 import { formatCooldown } from './constants'
 
@@ -106,6 +107,49 @@ function parseOverride(text: string): number | null {
 /** Present but unusable: the box gets an inline error and Replay is blocked. */
 function isInvalidOverride(value: number | null): boolean {
   return value !== null && Number.isNaN(value)
+}
+
+/**
+ * "Sep 24, 00:00" — short enough to sit in a 7rem column without running into
+ * Scope, in sans with tabular figures (AL-36). The year says nothing inside a
+ * replay window of at most 30 days.
+ */
+function formatReplayWhen(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString(APP_LOCALE, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  })
+}
+
+/** One override input: a real label, and the value it replaces as helper text (AL-35). */
+function OverrideField({
+  id,
+  label,
+  helper,
+  error,
+  children,
+}: {
+  id: string
+  label: string
+  helper: string
+  error: string | null
+  children: ReactNode
+}) {
+  return (
+    <div className="grid content-start gap-1">
+      <Label htmlFor={id} className="text-body-sm">{label}</Label>
+      {children}
+      <p id={`${id}-helper`} className="m-0 text-caption text-fg-subtle">{helper}</p>
+      {error && (
+        <p role="alert" className="m-0 max-w-48 text-caption text-destructive">{error}</p>
+      )}
+    </div>
+  )
 }
 
 function ThresholdRow({
@@ -193,6 +237,7 @@ export function RuleReplayDialog({
     message_format: draft?.message_format ?? rule.message_format,
   }
   const baseLabel = draft ? 'edited' : 'saved'
+  const baseLabelTitle = draft ? 'Edited' : 'Saved'
 
   // Only a value that actually DIFFERS from the rule counts as an override:
   // typing the saved number back in would otherwise cost a second identical
@@ -261,6 +306,24 @@ export function RuleReplayDialog({
     },
   })
 
+  // Run the rule as it stands the moment the dialog opens (AL-35): the question
+  // it exists for — "what would this have sent last week?" — needed a second
+  // click, and the dialog opened on a row of inputs with nothing to look at.
+  // Once per opening; the inputs then re-run it on demand.
+  const autoRan = useRef(false)
+  const { mutate: runReplay } = simulateMut
+  useEffect(() => {
+    if (!open) {
+      autoRan.current = false
+      return
+    }
+    if (autoRan.current) return
+    autoRan.current = true
+    runReplay({ n: days, overrides: null })
+    // Only the opening triggers it; later edits wait for the Replay button.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
   const handleOpenChange = (value: boolean) => {
     onOpenChange(value)
     if (!value) {
@@ -286,21 +349,26 @@ export function RuleReplayDialog({
           scrolls inside its own region and never widens or side-scrolls the
           dialog itself. */}
       <DialogContent className="max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-4xl min-w-0 overflow-hidden">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <History className="h-4 w-4" />
-            Replay rule “{rule.name}”{draft ? ' with your unsaved edits' : ''}
+        {/* Left-aligned at every width, clear of the close button (AL-36):
+            the centred two-line title ran into ✕ on a phone. */}
+        <DialogHeader className="pr-10 text-left">
+          <DialogTitle className="flex items-start gap-2">
+            <History aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+            <span className="min-w-0 break-words">
+              Replay rule “{rule.name}”{draft ? ' with your unsaved edits' : ''}
+            </span>
           </DialogTitle>
+          <p className="m-0 text-body-sm text-fg-subtle">
+            See what this rule would have sent in the chosen window. Nothing is sent or saved.
+          </p>
         </DialogHeader>
 
         <DialogBody className="min-w-0 space-y-3">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="space-y-1">
-              <div className="text-caption uppercase tracking-wide text-muted-foreground" aria-hidden="true">
-                Window
-              </div>
+          <div className="flex flex-wrap items-start gap-3">
+            <div className="grid content-start gap-1">
+              <Label htmlFor="replay-window" className="text-body-sm">Window</Label>
               <Select value={String(days)} onValueChange={(v) => setDays(Number(v))}>
-                <SelectTrigger aria-label="Replay window" className="w-32">
+                <SelectTrigger id="replay-window" className="w-32">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -316,93 +384,86 @@ export function RuleReplayDialog({
                 answering "would Min % 300 cut these incidents" used to mean
                 writing 300 onto the rule that is live-routing to a real channel
                 and waiting to find out (tripl-oxkt.17). */}
-            <div className="space-y-1">
-              <div className="text-caption uppercase tracking-wide text-muted-foreground" aria-hidden="true">
-                Cooldown (min)
-              </div>
+            <OverrideField
+              id="replay-cooldown"
+              label="Cooldown (minutes)"
+              helper={`${baseLabelTitle}: ${formatCooldown(base.cooldown_minutes)}`}
+              error={cooldownInvalid
+                ? `Whole minutes from 0 to ${COOLDOWN_OVERRIDE_MAX}, or blank for the ${baseLabel} value.`
+                : null}
+            >
               <Input
-                aria-label="Cooldown override in minutes"
+                id="replay-cooldown"
                 type="number"
                 min={0}
                 max={COOLDOWN_OVERRIDE_MAX}
                 step={1}
                 aria-invalid={cooldownInvalid || undefined}
-                placeholder={`${baseLabel}: ${base.cooldown_minutes}`}
+                aria-describedby="replay-cooldown-helper"
                 value={cooldownText}
                 onChange={(e) => setCooldownText(e.target.value)}
                 className="w-32"
               />
-              {cooldownInvalid && (
-                <p role="alert" className="text-micro text-destructive">
-                  Whole minutes from 0 to {COOLDOWN_OVERRIDE_MAX}, or blank for the saved value.
-                </p>
-              )}
-            </div>
-            <div className="space-y-1">
-              <div className="text-caption uppercase tracking-wide text-muted-foreground" aria-hidden="true">
-                Min %
-              </div>
+            </OverrideField>
+            <OverrideField
+              id="replay-min-pct"
+              label="Min change (%)"
+              helper={`${baseLabelTitle}: ${base.min_percent_delta}%`}
+              error={minPercentInvalid ? `0 or more, or blank for the ${baseLabel} value.` : null}
+            >
               <Input
-                aria-label="Minimum percent delta override"
+                id="replay-min-pct"
                 type="number"
                 min={0}
                 step="0.1"
                 aria-invalid={minPercentInvalid || undefined}
-                placeholder={`${baseLabel}: ${base.min_percent_delta}`}
+                aria-describedby="replay-min-pct-helper"
                 value={minPercentText}
                 onChange={(e) => setMinPercentText(e.target.value)}
                 className="w-28"
               />
-              {minPercentInvalid && (
-                <p role="alert" className="text-micro text-destructive">
-                  0 or more, or blank for the saved value.
-                </p>
-              )}
-            </div>
-            <div className="space-y-1">
-              <div className="text-caption uppercase tracking-wide text-muted-foreground" aria-hidden="true">
-                Min expected
-              </div>
+            </OverrideField>
+            <OverrideField
+              id="replay-min-expected"
+              label="Min expected count"
+              helper={`${baseLabelTitle}: ${base.min_expected_count}`}
+              error={minExpectedInvalid ? `0 or more, or blank for the ${baseLabel} value.` : null}
+            >
               <Input
-                aria-label="Minimum expected count override"
+                id="replay-min-expected"
                 type="number"
                 min={0}
                 step="0.1"
                 aria-invalid={minExpectedInvalid || undefined}
-                placeholder={`${baseLabel}: ${base.min_expected_count}`}
+                aria-describedby="replay-min-expected-helper"
                 value={minExpectedText}
                 onChange={(e) => setMinExpectedText(e.target.value)}
                 className="w-28"
               />
-              {minExpectedInvalid && (
-                <p role="alert" className="text-micro text-destructive">
-                  0 or more, or blank for the saved value.
-                </p>
-              )}
-            </div>
-            <div className="space-y-1">
-              <div className="text-caption uppercase tracking-wide text-muted-foreground" aria-hidden="true">
-                Sigma
-              </div>
+            </OverrideField>
+            <OverrideField
+              id="replay-sigma"
+              label="Sigma threshold"
+              helper="Blank: the project's detection setting"
+              error={sigmaOutOfRange
+                ? `Between ${SIGMA_MIN_EXCLUSIVE} and ${SIGMA_MAX}, or blank for the detection setting.`
+                : null}
+            >
               <Input
-                aria-label="Sigma threshold override"
+                id="replay-sigma"
                 type="number"
                 min={0.1}
                 max={SIGMA_MAX}
                 step="0.1"
                 aria-invalid={sigmaOutOfRange || undefined}
-                placeholder="detector default"
+                aria-describedby="replay-sigma-helper"
                 value={sigmaText}
                 onChange={(e) => setSigmaText(e.target.value)}
                 className="w-28"
               />
-              {sigmaOutOfRange && (
-                <p role="alert" className="text-micro text-destructive">
-                  Between {SIGMA_MIN_EXCLUSIVE} and {SIGMA_MAX}, or blank for the detector default.
-                </p>
-              )}
-            </div>
+            </OverrideField>
             <Button
+              className="mt-5"
               onClick={() => simulateMut.mutate(currentRequest)}
               // Blocked on any invalid override rather than sent
               // and 422'd: the replay would fail for a reason the dialog never
@@ -445,7 +506,7 @@ export function RuleReplayDialog({
 
           {resultIsStale && (
             <p role="status" className="rounded-md border border-dashed p-2 text-body-sm text-muted-foreground">
-              Settings changed since this replay — press Replay again to see results for them.
+              Settings changed since this replay — press Replay to see results for them.
             </p>
           )}
 
@@ -535,19 +596,19 @@ export function RuleReplayDialog({
                     >
                       <TableHeader className="bg-muted/50">
                         <TableRow className="hover:bg-transparent">
-                          <TableHead scope="col" className="h-auto w-40 py-2">When</TableHead>
+                          <TableHead scope="col" className="h-auto w-28 py-2">When</TableHead>
                           <TableHead scope="col" className="h-auto w-64 py-2">Scope</TableHead>
                           <TableHead scope="col" className="hidden h-auto w-32 py-2 md:table-cell">Scan</TableHead>
                           <TableHead scope="col" className="h-auto w-20 py-2">Dir</TableHead>
                           <TableHead scope="col" className="h-auto w-20 py-2 text-right">Actual</TableHead>
                           <TableHead scope="col" className="hidden h-auto w-24 py-2 text-right md:table-cell">Expected</TableHead>
-                          <TableHead scope="col" className="h-auto w-16 py-2 text-right">Δ%</TableHead>
+                          <TableHead scope="col" className="h-auto w-20 py-2 pr-3 text-right">Δ%</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {displayResult.firings.map((firing) => (
                           <TableRow key={firing.anomaly_id}>
-                            <TableCell className="whitespace-nowrap py-1.5 tnum">{formatDateTime(firing.bucket)}</TableCell>
+                            <TableCell className="whitespace-nowrap py-1.5 tnum">{formatReplayWhen(firing.bucket)}</TableCell>
                             {/* The kind through the shared `scopeKindLabel`, the
                                 same words the Inbox chips use, rather than the
                                 raw enum. The column shipped printing
@@ -589,7 +650,7 @@ export function RuleReplayDialog({
                                   ?? `Scan ${firing.scan_config_id.slice(0, 8)}`)}
                             </TableCell>
                             <TableCell className="py-1.5">
-                              <Chip variant="outline">{firing.direction}</Chip>
+                              <Chip variant="outline" size="xs">{firing.direction}</Chip>
                             </TableCell>
                             {/* Both columns through the same formatter: rounding
                                 only the baseline would leave "5780" beside
@@ -602,7 +663,7 @@ export function RuleReplayDialog({
                             <TableCell className="hidden py-1.5 text-right tnum text-muted-foreground md:table-cell">
                               {formatIncidentCount(firing.expected_count)}
                             </TableCell>
-                            <TableCell className="py-1.5 text-right tnum">
+                            <TableCell className="whitespace-nowrap py-1.5 pr-3 text-right tnum">
                               {formatPercentDelta(firing.percent_delta, firing.expected_count)}
                             </TableCell>
                           </TableRow>

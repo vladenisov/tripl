@@ -1,13 +1,24 @@
 import { formatNumber } from '@/lib/format'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bell, BellOff, ChevronDown, ChevronRight, History, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Bell, BellOff, ChevronDown, ChevronRight, History, MoreHorizontal, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { toast } from 'sonner'
 
 import { alertingApi, type AlertRuleUpdatePayload } from '@/api/alerting'
+import { anomalySettingsApi } from '@/api/anomalySettings'
 import { Button } from '@/components/ui/button'
 import { IconButton } from '@/components/ui/icon-button'
 import { Switch } from '@/components/ui/switch'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { ReadOnlyNotice, StatValueSkeleton } from '@/components/states'
 import { EmptyState } from '@/components/empty-state'
 import { Panel } from '@/components/settings/kit'
 import { Chip } from '@/components/primitives/chip'
@@ -21,7 +32,7 @@ import { SILENT_ERROR_META, surfaceError } from '@/lib/errorFeedback'
 import { stripValueErrorPrefix } from '@/lib/alertStatus'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { countOf } from '@/lib/plural'
-import { MUTE_PRESETS, muteChoiceName, muteName, muteUntilIso, unmuteName } from '@/lib/mutePresets'
+import { MUTE_PRESETS, muteChoiceName, muteUntilIso, unmuteName } from '@/lib/mutePresets'
 import { VIEWER_READ_ONLY_NOTICE } from '@/lib/permissions'
 import {
   MONITOR_STATUS_LABEL as STATUS_LABEL,
@@ -31,12 +42,15 @@ import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
 import type { AlertDestination, AlertRule, EventType, MonitorSummaryItem, ScanConfig } from '@/types'
 
 import { invalidateAlertingConfig } from './alertingCache'
+import { ChannelGlyph, channelLabel } from './channelMeta'
 import {
+  DETECTION_OFF_MESSAGE,
   defaultRuleForm,
   directionSummary,
   formatCooldown,
   isDefaultMessageTemplate,
   messageFormatForDestination,
+  ruleConditionSummary,
   ruleFormToPayload,
   ruleToForm,
   scopeSummary,
@@ -46,7 +60,7 @@ import {
 import { describeDeletionImpact } from './deletionImpact'
 import { RuleEditorDialog } from './RuleEditorDialog'
 import { RuleReplayDialog } from './RuleReplayDialog'
-import { monitorsSummaryKey } from '@/lib/queryKeys'
+import { monitorsSummaryKey, projectAnomalySettingsKey } from '@/lib/queryKeys'
 
 /** A rule carrying the destination it hangs off, as the page flattens it. */
 export interface RuleWithDestination extends AlertRule {
@@ -54,50 +68,38 @@ export interface RuleWithDestination extends AlertRule {
   destination_name: string
 }
 
-// Wide by construction: five facts and five controls per rule. Below the
-// minimum it scrolls horizontally rather than crushing the condition into two
-// characters — the same treatment the standalone page used at 680px, before it
-// absorbed the controls that used to sit on the destination card.
+// One DOM for every width (AL-7). The rule table used to be a fixed 840px grid
+// inside a horizontal scroller, so at 768px the delete and replay icons were
+// cut mid-glyph and at 390px the firing state, the switch and every action
+// sat off-screen with nothing saying the table scrolled. Now:
+//  - below `md` each row is a stacked card: name and state, the condition,
+//    where it routes, then the switch, Edit and the "…" menu;
+//  - from `md` it is the table, with "Routes to" folded into the rule cell's
+//    second line until `lg` has room for its own column.
 //
-// The minimum used to be 980px, which is WIDER than the ~900px this panel gets
-// beside the activity rail at 1512px, so the table was clipped at the width the
-// app actually renders it: the "Actions" header and two of the five controls
-// (Edit, Delete) sat past the right edge, and every text column was sized for a
-// table that never fitted. See RULE_TABLE_MIN_WIDTH below.
-//
-// The action track carries a FLOOR rather than being plain `auto`, because the
-// header row and each rule row are separate grids that only look like one
-// table: `auto` is measured per grid, so the header sized that column to its
-// "Actions" label (~50px) while a row sized it to five controls, and each
-// header label landed up to 130px right of the column it names. The floor is
-// what a row needs — 188px = a 36px Switch + four 32px icon buttons + four 6px
-// `gap-1.5` gutters (52px when a viewer keeps Replay alone) — so both grids
-// resolve the same tracks at rest. It stays `minmax`, not fixed, for the one
-// state that legitimately needs more: MuteControl reveals its duration presets
-// inline, and a fixed track would squash the controls instead of growing.
-//
-// "Last fired" gets 84px, not the 64px "State" gets, because a column has to fit
-// its own header (tripl-fgiv). "LAST FIRED" at the header's 10.5px/600 with
-// `tracking-[0.05em]` measures ~65px in Inter and ~69px in the system-ui
-// fallback, so at 64px it was the ONE header that wrapped to two lines: the
-// whole header row grew a line and every other label floated in it. The cells
-// themselves ("22h ago", "–") never needed the width; the label does.
+// The header row and each rule row are separate grids that only look like one
+// table, so they must resolve the same tracks: that is why every track is
+// fixed or `minmax(0, …)`, and why the action track carries a floor — the
+// switch, Edit and the menu (36 + 32 + 32px and two 6px gutters) — rather
+// than `auto`, which is measured per grid. Mute's durations no longer open
+// inline (AL-9): they live in the menu, so no row can grow wider than its
+// neighbours.
 //
 // Every column string is written out in full: Tailwind scans source for literal
 // class names, so an interpolated `grid-cols-[…]` would never be built.
-const RULE_GRID_BASE = 'grid items-center gap-3 px-4'
+const RULE_GRID_BASE = 'md:grid md:items-center md:gap-3 px-4'
 const RULE_GRID_COLS
-  = 'grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_64px_84px_minmax(188px,auto)]'
+  = 'md:grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_64px_84px_minmax(112px,auto)] lg:grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_64px_84px_minmax(112px,auto)]'
 const RULE_GRID_COLS_READ_ONLY
-  = 'grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_64px_84px_minmax(52px,auto)]'
-// 840px = the 820px the text columns were budgeted at, plus the 20px "Last
-// fired" just took, so widening the label's track did not narrow CONDITION.
-const RULE_TABLE_MIN_WIDTH = 'min-w-[840px]'
+  = 'md:grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_64px_84px_minmax(72px,auto)] lg:grid-cols-[minmax(0,2fr)_minmax(0,1.6fr)_minmax(0,1fr)_64px_84px_minmax(72px,auto)]'
 
 /** The one grid definition the header row and every rule row must share. */
 function ruleGridClass(canWrite: boolean): string {
   return `${RULE_GRID_BASE} ${canWrite ? RULE_GRID_COLS : RULE_GRID_COLS_READ_ONLY}`
 }
+
+/** How long a just-created rule stays highlighted in the list (AL-10). */
+const NEW_RULE_HIGHLIGHT_MS = 1500
 
 interface MonitorsSectionProps {
   slug: string
@@ -120,6 +122,11 @@ interface MonitorsSectionProps {
    * destination's card; rules no longer live there, so the section takes it.
    */
   autoOpenRuleForDestinationId: string | null
+  /**
+   * That destination's name, from the create response: the list may not have
+   * refetched it yet when the form opens, and the form is named after it (AL-34).
+   */
+  autoOpenRuleDestinationName?: string | null
   onAutoOpenRuleConsumed: () => void
   /** Send the reader to the Destinations section — nothing can route without one. */
   onGoToDestinations: () => void
@@ -151,6 +158,7 @@ export function MonitorsSection({
   scansFailed = false,
   canWrite,
   autoOpenRuleForDestinationId,
+  autoOpenRuleDestinationName = null,
   onAutoOpenRuleConsumed,
   onGoToDestinations,
 }: MonitorsSectionProps) {
@@ -172,6 +180,16 @@ export function MonitorsSection({
   // every rule, which is why five rules filled a screen before you could see
   // which of them was firing.
   const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null)
+  // The rule just created, lit briefly so the reader can find the row that
+  // appeared "somewhere in the table" (AL-10).
+  const [highlightRuleId, setHighlightRuleId] = useState<string | null>(null)
+  useEffect(() => {
+    if (!highlightRuleId) return
+    const timer = window.setTimeout(() => setHighlightRuleId(null), NEW_RULE_HIGHLIGHT_MS)
+    return () => window.clearTimeout(timer)
+  }, [highlightRuleId])
+  // Guided setup's hand-off: the header says "Step 3 of 3" (AL-34).
+  const [guidedRule, setGuidedRule] = useState(false)
 
   const summaryQuery = useQuery({
     queryKey: monitorsSummaryKey(slug),
@@ -181,6 +199,17 @@ export function MonitorsSection({
     staleTime: 30_000,
   })
   const summary = summaryQuery.data
+  // Project-wide detection, read so a switched-off detector is said above the
+  // rules it silences (AL-45). Same key as Detection settings, so a change
+  // there shows here without a reload. Its failure says nothing: the banner is
+  // a warning, not a claim this section has to back.
+  const detectionQuery = useQuery({
+    queryKey: projectAnomalySettingsKey(slug),
+    queryFn: () => anomalySettingsApi.get(slug),
+    enabled: !!slug,
+    meta: SILENT_ERROR_META,
+  })
+  const detectionOff = detectionQuery.data?.anomaly_detection_enabled === false
   const stateByRule = new Map<string, MonitorSummaryItem>(
     (summary?.monitors ?? []).map(monitor => [monitor.rule_id, monitor]),
   )
@@ -193,8 +222,13 @@ export function MonitorsSection({
   if (autoOpenRuleForDestinationId && !autoOpenConsumed) {
     setAutoOpenConsumed(true)
     setEditingRule(null)
-    setRuleForm(defaultRuleForm())
+    // Named after where it sends, so the last step does not open on an empty
+    // required field (AL-34). The reader can rename it.
+    const targetName = autoOpenRuleDestinationName
+      ?? destinations.find(destination => destination.id === autoOpenRuleForDestinationId)?.name
+    setRuleForm({ ...defaultRuleForm(), name: targetName ? `Alerts to ${targetName}` : '' })
     setFormDestinationId(autoOpenRuleForDestinationId)
+    setGuidedRule(true)
     setRuleDialogOpen(true)
   }
 
@@ -202,6 +236,7 @@ export function MonitorsSection({
   const dismissRuleDialog = () => {
     setRuleDialogOpen(false)
     setEditingRule(null)
+    setGuidedRule(false)
     onAutoOpenRuleConsumed()
   }
 
@@ -212,8 +247,12 @@ export function MonitorsSection({
   const createRuleMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: () => alertingApi.createRule(slug, formDestinationId, ruleFormToPayload(ruleForm)),
-    onSuccess: () => {
+    onSuccess: created => {
       invalidateAlertingConfig(qc, slug)
+      // Said, like a created destination is (AL-10); the two halves of this
+      // page used to behave differently.
+      toast.success(`Rule "${created.name}" created`)
+      setHighlightRuleId(created.id)
       dismissRuleDialog()
       setRuleForm(defaultRuleForm())
       // A created rule lands the alerting chapter's step — inert outside the
@@ -233,8 +272,9 @@ export function MonitorsSection({
         ruleFormToPayload(ruleForm),
       )
     },
-    onSuccess: () => {
+    onSuccess: saved => {
       invalidateAlertingConfig(qc, slug)
+      toast.success(`Rule "${saved.name}" saved`)
       dismissRuleDialog()
       setRuleForm(defaultRuleForm())
     },
@@ -250,7 +290,10 @@ export function MonitorsSection({
     meta: SILENT_ERROR_META,
     mutationFn: (rule: RuleWithDestination) =>
       alertingApi.deleteRule(slug, rule.destination_id, rule.id),
-    onSuccess: () => invalidateAlertingConfig(qc, slug),
+    onSuccess: (_, rule) => {
+      invalidateAlertingConfig(qc, slug)
+      toast.success(`Rule "${rule.name}" deleted`)
+    },
     onError: reportRowWriteError,
   })
 
@@ -311,10 +354,16 @@ export function MonitorsSection({
     resetRuleMutations()
     setEditingRule(null)
     setRuleForm(defaultRuleForm())
-    // Prefill only when there is no choice to make. With several destinations
-    // the picker starts empty and Create stays disabled until one is named,
+    // Prefill only when there is no choice to make: exactly one ENABLED
+    // destination (AL-3) — a disabled one next to it is not a real choice.
+    // With several, the picker starts empty and Create names it on submit,
     // rather than silently routing to whichever sorted first.
-    setFormDestinationId(destinations.length === 1 ? (destinations[0]?.id ?? '') : '')
+    const enabled = destinations.filter(destination => destination.enabled)
+    setFormDestinationId(
+      enabled.length === 1
+        ? (enabled[0]?.id ?? '')
+        : destinations.length === 1 ? (destinations[0]?.id ?? '') : '',
+    )
     setRuleDialogOpen(true)
   }
 
@@ -343,9 +392,13 @@ export function MonitorsSection({
   // Through the shared count helper, like the sibling audit panel. This was
   // `${rules.length} routing` — a count with its noun missing, which reads as an
   // unfinished template sitting directly on top of a table of numbers.
+  // "Alert rule", the one name for this object (JR-28): the tab, the button,
+  // the dialog and this count used to say Monitors, rule, alert rule and
+  // routing rule.
   const rulesSubtitle = rules.length > 0
-    ? countOf(rules.length, 'routing rule', 'routing rules')
+    ? countOf(rules.length, 'alert rule', 'alert rules')
     : undefined
+  const destinationById = new Map(destinations.map(destination => [destination.id, destination]))
 
   return (
     <>
@@ -354,9 +407,18 @@ export function MonitorsSection({
       {/* Once, above everything this section can no longer offer to change —
           rather than a tooltip on each of the switches and bins that are simply
           absent below. */}
-      {!canWrite && (
-        <p className="rounded-md border border-dashed p-3 text-body-sm text-muted-foreground">
-          {VIEWER_READ_ONLY_NOTICE}
+      {!canWrite && <ReadOnlyNotice>{VIEWER_READ_ONLY_NOTICE}</ReadOnlyNotice>}
+      {detectionOff && (
+        <p
+          role="status"
+          className="m-0 flex flex-wrap items-start gap-2 rounded-card border px-3 py-2.5 text-body-sm"
+          style={{ borderColor: 'var(--warning)', background: 'var(--warning-soft)' }}
+        >
+          <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" style={{ color: 'var(--warning)' }} />
+          <span className="min-w-0 flex-1">{DETECTION_OFF_MESSAGE}</span>
+          <Link to={`/p/${slug}/settings/monitoring`} className="underline underline-offset-2">
+            Detection settings
+          </Link>
         </p>
       )}
 
@@ -364,22 +426,25 @@ export function MonitorsSection({
           FIRING/WARNING/HEALTHY row never sits above the empty state. */}
       {rules.length > 0 && (
         <MiniStatStrip boxed>
+          {/* A skeleton, not "—" or a green "Healthy", until the summary
+              answers: a count the query has not returned is not a count
+              (DS-25), and a green tone on it is a false all-clear. */}
           <MiniStat
             label="Firing"
-            value={summary ? formatNumber(summary.firing_count) : '—'}
+            value={summary ? formatNumber(summary.firing_count) : <StatValueSkeleton />}
             tone={summary && summary.firing_count > 0 ? 'danger' : 'neutral'}
             pulse={!!summary && summary.firing_count > 0}
             delta={summary && summary.firing_count > 0 ? 'now' : undefined}
           />
           <MiniStat
             label="Warning"
-            value={summary ? formatNumber(summary.warning_count) : '—'}
+            value={summary ? formatNumber(summary.warning_count) : <StatValueSkeleton />}
             tone={summary && summary.warning_count > 0 ? 'warning' : 'neutral'}
           />
           <MiniStat
             label="Healthy"
-            value={summary ? formatNumber(summary.healthy_count) : '—'}
-            tone="success"
+            value={summary ? formatNumber(summary.healthy_count) : <StatValueSkeleton />}
+            tone={summary ? 'success' : 'neutral'}
           />
           <MiniStat label="Rules" value={formatNumber(rules.length)} />
         </MiniStatStrip>
@@ -434,9 +499,11 @@ export function MonitorsSection({
             />
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <div role="table" aria-label="Alert rules" className={RULE_TABLE_MIN_WIDTH}>
-              <div role="rowgroup">
+          <div>
+            <div role="table" aria-label="Alert rules">
+              {/* The header is a table's; below `md` each row is a card that
+                  carries its own labels, so there is nothing to head. */}
+              <div role="rowgroup" className="hidden md:block">
                 <div
                   role="row"
                   className={`${ruleGridClass(canWrite)} border-b py-2 micro-label`}
@@ -444,7 +511,7 @@ export function MonitorsSection({
                 >
                   <span role="columnheader">Rule</span>
                   <span role="columnheader">Condition</span>
-                  <span role="columnheader">Routes to</span>
+                  <span role="columnheader" className="hidden lg:block">Routes to</span>
                   <span role="columnheader">State</span>
                   <span role="columnheader">Last fired</span>
                   <span role="columnheader" className="text-right">Actions</span>
@@ -456,6 +523,8 @@ export function MonitorsSection({
                     key={rule.id}
                     slug={slug}
                     rule={rule}
+                    destination={destinationById.get(rule.destination_id)}
+                    highlighted={highlightRuleId === rule.id}
                     state={stateByRule.get(rule.id)}
                     scans={scans}
                     scansLoaded={scansLoaded}
@@ -512,6 +581,7 @@ export function MonitorsSection({
         // editor gains the fact without a second request. Undefined until that
         // request answers, which the dialog reads as "say nothing yet".
         scopeReadiness={summary?.scope_readiness}
+        guidedStep={guidedRule && !editingRule}
         onSubmit={() => ruleMutation.mutate()}
         isPending={ruleMutation.isPending}
         isError={ruleMutation.isError}
@@ -536,6 +606,10 @@ export function MonitorsSection({
 interface RuleRowProps {
   slug: string
   rule: RuleWithDestination
+  /** The destination the rule hangs off; its type names the channel. */
+  destination: AlertDestination | undefined
+  /** Just created: lit briefly and scrolled into view (AL-10). */
+  highlighted: boolean
   state: MonitorSummaryItem | undefined
   scans: ScanConfig[]
   scansLoaded: boolean
@@ -556,6 +630,8 @@ interface RuleRowProps {
 function RuleRow({
   slug,
   rule,
+  destination,
+  highlighted,
   state,
   scans,
   scansLoaded,
@@ -576,38 +652,38 @@ function RuleRow({
   const settingsId = `rule-settings-${rule.id}`
   // Built from the rule itself, not from the summary: the condition is
   // configuration, so it renders correctly while the state request is still in
-  // flight.
-  const directions = [
-    rule.notify_on_spike ? 'spike ▲' : null,
-    rule.notify_on_drop ? 'drop ▼' : null,
-  ]
-    .filter(Boolean)
-    .join(' · ')
-  const condition = [
-    directions,
-    rule.min_percent_delta > 0 ? `≥${rule.min_percent_delta}%` : null,
-    // The shared formatter, so one rule reads as one duration on every screen
-    // instead of "360m" here and "6h" there (tripl-oxkt.18).
-    `cooldown ${formatCooldown(rule.cooldown_minutes)}`,
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  // flight. Sans and in words (AL-11), with what it watches underneath, so a
+  // metrics-only rule no longer reads like every other rule (JR-15). The
+  // shared cooldown formatter keeps one rule one duration on every screen
+  // (tripl-oxkt.18).
+  const { condition, watches } = ruleConditionSummary(rule)
+  const destinationType = destination?.type ?? state?.destination_type
+  const channel = destinationType ? channelLabel(destinationType) : null
+
+  const rowRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    // `?.`: jsdom has no scrollIntoView, and a highlight is not worth a throw.
+    if (highlighted) rowRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+  }, [highlighted])
 
   return (
     <>
     <div
+      ref={rowRef}
       role="row"
-      className={`${ruleGridClass(canWrite)} min-h-(--row-h) border-b py-2.5 last:border-0`}
+      className={`${ruleGridClass(canWrite)} flex min-h-(--row-h) flex-wrap items-center gap-x-3 gap-y-2 border-b py-3 transition-colors duration-700 last:border-0 md:py-2.5 ${highlighted ? 'bg-accent-soft' : ''}`}
       style={{ borderColor: 'var(--border-subtle)' }}
+      data-highlighted={highlighted || undefined}
     >
-      {/* Nothing in this table ellipsizes any more. Every text cell carried
-          `truncate`, and at the width this panel actually gets, a two-row table
-          cut five separate strings at once — including CONDITION, which is the
-          whole payload of the row: two different rules both ended at "spike ▲ ·
-          drop ▼ · ≥100% · co…" and so read as duplicates of each other.
-          Wrapping costs a row a line; an ellipsis costs the fact. */}
-      <span role="cell" className="flex min-w-0 flex-col gap-1">
-        <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+      {/* Nothing in this table ellipsizes but the destination name. Every text
+          cell carried `truncate`, and at the width this panel actually gets, a
+          two-row table cut five separate strings at once — including
+          CONDITION, which is the whole payload of the row. Wrapping costs a
+          row a line; an ellipsis costs the fact. */}
+      <span role="cell" className="flex min-w-0 basis-full flex-col gap-1 md:basis-auto">
+        {/* One line: the chevron, the dot and the name never wrap apart, so
+            the dot cannot sit alone on a line above its rule (AL-7). */}
+        <span className="flex min-w-0 flex-nowrap items-center gap-1.5">
           {/* Expands the settings this list does not have room for. `Settings`
               names what opens, not the widget — a bare chevron says nothing
               about what is behind it. */}
@@ -626,7 +702,9 @@ function RuleRow({
               ? <ChevronDown aria-hidden="true" className="h-3.5 w-3.5" />
               : <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />}
           </button>
-          <Dot tone={tone} pulse={state?.status === 'firing'} size={7} />
+          {/* Static in a list (MO-18): the Firing count above pulses once;
+              every row pulsing with it made the table shimmer. */}
+          <Dot tone={tone} size={7} className="shrink-0" />
           {/* The detail page is the rule's fired history — the one thing
               neither this row nor its expansion can carry. */}
           <Link
@@ -636,52 +714,29 @@ function RuleRow({
           >
             {rule.name}
           </Link>
-          {!rule.enabled && <Chip tone="neutral" size="xs">off</Chip>}
-          {/* The MIRROR IMAGE of the incident card's muted line in
-              AlertingInbox.tsx — read the two together, because the difference
-              between them is deliberate and this row looks like an
-              inconsistency on its own.
+          {!rule.enabled && <Chip tone="neutral" size="xs" className="shrink-0">off</Chip>}
+        </span>
+        {/* A rule's mute is a STATE, shown as one — BellOff on every unmuted
+            row read as "muted" (AL-8). The only mute ACTION is in the menu.
 
-              An INCIDENT has THREE states and its guard must therefore stay
-              `group.muted` alone, with the timestamp branched on inside. An
-              ALERT RULE has TWO, because `is_rule_muted()`
-              (backend `_alerting_monitors.py`) returns FALSE the moment
-              `muted_until` is NULL — and NULL is the default on every rule ever
-              created:
-                - muted     → muted = true,  muted_until = <future>
-                - not muted → muted = false, muted_until = NULL or already past
-              So `muted && !muted_until` cannot occur here. The second condition
-              is NOT a second possibility being handled: it is type narrowing,
-              `string | null` down to the `string` formatDateTime needs, written
-              out rather than asserted so this row can never print an invalid
-              date if the API ever breaks its own contract.
-
-              What stood here was a `: 'muted'` else-branch — dead since it was
-              written, and actively misleading since tripl-a50u gave INCIDENTS a
-              real open-ended mute. Not because the strings match: the incident
-              card spells its open-ended case out as "muted — no end date, until
-              you unmute it". Because the SHAPE matches — silenced, with no end
-              date to show — and that shape now exists one file away, so a reader
-              skimming this row read the bare chip as a rule muted forever. That
-              is the opposite of the invariant: a rule's permanent lever is its
-              `enabled` switch, never a mute (tripl-b82m).
-
-              Do not restore the else branch. It could only ever fire on a
-              contract violation, and "muted, no end" is the one thing it would
-              be wrong to say then. The row does go quiet on that impossible
-              input — no chip, while the control still offers Unmute — and that
-              is the deliberate trade: saying nothing is recoverable, asserting a
-              state the product does not have is not. */}
-          {rule.muted && rule.muted_until && (
-            <Chip tone="warning" size="xs">
+            The MIRROR IMAGE of the incident card's muted line in
+            AlertingInbox.tsx: an INCIDENT has three mute states, an ALERT RULE
+            two, because `is_rule_muted()` (backend `_alerting_monitors.py`)
+            returns FALSE the moment `muted_until` is NULL. So `muted &&
+            !muted_until` cannot occur here; the second condition is type
+            narrowing, not a second case. Do not add a "muted, no end" branch —
+            a rule's permanent lever is its `enabled` switch (tripl-b82m). */}
+        {rule.muted && rule.muted_until && (
+          <span className="pl-6">
+            <Chip tone="warning" size="xs" icon={<BellOff aria-hidden="true" className="size-3" />}>
               {`muted until ${formatDateTime(rule.muted_until)}`}
             </Chip>
-          )}
-        </span>
+          </span>
+        )}
         {/* Delivery health. `Never delivered` is a different fact from `last
             sent 3h ago`, and it followed the rule off the destination card
             rather than being dropped in the move (tripl-oxkt.17). */}
-        <span className="break-words pl-6 text-micro" style={{ color: 'var(--fg-faint)' }}>
+        <span className="break-words pl-6 text-caption" style={{ color: 'var(--fg-faint)' }}>
           {rule.total_deliveries === 0 ? (
             'Never delivered'
           ) : (
@@ -695,36 +750,51 @@ function RuleRow({
             </>
           )}
         </span>
+        {/* Where it routes, until `lg` gives it a column of its own. */}
+        <span className="flex min-w-0 items-center gap-1 pl-6 text-caption lg:hidden" style={{ color: 'var(--fg-subtle)' }}>
+          {destinationType && <ChannelGlyph type={destinationType} aria-hidden="true" className="size-3 shrink-0" />}
+          <span className="truncate">{`Routes to ${rule.destination_name}${channel ? ` (${channel})` : ''}`}</span>
+        </span>
       </span>
-      <span role="cell" className="tnum break-words text-caption" style={{ color: 'var(--fg-subtle)' }}>
-        {condition}
+      <span role="cell" className="flex min-w-0 basis-full flex-col gap-0.5 pl-6 md:basis-auto md:pl-0">
+        <span className="tnum break-words text-body-sm" style={{ color: 'var(--fg)' }}>{condition}</span>
+        <span className="break-words text-caption" style={{ color: 'var(--fg-subtle)' }}>{watches}</span>
       </span>
-      <span role="cell" className="flex min-w-0 flex-col gap-0.5">
-        {/* `self-start`, or the flex column stretches the pill to the whole
-            column and a one-word chip renders as a wide empty box that reads
-            like an input. */}
-        {state && (
-          <Chip tone="neutral" size="xs" className="self-start">{state.destination_type}</Chip>
+      <span role="cell" className="hidden min-w-0 items-center gap-1.5 lg:flex">
+        {/* The channel's icon rather than a raw `demo_sink` chip, and the
+            name on one line (AL-11). */}
+        {destinationType && (
+          <ChannelGlyph
+            type={destinationType}
+            aria-label={channel ?? undefined}
+            role="img"
+            className="size-3.5 shrink-0"
+            style={{ color: 'var(--fg-subtle)' }}
+          />
         )}
         <span
-          className="break-words text-micro"
-          style={{ color: 'var(--fg-faint)' }}
+          className="truncate text-caption"
+          style={{ color: 'var(--fg-subtle)' }}
           title={`Routes to the "${rule.destination_name}" destination`}
         >
           {rule.destination_name}
         </span>
       </span>
-      <span role="cell">
+      {/* On a phone, state, last fired and the actions share the card's
+          last line (AL-7). */}
+      <span role="cell" className="pl-6 md:pl-0">
         {state ? (
           <Chip tone={tone} size="xs">{STATUS_LABEL[state.status]}</Chip>
         ) : (
-          <span className="text-micro" style={{ color: 'var(--fg-faint)' }}>—</span>
+          <span className="text-caption" style={{ color: 'var(--fg-faint)' }}>—</span>
         )}
       </span>
-      <span role="cell" className="tnum text-micro" style={{ color: 'var(--fg-faint)' }}>
-        {state?.last_anomaly_at ? formatRelativeTime(state.last_anomaly_at) : '—'}
+      <span role="cell" className="tnum pl-6 text-caption md:pl-0" style={{ color: 'var(--fg-faint)' }}>
+        {state?.last_anomaly_at
+          ? <><span className="md:hidden">Last fired </span>{formatRelativeTime(state.last_anomaly_at)}</>
+          : '—'}
       </span>
-      <span role="cell" className="flex shrink-0 items-center justify-end gap-1.5">
+      <span role="cell" className="ml-auto flex shrink-0 items-center justify-end gap-1.5">
         {canWrite && (
           <Switch
             checked={rule.enabled}
@@ -734,59 +804,48 @@ function RuleRow({
           />
         )}
         {canWrite && (
-          <MuteControl
-            ruleName={rule.name}
-            muted={rule.muted}
-            isPending={isMutePending}
-            onMute={onMute}
-          />
+          <IconButton
+            variant="ghost"
+            label={`Edit rule ${rule.name}`}
+            onClick={onEdit}
+          >
+            <Pencil aria-hidden="true" />
+          </IconButton>
         )}
-        {/* Replay stays for everyone: it is the one control here the API does
-            not gate, because it saves nothing — a viewer asking "would a
-            stricter threshold have cut this noise" is asking a question, not
-            making a change (backend alerting.py has no EditorUserDep on
-            /simulate). */}
         {/* Exactly one rule coaches the simulate step: the seeded firing rule,
-            whose window is guaranteed to hold anomalies. */}
+            whose window is guaranteed to hold anomalies. Replay sits in the
+            editor's menu, so the mark points at the menu. */}
         <ScenarioCoachMark
           step="alerting/simulate"
           when={rule.name === SCENARIO_SEEDED.firingRuleName}
         >
-          <IconButton
-            variant="ghost"
-            className="h-8 w-8"
-            onClick={onReplay}
-            tooltip="Replay this rule over past data, without saving anything"
-            label={`Replay ${rule.name}`}
-          >
-            <History aria-hidden="true" className="h-4 w-4" />
-          </IconButton>
+          {canWrite ? (
+            <RuleActionsMenu
+              ruleName={rule.name}
+              muted={rule.muted}
+              isMutePending={isMutePending}
+              isDeletePending={isDeletePending}
+              deleteImpact={describeDeletionImpact(rule.total_deliveries, rule.incident_count)}
+              onMute={onMute}
+              onReplay={onReplay}
+              onDelete={onDelete}
+            />
+          ) : (
+            // Replay stays for everyone: it is the one control here the API
+            // does not gate, because it saves nothing (backend alerting.py has
+            // no EditorUserDep on /simulate). A viewer has nothing else to put
+            // in a menu, so it is a labelled button.
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onReplay}
+              aria-label={`Replay ${rule.name}`}
+            >
+              <History aria-hidden="true" />
+              Replay
+            </Button>
+          )}
         </ScenarioCoachMark>
-        {canWrite && (
-          <>
-            <IconButton
-              variant="ghost"
-              className="h-8 w-8"
-              label={`Edit rule ${rule.name}`}
-              onClick={onEdit}
-            >
-              <Pencil aria-hidden="true" className="h-4 w-4" />
-            </IconButton>
-            <IconButton
-              variant="ghost"
-              className="h-8 w-8 text-muted-foreground hover:text-destructive"
-              label={`Delete rule ${rule.name}`}
-              // The shared cascade sentence, so the control and its confirm
-              // count the same way — and "1 delivery", not "1 deliveries"
-              // (ALR-45).
-              tooltip={`Deletes the rule. ${describeDeletionImpact(rule.total_deliveries, rule.incident_count)}`}
-              disabled={isDeletePending}
-              onClick={onDelete}
-            >
-              <Trash2 aria-hidden="true" className="h-4 w-4" />
-            </IconButton>
-          </>
-        )}
       </span>
     </div>
 
@@ -871,95 +930,93 @@ function RuleSetting({ label, value }: { label: string; value: string }) {
 }
 
 /**
- * Mute, with the duration on the label.
+ * Replay, Mute and Delete, labelled, behind one "…" (AL-8).
  *
- * Presets come from the shared list rather than a local literal — two surfaces
- * muted with different, unlabelled durations before it existed, so re-clicking
- * Mute silently extended a snooze the operator could not read (tripl-oxkt.7).
+ * The row used to show five unlabelled icons, and Mute was a bell-with-slash
+ * on every unmuted rule — which reads as "this is muted". Its durations opened
+ * inline and pushed the whole row's columns sideways (AL-9); in a menu they
+ * take no room at all.
  *
- * The interaction is the Inbox's, deliberately: a toggle that reveals the
- * durations in place, with the same `Mute <target> for <duration>` labels. Two
- * mute controls on one page that behave differently is the smaller version of
- * the problem this whole merge is fixing.
- *
- * Those labels are now the same because they are the same FUNCTION, not because
- * three files were kept in step by hand: `muteName`, `muteChoiceName` and
- * `unmuteName` come from `@/lib/mutePresets` alongside the durations. Rewording
- * one surface in place is no longer possible without editing the module every
- * mute surface reads (tripl-yapg).
+ * The mute choices keep the Inbox's labels, "Mute <target> for <duration>",
+ * because they are the same FUNCTIONS: `muteChoiceName` and `unmuteName` come
+ * from `@/lib/mutePresets` alongside the durations (tripl-yapg), and only the
+ * fixed durations are offered — a NULL `muted_until` UN-mutes a rule
+ * (tripl-a50u).
  */
-function MuteControl({
+function RuleActionsMenu({
   ruleName,
   muted,
-  isPending,
+  isMutePending,
+  isDeletePending,
+  deleteImpact,
   onMute,
+  onReplay,
+  onDelete,
 }: {
   ruleName: string
   muted: boolean
-  isPending: boolean
+  isMutePending: boolean
+  isDeletePending: boolean
+  /** The shared cascade sentence, so the menu and its confirm count alike (ALR-45). */
+  deleteImpact: string
   onMute: (mutedUntil: string | null) => void
+  onReplay: () => void
+  onDelete: () => void
 }) {
-  const [open, setOpen] = useState(false)
-
-  if (muted) {
-    return (
-      <IconButton
-        variant="ghost"
-        className="h-8 w-8"
-        disabled={isPending}
-        onClick={() => onMute(null)}
-        label={unmuteName(ruleName)}
-        tooltip="Unmute this rule"
-      >
-        <Bell aria-hidden="true" className="h-4 w-4" />
-      </IconButton>
-    )
-  }
-
   return (
-    <>
-      <IconButton
-        variant="ghost"
-        className="h-8 w-8"
-        disabled={isPending}
-        aria-expanded={open}
-        onClick={() => setOpen(current => !current)}
-        // A disclosure toggle, not a mute: it reveals the durations below and
-        // writes nothing, which is why it is named by `muteName` and not by
-        // `muteChoiceName`. The button that commits carries its duration
-        // (tripl-oxkt.7).
-        label={muteName(ruleName)}
-        tooltip="Mute this rule for a while"
-      >
-        <BellOff aria-hidden="true" className="h-4 w-4" />
-      </IconButton>
-      {open && (
-        <span className="flex items-center gap-1 text-micro" style={{ color: 'var(--fg-faint)' }}>
-          <span>for</span>
-          {MUTE_PRESETS.map(preset => (
-            <Button
-              key={preset.label}
-              size="sm"
-              variant="outline"
-              className="h-6 px-2 text-micro"
-              // MUTE_PRESETS' `ms` is `number`, so this call is statically
-              // confined to the "for <duration>" branch of `muteChoiceName`.
-              // The open-ended phrasing exists inside that builder but is
-              // unreachable from here without importing INDEFINITE_MUTE by
-              // name — which would be the leak tripl-a50u forbids, since
-              // `is_rule_muted()` reads a NULL `muted_until` as NOT MUTED.
-              aria-label={muteChoiceName(ruleName, preset)}
-              disabled={isPending}
-              onClick={() => {
-                setOpen(false)
-                onMute(muteUntilIso(preset.ms))
-              }}
-            >
-              {preset.label}
-            </Button>
-          ))}
-        </span>
-      )}
-    </>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <IconButton variant="ghost" label={`More actions for ${ruleName}`}>
+          <MoreHorizontal aria-hidden="true" />
+        </IconButton>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={6} className="w-56">
+        <DropdownMenuItem onSelect={onReplay} aria-label={`Replay ${ruleName}`}>
+          <History aria-hidden="true" />
+          Replay
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        {muted ? (
+          <DropdownMenuItem
+            disabled={isMutePending}
+            onSelect={() => onMute(null)}
+            aria-label={unmuteName(ruleName)}
+          >
+            <Bell aria-hidden="true" />
+            Unmute
+          </DropdownMenuItem>
+        ) : (
+          <>
+            <DropdownMenuLabel className="text-caption font-normal text-fg-subtle">Mute for</DropdownMenuLabel>
+            {MUTE_PRESETS.map(preset => (
+              <DropdownMenuItem
+                key={preset.label}
+                disabled={isMutePending}
+                // MUTE_PRESETS' `ms` is `number`, so this call is statically
+                // confined to the "for <duration>" branch of `muteChoiceName`.
+                aria-label={muteChoiceName(ruleName, preset)}
+                onSelect={() => onMute(muteUntilIso(preset.ms))}
+              >
+                <BellOff aria-hidden="true" />
+                {preset.label}
+              </DropdownMenuItem>
+            ))}
+          </>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          variant="destructive"
+          disabled={isDeletePending}
+          aria-label={`Delete rule ${ruleName}`}
+          onSelect={onDelete}
+        >
+          <Trash2 aria-hidden="true" />
+          <span className="grid">
+            Delete rule…
+            <span className="text-caption text-fg-subtle">{deleteImpact}</span>
+          </span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

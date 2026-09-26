@@ -34,12 +34,22 @@ export function AnnotationsCard({
   scopeId,
   canWrite,
   query,
+  prefillBucket = null,
+  dataEnd = null,
 }: {
   slug: string
   scope: MonitoringScope
   scopeId: string
   canWrite: boolean
   query: ReturnType<typeof useChartAnnotations>
+  /**
+   * A bucket to put in the form, e.g. the flagged one when the signal
+   * banner's "Annotate" sent the reader here (JR-5).
+   */
+  prefillBucket?: string | null
+  /** Where the collected series ends (the newest bucket's end), to say when a
+   *  new annotation is past the data (MO-8). */
+  dataEnd?: string | null
 }) {
   const queryClient = useQueryClient()
   const annotations = query.data ?? []
@@ -47,8 +57,16 @@ export function AnnotationsCard({
     queryClient.invalidateQueries({ queryKey: chartAnnotationsKey(slug, scope, scopeId) })
 
   // Prefilled with "now": the usual annotation is "we just deployed".
-  const [bucket, setBucket] = useState(() => toDatetimeLocalValue(new Date()))
+  const [bucket, setBucket] = useState(() =>
+    toDatetimeLocalValue(prefillBucket ? new Date(prefillBucket) : new Date()))
   const [label, setLabel] = useState('')
+  // Adopt a new prefill during render, not in an effect, so the form never
+  // paints the old time first.
+  const [appliedPrefill, setAppliedPrefill] = useState(prefillBucket)
+  if (prefillBucket && prefillBucket !== appliedPrefill) {
+    setAppliedPrefill(prefillBucket)
+    setBucket(toDatetimeLocalValue(new Date(prefillBucket)))
+  }
   const createMut = useMutation({
     meta: SILENT_ERROR_META,
     mutationFn: () =>
@@ -60,10 +78,23 @@ export function AnnotationsCard({
         scope_type: scope,
         scope_ref: scopeId,
       }),
-    onSuccess: () => {
+    onSuccess: created => {
       setBucket(toDatetimeLocalValue(new Date()))
       setLabel('')
       void invalidate()
+      // The list grows below the fold and the marker may sit at the chart's
+      // right edge, so say it worked (MO-8). The default "now" is usually past
+      // the newest collected bucket: the chart then parks the marker on that
+      // bucket, and the toast says why it is not where it was placed yet.
+      const endTime = dataEnd ? new Date(dataEnd).getTime() : Number.NaN
+      const createdTime = created?.bucket ? new Date(created.bucket).getTime() : Number.NaN
+      if (!Number.isNaN(endTime) && createdTime > endTime) {
+        toast.success('Annotation added', {
+          description: 'Its time is past the collected data, so it shows on the newest bucket until the next collection.',
+        })
+      } else {
+        toast.success('Annotation added')
+      }
     },
   })
 
@@ -98,7 +129,7 @@ export function AnnotationsCard({
   return (
     // The shared section-card geometry (DS-4 / MO-10): header bar with the
     // 12.5px h2 and its subtitle, then the body.
-    <Card>
+    <Card id="chart-annotations" className="scroll-mt-4">
       <CardHeader>
         <div className="flex items-center gap-2">
           <CalendarPlus aria-hidden="true" className="size-4 text-muted-foreground" />

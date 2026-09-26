@@ -14,10 +14,10 @@ import {
   Activity,
   Bell,
   BookOpen,
-  Database,
   FileText,
   Folder,
   Gauge,
+  GitBranch,
   Layers,
   LayoutDashboard,
   Link2,
@@ -25,24 +25,32 @@ import {
   ListChecks,
   Loader2,
   LogOut,
+  Plus,
   Search,
   Settings,
   SlidersHorizontal,
   Sparkles,
+  SunMoon,
   Table2,
   Tag,
+  UserPlus,
   Variable,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { aiApi } from '@/api/ai'
 import { eventTypesApi } from '@/api/eventTypes'
+import { planBranchesApi } from '@/api/planBranches'
 import { searchApi } from '@/api/search'
 import { ActiveProjectContext } from '@/components/active-project-context'
 import { useAuth } from '@/components/auth-context'
 import { useCommandPalette } from '@/components/command-palette-context'
+import { PROJECT_GROUPS, WORKSPACE_GROUPS } from '@/components/settings/nav'
+import { useTheme } from '@/components/theme-provider'
 import { eventNameLabel } from '@/lib/eventName'
 import { buildNavGroups, projectHomePath, switchProjectPath } from '@/lib/navigation'
 import { isOnboardingDismissed, setOnboardingDismissed } from '@/lib/onboardingDismissal'
-import { useActiveBranchId, useBranchLinkProps } from '@/hooks/useBranch'
+import { useBranchContext, useBranchLinkProps } from '@/hooks/useBranch'
+import { requestPageLeave } from '@/hooks/useUnsavedChangesGuard'
 import { useAiStatus } from '@/hooks/useAiStatus'
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -54,10 +62,11 @@ import {
   commandPaletteLexicalSearchKey,
   commandPaletteSearchKey,
   eventTypesKey,
+  planBranchesKey,
   projectsQueryOptions,
 } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { isOwner as isOwnerRole } from '@/lib/permissions'
+import { canWrite, isOwner as isOwnerRole } from '@/lib/permissions'
 
 
 /**
@@ -146,6 +155,8 @@ const paletteValue = {
   eventType: (eventTypeId: string) => `event-type:${eventTypeId}` as PaletteValue,
   search: (documentId: string) => `search:${documentId}` as PaletteValue,
   account: (action: string) => `account:${action}` as PaletteValue,
+  action: (action: string) => `action:${action}` as PaletteValue,
+  branch: (branchId: string) => `branch:${branchId}` as PaletteValue,
   ai: () => 'ai:ask' as PaletteValue,
 }
 
@@ -154,6 +165,12 @@ interface PaletteRow {
   value: PaletteValue
   label: string
   hint?: string
+  /**
+   * Other words a row answers to, matched by word prefix (not shown). The old
+   * name of a renamed page ("Schema & fields"), or what a settings section
+   * holds ("timezone" for General) (#238 JR-19).
+   */
+  keywords?: string[]
   icon: PaletteIcon
   iconColor?: string
   active?: boolean
@@ -183,10 +200,23 @@ interface PaletteGroup {
  * An empty query matches everything, which is what makes a freshly opened palette
  * show the full menu.
  */
-function matchesQuery(query: string, haystack: (string | undefined | null)[]): boolean {
+function matchesQuery(
+  query: string,
+  haystack: (string | undefined | null)[],
+  keywords: readonly string[] = [],
+): boolean {
   const needle = query.trim().toLowerCase()
   if (!needle) return true
-  return haystack.some(term => term?.toLowerCase().includes(needle))
+  // Every word must land somewhere, in any order: "fact table" missed while
+  // "revenue" found the Orders fact table, because the phrase was matched
+  // whole (#238 JR-19). Keywords match by word prefix only, so a one-letter
+  // query does not light up every row with that letter inside a keyword.
+  const keywordWords = keywords.flatMap(keyword => keyword.toLowerCase().split(/\s+/))
+  return needle.split(/\s+/).every(
+    token =>
+      haystack.some(term => term?.toLowerCase().includes(token))
+      || keywordWords.some(word => word.startsWith(token)),
+  )
 }
 
 /**
@@ -209,7 +239,7 @@ function visibleStaticGroups(query: string, groups: PaletteGroup[]): PaletteGrou
   return groups
     .map(group => ({
       heading: group.heading,
-      rows: group.rows.filter(row => matchesQuery(query, [row.label, row.hint])),
+      rows: group.rows.filter(row => matchesQuery(query, [row.label, row.hint], row.keywords)),
     }))
     .filter(group => group.rows.length > 0)
 }
@@ -236,6 +266,49 @@ type KnowledgeState = 'off' | 'searching' | 'error' | 'empty' | 'results'
 const STALE_RESULT_OPACITY = 0.55
 
 /**
+ * Words people type for a project page that its label does not contain: the
+ * names pages had before a rename, and the object nouns other screens use.
+ */
+const NAV_KEYWORDS: Record<string, string[]> = {
+  overview: ['live activity', 'home', 'dashboard', 'kpi'],
+  schema: ['schema & fields', 'schema', 'custom properties'],
+  alerting: ['monitors', 'alert rules', 'incidents', 'inbox', 'destinations'],
+  anomalies: ['signals', 'spikes', 'drops'],
+  metrics: ['fact tables', 'kpi'],
+  scans: ['data source', 'sql'],
+  branches: ['review', 'merge'],
+  history: ['snapshots', 'revisions'],
+}
+
+/**
+ * Settings rows whose rail label collides with a project page in the same
+ * list: the project's Govern › Audit log is filtered to the project, the
+ * instance one is not.
+ */
+const SETTINGS_LABEL: Record<string, string> = {
+  'inst-audit': 'Instance audit log',
+}
+
+/** What each settings section holds, keyed by settings/nav.ts item id. */
+const SETTINGS_KEYWORDS: Record<string, string[]> = {
+  general: ['timezone', 'slug', 'rename', 'project name'],
+  'plan-rules': ['naming', 'rules'],
+  members: ['users', 'roles', 'invite', 'team'],
+  sources: ['database', 'connection', 'warehouse', 'clickhouse', 'postgres'],
+  apikeys: ['api key', 'token', 'tracker'],
+  profile: ['name', 'email', 'avatar'],
+  security: ['password', 'sessions', 'sign in'],
+  runtime: ['workers', 'jobs', 'celery'],
+  email: ['smtp', 'mail'],
+  ai: ['openai', 'llm', 'embeddings', 'model'],
+  'inst-security': ['registration', 'sign up', 'access'],
+  storage: ['retention', 'files', 'photos'],
+  observability: ['logs', 'metrics', 'tracing'],
+  system: ['version', 'health'],
+  'inst-audit': ['audit log', 'history'],
+}
+
+/**
  * Is `next` the search that produced `held`, one keystroke on?
  *
  * Either direction, because both typing and backspacing refine: "check" holds
@@ -257,11 +330,12 @@ export default function CommandPalette({
   onNavigate: () => void
 }) {
   const { open, setOpen } = useCommandPalette()
+  const { resolvedTheme, setTheme } = useTheme()
   const navigate = useNavigate()
   const location = useLocation()
   const auth = useAuth()
   const { slug: routeSlug } = useParams()
-  const branchId = useActiveBranchId()
+  const { branchId, setBranchId } = useBranchContext()
   const branchLink = useBranchLinkProps()
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS)
@@ -303,6 +377,15 @@ export default function CommandPalette({
     staleTime: 60_000,
   })
   const eventTypes = eventTypesQuery.data ?? []
+
+  // The branch list the sidebar's switcher already loads for this project.
+  // Read from the cache only (no request of the palette's own): the switcher
+  // keeps it fresh, and without it the palette falls back to the branches page.
+  const branchesQuery = useQuery({
+    queryKey: planBranchesKey(activeProject?.slug),
+    queryFn: () => planBranchesApi.list(activeProject!.slug),
+    enabled: false,
+  })
 
   // Only the project in the address. Outside one (/workspace, a 404) this used
   // to fall back to projects[0], so knowledge results and AI answers came from
@@ -451,27 +534,55 @@ export default function CommandPalette({
   // the same string three times; the array form is what lets `StaticGroup` filter
   // them at all, since a row has to be data before a group can count how many of
   // them are left (tripl-k6gt).
-  const navRow = (path: string, label: string, icon: PaletteIcon): PaletteRow => ({
+  //
+  // No path on screen (#238 SH-19 / JR-20): every row printed its raw route in
+  // mono, which was noise, truncated labels at 390 and showed that Plan pages
+  // sit under /settings/. The group heading says where a row lives.
+  const navRow = (
+    path: string,
+    label: string,
+    icon: PaletteIcon,
+    keywords?: string[],
+  ): PaletteRow => ({
     value: paletteValue.nav(path),
     label,
-    hint: path,
+    keywords,
     icon,
     onSelect: () => goTo(path),
   })
 
   const isOwner = isOwnerRole(auth.user?.role)
+  const canEdit = canWrite(auth.user?.role)
 
-  // Workspace destinations, at the canonical paths and under the sidebar's and
-  // settings rail's own labels. Three of these pointed at retired URLs that only
-  // redirect, and the first was labelled "Overview" while pointing at the
-  // WORKSPACE dashboard — so the obvious query for a project's live page
-  // navigated out of the project entirely (tripl-m6cv).
+  // Workspace destinations: the portfolio, then every settings section the
+  // role can open, built from the settings rail's own model so the palette
+  // cannot drift from it. It used to list five rows, so "api key", "timezone"
+  // or "email" found nothing (#238 JR-19). Labels are the rail's (each with
+  // its own icon, not one sliders icon for all); the words people type for
+  // what a section holds are keywords.
+  const settingsRows: PaletteRow[] = [...WORKSPACE_GROUPS, ...PROJECT_GROUPS].flatMap(group =>
+    group.items
+      .filter(item => !item.ownerOnly || isOwner)
+      // Project sections are bound to a project by the address (SHELL-20);
+      // with none open there is nothing for them to configure.
+      .filter(item => !item.path.startsWith('project/') || !!activeProject)
+      .map(item => {
+        const path = item.path.startsWith('project/') && activeProject
+          ? `/settings/${item.path}?project=${encodeURIComponent(activeProject.slug)}`
+          : `/settings/${item.path}`
+        const label = group.label === 'Project'
+          ? `Project settings: ${item.label}`
+          : (SETTINGS_LABEL[item.id] ?? item.label)
+        // The rail's own keywords too, so the palette finds what the settings
+        // palette finds ("dark mode", "delete project"), plus the extra words
+        // kept here (JR-19).
+        const keywords = [...(item.keywords ?? []), ...(SETTINGS_KEYWORDS[item.id] ?? [])]
+        return navRow(path, label, item.icon, keywords.length > 0 ? keywords : undefined)
+      }),
+  )
   const navigateRows: PaletteRow[] = [
-    navRow('/workspace', 'All projects', LayoutDashboard),
-    navRow('/settings/data-sources', 'Data sources', Database),
-    navRow('/settings/members', 'Members', SlidersHorizontal),
-    navRow('/settings/profile', 'Profile', SlidersHorizontal),
-    ...(isOwner ? [navRow('/settings/instance/runtime', 'Runtime', SlidersHorizontal)] : []),
+    navRow('/workspace', 'All projects', LayoutDashboard, ['portfolio', 'workspace']),
+    ...settingsRows,
   ]
 
   // Built from the sidebar's own nav model rather than restated here. The
@@ -487,7 +598,7 @@ export default function CommandPalette({
         heading: `${group.label} — ${activeProject.name}`,
         rows: group.items
           .filter(item => !item.ownerOnly || isOwner)
-          .map(item => navRow(item.href, item.label, item.icon)),
+          .map(item => navRow(item.href, item.label, item.icon, NAV_KEYWORDS[item.id])),
       }))
     : []
 
@@ -499,11 +610,12 @@ export default function CommandPalette({
   const projectExtraRows: PaletteRow[] = activeProject
     ? [
         navRow(`/p/${activeProject.slug}/settings`, 'Project settings', Settings),
-        navRow(`/p/${activeProject.slug}/concepts`, 'Concepts', BookOpen),
+        navRow(`/p/${activeProject.slug}/concepts`, 'Concepts', BookOpen, ['glossary', 'help']),
         navRow(
           `/p/${activeProject.slug}/settings/monitoring`,
           'Detection settings',
           SlidersHorizontal,
+          ['sensitivity', 'threshold', 'monitoring'],
         ),
         // The way back to a dismissed getting-started checklist (WS-35).
         ...(isOnboardingDismissed(activeProject.slug, activeProject.id)
@@ -549,6 +661,83 @@ export default function CommandPalette({
       }))
     : []
 
+  // Switching branch swaps the data under the page without a navigation, so
+  // it asks the page's unsaved-changes guard first and says the switch out
+  // loud — the same as the sidebar's branch switcher (PL-1).
+  const switchBranch = (targetId: string | null, targetName: string) =>
+    runCommand(() =>
+      requestPageLeave(() => {
+        setBranchId(targetId)
+        toast(
+          targetId
+            ? `Switched to ${targetName} — edits stay on this branch until it merges`
+            : 'Switched to main — edits now change the live plan',
+          { id: 'branch-switched' },
+        )
+      }),
+    )
+
+  // One "Switch to …" row per branch the reader is not on: main and every
+  // open working branch. Before the switcher has loaded the list there is
+  // nothing to name, so one row opens the branches page instead.
+  const branchList = branchesQuery.data?.items
+  const branchSwitchRows: PaletteRow[] = !activeProject
+    ? []
+    : branchList
+      ? branchList
+          .filter(branch =>
+            branch.kind === 'main'
+              ? branchId !== null && branchId !== branch.id
+              : branch.id !== branchId && branch.status !== 'merged' && branch.status !== 'closed',
+          )
+          .map(branch => ({
+            value: paletteValue.branch(branch.id),
+            label: `Switch to ${branch.name}`,
+            keywords: ['branch', 'switch', 'checkout'],
+            icon: GitBranch,
+            onSelect: () => switchBranch(branch.kind === 'main' ? null : branch.id, branch.name),
+          }))
+      : [
+          // Its own value: the "Plan branches" jump row already owns
+          // nav:<branches path>, and cmdk selects by value, so a shared one
+          // would highlight both rows at once.
+          {
+            ...navRow(`/p/${activeProject.slug}/settings/branches`, 'Switch branch…', GitBranch, [
+              'branch',
+              'checkout',
+            ]),
+            value: paletteValue.action('switch-branch'),
+          },
+        ]
+
+  // Commands, not places (#238 JR-19): a common task can be started from the
+  // keyboard. Create actions only for a role that can create. "New branch" and
+  // "Invite member" open their forms (`?new=1`, `?invite=1`), not just the page
+  // the form lives on.
+  const actionRows: PaletteRow[] = [
+    ...(activeProject && canEdit
+      ? [
+          navRow(`/p/${activeProject.slug}/events/all/new`, 'New event', Plus, ['create', 'add']),
+          navRow(`/p/${activeProject.slug}/metrics/new`, 'New metric', Plus, ['create', 'add']),
+          navRow(`/p/${activeProject.slug}/settings/branches?new=1`, 'New branch', GitBranch, [
+            'create',
+            'add',
+          ]),
+        ]
+      : []),
+    ...branchSwitchRows,
+    ...(isOwner
+      ? [navRow('/settings/members?invite=1', 'Invite member', UserPlus, ['add', 'user', 'invite'])]
+      : []),
+    {
+      value: paletteValue.action('toggle-theme'),
+      label: resolvedTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme',
+      keywords: ['theme', 'dark', 'light', 'appearance', 'toggle'],
+      icon: SunMoon,
+      onSelect: () => runCommand(() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')),
+    },
+  ]
+
   const accountRows: PaletteRow[] = [
     {
       value: paletteValue.account('sign-out'),
@@ -562,13 +751,16 @@ export default function CommandPalette({
   // knowledge results while the rest are above them, and the reading order is
   // part of the design.
   const menuGroups = visibleStaticGroups(query, [
-    { heading: 'Navigate', rows: navigateRows },
+    // The current project first, then the workspace (#238 SH-19): the list
+    // used to open on Data sources, Members, Profile and Runtime.
     // Plan / Observe / Govern, in the sidebar's order and under the sidebar's
     // headings, so the palette reads as the same map of the product.
     ...projectNavGroups,
     ...(activeProject
       ? [{ heading: `More — ${activeProject.name}`, rows: projectExtraRows }]
       : []),
+    { heading: 'Actions', rows: actionRows },
+    { heading: 'Workspace', rows: navigateRows },
     { heading: 'Projects', rows: projectRows },
     ...(activeProject
       ? [{ heading: `Event types — ${activeProject.name}`, rows: eventTypeRows }]
@@ -611,7 +803,10 @@ export default function CommandPalette({
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         showCloseButton={false}
-        className="overflow-hidden p-0 sm:max-w-[640px] gap-0"
+        // Anchored near the top, not centred: centring moved the input ~180px
+        // every time the result count changed, and the eye lost the caret
+        // (#238 SH-19).
+        className="top-[12vh] translate-y-0 overflow-hidden p-0 sm:max-w-[640px] gap-0"
         // Take over Radix's focus restore: it aims at whatever was focused when
         // the dialog mounted, which for a global Ctrl+K is usually <body>.
         onCloseAutoFocus={(event) => {
@@ -756,21 +951,32 @@ export default function CommandPalette({
                   // `items` array is what a failed request and an empty knowledge
                   // base used to have in common (`data?.items ?? []`), so the
                   // palette reported an outage as a fact about the user's data.
-                  <Group heading="Knowledge search">
+                  <Group heading="Search results">
                     <div
                       className="px-3.5 py-2 text-caption"
                       style={{ color: 'var(--destructive)' }}
                     >
-                      Knowledge search failed. Results may be missing — try again.
+                      Search failed. Results may be missing — try again.
                     </div>
                   </Group>
                 ) : knowledgeState === 'empty' ? (
-                  <Group heading={`Knowledge matching "${debouncedQuery}"`}>
+                  // "Search results", not "Knowledge matching …": the heading
+                  // style uppercases, so the query was SHOUTED back, and
+                  // "knowledge" is our word, not the reader's (#238 SH-20).
+                  // The query sits in the line, in its own case.
+                  <Group heading="Search results">
                     <div
                       className="px-3.5 py-2 text-caption"
                       style={{ color: 'var(--fg-subtle)' }}
                     >
-                      No knowledge matches.
+                      {menuGroups.length === 0 ? (
+                        <>
+                          No results for “{debouncedQuery}”. Try an event, metric or page name
+                          {aiEnabled ? ', or ask AI.' : '.'}
+                        </>
+                      ) : (
+                        <>No events, metrics or fields match “{debouncedQuery}”.</>
+                      )}
                     </div>
                   </Group>
                 ) : searchGroups.length === 0 ? (
@@ -779,7 +985,7 @@ export default function CommandPalette({
                   // cleared. Once there are rows, the branch below keeps them
                   // and says so, rather than emptying the dialog for the length
                   // of the round trip.
-                  <Group heading="Searching knowledge…">
+                  <Group heading="Searching…">
                     <div
                       className="px-3.5 py-2 text-caption"
                       style={{ color: 'var(--fg-subtle)' }}
@@ -833,7 +1039,6 @@ export default function CommandPalette({
                                 label={label}
                                 hint={result.subtitle || undefined}
                                 description={result.description || result.snippet || undefined}
-                                confidence={result.confidence}
                                 semantic={result.semantic_used}
                               />
                             )
@@ -911,26 +1116,6 @@ function StaticGroups({ groups }: { groups: PaletteGroup[] }) {
   )
 }
 
-function confidenceTier(confidence: number): { label: string; color: string } {
-  const pct = Math.round(confidence * 100)
-  if (confidence >= 0.8) return { label: `${pct}%`, color: 'var(--success)' }
-  if (confidence >= 0.5) return { label: `${pct}%`, color: 'var(--warning)' }
-  return { label: `${pct}%`, color: 'var(--fg-faint)' }
-}
-
-function ConfidenceBadge({ confidence }: { confidence: number }) {
-  const { label, color } = confidenceTier(confidence)
-  return (
-    <span
-      className="tnum shrink-0 rounded-sm px-1 text-micro font-semibold"
-      style={{ color, backgroundColor: 'color-mix(in srgb, currentColor 12%, transparent)' }}
-      title={`Search confidence: ${label}`}
-    >
-      {label}
-    </span>
-  )
-}
-
 function Item({
   value,
   onSelect,
@@ -939,15 +1124,15 @@ function Item({
   label,
   hint,
   description,
-  confidence,
   semantic,
   active,
 }: PaletteRow & {
   description?: string
-  confidence?: number
   semantic?: boolean
 }) {
-  const showConfidence = typeof confidence === 'number' && confidence > 0
+  // No "80%" badge (#238 JR-20): the exact event and eight scan variants all
+  // read 80%, so the list looked like duplicates, and the figure meant nothing
+  // to a reader. The server's order already says which is best.
   return (
     <Command.Item
       value={value}
@@ -982,14 +1167,16 @@ function Item({
           semantic
         </Chip>
       )}
-      {showConfidence && <ConfidenceBadge confidence={confidence} />}
       {active && (
         <span className="shrink-0 micro-label" style={{ color: 'var(--fg-faint)' }}>
           current
         </span>
       )}
       {hint && (
-        <span className="mono shrink-0 truncate text-micro" style={{ color: 'var(--fg-faint)' }}>
+        <span
+          className="mono hidden max-w-[40%] shrink-0 truncate text-micro sm:block"
+          style={{ color: 'var(--fg-faint)' }}
+        >
           {hint}
         </span>
       )}

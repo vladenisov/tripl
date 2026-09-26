@@ -12,7 +12,7 @@ import { useConfirm } from '@/hooks/useConfirm'
 import { requestPageLeave } from '@/hooks/useUnsavedChangesGuard'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useCanWriteProject } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { EntityNotFound, PageSkeleton, ReadOnlyNotice } from '@/components/states'
 import { ErrorState } from '@/components/error-state'
 import type { EventType, EventTypeOwner } from '@/types'
 import { Button } from '@/components/ui/button'
@@ -133,20 +133,23 @@ export function EventTypeDetail({ slug, eventTypeId }: { slug: string; eventType
     )
   }
 
+  // The not-found state with the way back, not a grey sentence (#237 SH-33).
   if (isSuccess && !et && !sameNameOnThisBranch) {
     return (
-      <div className="space-y-4">
-        <BackLink label="Event types" onClick={goBack} />
-        <p className="text-body text-muted-foreground">
-          {branchId === null
-            ? 'This event type does not exist on main.'
-            : 'This event type does not exist on the selected branch.'}
-        </p>
-      </div>
+      <EntityNotFound
+        title="Event type not found"
+        description={
+          branchId === null
+            ? 'This event type does not exist on main. It may have been deleted or renamed.'
+            : 'This event type does not exist on the selected branch. It may have been deleted, renamed, or only exist on another branch.'
+        }
+        back={{ to: `/p/${slug}/settings/event-types`, label: 'Back to event types' }}
+      />
     )
   }
 
-  if (!et) return null
+  // First load: the page's shape, not a blank column (#237 SH-23).
+  if (!et) return redirectTo ? null : <PageSkeleton variant="detail" label="Loading event type…" />
 
   return (
     <PageContainer className="space-y-3.5">

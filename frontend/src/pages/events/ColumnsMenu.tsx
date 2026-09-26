@@ -86,7 +86,7 @@ export function ColumnsMenu({
           onChange={() => onToggle('status')}
         />
         <ColumnToggle
-          label="Reviewed"
+          label="Verified"
           pinned={reviewedPinned}
           checked={!reviewedHidden}
           onChange={() => onToggle('reviewed')}

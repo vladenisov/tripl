@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
+import { cn } from '@/lib/utils'
 import { relaxedToJson } from './jsonRelaxed'
 import { formatJsonTemplate, templateJsonError, validateJsonWithVars } from './jsonTemplate'
 import { SuggestionListbox } from './VariableInput'
 import { filterVariableSuggestions, type VariableSuggestion } from './variableSuggestions'
 import { useEvDescribedBy } from './evFieldContext'
+import { EV_INPUT_CLASS } from './eventFormLayout'
 
 /** The text the box shows for a stored value: re-indented where it parses. */
 function displayJson(value: string): string {
@@ -200,14 +201,29 @@ export function JsonEditor({
 
   return (
     <div className="space-y-1">
+      {/* A small toolbar above the box (AU-40): Format used to sit alone under
+          the box's right edge and read as stray text. Not an overlay either —
+          that covered the first line of every payload wider than the box. */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          JSON · <span className="mono">{'${variables}'}</span> allowed
+        </span>
+        <Button type="button" variant="ghost" size="xs" onClick={handleFormat} className="shrink-0">
+          Format
+        </Button>
+      </div>
       <div ref={wrapperRef} className="relative">
-        <Textarea
+        {/* The form's one control style, not the shared Textarea: its border,
+            background and focus colour differed from every neighbouring input
+            (AU-40, the last LIVE-30 holdout). `aria-invalid` draws the danger
+            edge through INPUT_CLASS. */}
+        <textarea
           ref={textareaRef}
           id={id}
           value={raw}
           onChange={e => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          className={`font-mono text-body-sm ${error ? 'border-destructive' : ''}`}
+          className={cn(EV_INPUT_CLASS, 'block min-h-[96px] py-2 font-mono leading-[1.5]')}
           rows={4}
           placeholder='{ "key": "value" }'
           aria-required={required || undefined}
@@ -231,14 +247,7 @@ export function JsonEditor({
           onPick={insertVar}
         />
       </div>
-      {/* Format sits under the field, not over it: an overlay button covered the
-          first line of every payload wider than the box. */}
-      <div className="flex items-start justify-between gap-2">
-        <p id={errorId} className="min-w-0 text-body-sm text-destructive">{error}</p>
-        <Button type="button" variant="ghost" size="xs" onClick={handleFormat} className="shrink-0">
-          Format
-        </Button>
-      </div>
+      <p id={errorId} className="min-w-0 text-body-sm text-destructive empty:hidden">{error}</p>
       {repair && (
         <div className="flex items-start justify-between gap-2" aria-live="polite">
           <p className="min-w-0 text-body-sm text-muted-foreground">

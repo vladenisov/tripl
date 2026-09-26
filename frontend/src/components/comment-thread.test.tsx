@@ -95,7 +95,7 @@ describe('CommentThread', () => {
     )
 
     expect(await screen.findByText('is this still sent?')).toBeInTheDocument()
-    expect(screen.getByText(/commenting is done by an editor or owner/)).toBeInTheDocument()
+    expect(screen.getByText('Only editors and owners can comment.')).toBeInTheDocument()
     expect(screen.queryByLabelText('Write a comment')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete comment' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'resolve' })).not.toBeInTheDocument()

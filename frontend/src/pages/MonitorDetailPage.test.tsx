@@ -88,11 +88,37 @@ type MockOptions = {
   muteResponse?: Record<string, unknown>
 }
 
+/** One scope the failed delivery matched, as its detail route returns it. */
+const DELIVERY_ITEM = {
+  id: 'item-1',
+  delivery_id: 'del-1',
+  scope_type: 'event',
+  scope_ref: 'evt-9',
+  scope_name: 'checkout_failed',
+  event_type_id: null,
+  event_id: 'evt-9',
+  bucket: '2026-06-26T10:00:00Z',
+  direction: 'spike',
+  actual_count: 380,
+  expected_count: 200,
+  absolute_delta: 180,
+  percent_delta: 90,
+  details_path: null,
+  monitoring_path: null,
+  drift_field: null,
+  drift_type: null,
+  sample_value: null,
+  correlation_group_id: null,
+}
+
 function mockApi(options: MockOptions = {}) {
   const monitor = options.monitor ?? BASE_MONITOR
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
+    if (/\/alert-deliveries\/del-1(\?|$)/.test(url) && method === 'GET') {
+      return jsonResponse({ ...HISTORY.items[0], items: [DELIVERY_ITEM] })
+    }
     if (url.includes('/alert-deliveries')) return jsonResponse(HISTORY)
     if (url.includes('/monitors/rule-1/mute')) {
       return jsonResponse(options.muteResponse ?? { ...monitor, muted: true, muted_until: '2099-01-01T00:00:00Z' })
@@ -177,6 +203,12 @@ const expectedMutePresetName = (ruleName: string, presetLabel: string) =>
   `Mute ${ruleName} for ${presetLabel}`
 const expectedUnmuteName = (ruleName: string) => `Unmute ${ruleName}`
 
+/** The durations sit behind the header's "Mute" menu (MO-35). */
+async function openMuteMenu() {
+  fireEvent.keyDown(await screen.findByRole('button', { name: 'Mute' }), { key: 'Enter' })
+  return screen.findByRole('menu')
+}
+
 /** The rule name `BASE_MONITOR` carries, and therefore the target every button names. */
 const RULE = BASE_MONITOR.rule_name
 
@@ -187,8 +219,10 @@ describe('MonitorDetailPage', () => {
     renderDetail()
 
     expect(await screen.findByRole('heading', { name: 'payment_failed spike' })).toBeInTheDocument()
-    // Condition config
-    expect(screen.getByText('Spike ▲')).toBeInTheDocument()
+    // Condition config: the direction in words beside a coloured arrow, not a
+    // black text triangle (MO-37).
+    expect(screen.getByText('Spike')).toBeInTheDocument()
+    expect(screen.queryByText(/▲/)).toBeNull()
     expect(screen.getByText('≥ 50% change')).toBeInTheDocument()
     expect(screen.getByText('6h between alerts')).toBeInTheDocument()
     expect(screen.getByText('Project total')).toBeInTheDocument()
@@ -215,9 +249,7 @@ describe('MonitorDetailPage', () => {
     // The failed delivery is on screen; only its Retry is withheld.
     expect(await screen.findByText('hourly events scan')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument()
-    expect(
-      screen.queryByRole('button', { name: expectedMutePresetName(RULE, '1h') }),
-    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Mute' })).not.toBeInTheDocument()
     expect(screen.getByRole('note')).toHaveTextContent(/viewer role/)
     // Nothing to edit from here either: the rule editor is an editor's.
     expect(screen.queryByRole('link', { name: /Edit rule/ })).not.toBeInTheDocument()
@@ -308,13 +340,14 @@ describe('MonitorDetailPage', () => {
     // if the instant is identical, so assert the instant rather than merely
     // "some time in the future" — which would also pass if the wrong number
     // were passed in, or the label, or an already-absolute timestamp.
+    await openMuteMenu()
     const clickedAt = Date.parse('2026-08-14T10:00:00Z')
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(clickedAt)
-    // Queried by the name a screen reader hears, not by the "1h" on its face:
-    // the button is reachable by either, and picking the accessible one means
-    // this test also breaks if the label ever stops naming its target
+    // Queried by the name a screen reader hears, not by the "For 1h" on its
+    // face: the item is reachable by either, and picking the accessible one
+    // means this test also breaks if the label ever stops naming its target
     // (tripl-in45).
-    fireEvent.click(screen.getByRole('button', { name: expectedMutePresetName(RULE, '1h') }))
+    fireEvent.click(screen.getByRole('menuitem', { name: expectedMutePresetName(RULE, '1h') }))
     nowSpy.mockRestore()
 
     await waitFor(() => {
@@ -335,6 +368,7 @@ describe('MonitorDetailPage', () => {
     renderDetail()
 
     await screen.findByRole('heading', { name: 'payment_failed spike' })
+    await openMuteMenu()
 
     // The three the shared module defines, unrenamed and unreordered — this is
     // what stops the rewire from quietly dropping or relabelling one. The
@@ -344,7 +378,7 @@ describe('MonitorDetailPage', () => {
     // the buttons started naming their target (tripl-in45).
     for (const label of ['1h', '24h', '7d']) {
       expect(
-        screen.getByRole('button', { name: expectedMutePresetName(RULE, label) }),
+        screen.getByRole('menuitem', { name: expectedMutePresetName(RULE, label) }),
       ).toBeInTheDocument()
     }
     // ONLY those — the count, not just the presence of the three. Without it a
@@ -358,13 +392,13 @@ describe('MonitorDetailPage', () => {
     // the one assertion in the suite that counts these buttons.
     const presetPrefix = `Mute ${RULE} for `
     expect(
-      screen.getAllByRole('button', { name: (name: string) => name.startsWith(presetPrefix) }),
+      screen.getAllByRole('menuitem', { name: (name: string) => name.startsWith(presetPrefix) }),
     ).toHaveLength(3)
     // …and no open-ended mute. A rule with a NULL `muted_until` is NOT muted
     // (`is_rule_muted`), so that button would do the opposite of its label here;
     // the permanent lever on a rule is the enable/disable switch.
-    expect(screen.queryByRole('button', { name: /until unmuted/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Until I unmute/i })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: /until unmuted/i })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: /Until I unmute/i })).toBeNull()
     // The same two negatives again, built from the shared module rather than
     // frozen — and this pair matters MORE after tripl-yapg, for two reasons.
     //
@@ -384,7 +418,7 @@ describe('MonitorDetailPage', () => {
     // This assertion is what replaces the broken grammar (tripl-a50u,
     // tripl-yapg).
     expect(
-      screen.queryByRole('button', { name: muteChoiceName(RULE, INDEFINITE_MUTE) }),
+      screen.queryByRole('menuitem', { name: muteChoiceName(RULE, INDEFINITE_MUTE) }),
     ).toBeNull()
     expect(screen.queryByText(INDEFINITE_MUTE.label)).toBeNull()
   })
@@ -410,15 +444,16 @@ describe('MonitorDetailPage', () => {
     renderDetail()
 
     await screen.findByRole('heading', { name: RULE })
+    await openMuteMenu()
 
     for (const preset of MUTE_PRESETS) {
       expect(
-        screen.getByRole('button', { name: expectedMutePresetName(RULE, preset.label) }),
+        screen.getByRole('menuitem', { name: expectedMutePresetName(RULE, preset.label) }),
       ).toBeInTheDocument()
       // The duration alone is no longer a whole accessible name. It is still
       // the visible text, and still a substring of the name above — WCAG 2.5.3,
       // so "click 1h" keeps working for speech input.
-      expect(screen.queryByRole('button', { name: preset.label })).toBeNull()
+      expect(screen.queryByRole('menuitem', { name: preset.label })).toBeNull()
     }
   })
 
@@ -446,11 +481,12 @@ describe('MonitorDetailPage', () => {
       expect(screen.getByRole('button', { name: expectedUnmuteName(ruleName) })).toBeInTheDocument()
       return
     }
+    await openMuteMenu()
     expect(
-      screen.getByRole('button', { name: expectedMutePresetName(ruleName, at(MUTE_PRESETS, 0).label) }),
+      screen.getByRole('menuitem', { name: expectedMutePresetName(ruleName, at(MUTE_PRESETS, 0).label) }),
     ).toBeInTheDocument()
     // …and never the previous monitor's name, or the fixture's.
-    expect(screen.queryByRole('button', { name: expectedMutePresetName(RULE, '1h') })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: expectedMutePresetName(RULE, '1h') })).toBeNull()
   })
 
   it('says "still firing" beside the last-fired time instead of contradicting it (LIVE-18)', async () => {
@@ -462,12 +498,91 @@ describe('MonitorDetailPage', () => {
     expect(screen.queryByText('now')).not.toBeInTheDocument()
   })
 
-  it('says how many scopes are firing, so the Active scopes tone has something to colour (MON-42)', async () => {
+  it('says how many of the watched scopes are firing, once (MON-42, MO-36)', async () => {
     mockApi()
     renderDetail()
 
     await screen.findByRole('heading', { name: 'payment_failed spike' })
-    expect(screen.getByText('1 firing')).toBeInTheDocument()
+    // "1 of 2", not "2 · 1 firing": the number is said once.
+    expect(screen.getByText('Firing scopes')).toBeInTheDocument()
+    expect(screen.getByText('1 of 2')).toBeInTheDocument()
+    expect(screen.queryByText('1 firing')).toBeNull()
+  })
+
+  it('lists which scopes are firing now, each linking to its drilldown (MO-36)', async () => {
+    mockApi({
+      monitor: {
+        ...BASE_MONITOR,
+        firing_scope_count: 2,
+        firing_scopes: [
+          {
+            scope_type: 'event',
+            scope_ref: 'evt-7',
+            scan_config_id: 'scan-1',
+            scope_name: 'payment_declined',
+            event_id: 'evt-7',
+            direction: 'drop',
+            last_anomaly_bucket: '2026-06-26T10:00:00Z',
+            last_notified_at: '2026-06-26T10:01:00Z',
+          },
+          {
+            // Not notified yet: a cooldown held the first message back, so
+            // there is no delivery to take a name or a direction from.
+            scope_type: 'event_type',
+            scope_ref: 'et-3',
+            scan_config_id: 'scan-1',
+            scope_name: null,
+            event_id: null,
+            direction: null,
+            last_anomaly_bucket: '2026-06-26T10:00:00Z',
+            last_notified_at: null,
+          },
+        ],
+      },
+    })
+    renderDetail()
+
+    expect(await screen.findByRole('heading', { name: 'Firing now' })).toBeInTheDocument()
+    expect(screen.getByText('2 scopes')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /payment_declined/ })).toHaveAttribute(
+      'href',
+      '/p/demo/monitoring/event/evt-7',
+    )
+    expect(screen.getByRole('img', { name: 'Drop' })).toBeInTheDocument()
+    expect(screen.getByText('not notified yet')).toBeInTheDocument()
+  })
+
+  it('shows no "Firing now" panel when nothing fires', async () => {
+    mockApi({ monitor: { ...BASE_MONITOR, status: 'healthy', firing_scope_count: 0, firing_scopes: [] } })
+    renderDetail()
+
+    await screen.findByRole('heading', { name: 'payment_failed spike' })
+    expect(screen.queryByRole('heading', { name: 'Firing now' })).toBeNull()
+  })
+
+  it('opens a delivery\'s matched scopes, each linking to its chart (MO-36)', async () => {
+    mockApi()
+    renderDetail()
+
+    const matched = await screen.findByRole('button', { name: /4 matched/ })
+    expect(matched).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(matched)
+
+    expect(matched).toHaveAttribute('aria-expanded', 'true')
+    expect(await screen.findByRole('link', { name: /checkout_failed/ })).toHaveAttribute(
+      'href',
+      '/p/demo/monitoring/event/evt-9',
+    )
+  })
+
+  it('puts the state beside the title and mute among the header actions (MO-35)', async () => {
+    mockApi()
+    renderDetail()
+
+    const heading = await screen.findByRole('heading', { level: 1, name: RULE })
+    // The chip is the title's sibling, on the title's line.
+    expect(heading.parentElement).toHaveTextContent('Firing')
+    expect(screen.getByRole('button', { name: 'Mute' })).toBeInTheDocument()
   })
 
   it('refreshes the Monitors list summary after a mute (MON-31)', async () => {
@@ -477,7 +592,8 @@ describe('MonitorDetailPage', () => {
     renderDetail(null, queryClient)
 
     await screen.findByRole('heading', { name: 'payment_failed spike' })
-    fireEvent.click(screen.getByRole('button', { name: expectedMutePresetName(RULE, '1h') }))
+    await openMuteMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: expectedMutePresetName(RULE, '1h') }))
 
     await waitFor(() =>
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['monitors-summary', 'demo'] }),
@@ -541,7 +657,7 @@ describe('MonitorDetailPage', () => {
     })
   })
 
-  it('renders an error state when the monitor cannot be loaded', async () => {
+  it('says a deleted rule is not found, with a way back instead of a retry (SH-33)', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)
       if (url.includes('/alert-deliveries')) return jsonResponse(HISTORY)
@@ -550,9 +666,35 @@ describe('MonitorDetailPage', () => {
 
     renderDetail()
 
-    // "Rule", not "Monitor": the second noun for one object went with the
-    // standalone list it named (tripl-89ps).
-    expect(await screen.findByText('Rule unavailable')).toBeInTheDocument()
+    // "Alert rule", not "Monitor": one name for one object (tripl-89ps, JR-28).
+    expect(await screen.findByText('Alert rule not found')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to alert rules' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting?section=monitors',
+    )
+    expect(screen.queryByRole('button', { name: /Try again|Retry/ })).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('keeps a retry for a rule that failed to load for another reason', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.includes('/alert-deliveries')) return jsonResponse(HISTORY)
+      return jsonResponse({ detail: 'Internal server error' }, 500)
+    })
+
+    renderDetail()
+
+    expect(await screen.findByText('Could not load this alert rule')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Try again/ })).toBeInTheDocument()
+  })
+
+  it('shows the page shape while the rule loads, not a sentence', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}))
+
+    renderDetail()
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading alert rule…')
   })
 })
 
@@ -588,7 +730,7 @@ describe('MonitorDetailPage inert scopes', () => {
     )
     // The chip carries the same sentence, so hovering the marked scope answers
     // the question the marking raises.
-    expect(screen.getByText('Value drifts')).toHaveAttribute(
+    expect(screen.getByText('Value drift')).toHaveAttribute(
       'title',
       expect.stringContaining('documents an allowed-values list'),
     )
@@ -616,7 +758,7 @@ describe('MonitorDetailPage inert scopes', () => {
 
     renderDetail()
 
-    expect(await screen.findByText('Value drifts')).not.toHaveAttribute('title')
+    expect(await screen.findByText('Value drift')).not.toHaveAttribute('title')
     expect(screen.queryByText(VALUE_DRIFT_SENTENCE)).toBeNull()
   })
 
@@ -674,7 +816,7 @@ describe('MonitorDetailPage inert scopes', () => {
 
     renderDetail()
 
-    expect(await screen.findByText('Value drifts')).toBeInTheDocument()
+    expect(await screen.findByText('Value drift')).toBeInTheDocument()
     expect(screen.queryByText(VALUE_DRIFT_SENTENCE)).toBeNull()
   })
 })

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tripl.models.event import Event
 from tripl.models.plan_branch import BranchKind, BranchStatus, PlanBranch
 from tripl.models.plan_branch_comment import PlanBranchComment
-from tripl.models.plan_revision import PlanRevision
+from tripl.models.plan_revision import PlanRevision, PlanRevisionKind
 from tripl.services.demo.scenario import DemoContext
 from tripl.services.plan_branch_service import deep_copy_plan_to_branch
 from tripl.services.plan_revision_service import build_plan_snapshot
@@ -52,6 +52,7 @@ async def build_branches(session: AsyncSession, ctx: DemoContext) -> None:
         project_id=ctx.project_id,
         created_by=ctx.created_by,
         summary=f"Base snapshot for branch '{_BRANCH_NAME}'",
+        kind=PlanRevisionKind.branch_base.value,
         payload=base_payload,
     )
     session.add(base_revision)
@@ -68,6 +69,7 @@ async def build_branches(session: AsyncSession, ctx: DemoContext) -> None:
     )
     session.add(branch)
     await session.flush()
+    base_revision.branch_id = branch.id
 
     # Isolated branch copy of the whole plan, then ONE modification on the copy,
     # so the branch diff is exactly one changed event and nothing else.

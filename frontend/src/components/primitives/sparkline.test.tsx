@@ -1,6 +1,6 @@
 import { render } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { Sparkline } from './sparkline'
+import { Sparkline, SparklineSkeleton } from './sparkline'
 
 function linePoints(container: HTMLElement): Array<[number, number]> {
   // The stroked path is the last <path>; the first one is the area fill.
@@ -69,5 +69,16 @@ describe('Sparkline colour', () => {
     const { container } = render(<Sparkline data={[1, 3, 2]} color="var(--danger)" />)
     const paths = container.querySelectorAll('path')
     expect(paths[paths.length - 1]?.getAttribute('stroke')).toBe('var(--danger)')
+  })
+})
+
+// EV-20: a loading row drew the same "—" as a loaded empty one.
+describe('SparklineSkeleton', () => {
+  it('holds the sparkline\'s size and stays out of the accessibility tree', () => {
+    const { getByTestId } = render(<SparklineSkeleton width={40} height={12} />)
+    const block = getByTestId('sparkline-skeleton')
+    expect(block).toHaveAttribute('aria-hidden', 'true')
+    expect(block.style.width).toBe('40px')
+    expect(block.style.height).toBe('12px')
   })
 })

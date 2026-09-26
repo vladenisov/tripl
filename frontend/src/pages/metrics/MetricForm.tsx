@@ -1,19 +1,18 @@
 import { useMemo, useState } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { AlertTriangle, ChevronLeft, Loader2, Plus, Save } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { PageSkeleton, QueryErrorState, ReadOnlyNotice } from '@/components/states'
 import { PageHeader } from '@/components/primitives/page-header'
 import { PageContainer } from '@/components/primitives/page-container'
 import { SaveBar } from '@/components/forms/SaveBar'
 import { examplePlaceholder } from '@/components/forms/placeholders'
 import { attentionSummary } from '@/components/forms/validation'
 import { Button } from '@/components/ui/button'
-import { LoadingState } from '@/components/primitives/loading-state'
 import {
   RadioCards,
   SCard,
@@ -661,6 +660,7 @@ const EMPTY_DATA_SOURCES: DataSource[] = []
  */
 export default function MetricEditPage() {
   const { slug, metricId } = useParams<{ slug: string; metricId?: string }>()
+  const canWrite = useCanWriteProject()
   const navigate = useNavigate()
   const location = useLocation()
   const isNew = !metricId
@@ -690,24 +690,46 @@ export default function MetricEditPage() {
     enabled: !!slug && !!metricId,
   })
 
+  // A viewer reads a metric on its drilldown, whose Definition card is the
+  // read view; the editor showed them a disabled form with live borders,
+  // required stars and author hints instead (#237 MT-28). "New metric" has
+  // nothing to read, so it goes back to the catalog.
+  if (!canWrite && slug) {
+    return (
+      <Navigate
+        to={metricId ? getMetricMonitoringPath(slug, metricId) : `/p/${slug}/metrics`}
+        replace
+      />
+    )
+  }
+
+  // A deleted or unknown metric is "not found" with the way back, not a red
+  // card offering a retry that can never succeed (#237 SH-33).
   if (metricQuery.error) {
     return (
       <PageContainer width="narrow">
-        <ErrorState
-          title="Failed to load metric editor"
+        <QueryErrorState
           error={metricQuery.error}
+          title="Could not load this metric"
           onRetry={() => void metricQuery.refetch()}
+          notFound={{
+            title: 'Metric not found',
+            back: { to: `/p/${slug}/metrics`, label: 'Back to metrics' },
+          }}
         />
       </PageContainer>
     )
   }
 
   // Data sources still block while LOADING: a SQL metric opened before its
-  // source's option exists would paint the select blank.
+  // source's option exists would paint the select blank. The form's shape
+  // while it does, not a centred "Loading…" (#237 SH-23).
   const isLoading = dataSourcesQuery.isLoading || (!isNew && metricQuery.isLoading)
   if (isLoading || !slug) {
     return (
-      <LoadingState className="flex min-h-[240px] items-center justify-center text-body-sm" />
+      <PageContainer width="narrow">
+        <PageSkeleton variant="form" label={isNew ? 'Loading metric editor…' : 'Loading metric…'} />
+      </PageContainer>
     )
   }
 

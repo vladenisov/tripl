@@ -118,6 +118,14 @@ export interface ScanConfig {
   platform_column: string | null
   created_at: string
   updated_at: string
+  /**
+   * Server-derived `interval IS NOT NULL` (MO-23): whether the scheduler
+   * collects metrics for this scan. Read-only, never sent back. The views keep
+   * `scanModeOf`, which also needs a time column: an interval without one is
+   * `misconfigured`, a state this flag alone would report as monitoring.
+   * Optional so hand-built configs (tests, the form's draft) need not invent it.
+   */
+  readonly monitoring_enabled?: boolean
 }
 
 export interface PlatformPresenceRow {

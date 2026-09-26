@@ -2027,12 +2027,31 @@ async def get_top_events_by_volume(
             .limit(limit)
         )
     ).all()
+    if not rows:
+        return []
+    # The share denominator (MO-25): type-level rows only, the project-total
+    # definition ``get_data_source_stats`` documents — every collection chunk
+    # also writes event-level rows re-counting the same warehouse rows, so a
+    # flat sum would count matched volume twice.
+    window_total = (
+        await session.execute(
+            select(func.coalesce(func.sum(EventMetric.count), 0))
+            .join(ScanConfig, ScanConfig.id == EventMetric.scan_config_id)
+            .where(
+                ScanConfig.project_id == project.id,
+                EventMetric.bucket >= time_from,
+                EventMetric.event_id.is_(None),
+                EventMetric.event_type_id.is_not(None),
+            )
+        )
+    ).scalar_one()
     return [
         TopEventResponse(
             event_id=row.id,
             name=row.name,
             event_type_id=row.event_type_id,
             total_count=int(row.total or 0),
+            window_total_count=int(window_total or 0),
         )
         for row in rows
     ]

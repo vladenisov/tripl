@@ -235,7 +235,8 @@ describe('CommandPalette', () => {
     // "Event type settings", "Meta field settings", "Relation settings",
     // "Variable settings" and "Monitoring settings" (tripl-m6cv).
     expect(screen.getByText('Event types')).toBeInTheDocument()
-    expect(screen.getByText('Schema & fields')).toBeInTheDocument()
+    // Renamed for what it holds (#238 AU-10); the old name is a keyword.
+    expect(screen.getByText('Meta fields')).toBeInTheDocument()
     expect(screen.getByText('Relations')).toBeInTheDocument()
     expect(screen.getByText('Variables')).toBeInTheDocument()
     expect(screen.getByText('Detection settings')).toBeInTheDocument()
@@ -862,7 +863,7 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
     // a search that has not run yet. A state machine keyed on the debounced
     // query alone reads this moment as "answered, and the answer is nothing".
     expect(screen.getByText('Searching.')).toBeInTheDocument()
-    expect(screen.queryByText('No knowledge matches.')).toBeNull()
+    expect(screen.queryByText(/No results for/)).toBeNull()
     expect(screen.queryByText('No matches.')).toBeNull()
   })
 
@@ -995,7 +996,7 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
       target: { value: 'zzzqqq' },
     })
 
-    expect(await screen.findByText('No knowledge matches.')).toBeInTheDocument()
+    expect(await screen.findByText(/No results for “zzzqqq”/)).toBeInTheDocument()
     expect(screen.queryByText('No matches.')).toBeNull()
   })
 
@@ -1014,10 +1015,10 @@ describe('CommandPalette ranking and filtering (tripl-k6gt)', () => {
       target: { value: 'zzzqqq' },
     })
 
-    expect(await screen.findByText(/Knowledge search failed/)).toBeInTheDocument()
+    expect(await screen.findByText(/Search failed/)).toBeInTheDocument()
     // A 500 and an empty index both leave `data?.items ?? []` at length 0. The
     // palette must not turn the first into a claim about the user's data.
-    expect(screen.queryByText('No knowledge matches.')).toBeNull()
+    expect(screen.queryByText(/No results for/)).toBeNull()
     expect(screen.queryByText('No matches.')).toBeNull()
   })
 })
@@ -1086,6 +1087,32 @@ describe('CommandPalette focus restore', () => {
       expect(document.activeElement).toBe(screen.getByTestId('topbar-trigger'))
     })
     expect(document.activeElement).not.toBe(document.body)
+  })
+
+  it('skips a trigger that cannot take focus (hidden at this breakpoint)', async () => {
+    mockEmptyProject()
+    renderHarness('/p/demo/events')
+
+    // The top bar's trigger is display:none at lg+, where focus() on it is a
+    // silent no-op. Stand one in front of the harness trigger to model that.
+    const hidden = document.createElement('button')
+    hidden.setAttribute(COMMAND_PALETTE_TRIGGER_ATTR, '')
+    hidden.focus = () => {}
+    document.body.prepend(hidden)
+
+    try {
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+      await screen.findByPlaceholderText(/Search projects/i)
+
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+
+      await waitFor(() => {
+        expect(document.activeElement).toBe(screen.getByTestId('topbar-trigger'))
+      })
+    } finally {
+      hidden.remove()
+    }
   })
 })
 
@@ -1356,5 +1383,86 @@ describe('CommandPalette in the shell (SHELL-25 / SHELL-27)', () => {
     await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/p/demo/settings'))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(document.activeElement).toBe(screen.getByRole('main'))
+  })
+})
+
+describe('CommandPalette reach and noise (#238 JR-19 / SH-19 / JR-20)', () => {
+  function mockDemo() {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/projects')) return mockJsonResponse([demoProject()])
+      if (url.endsWith('/api/v1/projects/demo/event-types')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/search?')) {
+        return mockJsonResponse({ items: [], total: 0, semantic_used: false })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+  }
+
+  it('finds settings sections by what they hold', async () => {
+    mockDemo()
+    renderHarness('/p/demo/events')
+    fireEvent.click(screen.getByTestId('open-palette'))
+    const input = await screen.findByPlaceholderText(/Search projects/i)
+    await screen.findByText('Demo')
+
+    fireEvent.change(input, { target: { value: 'api key' } })
+    expect(await screen.findByText('API keys')).toBeInTheDocument()
+
+    fireEvent.change(input, { target: { value: 'timezone' } })
+    expect(await screen.findByText('Project settings: General')).toBeInTheDocument()
+
+    // A keyword only the settings rail knows (nav.ts), not the palette's list.
+    fireEvent.change(input, { target: { value: 'dark mode' } })
+    expect(await screen.findByText('Profile')).toBeInTheDocument()
+  })
+
+  it('matches a multi-word query word by word, and keeps the old page name as a keyword', async () => {
+    mockDemo()
+    renderHarness('/p/demo/events')
+    fireEvent.click(screen.getByTestId('open-palette'))
+    const input = await screen.findByPlaceholderText(/Search projects/i)
+    await screen.findByText('Demo')
+
+    fireEvent.change(input, { target: { value: 'schema fields' } })
+    expect(await screen.findByText('Meta fields')).toBeInTheDocument()
+  })
+
+  it('offers create and theme commands', async () => {
+    mockDemo()
+    renderHarness('/p/demo/events')
+    fireEvent.click(screen.getByTestId('open-palette'))
+    await screen.findByText('Demo')
+
+    expect(screen.getByText('New event')).toBeInTheDocument()
+    expect(screen.getByText('New metric')).toBeInTheDocument()
+    expect(screen.getByText(/Switch to (light|dark) theme/)).toBeInTheDocument()
+  })
+
+  it('offers branch and invite commands that open their forms', async () => {
+    mockDemo()
+    renderHarness('/p/demo/events')
+    fireEvent.click(screen.getByTestId('open-palette'))
+    await screen.findByText('Demo')
+
+    // Without the switcher's cached branch list, one row opens the branches page.
+    expect(screen.getByText('Switch branch…')).toBeInTheDocument()
+    expect(screen.getByText('Invite member')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('New branch'))
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/p/demo/settings/branches')
+    })
+    expect(screen.getByTestId('location-search')).toHaveTextContent('?new=1')
+  })
+
+  it('prints no raw route next to a destination', async () => {
+    mockDemo()
+    renderHarness('/p/demo/events')
+    fireEvent.click(screen.getByTestId('open-palette'))
+    await screen.findByText('Demo')
+
+    expect(screen.queryByText('/p/demo/settings/meta-fields')).toBeNull()
+    expect(screen.queryByText('/settings/members')).toBeNull()
   })
 })

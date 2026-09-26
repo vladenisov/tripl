@@ -164,3 +164,60 @@ describe('FilterEditor — icon buttons carry names (DS-13 / ALR-23)', () => {
     expect(screen.queryByRole('button', { name: 'Remove value' })).toBeNull()
   })
 })
+
+// A catalog metric filter (JR-15): values are MetricDefinition ids, so the row
+// must name them from the metrics catalog — not fall back to the direction
+// picker and print raw uuids.
+function mockMetricsFetch(): string[] {
+  const calls: string[] = []
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input)
+    calls.push(url)
+    if (/\/metrics\/met-1(\?|$)/.test(url)) {
+      return jsonResponse({ id: 'met-1', name: 'checkout_rate', display_name: 'Checkout rate' })
+    }
+    if (/\/metrics\?/.test(url)) {
+      return jsonResponse({
+        items: [
+          { id: 'met-1', name: 'checkout_rate', display_name: 'Checkout rate' },
+          { id: 'met-2', name: 'refund_count', display_name: '' },
+        ],
+        total: 2,
+      })
+    }
+    throw new Error(`Unhandled fetch: ${url}`)
+  })
+  return calls
+}
+
+describe('FilterEditor — metric filter (JR-15)', () => {
+  it('names a saved metric from the catalog, under the Metric field', async () => {
+    mockMetricsFetch()
+    renderEventFilter([
+      { uid: 'filter-1', field: 'metric', operator: 'in', values: ['met-1'] },
+    ])
+
+    expect(await screen.findByText('Checkout rate')).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Filter field' })).toHaveTextContent('Metric')
+    expect(screen.getByRole('button', { name: 'Remove filter 1: Metric' })).toBeInTheDocument()
+    expect(screen.queryByText('met-1')).toBeNull()
+  })
+
+  it('lists catalog metrics, not directions, when the picker opens', async () => {
+    const calls = mockMetricsFetch()
+    renderEventFilter([
+      { uid: 'filter-1', field: 'metric', operator: 'in', values: [] },
+    ])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Choose metrics…' }))
+
+    await waitFor(() =>
+      expect(calls.some((url) => /\/metrics\?/.test(url) && url.includes('limit=50'))).toBe(true),
+    )
+    expect(await screen.findByText('Checkout rate')).toBeInTheDocument()
+    // A blank display name falls back to the machine name.
+    expect(screen.getByText('refund_count')).toBeInTheDocument()
+    expect(screen.queryByText('Spike (up)')).toBeNull()
+    expect(screen.getByLabelText('Search values')).toHaveAttribute('placeholder', 'Search metrics…')
+  })
+})

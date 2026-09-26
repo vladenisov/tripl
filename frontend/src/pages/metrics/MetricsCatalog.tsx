@@ -47,7 +47,7 @@ import { FilterBar, FilterSearch, FilterSelect } from '@/components/ui/filter-ba
 import { Chip, type ChipTone } from '@/components/primitives/chip'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
-import { LoadingState } from '@/components/primitives/loading-state'
+import { SectionSkeleton, StatValueSkeleton } from '@/components/states'
 import { Sparkline } from '@/components/primitives/sparkline'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import {
@@ -693,8 +693,14 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
         />
       ) : (
         <MiniStatStrip boxed className={isEmpty ? 'opacity-60' : undefined}>
-          <MiniStat label="Metrics" value={data ? formatNumber(total) : '—'} />
-          <MiniStat label="Active" value={data ? formatNumber(active) : '—'} tone="success" />
+          {/* Pending values are a skeleton bar with no tone, never "—" or a
+              green 0 that reads as an answer (#237 DS-25 / MT-33). */}
+          <MiniStat label="Metrics" value={data ? formatNumber(total) : <StatValueSkeleton />} />
+          <MiniStat
+            label="Active"
+            value={data ? formatNumber(active) : <StatValueSkeleton />}
+            tone={data ? 'success' : undefined}
+          />
           <StatFilter
             active={signalFilter === 'anomalies'}
             onToggle={() => toggleSignalFilter('anomalies')}
@@ -711,11 +717,15 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               // reader stops trusting both numbers (tripl-vsw2).
               label="Metrics with anomalies"
               value={
-                <span style={{ color: anomalyCount > 0 ? 'var(--danger)' : undefined }}>
-                  {data ? formatNumber(anomalyCount) : '—'}
-                </span>
+                data ? (
+                  <span style={{ color: anomalyCount > 0 ? 'var(--danger)' : undefined }}>
+                    {formatNumber(anomalyCount)}
+                  </span>
+                ) : (
+                  <StatValueSkeleton />
+                )
               }
-              tone={anomalyCount > 0 ? 'danger' : 'neutral'}
+              tone={data && anomalyCount > 0 ? 'danger' : 'neutral'}
             />
           </StatFilter>
           <StatFilter
@@ -726,11 +736,15 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
             <MiniStat
               label="Stale"
               value={
-                <span style={{ color: staleCount > 0 ? 'var(--warning)' : undefined }}>
-                  {data ? formatNumber(staleCount) : '—'}
-                </span>
+                data ? (
+                  <span style={{ color: staleCount > 0 ? 'var(--warning)' : undefined }}>
+                    {formatNumber(staleCount)}
+                  </span>
+                ) : (
+                  <StatValueSkeleton />
+                )
               }
-              tone={staleCount > 0 ? 'warning' : 'neutral'}
+              tone={data && staleCount > 0 ? 'warning' : 'neutral'}
             />
           </StatFilter>
         </MiniStatStrip>
@@ -831,7 +845,7 @@ export function MetricsCatalog({ slug }: { slug?: string }) {
               </div>
             )}
             {metricsQuery.isLoading ? (
-              <LoadingState className="px-4 py-6 text-body-sm" />
+              <SectionSkeleton variant="rows" label="Loading metrics…" />
             ) : visibleMetrics.length === 0 ? (
               // Names what is filtering, the stat toggle included: it is not an
               // obvious control to undo (MET-25). The one-click way out is the

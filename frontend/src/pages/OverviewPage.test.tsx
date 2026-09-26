@@ -38,7 +38,14 @@ const PROJECT = {
   },
 }
 
+/** An ISO bucket start `hoursAgo` hours before now. */
+function hoursAgo(hours: number): string {
+  return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString()
+}
+
 interface MockOpts {
+  /** Replaces the project summary (merged over PROJECT.summary). */
+  summary?: Partial<typeof PROJECT.summary> & Record<string, unknown>
   activity?: unknown[]
   signals?: unknown[]
   sources?: unknown[]
@@ -46,9 +53,14 @@ interface MockOpts {
   /** `null` models a project with no scan config at all — the bare empty series. */
   scanConfigId?: string | null
   /** `[]` models a scan whose buckets all predate the card's 7-day window. */
-  volumeData?: Array<{ bucket: string; count: number; expected_count: number | null }>
+  volumeData?: Array<{
+    bucket: string
+    count: number
+    expected_count: number | null
+    is_anomaly?: boolean
+  }>
   kpiSeries?: number[]
-  topEvents?: Array<{ event_id: string; name: string; total_count: number }>
+  topEvents?: Array<{ event_id: string; name: string; total_count: number; window_total_count?: number }>
   /** Never settles the volume request, so the card stays in its pending state. */
   holdVolume?: boolean
 }
@@ -68,8 +80,8 @@ function mockFetch(opts?: MockOpts) {
         interval: 'hour',
         latest_signal: null,
         data: opts?.volumeData ?? [
-          { bucket: 'b1', count: 10, expected_count: null },
-          { bucket: 'b2', count: 25, expected_count: null },
+          { bucket: hoursAgo(2), count: 10, expected_count: null },
+          { bucket: hoursAgo(1), count: 25, expected_count: null },
         ],
         forecast: [],
       })
@@ -85,7 +97,9 @@ function mockFetch(opts?: MockOpts) {
     if (url.includes('/anomalies/signals')) return jsonResponse(opts?.signals ?? [])
     if (url.includes('/activity/projects/')) return jsonResponse(opts?.activity ?? [])
     if (url.includes('/data-sources')) return jsonResponse(opts?.sources ?? [])
-    if (url.endsWith('/projects/demo')) return jsonResponse(PROJECT)
+    if (url.endsWith('/projects/demo')) {
+      return jsonResponse({ ...PROJECT, summary: { ...PROJECT.summary, ...opts?.summary } })
+    }
     throw new Error(`Unhandled fetch: ${url}`)
   })
 }
@@ -135,7 +149,7 @@ describe('OverviewPage', () => {
     mockFetch()
     const { container } = renderOverview()
 
-    await screen.findByRole('heading', { name: 'Live activity' })
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
     const eyebrow = container.querySelector('[data-slot="page-eyebrow"]')
     expect(eyebrow).toHaveTextContent('Observe')
     expect(eyebrow).not.toHaveTextContent('Demo')
@@ -145,7 +159,7 @@ describe('OverviewPage', () => {
     mockFetch()
     renderOverview()
 
-    expect(await screen.findByRole('heading', { name: 'Live activity' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument()
     expect(screen.getByText('Active events')).toBeInTheDocument()
 
     // active_event_count = 323 → "323"
@@ -169,8 +183,42 @@ describe('OverviewPage', () => {
     expect(
       screen.getByText('One scan — not the project’s combined volume across all scans.'),
     ).toBeInTheDocument()
-    // latest bucket count = 25
-    expect(await screen.findByText('25')).toBeInTheDocument()
+    // The headline is the last 24 hours (10 + 25), not the newest bucket.
+    expect(await screen.findByText('35')).toBeInTheDocument()
+    expect(screen.getByText('last 24h')).toBeInTheDocument()
+  })
+
+  it('heads the volume card with the last 24h against the day before, on a dated axis (MO-16)', async () => {
+    // "6,556 · latest bucket · 167 buckets" was one partial hour and internal
+    // vocabulary; the flagged bucket behind the Open signals KPI was invisible.
+    mockFetch({
+      volumeData: [
+        { bucket: hoursAgo(40), count: 100, expected_count: null },
+        { bucket: hoursAgo(30), count: 100, expected_count: null },
+        { bucket: hoursAgo(5), count: 150, expected_count: null, is_anomaly: true },
+        { bucket: hoursAgo(1), count: 100, expected_count: null },
+      ],
+    })
+    const { container } = renderOverview()
+
+    expect(
+      await screen.findByRole('group', {
+        name: 'Volume in the last 24 hours: 250, +25% against the 24 hours before',
+      }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('+25%')).toBeInTheDocument()
+    expect(screen.queryByText(/latest bucket/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/buckets$/)).not.toBeInTheDocument()
+    // The axis ends at "now" at the series' cadence ("hour" is not a scan
+    // interval code, so only "now" is printed for this fixture).
+    expect(screen.getByText('now')).toBeInTheDocument()
+    // The flagged bucket gets the sparkline's anomaly marker.
+    expect(container.querySelector('circle[fill="var(--danger)"]')).not.toBeNull()
+    // And the card opens the drilldown it summarises.
+    expect(screen.getByRole('link', { name: 'Open chart' })).toHaveAttribute(
+      'href',
+      '/p/demo/monitoring/project-total/scan-1',
+    )
   })
 
   it('bounds the volume request to a 7-day window (tripl-jfjt)', async () => {
@@ -282,9 +330,14 @@ describe('OverviewPage', () => {
 
     const label = await screen.findByText('feature_flag:flag_use:growthbook')
     // The column tracks the panel width instead of being pinned at w-40, so a
-    // wide panel shows the whole name.
+    // wide panel shows the whole name — capped narrower than before so the bar
+    // no longer starts mid-card, and full width (name above bar) on a phone
+    // (MO-25).
     expect(label.className).not.toMatch(/\bw-40\b/)
-    expect(label.className).toContain('w-[min(45%,22rem)]')
+    expect(label.className).toContain('sm:w-[min(40%,16rem)]')
+    expect(label.className).not.toContain('mono')
+    // Every row opens the event's monitoring page (MO-15).
+    expect(label.closest('a')).toHaveAttribute('href', '/p/demo/monitoring/event/e2')
 
     // Every name still renders in full in the DOM (and in the row's a11y name),
     // so nothing depends on hovering to tell the bars apart.
@@ -293,6 +346,19 @@ describe('OverviewPage', () => {
         screen.getByRole('listitem', { name: `${e.name}: ${e.total_count.toLocaleString()} events` }),
       ).toBeInTheDocument()
     }
+  })
+
+  it("shows each top event's share of the project's volume (MO-25)", async () => {
+    mockFetch({
+      topEvents: [
+        { event_id: 'e1', name: 'app_open', total_count: 600, window_total_count: 1000 },
+        { event_id: 'e2', name: 'tap', total_count: 50, window_total_count: 1000 },
+      ],
+    })
+    renderOverview()
+
+    expect(await screen.findByRole('listitem', { name: 'app_open: 600 events, 60% of the total' })).toHaveTextContent('60%')
+    expect(screen.getByRole('listitem', { name: 'tap: 50 events, 5% of the total' })).toBeInTheDocument()
   })
 
   it('captions the KPI sparkline as new events, not active events (tripl-jfm3.22)', async () => {
@@ -381,7 +447,7 @@ describe('OverviewPage', () => {
 
     expect(await screen.findByText('Page not found')).toBeInTheDocument()
     // The KPI strip / widgets must not render alongside the not-found page.
-    expect(screen.queryByRole('heading', { name: 'Live activity' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { level: 1, name: 'Overview' })).not.toBeInTheDocument()
   })
 
   it('labels a metric-scope signal with the name the server resolved (issue .17)', async () => {
@@ -662,18 +728,20 @@ describe('OverviewPage — beside the activity rail (LIVE-10)', () => {
     renderWithRail()
 
     const rail = await screen.findByRole('complementary', { name: 'Activity feed' })
-    expect(within(rail).getByText('Recent activity')).toBeInTheDocument()
-    await screen.findByRole('heading', { name: 'Live activity' })
-    // Once in the rail, and not a second time in the page body.
-    expect(screen.getAllByText('Recent activity')).toHaveLength(1)
+    // The rail is "Activity"; "Recent activity" is only Overview's card (SH-8).
+    expect(within(rail).getByText('Activity')).toBeInTheDocument()
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    // The feed is in the rail, and not a second time in the page body.
+    expect(screen.queryByText('Recent activity')).not.toBeInTheDocument()
   })
 
   it('keeps its panel behind the drawer, which covers the page rather than sitting beside it', async () => {
     mockFetch()
     renderWithRail({ inline: false })
 
-    await screen.findByRole('heading', { name: 'Live activity' })
-    await waitFor(() => expect(screen.getAllByText('Recent activity')).toHaveLength(2))
+    await screen.findByRole('heading', { level: 1, name: 'Overview' })
+    // The page keeps its own card (the drawer's title is "Activity").
+    await waitFor(() => expect(screen.getAllByText('Recent activity')).toHaveLength(1))
   })
 
   it('keeps the panel when the rail is closed', async () => {
@@ -735,3 +803,127 @@ function makeSource(overrides: {
     ...overrides,
   }
 }
+
+describe('OverviewPage — design review batches (MO-15, MO-17, MO-24, MO-26, JR-27)', () => {
+  it('links the KPI tiles where the work is, under one review name', async () => {
+    mockFetch()
+    renderOverview()
+
+    // "In review", the status name used everywhere (JR-27), not "Needs review".
+    const review = await screen.findByRole('link', { name: /^In review/ })
+    expect(review).toHaveAttribute('href', '/p/demo/events/review')
+    expect(screen.queryByText('Needs review')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /^Open signals/ })).toHaveAttribute(
+      'href',
+      '/p/demo/anomalies',
+    )
+    expect(screen.getByRole('link', { name: /^Coverage/ })).toHaveAttribute(
+      'href',
+      '/p/demo/coverage',
+    )
+  })
+
+  it('keeps the KPI figures neutral unless they are an exception (MO-17)', async () => {
+    mockFetch()
+    renderOverview()
+
+    await screen.findByText('323')
+    // "Implemented" used to be green whatever the ratio, and a zero signal
+    // count green too — praise for nothing.
+    const implemented = screen.getByText('Implemented').closest('dl') as HTMLElement
+    expect(within(implemented).getByText('320')).not.toHaveAttribute('data-tone')
+    const signals = screen.getByText('Open signals').closest('dl') as HTMLElement
+    expect(await within(signals).findByText('0')).not.toHaveAttribute('data-tone')
+  })
+
+  it('answers "is everything OK?" in one line under the title (MO-15)', async () => {
+    mockFetch({
+      signals: [makeEventSignal('ev-1')],
+      summary: {
+        open_incident_count: 2,
+        failing_scan_config_count: 1,
+        failing_alert_destination_count: 1,
+      },
+    })
+    renderOverview()
+
+    const anomalies = await screen.findByRole('link', { name: '1 open anomaly' })
+    expect(anomalies).toHaveAttribute('href', '/p/demo/anomalies')
+    expect(screen.getByRole('link', { name: '2 open incidents' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting',
+    )
+    expect(screen.getByRole('link', { name: '1 failing scan' })).toHaveAttribute(
+      'href',
+      '/p/demo/scans',
+    )
+    // A broken channel is named beside the failing scans, linking to Alerting.
+    expect(screen.getByRole('link', { name: '1 broken alert channel' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting',
+    )
+  })
+
+  it('shows a signal as a % change with the z-score on hover, and does not pulse it (MO-2, MO-18)', async () => {
+    // 300 vs 100 expected: +200%.
+    mockFetch({ signals: [makeEventSignal('ev-1')] })
+    const { container } = renderOverview()
+
+    const row = await screen.findByRole('link', { name: /Spike on Event · map:open:spot/ })
+    const change = within(row).getByText('+200%')
+    expect(change).toHaveAttribute('title', 'Major · z=8.0')
+    expect(row).not.toHaveTextContent('z=8.0')
+    expect(row.querySelector('.pulse-dot')).toBeNull()
+    // The Open signals KPI keeps its pulse; the list rows do not.
+    expect(
+      container.querySelectorAll('[data-slot="mini-stat-strip"] .pulse-dot'),
+    ).toHaveLength(1)
+  })
+
+  it('shows one empty state instead of five empty panels in a blank project (MO-24)', async () => {
+    mockFetch({
+      summary: { active_event_count: 0, implemented_event_count: 0, review_pending_event_count: 0 },
+      sources: [],
+    })
+    renderOverview()
+
+    expect(
+      await screen.findByRole('heading', { name: 'Overview fills in after your first scan' }),
+    ).toBeInTheDocument()
+    // Owners can act on it straight away.
+    expect(screen.getByRole('link', { name: 'Connect a data source' })).toHaveAttribute(
+      'href',
+      '/settings/data-sources',
+    )
+    expect(screen.queryByText('Top events · 48h')).not.toBeInTheDocument()
+    expect(screen.queryByText('Source health')).not.toBeInTheDocument()
+    expect(screen.queryByText('Active signals')).not.toBeInTheDocument()
+  })
+
+  it('names a synthetic source once, with its status as a chip, and links the row (MO-26)', async () => {
+    mockFetch({
+      sources: [
+        makeSource({ id: 's-demo', name: 'Demo warehouse', project_id: null }),
+        {
+          ...makeSource({ id: 's-syn', name: 'Synthetic warehouse', project_id: null }),
+          db_type: 'synthetic',
+          is_synthetic: true,
+        },
+      ],
+    })
+    renderOverview()
+
+    const synthetic = (await screen.findByText('Synthetic warehouse')).closest('a') as HTMLElement
+    expect(synthetic).toHaveAttribute('href', '/settings/data-sources/s-syn')
+    // The badge says "Synthetic"; the engine name no longer repeats it.
+    expect(within(synthetic).queryByText('synthetic')).not.toBeInTheDocument()
+    expect(within(synthetic).getByText('Synthetic')).toBeInTheDocument()
+    // A real engine still shows, since it adds information.
+    const real = screen.getByText('Demo warehouse').closest('a') as HTMLElement
+    expect(within(real).getByText('clickhouse')).toBeInTheDocument()
+    // The status is a toned chip (the check is months old here, so "Stale").
+    expect(
+      within(real).getByText('Stale').closest('[data-slot="chip"]'),
+    ).toHaveAttribute('data-tone', 'warning')
+  })
+})

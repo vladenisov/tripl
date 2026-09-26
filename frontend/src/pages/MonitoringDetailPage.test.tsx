@@ -721,7 +721,8 @@ describe('MonitoringDetailPage back affordance (tripl-lkox)', () => {
     installProjectTotalOnlyFetch()
     const { container } = renderMonitoringPage()
 
-    await screen.findByRole('heading', { level: 1, name: 'Project total' })
+    // Titled for what it shows (MO-12); the eyebrow still names the scope.
+    await screen.findByRole('heading', { level: 1, name: 'Total volume' })
     expect(container.querySelector('[data-slot="page-eyebrow"]')).toHaveTextContent(
       'Observe · Project total',
     )
@@ -766,6 +767,8 @@ describe('MonitoringDetailPage event detail', () => {
         })
       }
       if (url.includes('/api/v1/projects/demo/events/event-1/photos')) return mockJsonResponse([])
+      if (url.includes('/api/v1/projects/demo/events/event-1/comments')) return mockJsonResponse([])
+      if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
       if (url.endsWith('/api/v1/settings/photo-limits')) return mockJsonResponse({ photo_max_size_mb: 10 })
       if (url.endsWith('/api/v1/projects/demo/events/event-1')) return mockJsonResponse(eventFixture())
       if (url.endsWith('/api/v1/projects/demo/scans/scan-1')) {
@@ -843,6 +846,8 @@ function installEventDetailFetch(
       })
     }
     if (url.includes('/api/v1/projects/demo/events/event-1/photos')) return mockJsonResponse([])
+    if (url.includes('/api/v1/projects/demo/events/event-1/comments')) return mockJsonResponse([])
+    if (url.endsWith('/api/v1/users')) return mockJsonResponse([])
     if (url.endsWith('/api/v1/settings/photo-limits')) return mockJsonResponse({ photo_max_size_mb: 10 })
     if (url.includes('/api/v1/projects/demo/events/event-1/implementation-tickets')) {
       return mockJsonResponse(opts.tickets ?? [])
@@ -1023,6 +1028,94 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(panel.queryByText(/baseline 0 at the flagged bucket/)).toBeNull()
   })
 
+  it('shows the event discussion on the detail page, where viewers now land (EV-34)', async () => {
+    installEventDetailFetch()
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(
+      await screen.findByText('Nothing raised yet. Questions and notes here stay out of the spec.'),
+    ).toBeInTheDocument()
+  })
+
+  it('counts the discussion in the hero and jumps to it (JR-7)', async () => {
+    installEventDetailFetch()
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    // The thread sits below the tabs; the chip says it exists and how big it is.
+    const chip = await screen.findByRole('button', { name: 'Discussion (0)' })
+    // Spied, not replaced and deleted: deleting it also removed test-setup's
+    // polyfill, and every Radix Select opened later in the file then threw.
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView')
+    try {
+      fireEvent.click(chip)
+      expect(scrollIntoView).toHaveBeenCalled()
+      expect(document.getElementById('event-discussion')).not.toBeNull()
+    } finally {
+      scrollIntoView.mockRestore()
+    }
+  })
+
+  it('gives a signal its next steps: annotate, discuss, and the alert inbox (MO-4 / JR-5)', async () => {
+    installEventDetailFetch({ latestSignal: { ...dropToZeroSignal(), actual_count: 81, z_score: -6.5 } })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+    await screen.findByText(/Volume drop detected/)
+
+    expect(screen.getByRole('button', { name: 'Annotate' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Discuss' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'View alerts' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting',
+    )
+  })
+
+  it('states the flagged bucket as one sentence and says why it was flagged (MO-2)', async () => {
+    installEventDetailFetch({
+      latestSignal: {
+        ...dropToZeroSignal(),
+        direction: 'spike',
+        actual_count: 5767,
+        expected_count: 3174,
+        z_score: 16,
+      },
+      sigmaThreshold: 4,
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    const summary = await screen.findByTestId('signal-summary')
+    expect(summary.textContent).toMatch(/5\D?767 events, 82% above the expected 3\D?174/)
+    expect(summary.textContent).toContain('(16.0σ)')
+    expect(summary.textContent).toContain('Why flagged: 16.0σ from the expected value; anything past 4σ is flagged.')
+    // The 4-up grid of raw figures is gone.
+    expect(screen.queryByText('Flagged bucket')).toBeNull()
+    expect(screen.queryByText('Deviation')).toBeNull()
+  })
+
+  it('marks one event as verified from the overflow menu (JR-8)', async () => {
+    const spy = installEventDetailFetch()
+    const base = spy.getMockImplementation()!
+    spy.mockImplementation(async (input, init) => {
+      if (String(input).includes('/api/v1/projects/demo/events/bulk-update')) return mockJsonResponse({})
+      return base(input, init)
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More actions' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Mark as verified/ }))
+
+    await waitFor(() => {
+      const post = spy.mock.calls.find(([url]) => String(url).includes('/events/bulk-update'))
+      expect(post).toBeDefined()
+      const body = JSON.parse(String(post![1]?.body)) as Record<string, unknown>
+      expect(body).toMatchObject({ event_ids: ['event-1'], reviewed: true })
+    })
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Marked as verified'))
+  })
+
   it('omits the signal mini-chart when the event has no active anomaly', async () => {
     installEventDetailFetch() // latest_signal defaults to null → no banner, no chart
     renderEventDetail()
@@ -1067,7 +1160,7 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     expect(banner.textContent).not.toMatch(/[+-]?\d+% vs/)
   })
 
-  it('keeps the numeric z-score in the banner for a partial (non-zero) drop', async () => {
+  it('states a partial drop as a % change and keeps the z-score in the tooltip (MO-2)', async () => {
     installEventDetailFetch({
       latestSignal: {
         ...dropToZeroSignal(),
@@ -1081,7 +1174,9 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     await screen.findByRole('heading', { name: 'checkout_completed' })
 
     const banner = screen.getByText(/Volume drop detected/)
-    expect(banner.textContent).toContain('z=-3.3')
+    expect(banner.textContent).toMatch(/19(\.0)?% vs\. baseline/)
+    expect(banner.textContent).not.toMatch(/z\s*=/)
+    expect(banner).toHaveAttribute('title', expect.stringContaining('z=-3.3'))
     expect(banner.textContent).not.toContain('dropped to zero')
   })
 
@@ -1204,15 +1299,31 @@ describe('MonitoringDetailPage event-detail header and semantics', () => {
     renderEventDetail()
     await screen.findByRole('heading', { name: 'checkout_completed' })
 
-    expect(screen.getByText('Volume · 24h').closest('[title]')).toHaveAttribute(
-      'title',
-      'No events in the last 24h',
-    )
+    // The strip waits for the series (DS-25), then explains the empty state.
+    await waitFor(() =>
+      expect(screen.getByText('Volume · 24h').closest('[title]')).toHaveAttribute(
+        'title',
+        'No events in the last 24h',
+      ))
     // The Events list's own sentence for the same state (MON-28).
-    expect(screen.getByText('Δ · 24h').closest('[title]')).toHaveAttribute(
+    expect(screen.getByText('Change vs prior 24h').closest('[title]')).toHaveAttribute(
       'title',
       'No metrics collected for this event in the last 48h.',
     )
+  })
+
+  it('does not claim "no events" before the series arrives (DS-25)', async () => {
+    const fetchSpy = installEventDetailFetch({ metricsData: [] })
+    const base = fetchSpy.getMockImplementation()!
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).includes('/events/event-1/metrics')) return new Promise<Response>(() => {})
+      return base(input, init)
+    })
+    renderEventDetail()
+    await screen.findByRole('heading', { name: 'checkout_completed' })
+
+    expect(screen.getByText('Volume · 24h').closest('[title]')).toBeNull()
+    expect(screen.queryByTitle('No events in the last 24h')).toBeNull()
   })
 
   it('de-emphasises and explains empty drift and last-seen stats', async () => {
@@ -1700,9 +1811,10 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
     const chart = await screen.findByTestId('metrics-chart')
     // The percent-aware formatter reached the chart: 0.08 → '8%'.
     expect(chart).toHaveAttribute('data-value-sample', '8%')
-    // The latest-signal stat card renders the stored fractions ×100.
-    expect(screen.getByText('8%')).toBeInTheDocument()
-    expect(screen.getByText('5%')).toBeInTheDocument()
+    // The latest-signal summary renders the stored fractions ×100 (a sentence
+    // now, not a 4-up stat grid — MO-2).
+    const summary = screen.getByTestId('signal-summary')
+    expect(summary.textContent).toMatch(/: 8%, 60% above the expected 5% \(/)
   })
 
   // DS-31 / MET-40: only '%' used to get a formatter, so a 0.0045 s latency
@@ -1741,9 +1853,9 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
 
     const chart = await screen.findByTestId('metrics-chart')
     await waitFor(() => expect(chart).toHaveAttribute('data-tooltip-large', '$1,234'))
-    // The stat card spells the value the same way the tooltip does.
-    expect(screen.getByText('$1,234')).toBeInTheDocument()
-    expect(screen.getByText('$1,000')).toBeInTheDocument()
+    // The signal summary spells the value the same way the tooltip does.
+    const summary = screen.getByTestId('signal-summary')
+    expect(summary.textContent).toMatch(/: \$1,234, 23% above the expected \$1,000 \(/)
   })
 
   it('labels the primary tab and card "Value" for the metric scope, not "Volume"', async () => {
@@ -1793,6 +1905,12 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
       expect(body.scope_ref).toBe('metric-1')
       expect(body.label).toBe('campaign launch')
     })
+    // Confirmed, not only by a list growing below the fold (MO-8). Today's
+    // 10:00 is past the fixture's collected series, so the toast also says the
+    // marker is parked on the newest bucket until the next collection.
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Annotation added', {
+      description: expect.stringMatching(/past the collected data, so it shows on the newest bucket/),
+    }))
   })
 
   it('renders percent-metric breakdowns with the percent formatter and unit label (tripl-4dej)', async () => {
@@ -2071,7 +2189,8 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
       </QueryClientProvider>,
     )
 
-    expect(await screen.findByText('Loading breakdowns…')).toBeInTheDocument()
+    // The page waits in its own skeleton for the definition that titles it.
+    expect(await screen.findByText('Loading metric…')).toBeInTheDocument()
     // Give the series a chance to land: the tab still has not asked for data.
     await waitFor(() =>
       expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/metrics/metric-1/series'))).toBe(true))
@@ -2122,6 +2241,22 @@ describe('MonitoringDetailPage catalog-metric drilldown', () => {
 
     await screen.findByTestId('metrics-chart')
     expect(fetchSpy.mock.calls.some(([input]) => String(input).endsWith('/event-types'))).toBe(false)
+  })
+
+  // SH-33: a deleted metric is not a failure to retry.
+  it('says a missing metric was not found and links back to Metrics', async () => {
+    const fetchSpy = installMetricDetailFetch('1d')
+    const base = fetchSpy.getMockImplementation()!
+    fetchSpy.mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/api/v1/projects/demo/metrics/metric-1')) return errorResponse(404)
+      return base(input, init)
+    })
+    renderMetricDetail()
+
+    expect(await screen.findByRole('heading', { name: 'Metric not found' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Back to Metrics/ })).toHaveAttribute('href', '/p/demo/metrics')
+    expect(screen.queryByRole('button', { name: /Try again/ })).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('retries the failed metric definition from the page error (MON-7)', async () => {

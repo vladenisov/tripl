@@ -92,19 +92,25 @@ export function BulkActionBar({
         </span>
       )}
       {canSelectAll && (
-        <button
+        <>
+        {/* A rule between the count and the widening action: run together,
+            "2 selected Select all 17" read as one phrase (EV-31). */}
+        <div className="hidden h-5 w-px sm:block" style={{ background: 'var(--border)' }} />
+        <Button
           type="button"
+          variant="ghost"
+          size="sm"
           onClick={onSelectAllMatching}
           disabled={disabled}
-          className="text-body-sm font-medium underline-offset-2 hover:underline disabled:opacity-50"
-          style={{ color: 'var(--accent)' }}
+          className="h-8 text-primary"
         >
           {isSelectingAll
             ? 'Selecting…'
             : matchingTotal === null
               ? 'Select all matching'
               : `Select all ${matchingTotal.toLocaleString()}`}
-        </button>
+        </Button>
+        </>
       )}
       <div className="hidden h-5 w-px sm:block" style={{ background: 'var(--border)' }} />
       <Select
@@ -112,7 +118,7 @@ export function BulkActionBar({
         onValueChange={v => { if (v) onSetStatus(v as EventStatus) }}
         disabled={disabled}
       >
-        <SelectTrigger className="h-7 w-auto min-w-[8rem] whitespace-nowrap border-[var(--border-strong)] data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Set status">
+        <SelectTrigger className="h-8 w-auto min-w-[8rem] whitespace-nowrap border-[var(--border-strong)] data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Set status">
           <SelectValue placeholder="Set status…" />
         </SelectTrigger>
         <SelectContent>
@@ -123,14 +129,18 @@ export function BulkActionBar({
           ))}
         </SelectContent>
       </Select>
+      {/* Every control in the bar is 32px, one row height (EV-31). */}
       <Button
         variant="outline"
         size="sm"
+        className="h-8"
         onClick={onMarkReviewed}
         disabled={disabled}
       >
         <CheckCheck />
-        Mark reviewed
+        {/* "Verified", not "reviewed": this flag does not move an event out
+            of the In review queue (#238 JR-27). */}
+        Mark as verified
       </Button>
       {owners.length > 0 && (
         <Select
@@ -138,7 +148,7 @@ export function BulkActionBar({
           onValueChange={v => { if (v) onAssignOwner(v === UNASSIGN_VALUE ? null : v) }}
           disabled={disabled}
         >
-          <SelectTrigger className="h-7 w-auto min-w-[9.5rem] whitespace-nowrap border-[var(--border-strong)] data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Assign owner">
+          <SelectTrigger className="h-8 w-auto min-w-[9.5rem] whitespace-nowrap border-[var(--border-strong)] data-[placeholder]:text-foreground [&_svg]:text-foreground/70" aria-label="Assign owner">
             <SelectValue placeholder="Assign owner…" />
           </SelectTrigger>
           <SelectContent>
@@ -162,6 +172,7 @@ export function BulkActionBar({
       <Button
         variant="danger"
         size="sm"
+        className="h-8"
         onClick={onDelete}
         disabled={disabled}
       >
@@ -172,10 +183,10 @@ export function BulkActionBar({
       <button
         type="button"
         onClick={onClear}
-        className="flex h-6 w-6 items-center justify-center rounded-sm text-[var(--fg-subtle)] hover:text-[var(--fg)]"
+        className="flex size-8 items-center justify-center rounded-control text-[var(--fg-subtle)] hover:bg-surface-hover hover:text-[var(--fg)]"
         aria-label="Clear selection"
       >
-        <X className="h-3.5 w-3.5" />
+        <X className="size-3.5" aria-hidden="true" />
       </button>
     </div>
   )

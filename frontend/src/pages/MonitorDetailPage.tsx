@@ -1,17 +1,22 @@
-import { type ReactNode, useMemo } from 'react'
+import { type ReactNode, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Bell, BellOff, RefreshCw, Settings2 } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, Bell, BellOff, ChevronDown, ChevronRight, RefreshCw, Settings2 } from 'lucide-react'
 import { alertingApi } from '@/api/alerting'
 import { InfoRow, Panel } from '@/components/settings/kit'
 import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
 import { LoadingState } from '@/components/primitives/loading-state'
 import { Button } from '@/components/ui/button'
-import { ErrorState } from '@/components/error-state'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { PageSkeleton, QueryErrorState, ReadOnlyNotice } from '@/components/states'
 import { FormRow } from '@/components/ui/form-row'
 import { Chip } from '@/components/primitives/chip'
-import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { formatDateTime, formatRelativeTime } from '@/lib/datetime'
 import { formatNumber } from '@/lib/format'
@@ -26,13 +31,18 @@ import {
   ALERT_DELIVERY_TONE as DELIVERY_TONE,
   MONITOR_STATUS_LABEL as STATUS_LABEL,
   MONITOR_STATUS_TONE as STATUS_TONE,
+  signalDirectionColor,
 } from '@/lib/statusLexicon'
 import { useAdaptiveRefetchInterval } from '@/realtime/streamContext'
-import { formatCooldown } from './alerting/constants'
+import { RULE_SIGNAL_GROUPS, formatCooldown } from './alerting/constants'
+import { channelLabel } from './alerting/channelMeta'
 import { InertScopeNotice, inertScopeSentence, type DriftScope } from './alerting/InertScopeNotice'
-import type { AlertDelivery, MonitorDetail } from '@/types'
+import type { AlertDelivery, MonitorDetail, MonitorFiringScope } from '@/types'
 import { useCanWriteProject } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { getScopeMonitoringPath } from '@/lib/monitoring'
+import { formatIncidentCount, scopeKindLabel } from '@/lib/alertStatus'
+import { formatPercentDelta } from '@/lib/percentDelta'
+import { alertDeliveryKey } from '@/lib/queryKeys'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { usePageTitle } from '@/components/shell-chrome-context'
 import { invalidateAlertingConfig } from './alerting/alertingCache'
@@ -107,59 +117,52 @@ export default function MonitorDetailPage() {
   usePageTitle(monitor?.rule_name)
   const muteError = muteMut.error ?? unmuteMut.error
 
+  // The list this rule lives in: Alerting, on its Rules section.
+  const rulesListPath = `/p/${slug}/settings/alerting?section=monitors`
+
   if (monitorQuery.isError) {
+    // A rule that does not exist is not a failure to retry (#237 SH-33): a
+    // deleted rule's link from an old alert lands on "not found" and a way back.
     return (
       <PageContainer>
-        <ErrorState
-          title="Rule unavailable"
+        <QueryErrorState
           error={monitorQuery.error}
+          title="Could not load this alert rule"
           onRetry={() => {
             void monitorQuery.refetch()
           }}
-          retryLabel="Retry"
+          notFound={{
+            title: 'Alert rule not found',
+            description: 'It may have been deleted. Its past deliveries are gone with it.',
+            back: { to: rulesListPath, label: 'Back to alert rules' },
+          }}
           compact
         />
       </PageContainer>
     )
   }
 
+  if (monitorQuery.isLoading || !monitor) {
+    // The page's own shape while it loads, not a line of text (#237).
+    return <PageSkeleton variant="detail" label="Loading alert rule…" />
+  }
+
+  const statusTone = STATUS_TONE[monitor.status]
+
   return (
     // The eyebrow names the nav group and the collection, as on every Observe
     // detail page, instead of a separate back link above the header (DS-2 /
     // MO-40); the top bar's breadcrumb is the way back.
     <PageContainer>
-      {monitorQuery.isLoading || !monitor ? (
-        <LoadingState className="px-1 py-6 text-body-sm" />
-      ) : (
-        <>
-          <PageHeader
-            eyebrow="Observe · Alert rule"
-            title={monitor.rule_name}
-            actions={
-              // Editing a rule is an editor's job; the link would land a
-              // viewer on a read-only Monitors section.
-              slug && canWrite ? (
-                <Button asChild variant="outline" size="sm">
-                  <Link
-                    // A monitor IS an alert rule — the standalone list that used
-                    // the first noun is gone, and rules are edited in the
-                    // Monitors section of Alerting (tripl-89ps). The section has
-                    // to be named: without it the link lands on the incident
-                    // Inbox, which is the default, and "Edit rule" opens triage.
-                    to={`/p/${slug}/settings/alerting?section=monitors`}
-                    className="no-underline"
-                  >
-                    <Settings2 aria-hidden="true" />
-                    Edit rule
-                  </Link>
-                </Button>
-              ) : undefined
-            }
-          />
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Dot tone={STATUS_TONE[monitor.status]} pulse={monitor.status === 'firing'} size={8} />
-            <Chip tone={STATUS_TONE[monitor.status]} size="sm">
+      <PageHeader
+        eyebrow="Observe · Alert rule"
+        title={monitor.rule_name}
+        // The state belongs to the title, not to a line of its own between the
+        // title and the stats (MO-35). No pulsing dot: the chip says it, and
+        // "Last fired · still firing" below is the one place that moves (MO-18).
+        titleAddon={
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            <Chip tone={statusTone} size="sm">
               {STATUS_LABEL[monitor.status]}
             </Chip>
             {!monitor.rule_enabled && (
@@ -168,48 +171,74 @@ export default function MonitorDetailPage() {
               </Chip>
             )}
             {monitor.muted && monitor.muted_until && (
-              <Chip tone="warning" size="sm">
+              <Chip tone="warning" size="sm" icon={<BellOff aria-hidden="true" className="size-3" />}>
                 Muted until {formatDateTime(monitor.muted_until)}
               </Chip>
             )}
-          </div>
+          </span>
+        }
+        actions={
+          // Mute and editing are an editor's job; a viewer gets the notice
+          // below instead of controls that would 403.
+          slug && canWrite ? (
+            <>
+              <MuteControl
+                // The same string the heading shows: the names have to match
+                // what the operator just read (tripl-in45).
+                ruleName={monitor.rule_name}
+                muted={monitor.muted}
+                onMute={(ms) => muteMut.mutate(muteUntilIso(ms))}
+                onUnmute={() => unmuteMut.mutate()}
+                isPending={muteMut.isPending || unmuteMut.isPending}
+              />
+              <Button asChild variant="outline" size="sm">
+                <Link
+                  // A monitor IS an alert rule, and rules are edited in the
+                  // Rules section of Alerting (tripl-89ps, JR-28). The section
+                  // has to be named: without it the link lands on the incident
+                  // Inbox, which is the default, and "Edit rule" opens triage.
+                  to={rulesListPath}
+                  className="no-underline"
+                >
+                  <Settings2 aria-hidden="true" />
+                  Edit rule
+                </Link>
+              </Button>
+            </>
+          ) : undefined
+        }
+      />
 
-          {canWrite ? (
-            <MuteControl
-              // The same string the heading above shows: the button names have to
-              // match what the operator just read, or the announcement identifies
-              // a monitor by a noun that appears nowhere on screen (tripl-in45).
-              ruleName={monitor.rule_name}
-              muted={monitor.muted}
-              onMute={(ms) => muteMut.mutate(muteUntilIso(ms))}
-              onUnmute={() => unmuteMut.mutate()}
-              isPending={muteMut.isPending || unmuteMut.isPending}
-              errorMessage={muteError instanceof Error ? muteError.message : null}
-            />
-          ) : (
-            <ReadOnlyNotice>
-              Read-only: your account has the viewer role. Muting this monitor and
-              retrying its deliveries are done by an editor or owner.
-            </ReadOnlyNotice>
-          )}
-
-          <RecencyStrip monitor={monitor} />
-
-          <ConfigPanel slug={slug} monitor={monitor} />
-
-          <DestinationPanel slug={slug} monitor={monitor} />
-
-          <FiredHistoryTimeline
-            items={historyQuery.data?.items ?? []}
-            total={historyQuery.data?.total ?? 0}
-            isLoading={historyQuery.isLoading}
-            isError={historyQuery.isError}
-            onRetry={canWrite ? (deliveryId) => retryMut.mutate(deliveryId) : undefined}
-            retryingId={retryMut.isPending ? (retryMut.variables ?? null) : null}
-            retryError={retryError}
-          />
-        </>
+      {muteError instanceof Error && (
+        <p role="alert" className="m-0 text-caption" style={{ color: 'var(--danger)' }}>
+          {muteError.message}
+        </p>
       )}
+      {!canWrite && (
+        <ReadOnlyNotice>
+          Read-only: your account has the viewer role. Muting this rule and
+          retrying its deliveries are done by an editor or owner.
+        </ReadOnlyNotice>
+      )}
+
+      <RecencyStrip monitor={monitor} />
+
+      <FiringNowPanel slug={slug} scopes={monitor.firing_scopes ?? []} />
+
+      <ConfigPanel slug={slug} monitor={monitor} />
+
+      <DestinationPanel slug={slug} monitor={monitor} />
+
+      <FiredHistoryTimeline
+        slug={slug}
+        items={historyQuery.data?.items ?? []}
+        total={historyQuery.data?.total ?? 0}
+        isLoading={historyQuery.isLoading}
+        isError={historyQuery.isError}
+        onRetry={canWrite ? (deliveryId) => retryMut.mutate(deliveryId) : undefined}
+        retryingId={retryMut.isPending ? (retryMut.variables ?? null) : null}
+        retryError={retryError}
+      />
     </PageContainer>
   )
 }
@@ -291,13 +320,12 @@ function MuteControl({
   onMute,
   onUnmute,
   isPending,
-  errorMessage,
 }: {
   /**
-   * What the buttons name. A monitor IS an alert rule (tripl-89ps), so the noun
-   * is the rule's name — the same one the page heading shows and the same one
-   * `MonitorsSection`'s row control takes under this name. It is a prop and not
-   * a lookup because nothing else in this component identifies the monitor:
+   * What the controls name. A monitor IS an alert rule (tripl-89ps), so the
+   * noun is the rule's name — the same one the page heading shows and the same
+   * one `MonitorsSection`'s row menu takes under this name. It is a prop and
+   * not a lookup because nothing else in this component identifies the rule:
    * `muted` and the callbacks are all anonymous.
    */
   ruleName: string
@@ -305,58 +333,47 @@ function MuteControl({
   onMute: (ms: number) => void
   onUnmute: () => void
   isPending: boolean
-  errorMessage: string | null
 }) {
+  if (muted) {
+    return (
+      <ActionButton
+        icon={<Bell className="h-3.5 w-3.5" />}
+        label="Unmute"
+        ariaLabel={unmuteName(ruleName)}
+        onClick={onUnmute}
+        disabled={isPending}
+      />
+    )
+  }
+  // A header action, "Mute ▾", next to "Edit rule" (MO-35) — the three
+  // presets used to float on a line of their own under the title.
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {muted ? (
-        <ActionButton
-          icon={<Bell className="h-3.5 w-3.5" />}
-          label="Unmute"
-          ariaLabel={unmuteName(ruleName)}
-          onClick={onUnmute}
-          disabled={isPending}
-        />
-      ) : (
-        <>
-          {/* The visible "Mute for" is a plain span, so it is never part of any
-              button's accessible name — reading the row left to right is how a
-              sighted user gets the sentence, and the aria-label below is how
-              everyone else does (tripl-in45). */}
-          <span className="inline-flex items-center gap-1.5 text-body-sm" style={{ color: 'var(--fg-muted)' }}>
-            <BellOff className="h-3.5 w-3.5" />
-            Mute for
-          </span>
-          {MUTE_PRESETS.map((preset: MutePreset) => (
-            <ActionButton
-              key={preset.label}
-              icon={null}
-              label={preset.label}
-              // This page maps `MUTE_PRESETS`, whose `ms` is `number`, so this
-              // call is statically confined to the "for <duration>" branch of
-              // `muteChoiceName`. The open-ended phrasing does exist inside
-              // that builder — it has to, the Inbox needs it — but it is
-              // unreachable from here without importing `INDEFINITE_MUTE` or
-              // `INBOX_MUTE_CHOICES` by name, which is the greppable act
-              // tripl-a50u forbids on a rule surface: `is_rule_muted()` reads
-              // the NULL `muted_until` such a button writes as NOT MUTED. The
-              // guard is the typing of `MUTE_PRESETS`, not the phrasing here —
-              // and the negatives in this page's test file are what would catch
-              // a leak now that it would read as grammatical English
-              // (tripl-yapg).
-              ariaLabel={muteChoiceName(ruleName, preset)}
-              onClick={() => onMute(preset.ms)}
-              disabled={isPending}
-            />
-          ))}
-        </>
-      )}
-      {errorMessage && (
-        <span role="alert" className="text-caption" style={{ color: 'var(--danger)' }}>
-          {errorMessage}
-        </span>
-      )}
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="outline" size="sm" disabled={isPending}>
+          <BellOff aria-hidden="true" />
+          Mute
+          <ChevronDown aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={6}>
+        {MUTE_PRESETS.map((preset: MutePreset) => (
+          <DropdownMenuItem
+            key={preset.label}
+            // This page maps `MUTE_PRESETS`, whose `ms` is `number`, so this
+            // call is statically confined to the "for <duration>" branch of
+            // `muteChoiceName`. The open-ended phrasing is unreachable from
+            // here without importing `INDEFINITE_MUTE` or `INBOX_MUTE_CHOICES`
+            // by name, which tripl-a50u forbids on a rule surface:
+            // `is_rule_muted()` reads a NULL `muted_until` as NOT MUTED.
+            aria-label={muteChoiceName(ruleName, preset)}
+            onSelect={() => onMute(preset.ms)}
+          >
+            For {preset.label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -387,32 +404,116 @@ function RecencyStrip({ monitor }: { monitor: MonitorDetail }) {
       {/* The tone used to be set with no delta, and MiniStat paints the tone
           on the delta only — so the emphasis never rendered (MON-42). The
           delta now says what the tone is about. */}
+      {/* "4 of 4", once: "4 · 4 firing" said the number twice (MO-36). */}
       <MiniStat
-        label="Active scopes"
-        value={formatNumber(monitor.active_scope_count)}
-        tone={monitor.firing_scope_count > 0 ? 'danger' : 'neutral'}
-        delta={
-          monitor.firing_scope_count > 0
-            ? `${formatNumber(monitor.firing_scope_count)} firing`
-            : undefined
-        }
+        label="Firing scopes"
+        value={`${formatNumber(monitor.firing_scope_count)} of ${formatNumber(monitor.active_scope_count)}`}
+        valueTone={monitor.firing_scope_count > 0 ? 'danger' : undefined}
+        delta="watched"
       />
     </MiniStatStrip>
   )
 }
 
-function directionLabel(monitor: MonitorDetail): string {
-  const parts = [
-    monitor.notify_on_spike ? 'Spike ▲' : null,
-    monitor.notify_on_drop ? 'Drop ▼' : null,
-  ].filter(Boolean)
-  return parts.length > 0 ? parts.join(' · ') : '—'
+/**
+ * Which scopes are firing now, each linking to its drilldown (MO-36).
+ *
+ * The strip above only counts them; this says which. Not rendered when nothing
+ * fires — and `?? []` at the call site keeps a response that predates the field
+ * from painting an empty panel.
+ */
+function FiringNowPanel({ slug, scopes }: { slug?: string; scopes: MonitorFiringScope[] }) {
+  if (scopes.length === 0) return null
+  return (
+    <Panel title="Firing now" subtitle={`${formatNumber(scopes.length)} ${scopes.length === 1 ? 'scope' : 'scopes'}`}>
+      <ul className="m-0 list-none p-0">
+        {scopes.map((scope) => (
+          <FiringScopeRow
+            key={`${scope.scope_type}:${scope.scope_ref}:${scope.scan_config_id ?? ''}`}
+            slug={slug}
+            scope={scope}
+          />
+        ))}
+      </ul>
+    </Panel>
+  )
+}
+
+function FiringScopeRow({ slug, scope }: { slug?: string; scope: MonitorFiringScope }) {
+  const path = slug ? getScopeMonitoringPath(slug, scope) : null
+  // A null name is a scope the rule has not notified yet (a cooldown or a mute
+  // held the first message back), so there is no delivery to borrow it from.
+  const name = (
+    <>
+      <span style={{ color: 'var(--fg-subtle)' }}>{scopeKindLabel(scope.scope_type)}</span>{' '}
+      {scope.scope_name ?? (
+        <span style={{ color: 'var(--fg-faint)' }}>not notified yet</span>
+      )}
+    </>
+  )
+  return (
+    <li
+      className="flex min-h-(--row-h) flex-wrap items-center gap-2 border-b px-4 py-2 text-body-sm last:border-0"
+      style={{ borderColor: 'var(--border-subtle)' }}
+    >
+      {scope.direction === 'spike' && (
+        <ArrowUp aria-label="Spike" role="img" className="size-3.5 shrink-0" style={{ color: signalDirectionColor('spike') }} />
+      )}
+      {scope.direction === 'drop' && (
+        <ArrowDown aria-label="Drop" role="img" className="size-3.5 shrink-0" style={{ color: signalDirectionColor('drop') }} />
+      )}
+      {path ? (
+        <Link to={path} className="min-w-0 truncate no-underline hover:underline" style={{ color: 'var(--fg)' }}>
+          {name}
+        </Link>
+      ) : (
+        <span className="min-w-0 truncate">{name}</span>
+      )}
+      <span
+        className="tnum ml-auto text-caption"
+        style={{ color: 'var(--fg-subtle)' }}
+        title={formatDateTime(scope.last_anomaly_bucket)}
+      >
+        {formatRelativeTime(scope.last_anomaly_bucket)}
+      </span>
+    </li>
+  )
+}
+
+/**
+ * Spike and drop with the arrows the rest of the module draws, in their
+ * direction colours — not black text triangles (MO-37).
+ */
+function DirectionValue({ monitor }: { monitor: MonitorDetail }) {
+  if (!monitor.notify_on_spike && !monitor.notify_on_drop) return <>—</>
+  return (
+    <span className="inline-flex flex-wrap items-center gap-3">
+      {monitor.notify_on_spike && (
+        <span className="inline-flex items-center gap-1">
+          <ArrowUp aria-hidden="true" className="size-3.5" style={{ color: signalDirectionColor('spike') }} />
+          Spike
+        </span>
+      )}
+      {monitor.notify_on_drop && (
+        <span className="inline-flex items-center gap-1">
+          <ArrowDown aria-hidden="true" className="size-3.5" style={{ color: signalDirectionColor('drop') }} />
+          Drop
+        </span>
+      )}
+    </span>
+  )
 }
 
 interface WatchedScope {
   label: string
   /** Set only on a drift scope the project has no source data for. */
   inert: DriftScope | null
+}
+
+/** Which drift scope, if any, a signal-group key is — for the inert marking. */
+const DRIFT_SCOPE_BY_KEY: Partial<Record<string, DriftScope>> = {
+  include_distribution_drifts: 'distribution_drift',
+  include_variable_value_drifts: 'variable_value_drift',
 }
 
 function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail }) {
@@ -422,27 +523,31 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
   const distributionIsInert = monitor.scope_readiness?.distribution_drift === false
   const valueDriftIsInert = monitor.scope_readiness?.variable_value_drift === false
 
-  const scopes: WatchedScope[] = [
-    monitor.include_project_total ? { label: 'Project total', inert: null } : null,
-    monitor.include_event_types ? { label: 'Event types', inert: null } : null,
-    monitor.include_events ? { label: 'Events', inert: null } : null,
-    monitor.include_schema_drifts ? { label: 'Schema drifts', inert: null } : null,
-    monitor.include_distribution_drifts
-      ? { label: 'Distribution drifts', inert: distributionIsInert ? 'distribution_drift' : null }
-      : null,
-    monitor.include_release_regressions ? { label: 'Release regressions', inert: null } : null,
-    monitor.include_variable_value_drifts
-      ? { label: 'Value drifts', inert: valueDriftIsInert ? 'variable_value_drift' : null }
-      : null,
-    monitor.include_metrics ? { label: 'Metrics', inert: null } : null,
-  ].filter((scope): scope is WatchedScope => scope !== null)
+  const inertByScope: Partial<Record<DriftScope, boolean>> = {
+    distribution_drift: distributionIsInert,
+    variable_value_drift: valueDriftIsInert,
+  }
+  // Grouped as the rule editor groups them — volume changes, then the drift
+  // detectors — and named in the editor's words, so one scope is not
+  // "Distribution" there and "Distribution drifts" here (MO-37, AL-38).
+  const groups = RULE_SIGNAL_GROUPS.map((group) => ({
+    id: group.id,
+    label: group.id === 'volume' ? 'Volume' : 'Drift',
+    scopes: group.scopes
+      // `?? false`: a response that predates a flag reads as "not watched".
+      .filter((scope) => monitor[scope.key] ?? false)
+      .map((scope): WatchedScope => {
+        const drift = DRIFT_SCOPE_BY_KEY[scope.key] ?? null
+        return { label: scope.label, inert: drift && inertByScope[drift] ? drift : null }
+      }),
+  })).filter((group) => group.scopes.length > 0)
 
-  const inertScopes = scopes
-    .map((scope) => scope.inert)
+  const inertScopes = groups
+    .flatMap((group) => group.scopes.map((scope) => scope.inert))
     .filter((scope): scope is DriftScope => scope !== null)
 
   return (
-    <Panel title="Condition" subtitle="When this monitor fires">
+    <Panel title="Condition" subtitle="When this rule fires">
       {/* Which scan's anomalies this rule can see at all — the first thing that
           narrows it, so it reads before the direction and thresholds that narrow
           it further. The screen refused to name it before, while the docs told
@@ -452,7 +557,7 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
           wording is the rule editor's own option label, not a third phrasing —
           the screen that SETS this value is the one worth agreeing with. */}
       <InfoRow label="Scan" value={monitor.scan_name ?? 'All scans'} mono={false} />
-      <InfoRow label="Direction" value={directionLabel(monitor)} mono={false} />
+      <InfoRow label="Direction" value={<DirectionValue monitor={monitor} />} mono={false} />
       <InfoRow
         label="Threshold"
         value={monitor.min_percent_delta > 0 ? `≥ ${monitor.min_percent_delta}% change` : 'Any change'}
@@ -486,27 +591,32 @@ function ConfigPanel({ slug, monitor }: { slug?: string; monitor: MonitorDetail 
         }
       >
         <div className="flex min-w-0 flex-col gap-2">
-          <div className="flex min-w-0 flex-wrap gap-1.5">
-            {scopes.length > 0 ? (
-              scopes.map((scope) => (
-                <Chip
-                  key={scope.label}
-                  tone={scope.inert ? 'warning' : 'neutral'}
-                  size="xs"
-                  // A chip alone cannot say why it is marked, and the reader
-                  // hovering it is asking exactly that. The notice below carries
-                  // the same sentence for anyone who never hovers.
-                  title={scope.inert ? inertScopeSentence(scope.inert) : undefined}
-                >
-                  {scope.label}
-                </Chip>
-              ))
-            ) : (
-              <span className="text-body-sm" style={{ color: 'var(--fg-faint)' }}>
-                No scopes selected
-              </span>
-            )}
-          </div>
+          {groups.length > 0 ? (
+            groups.map((group) => (
+              <div key={group.id} className="flex min-w-0 flex-wrap items-center gap-1.5">
+                <span className="w-14 shrink-0 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+                  {group.label}
+                </span>
+                {group.scopes.map((scope) => (
+                  <Chip
+                    key={scope.label}
+                    tone={scope.inert ? 'warning' : 'neutral'}
+                    size="xs"
+                    // A chip alone cannot say why it is marked, and the reader
+                    // hovering it is asking exactly that. The notice below
+                    // carries the same sentence for anyone who never hovers.
+                    title={scope.inert ? inertScopeSentence(scope.inert) : undefined}
+                  >
+                    {scope.label}
+                  </Chip>
+                ))}
+              </div>
+            ))
+          ) : (
+            <span className="text-body-sm" style={{ color: 'var(--fg-faint)' }}>
+              No scopes selected
+            </span>
+          )}
           {inertScopes.map((scope) => (
             <InertScopeNotice
               key={scope}
@@ -539,13 +649,14 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
         }
       >
         <span className="flex min-w-0 items-center gap-2">
-          {/* The channel kind is a category tag: an outline chip (DS-6). */}
+          {/* The channel kind is a category tag: an outline chip (DS-6), in
+              words rather than the raw `demo_sink` type (AL-11). */}
           <Chip variant="outline" size="xs">
-            {monitor.destination_type}
+            {channelLabel(monitor.destination_type)}
           </Chip>
           {slug ? (
             <Link
-              to={`/p/${slug}/settings/alerting`}
+              to={`/p/${slug}/settings/alerting?section=destinations`}
               className="min-w-0 truncate text-body-sm no-underline hover:underline"
               style={{ color: 'var(--fg)' }}
               title={monitor.destination_name}
@@ -575,7 +686,7 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
           style={{ background: 'var(--danger-soft)', color: 'var(--fg-muted)' }}
         >
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--danger)' }} />
-          This destination is disabled — alerts for this monitor will not be delivered.
+          This destination is disabled — alerts for this rule will not be delivered.
         </div>
       )}
     </Panel>
@@ -583,6 +694,7 @@ function DestinationPanel({ slug, monitor }: { slug?: string; monitor: MonitorDe
 }
 
 function FiredHistoryTimeline({
+  slug,
   items,
   total,
   isLoading,
@@ -591,6 +703,7 @@ function FiredHistoryTimeline({
   retryingId,
   retryError,
 }: {
+  slug?: string
   items: AlertDelivery[]
   total: number
   isLoading: boolean
@@ -611,13 +724,14 @@ function FiredHistoryTimeline({
         </div>
       ) : items.length === 0 ? (
         <div className="px-4 py-6 text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-          This monitor has not fired yet.
+          This rule has not fired yet.
         </div>
       ) : (
         <ul className="m-0 list-none p-0">
           {items.map((delivery) => (
             <DeliveryRow
               key={delivery.id}
+              slug={slug}
               delivery={delivery}
               onRetry={onRetry ? () => onRetry(delivery.id) : undefined}
               retrying={retryingId === delivery.id}
@@ -633,16 +747,22 @@ function FiredHistoryTimeline({
 }
 
 function DeliveryRow({
+  slug,
   delivery,
   onRetry,
   retrying,
   retryError,
 }: {
+  slug?: string
   delivery: AlertDelivery
   onRetry?: () => void
   retrying: boolean
   retryError: string | null
 }) {
+  // "4 matched" opens the four scopes, each linking to its chart (MO-36): the
+  // alert used to be a dead end between the message and the anomaly.
+  const [expanded, setExpanded] = useState(false)
+  const scopesId = `delivery-scopes-${delivery.id}`
   return (
     <li className="min-h-(--row-h) border-b px-4 py-3 last:border-0" style={{ borderColor: 'var(--border-subtle)' }}>
       <div className="flex flex-wrap items-center gap-2">
@@ -650,13 +770,29 @@ function DeliveryRow({
           {delivery.status}
         </Chip>
         <Chip variant="outline" size="xs">
-          {delivery.channel}
+          {channelLabel(delivery.channel)}
         </Chip>
         <span className="min-w-0 flex-1 truncate text-body-sm font-medium">{delivery.scan_name}</span>
         {/* A count and a relative time: sans with tabular digits (DS-17). */}
-        <span className="tnum text-caption" style={{ color: 'var(--fg-subtle)' }}>
-          {formatNumber(delivery.matched_count)} matched
-        </span>
+        {delivery.matched_count > 0 ? (
+          <button
+            type="button"
+            className="tnum inline-flex items-center gap-0.5 rounded-sm text-caption hover:underline"
+            style={{ color: 'var(--fg-subtle)' }}
+            aria-expanded={expanded}
+            aria-controls={expanded ? scopesId : undefined}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded
+              ? <ChevronDown aria-hidden="true" className="size-3" />
+              : <ChevronRight aria-hidden="true" className="size-3" />}
+            {formatNumber(delivery.matched_count)} matched
+          </button>
+        ) : (
+          <span className="tnum text-caption" style={{ color: 'var(--fg-subtle)' }}>
+            0 matched
+          </span>
+        )}
         <span
           className="tnum text-micro"
           style={{ color: 'var(--fg-faint)' }}
@@ -685,6 +821,68 @@ function DeliveryRow({
           Retry failed: {retryError}
         </p>
       )}
+      {expanded && slug && <DeliveryScopes id={scopesId} slug={slug} deliveryId={delivery.id} />}
     </li>
+  )
+}
+
+/** The scopes one delivery matched, each linking to its drilldown (MO-36). */
+function DeliveryScopes({ id, slug, deliveryId }: { id: string; slug: string; deliveryId: string }) {
+  // The same key the delivery log's expanded row reads, so a delivery opened
+  // there costs no second request here.
+  const detailQuery = useQuery({
+    queryKey: alertDeliveryKey(slug, deliveryId),
+    queryFn: () => alertingApi.getDelivery(slug, deliveryId),
+    meta: SILENT_ERROR_META,
+  })
+  if (detailQuery.isPending) {
+    return <LoadingState className="mt-2 text-caption" label="Loading matched scopes…" />
+  }
+  if (detailQuery.isError) {
+    return (
+      <p id={id} className="mt-2 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        Could not load the matched scopes.
+      </p>
+    )
+  }
+  const items = detailQuery.data.items
+  if (items.length === 0) {
+    return (
+      <p id={id} className="mt-2 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+        No per-scope rows were stored for this delivery.
+      </p>
+    )
+  }
+  return (
+    <ul id={id} className="mt-2 grid list-none gap-1 p-0 pl-4">
+      {items.map((item) => {
+        const path = getScopeMonitoringPath(slug, item)
+        const name = (
+          <>
+            <span style={{ color: 'var(--fg-subtle)' }}>{scopeKindLabel(item.scope_type)}</span>{' '}
+            {item.scope_name}
+          </>
+        )
+        return (
+          <li key={item.id} className="flex flex-wrap items-center gap-2 text-caption">
+            {item.direction === 'spike'
+              ? <ArrowUp aria-label="Spike" role="img" className="size-3" style={{ color: signalDirectionColor('spike') }} />
+              : <ArrowDown aria-label="Drop" role="img" className="size-3" style={{ color: signalDirectionColor('drop') }} />}
+            {path ? (
+              <Link to={path} className="min-w-0 no-underline hover:underline" style={{ color: 'var(--fg)' }}>
+                {name}
+              </Link>
+            ) : (
+              <span className="min-w-0">{name}</span>
+            )}
+            <span className="tnum" style={{ color: 'var(--fg-subtle)' }}>
+              {formatIncidentCount(item.actual_count)} vs {formatIncidentCount(item.expected_count)}
+              {' · '}
+              {formatPercentDelta(item.percent_delta, item.expected_count)}
+            </span>
+          </li>
+        )
+      })}
+    </ul>
   )
 }

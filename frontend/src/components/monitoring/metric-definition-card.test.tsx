@@ -387,6 +387,18 @@ describe('MetricDefinitionCard event composition', () => {
     expect(screen.queryByText('—')).toBeNull()
   })
 
+  // MO-33: a SQL metric has no value column; it showed an empty "–" token.
+  it('leaves out a column the SQL metric does not use', () => {
+    renderCard(factDefinition({
+      kind: 'sql',
+      config: { metric_sql: 'select 1', time_column: 'ts' },
+    }))
+    expect(screen.getByText('time')).toBeInTheDocument()
+    expect(screen.getByText('ts')).toBeInTheDocument()
+    expect(screen.queryByText('value')).toBeNull()
+    expect(screen.queryByText('—')).toBeNull()
+  })
+
   it('labels the collection interval the way the rest of the UI does (MET-41)', () => {
     renderCard(factDefinition({ interval: '1h' }))
     expect(screen.getByText('Hourly')).toBeInTheDocument()

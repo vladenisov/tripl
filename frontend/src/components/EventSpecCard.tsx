@@ -1,6 +1,6 @@
-import { useMemo, type CSSProperties } from 'react'
+import { useMemo, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
-import { Copy } from 'lucide-react'
+import { ChevronDown, Copy } from 'lucide-react'
 import { toast } from 'sonner'
 import { Chip } from '@/components/primitives/chip'
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,16 @@ const CARD = 'overflow-hidden rounded-card border'
 const CARD_STYLE = { background: 'var(--surface)', borderColor: 'var(--border)' } as const
 const TH = 'h-auto px-[14px] py-2 text-left micro-label text-[var(--fg-subtle)]'
 const TD = 'px-[14px] py-[9px] text-body-sm align-top'
+
+/** The `${…}` names a field value uses. */
+function templateTokens(value: string): Set<string> {
+  return new Set(Array.from(value.matchAll(/\$\{([^}]+)\}/g), match => match[1] ?? ''))
+}
+
+/** Optional, unset and not part of the name: nothing to send, so folded away. */
+function isUnsetOptional(row: SpecRow): boolean {
+  return !row.value && !row.field.is_required && !row.namesTheEvent
+}
 
 /**
  * What a developer needs to instrument an event, on the page they are sent to.
@@ -57,15 +67,30 @@ export function EventSpecCard({
       .sort((a, b) => a.order - b.order)
       .map(field => {
         const fv = valueByField.get(field.id)
+        const value = fv?.value ?? ''
+        // Only the variables this value names: a field reading `home` listed
+        // `${user_id} = u_001, u_002…` from a context it does not use (EV-32).
+        const tokens = templateTokens(value)
         return {
           field,
-          value: fv?.value ?? '',
+          value,
           namesTheEvent: naming.has(field.name),
-          contexts: fv?.variable_values ?? [],
+          contexts: (fv?.variable_values ?? []).filter(
+            context =>
+              tokens.has(context.variable_name)
+              || (!!context.source_column && tokens.has(context.source_column)),
+          ),
         }
       })
   }, [event.field_values, eventType?.field_definitions, rule])
-  const payload = useMemo(() => buildExamplePayload(rows), [rows])
+  // Optional fields with no value (often auto-created by accepted drift) fold
+  // into one line, and the copies leave them out too: the spec to copy was
+  // mostly empty rows (EV-32).
+  const specRows = useMemo(() => rows.filter(row => !isUnsetOptional(row)), [rows])
+  const unsetRows = useMemo(() => rows.filter(isUnsetOptional), [rows])
+  const [showUnset, setShowUnset] = useState(false)
+  const shownRows = showUnset ? rows : specRows
+  const payload = useMemo(() => buildExamplePayload(specRows), [specRows])
   const payloadJson = JSON.stringify(payload, null, 2)
   const markdown = () =>
     buildSpecMarkdown({
@@ -74,7 +99,7 @@ export function EventSpecCard({
       eventTypeName: eventType?.display_name,
       description: event.description,
       rule,
-      rows,
+      rows: specRows,
       payload,
     })
 
@@ -148,7 +173,7 @@ export function EventSpecCard({
         )}
       </div>
 
-      {rows.length > 0 && (
+      {shownRows.length > 0 && (
         // The design-system table scrolls itself, with the edge fade that says
         // there is more to the right on a phone (LIVE-5); the card is
         // `--surface`, so the fade's cover is set to match. A phone drops the
@@ -167,7 +192,7 @@ export function EventSpecCard({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map(row => (
+              {shownRows.map(row => (
                 <TableRow
                   key={row.field.id}
                   className="hover:bg-transparent"
@@ -229,6 +254,21 @@ export function EventSpecCard({
               ))}
             </TableBody>
           </Table>
+        </div>
+      )}
+      {unsetRows.length > 0 && (
+        <div className="border-t px-4 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={showUnset}
+            onClick={() => setShowUnset(open => !open)}
+          >
+            <ChevronDown className={`transition-transform ${showUnset ? 'rotate-180' : ''}`} aria-hidden="true" />
+            {showUnset
+              ? 'Hide optional fields that are not set'
+              : `+${unsetRows.length} optional field${unsetRows.length === 1 ? '' : 's'} not set`}
+          </Button>
         </div>
       )}
 

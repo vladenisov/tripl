@@ -273,6 +273,10 @@ describe('Layout bypass block', () => {
   })
 })
 
+// The top bar repeats the project name on a phone-only line under the title
+// (#238); skip it so crumb assertions still find exactly the crumb.
+const CRUMB_IGNORE = 'script, style, [data-testid="topbar-project"]'
+
 describe('Layout breadcrumbs', () => {
   it('renders no root crumb on the workspace surface (tripl-jfm3.34)', async () => {
     renderLayout('/workspace', '/workspace', 'Workspace dashboard')
@@ -291,8 +295,9 @@ describe('Layout breadcrumbs', () => {
 
     // Concepts sits outside the grouped nav, so it used to fall through to the
     // catch-all and render "Demo › Overview" — a trail pointing at a page the
-    // user is not on.
-    expect(screen.getByText('Demo')).toBeInTheDocument()
+    // user is not on. (The phone-only project line under the title also reads
+    // "Demo"; the crumb is the one asserted here.)
+    expect(screen.getByText('Demo', { ignore: CRUMB_IGNORE })).toBeInTheDocument()
     expect(screen.getByText('Help & reference')).toBeInTheDocument()
     expect(screen.getByText('Concepts')).toBeInTheDocument()
     expect(screen.queryByText('Overview')).toBeNull()
@@ -303,7 +308,7 @@ describe('Layout breadcrumbs', () => {
     await screen.findByText('Page not found')
 
     // The slug is valid, so the trail still names the project (tripl-jfm3.3) …
-    expect(screen.getByText('Demo')).toBeInTheDocument()
+    expect(screen.getByText('Demo', { ignore: CRUMB_IGNORE })).toBeInTheDocument()
     // … but the page half must not name a real surface the user is not on.
     expect(screen.queryByText('Overview')).toBeNull()
     expect(screen.getByText('Not found')).toBeInTheDocument()
@@ -391,6 +396,39 @@ describe('Layout page title (LIVE-34)', () => {
   })
 })
 
+describe('Layout detail crumbs from the entity (MO-13)', () => {
+  function NamedDetail({ name }: { name?: string }) {
+    usePageTitle(name)
+    return <div>Detail body</div>
+  }
+
+  it('files an alert rule under Observe › Alerting › Rules', async () => {
+    renderLayout('/p/demo/monitors/rule-1', '/p/:slug/monitors/:id', undefined, {
+      page: <NamedDetail name="Checkout drop" />,
+    })
+    await screen.findByText('Detail body')
+
+    const banner = screen.getByRole('banner')
+    expect(within(banner).getByText('Alerting')).toBeInTheDocument()
+    expect(within(banner).getByText('Rules')).toBeInTheDocument()
+    expect(within(banner).getByText('Checkout drop')).toBeInTheDocument()
+  })
+
+  it('files an event type\'s volume under Event types, not Anomalies', async () => {
+    renderLayout('/p/demo/monitoring/event-type/et-1', undefined, undefined, {
+      page: <NamedDetail name="Screen View" />,
+    })
+    await screen.findByText('Detail body')
+
+    const banner = screen.getByRole('banner')
+    expect(within(banner).getByText('Event types')).toBeInTheDocument()
+    // The same group the nav files Event types under, not Observe.
+    expect(within(banner).getAllByText('Plan').length).toBeGreaterThan(0)
+    expect(within(banner).queryByText('Observe')).toBeNull()
+    expect(within(banner).queryByText('Anomalies')).toBeNull()
+  })
+})
+
 describe('Layout unknown project (tripl-jfm3.2)', () => {
   it('renders a not-found state instead of the project shell for an unknown slug', async () => {
     renderLayout('/p/no-such-project-xyz/overview', '/p/:slug/overview', 'Live activity body')
@@ -399,7 +437,7 @@ describe('Layout unknown project (tripl-jfm3.2)', () => {
     // No shell, so nothing below it can fan out project-scoped requests.
     expect(screen.queryByText('Live activity body')).toBeNull()
     expect(screen.queryByRole('navigation', { name: 'sidebar' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Toggle activity panel' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Toggle activity feed' })).toBeNull()
     // The invented slug is not echoed back as if it named a workspace.
     expect(screen.getByText(/no project with the address/i)).toBeInTheDocument()
   })
@@ -473,7 +511,7 @@ describe('Layout activity panel', () => {
     expect(await screen.findByText('Monitoring detail')).toBeInTheDocument()
     expect(screen.queryByTestId('activity-panel')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle activity panel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle activity feed' }))
 
     expect(await screen.findByTestId('activity-panel')).toHaveTextContent('Now demo')
   })
@@ -483,7 +521,7 @@ describe('Layout activity panel', () => {
     renderLayout('/p/demo/monitoring/event/event-1')
     await screen.findByText('Monitoring detail')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle activity panel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle activity feed' }))
     // Below the breakpoint the rail is an off-canvas drawer with a backdrop.
     expect(await screen.findByTestId('activity-panel')).toBeInTheDocument()
     const backdrop = screen.getByRole('button', { name: 'Close activity feed' })
@@ -497,7 +535,7 @@ describe('Layout activity panel', () => {
     renderLayout('/p/demo/monitoring/event/event-1')
     await screen.findByText('Monitoring detail')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle activity panel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle activity feed' }))
     expect(await screen.findByTestId('activity-panel')).toBeInTheDocument()
     // Inline mode has no drawer backdrop.
     expect(screen.queryByRole('button', { name: 'Close activity feed' })).toBeNull()
@@ -576,7 +614,7 @@ describe('Layout mobile navigation drawer (SHELL-21)', () => {
     renderLayout('/p/demo/events', '/p/:slug/events', 'Events body')
     await screen.findByText('Events body')
 
-    const toggle = screen.getByRole('button', { name: 'Toggle activity panel' })
+    const toggle = screen.getByRole('button', { name: 'Toggle activity feed' })
     toggle.focus()
     fireEvent.click(toggle)
     expect(await screen.findByTestId('activity-panel')).toBeInTheDocument()
@@ -617,7 +655,7 @@ describe('Layout landmarks and route changes', () => {
     await screen.findByText('Page not found')
 
     expect(screen.queryByTestId('activity-panel')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Toggle activity panel' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Toggle activity feed' })).toBeNull()
   })
 })
 

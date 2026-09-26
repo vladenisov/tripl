@@ -1,4 +1,5 @@
 import { useId, useState } from "react"
+import { Link } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { List, Pencil, Plus, Trash2, X } from "lucide-react"
 import { metaFieldsApi } from "@/api/metaFields"
@@ -26,11 +27,61 @@ import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
 import { Panel } from "@/components/settings/kit"
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { META_FIELD_LINK_PLACEHOLDER, MULTI_VALUE_META_FIELD_TYPES } from "@/lib/metaFields"
+import {
+  META_FIELD_LINK_EXAMPLE_KEY,
+  META_FIELD_LINK_PLACEHOLDER,
+  MULTI_VALUE_META_FIELD_TYPES,
+  metaFieldLinkExample,
+} from "@/lib/metaFields"
 import { getErrorMessage } from '@/lib/utils'
 import { useCanWriteProject } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { ReadOnlyNotice } from '@/components/states'
 import { metaFieldsKey, projectMetaFieldsKey } from '@/lib/queryKeys'
+
+/**
+ * A link template as it will be saved. `{value}` without the dollar sign is
+ * what people type from memory (the seeded Jira template had it), and it
+ * silently never resolved; it is taken to mean `${value}` (#244 AU-9).
+ */
+function normalizeLinkTemplate(template: string): string {
+  return template.trim().replace(/(?<!\$)\{value\}/g, META_FIELD_LINK_PLACEHOLDER)
+}
+
+const LINK_TEMPLATE_MISSING_VALUE = `Add ${META_FIELD_LINK_PLACEHOLDER} where the key goes, e.g. https://jira.example.com/browse/${META_FIELD_LINK_PLACEHOLDER}.`
+
+/** Why a link template cannot be saved, or null. */
+function linkTemplateError(enabled: boolean, template: string): string | null {
+  if (!enabled) return null
+  if (!template.trim()) return REQUIRED_MESSAGE
+  if (!normalizeLinkTemplate(template).includes(META_FIELD_LINK_PLACEHOLDER)) {
+    return LINK_TEMPLATE_MISSING_VALUE
+  }
+  return null
+}
+
+/**
+ * The one helper line under a link template, the same in both dialogs: a live
+ * preview of the link once the template can build one, the rule until then.
+ */
+function LinkTemplateHint({ id, template }: { id: string; template: string }) {
+  const example = metaFieldLinkExample(normalizeLinkTemplate(template))
+  return (
+    <p id={id} className="min-w-0 break-words text-body-sm text-muted-foreground">
+      {example ? (
+        <>
+          Opens <span className="font-mono">{example}</span> for a stored value like{' '}
+          <span className="font-mono">{META_FIELD_LINK_EXAMPLE_KEY}</span>.
+        </>
+      ) : (
+        <>
+          Put <span className="font-mono">{META_FIELD_LINK_PLACEHOLDER}</span> where the stored value
+          goes. Stored values stay short, for example{' '}
+          <span className="font-mono">{META_FIELD_LINK_EXAMPLE_KEY}</span>.
+        </>
+      )}
+    </p>
+  )
+}
 
 export function MetaFieldsTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
@@ -69,10 +120,10 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
     ? {
         name: name.trim() ? null : REQUIRED_MESSAGE,
         displayName: displayName.trim() ? null : REQUIRED_MESSAGE,
-        linkTemplate: displayAsLink && !linkTemplate.trim() ? REQUIRED_MESSAGE : null,
+        linkTemplate: linkTemplateError(displayAsLink, linkTemplate),
       }
     : { name: null, displayName: null, linkTemplate: null }
-  const editLinkError = editSubmitted && editDisplayAsLink && !editLinkTemplate.trim() ? REQUIRED_MESSAGE : null
+  const editLinkError = editSubmitted ? linkTemplateError(editDisplayAsLink, editLinkTemplate) : null
 
   // IDs for create dialog form controls
   const createNameId = useId()
@@ -123,7 +174,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       allow_multiple: canAllowMultiple && allowMultiple,
       ...(fieldType === 'enum' && enumOptions.length > 0 ? { enum_options: enumOptions } : {}),
       ...(defaultValue ? { default_value: defaultValue } : {}),
-      ...(displayAsLink ? { link_template: linkTemplate.trim() || null } : {}),
+      ...(displayAsLink ? { link_template: normalizeLinkTemplate(linkTemplate) || null } : {}),
       sensitivity,
     }, branchId),
     onSuccess: () => {
@@ -141,7 +192,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       allow_multiple: canEditAllowMultiple && editAllowMultiple,
       ...(editFieldType === 'enum' ? { enum_options: editEnumOptions } : { enum_options: null }),
       default_value: editDefaultValue || null,
-      link_template: editDisplayAsLink ? (editLinkTemplate.trim() || null) : null,
+      link_template: editDisplayAsLink ? (normalizeLinkTemplate(editLinkTemplate) || null) : null,
       sensitivity: editSensitivity,
     }, branchId),
     onSuccess: () => {
@@ -201,10 +252,23 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
       {/* The shared page header (DS-1): the page had no title of its own, only
           the Panel's. "New meta field" names the create action the way the
           dialog does (DS-29). */}
+      {/* "Meta fields", the name the button, the dialog and the event form
+          already use; "Schema & fields" sent people looking for a type's
+          schema here (#238 AU-10 / JR-30). The description says how these
+          differ from a type's own fields and links there. */}
       <PageHeader
         eyebrow="Plan"
-        title="Schema & fields"
-        description="Meta fields add structured metadata to every event: a ticket link, an owner, a release."
+        title="Meta fields"
+        description={
+          <>
+            Extra attributes every event carries whatever its type: owner team, Jira ticket,
+            review date. Per-type fields live on each{' '}
+            <Link to={`/p/${slug}/settings/event-types`} className="text-accent no-underline hover:underline">
+              event type
+            </Link>
+            .
+          </>
+        }
         actions={
           canWrite && (
             <Button size="sm" onClick={() => setShowForm(true)}>
@@ -224,7 +288,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
             onSubmit={e => {
               e.preventDefault()
               setCreateSubmitted(true)
-              if (!name.trim() || !displayName.trim() || (displayAsLink && !linkTemplate.trim())) {
+              if (!name.trim() || !displayName.trim() || linkTemplateError(displayAsLink, linkTemplate)) {
                 const form = e.currentTarget
                 requestAnimationFrame(() => focusFirstInvalid(form))
                 return
@@ -307,9 +371,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                       {...invalidAria(createLinkTemplateId, createErrors.linkTemplate)}
                     />
                     <FieldError inputId={createLinkTemplateId} message={createErrors.linkTemplate} />
-                    <p className="text-body-sm text-muted-foreground">
-                      Use <span className="font-mono">{META_FIELD_LINK_PLACEHOLDER}</span>. Stored values stay short, for example <span className="font-mono">TASK-123</span>.
-                    </p>
+                    <LinkTemplateHint id={`${createLinkTemplateId}-hint`} template={linkTemplate} />
                   </div>
                 )}
               </div>
@@ -333,7 +395,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
             onSubmit={e => {
               e.preventDefault()
               setEditSubmitted(true)
-              if (editDisplayAsLink && !editLinkTemplate.trim()) {
+              if (linkTemplateError(editDisplayAsLink, editLinkTemplate)) {
                 const form = e.currentTarget
                 requestAnimationFrame(() => focusFirstInvalid(form))
                 return
@@ -414,9 +476,7 @@ export function MetaFieldsTab({ slug }: { slug: string }) {
                       {...invalidAria(editLinkTemplateId, editLinkError)}
                     />
                     <FieldError inputId={editLinkTemplateId} message={editLinkError} />
-                    <p className="text-body-sm text-muted-foreground">
-                      Use <span className="font-mono">{META_FIELD_LINK_PLACEHOLDER}</span> to inject the stored value into the final URL.
-                    </p>
+                    <LinkTemplateHint id={`${editLinkTemplateId}-hint`} template={editLinkTemplate} />
                   </div>
                 )}
               </div>

@@ -9,8 +9,8 @@ import {
   History,
   LineChart,
   Link2,
+  ScanLine,
   ScrollText,
-  Search,
   ShieldCheck,
   Table2,
   Tag,
@@ -110,7 +110,11 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
         },
         {
           id: 'schema',
-          label: 'Schema & fields',
+          // Named for what the page holds: the meta fields every event
+          // carries. "Schema & fields" promised the per-type schema, which
+          // lives on each event type (#238 AU-10 / JR-30). The old name stays a
+          // palette keyword.
+          label: 'Meta fields',
           icon: Braces,
           href: `${base}/settings/meta-fields`,
           match: (p) => p.startsWith(`${base}/settings/meta-fields`),
@@ -158,7 +162,10 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
       items: [
         {
           id: 'overview',
-          label: 'Live activity',
+          // The project's home (projectHomePath): KPIs, volume, signals and the
+          // get-started checklist. "Live activity" undersold it and collided
+          // with the top bar's activity feed (#238 SH-8 / JR-35).
+          label: 'Overview',
           icon: Activity,
           href: `${base}/overview`,
           match: (p) => p.startsWith(`${base}/overview`),
@@ -201,10 +208,12 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
               && !p.startsWith(`${base}/monitoring/metric/`)
               && !p.startsWith(`${base}/monitoring/event/`)),
           // Badges the open-signal population (monitoring_signal_count) — the raw
-          // anomalies feed this page lists — in a danger tone when any are open.
-          // Omitted when nothing is open.
+          // anomalies feed this page lists. Warning, not danger: signals are
+          // information about what detection found; the work somebody owes is
+          // the incident on Alerting, which keeps danger (#240 JR-6). Omitted
+          // when nothing is open.
           count: openSignals > 0 ? formatCount(openSignals) : undefined,
-          tone: openSignals > 0 ? 'danger' : undefined,
+          tone: openSignals > 0 ? 'warning' : undefined,
         },
         {
           id: 'alerting',
@@ -257,7 +266,9 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
         {
           id: 'scans',
           label: 'Scans',
-          icon: Search,
+          // Not the magnifier: on the collapsed rail Scans and Search were the
+          // same icon a few rows apart (#238 SH-13).
+          icon: ScanLine,
           href: `${base}/scans`,
           match: (p) => p.startsWith(`${base}/scans`),
         },
@@ -267,8 +278,11 @@ export function buildNavGroups(slug: string, summary: ProjectSummary | undefined
           icon: ScrollText,
           href: `${base}/settings/audit`,
           match: (p) => p.startsWith(`${base}/settings/audit`),
-          // The feed behind this is instance-wide, not project-scoped
-          // (tripl-jfm3.110).
+          // THIS project's changes: the page asks /audit with project_slug
+          // (AuditTab), so "who changed my plan?" is answered for this plan
+          // alone. Actions that belong to no project (members, API keys, a
+          // project's deletion) are in Settings › Instance › Audit log
+          // (#238 JR-26). Owner-only because the endpoint is (tripl-jfm3.110).
           ownerOnly: true,
         },
       ],

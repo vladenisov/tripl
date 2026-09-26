@@ -132,11 +132,16 @@ def filter_matches_anomaly(
         actual = str(anomaly.event_id) if anomaly.event_id is not None else None
     elif filter_row.field == "direction":
         actual = "up" if anomaly.direction == "spike" else "down"
+    elif filter_row.field == "metric":
+        # A catalog-metric signal's scope_ref IS its MetricDefinition id (see
+        # worker/tasks/metrics/detect.py); no other scope names a metric.
+        actual = anomaly.scope_ref if anomaly.scope_type == SCOPE_METRIC else None
     else:
         return True
 
     # A genuinely event-less signal (the project-total / event-type rollups, a
-    # catalog metric) carries no such field at all and still passes through.
+    # catalog metric) carries no such field at all and still passes through —
+    # and, symmetrically, a volume or drift signal passes a ``metric`` filter.
     if actual is None:
         return True
 

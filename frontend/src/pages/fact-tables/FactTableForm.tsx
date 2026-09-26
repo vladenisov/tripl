@@ -6,7 +6,7 @@ import { examplePlaceholder, sqlPlaceholder } from '@/components/forms/placehold
 import { attentionSummary } from '@/components/forms/validation'
 import { Button } from '@/components/ui/button'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Navigate, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, Eye, Loader2, Plus, Save, Trash2 } from 'lucide-react'
 import { dataSourcesApi } from '@/api/dataSources'
@@ -46,7 +46,8 @@ import {
 import { useCanWriteProject } from '@/lib/permissions'
 import { toIdentifier } from '@/lib/identifier'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { PageSkeleton, QueryErrorState, ReadOnlyNotice } from '@/components/states'
+import { FactTableReadView } from './FactTableReadView'
 import { uid } from '@/lib/uid'
 // The shared settings field row and error wiring: the metric and fact-table
 // editors report validation the same way — inline under the field, linked from
@@ -923,6 +924,7 @@ const EMPTY_DATA_SOURCES: DataSource[] = []
  */
 export default function FactTableEditPage() {
   const { slug, factTableId } = useParams<{ slug: string; factTableId?: string }>()
+  const canWrite = useCanWriteProject()
   const navigate = useNavigate()
   const isNew = !factTableId
 
@@ -938,18 +940,27 @@ export default function FactTableEditPage() {
     enabled: !!slug && !!factTableId,
   })
 
+  // "New fact table" has nothing for a viewer to read (#237 MT-28).
+  if (!canWrite && isNew && slug) return <Navigate to={`/p/${slug}/metrics/fact-tables`} replace />
+
+  // A deleted or unknown fact table is "not found" with the way back; only a
+  // real failure keeps the retry (#237 SH-33).
   const loadError = dataSourcesQuery.error ?? factTableQuery.error
   if (loadError) {
     return (
       <PageContainer width="narrow">
-        <ErrorState
-          title="Failed to load fact table editor"
-          error={loadError}
+        <QueryErrorState
+          error={factTableQuery.error ?? loadError}
+          title={isNew ? 'Could not load data sources' : 'Could not load this fact table'}
           onRetry={() => {
             void Promise.all([
               dataSourcesQuery.refetch(),
               ...(factTableId ? [factTableQuery.refetch()] : []),
             ])
+          }}
+          notFound={{
+            title: 'Fact table not found',
+            back: { to: `/p/${slug}/metrics/fact-tables`, label: 'Back to fact tables' },
           }}
         />
       </PageContainer>
@@ -959,9 +970,20 @@ export default function FactTableEditPage() {
   const isLoading = dataSourcesQuery.isLoading || (!isNew && factTableQuery.isLoading)
   if (isLoading || !slug) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-        Loading…
-      </div>
+      <PageContainer width="narrow">
+        <PageSkeleton variant="form" label={isNew ? 'Loading fact table editor…' : 'Loading fact table…'} />
+      </PageContainer>
+    )
+  }
+
+  // A viewer reads the definition; a disabled form is not a read view.
+  if (!canWrite && factTableQuery.data) {
+    return (
+      <FactTableReadView
+        factTable={factTableQuery.data}
+        dataSources={dataSourcesQuery.data ?? EMPTY_DATA_SOURCES}
+        onClose={goBack}
+      />
     )
   }
 

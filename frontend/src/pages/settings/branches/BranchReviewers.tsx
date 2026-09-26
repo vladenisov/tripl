@@ -1,6 +1,6 @@
 import { useId, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { X } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 
 import { planBranchesApi } from '@/api/planBranches'
 import { usersApi } from '@/api/users'
@@ -144,20 +144,23 @@ export function BranchReviewSummary({
               })}
             </ul>
           )}
+          {/* Inline after the chips, as an outlined control: the ghost button
+              floated far right read as a heading (PL-27). */}
           {showPicker && !picking ? (
             <Button
               type="button"
-              size="sm"
-              variant="ghost"
-              className="ml-auto h-7"
+              size="xs"
+              variant="outline"
+              aria-label="Add reviewer"
               onClick={() => setPicking(true)}
             >
-              Add reviewer
+              <Plus aria-hidden="true" />
+              Reviewer
             </Button>
           ) : null}
           {showPicker && picking ? (
             <form
-              className="ml-auto flex items-center gap-1.5"
+              className="flex items-center gap-1.5"
               onSubmit={(event) => {
                 event.preventDefault()
                 if (picked) addMut.mutate(picked)

@@ -24,6 +24,20 @@ import { eventMetricsApi } from '@/api/eventMetrics'
 import { eventsApi } from '@/api/events'
 import { scansApi } from '@/api/scans'
 
+/**
+ * Matches a row's scope label by its full text. The "Spike on" / "Drop on"
+ * prefix is its own element (visually hidden on phones, MO-20), so the default
+ * text matcher, which reads only an element's own text nodes, no longer sees
+ * "Spike on Event · Signup" as one string.
+ */
+function rowLabel(text: string | RegExp) {
+  return (_content: string, element: Element | null) => {
+    if (!element?.hasAttribute('data-anomaly-label')) return false
+    const full = element.textContent ?? ''
+    return typeof text === 'string' ? full === text : text.test(full)
+  }
+}
+
 function makeSignal(overrides: Partial<MonitoringSignal>): MonitoringSignal {
   return {
     scan_config_id: 'scan-1',
@@ -188,8 +202,8 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
 
     renderAnomalies()
 
-    expect(await screen.findByText('Spike on Event type · Signup')).toBeInTheDocument()
-    expect(await screen.findByText('Spike on Event · Checkout tapped')).toBeInTheDocument()
+    expect(await screen.findByText(rowLabel('Spike on Event type · Signup'))).toBeInTheDocument()
+    expect(await screen.findByText(rowLabel('Spike on Event · Checkout tapped'))).toBeInTheDocument()
   })
 
   it('does not download the event catalog just to label rows', async () => {
@@ -199,7 +213,7 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
 
     renderAnomalies()
 
-    await screen.findByText('Spike on Event · Checkout tapped')
+    await screen.findByText(rowLabel('Spike on Event · Checkout tapped'))
     expect(eventsApi.list).not.toHaveBeenCalled()
   })
 
@@ -217,14 +231,54 @@ describe('AnomaliesPage — scope names (tripl-nxk2.4, tripl-y4wt)', () => {
     renderAnomalies()
 
     // Both scopes are listed (no collapse), and only the child carries the tag.
-    const parentRow = (await screen.findByText('Spike on Project total')).closest(
+    const parentRow = (await screen.findByText(rowLabel('Spike on Project total'))).closest(
       '[role="row"]',
     ) as HTMLElement
     const childRow = screen
-      .getByText('Spike on Event type · Signup')
+      .getByText(rowLabel('Spike on Event type · Signup'))
       .closest('[role="row"]') as HTMLElement
-    expect(childRow).toHaveTextContent('part of total')
-    expect(parentRow).not.toHaveTextContent('part of total')
+    // Worded as what it means, not the "part of total" annotation (MO-22).
+    expect(childRow).toHaveTextContent('within total spike')
+    expect(childRow).not.toHaveTextContent('part of total')
+    expect(parentRow).not.toHaveTextContent('within total spike')
+  })
+
+  it('says "within total drop" on a child folded under a project_total drop', async () => {
+    // Children are keyed to parents by direction, so a drop child's parent is
+    // a total drop; "within total spike" on it was wrong.
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({
+        scope_type: 'event_type',
+        scope_ref: 'et-12345678',
+        scope_name: 'Signup',
+        direction: 'drop',
+        actual_count: 40,
+        expected_count: 80,
+        z_score: -8,
+        incident_child: true,
+      }),
+    ])
+
+    renderAnomalies()
+
+    const row = (await screen.findByText(rowLabel('Drop on Event type · Signup'))).closest(
+      '[role="row"]',
+    ) as HTMLElement
+    expect(row).toHaveTextContent('within total drop')
+    expect(row).not.toHaveTextContent('within total spike')
+  })
+
+  it('keeps the direction prefix in the accessible name but hides it visually on phones (MO-20)', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scope_ref: 'metric-abc', scope_name: 'Checkout conversion' }),
+    ])
+
+    renderAnomalies()
+
+    const link = await screen.findByRole('link', { name: 'Spike on Metric · Checkout conversion' })
+    // The arrow carries the direction below sm; the words return from sm up.
+    const prefix = within(link).getByText('Spike on')
+    expect(prefix).toHaveClass('sr-only', 'sm:not-sr-only')
   })
 })
 
@@ -244,7 +298,7 @@ describe('AnomaliesPage — severity label (tripl-yfsj.9)', () => {
 
     renderAnomalies()
 
-    const row = (await screen.findByText('Drop on Event type · Signup')).closest(
+    const row = (await screen.findByText(rowLabel('Drop on Event type · Signup'))).closest(
       '[role="row"]',
     ) as HTMLElement
     expect(row).toHaveTextContent('dropped to zero')
@@ -252,18 +306,88 @@ describe('AnomaliesPage — severity label (tripl-yfsj.9)', () => {
     expect(row).not.toHaveTextContent('z=-20')
   })
 
-  it('keeps the numeric z-score for a non-zero signal', async () => {
-    // makeSignal() defaults to a spike with z_score 8 and actual_count 120.
+  it('leads with the % change and keeps the z-score in the tooltip (MO-2, JR-31)', async () => {
+    // makeSignal() defaults to a spike with z_score 8, 120 actual vs 80
+    // expected: +50%, exactly on the Significant bar.
     vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_type: 'event_type', scope_ref: 'et-1', scope_name: 'Signup' }),
     ])
 
     renderAnomalies()
 
-    const row = (await screen.findByText('Spike on Event type · Signup')).closest(
+    const row = (await screen.findByText(rowLabel('Spike on Event type · Signup'))).closest(
       '[role="row"]',
     ) as HTMLElement
-    expect(row).toHaveTextContent('z=8.0')
+    const change = within(row).getByText('+50%')
+    // The magnitude in words, on the filter's own bars, and the z-score for
+    // whoever wants it — neither as the headline figure.
+    expect(change).toHaveAttribute('title', 'Significant · z=8.0')
+    expect(row).toHaveTextContent('Significant')
+    expect(row).not.toHaveTextContent('z=8.0')
+  })
+
+  it('puts the change straight after the scope, not last (MO-19)', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scope_name: 'Checkout conversion' }),
+    ])
+
+    renderAnomalies()
+
+    await screen.findByRole('link', { name: 'Spike on Metric · Checkout conversion' })
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Anomaly',
+      'Change',
+      'Actual / expected',
+      'When',
+      // The row menu's column, named for screen readers only (MO-4).
+      'Actions',
+    ])
+    // The table is no longer a fixed-width strip inside a sideways scroller,
+    // which hid the change and the time off a phone screen (MO-20).
+    expect(screen.getByRole('table', { name: 'Anomaly signals' }).className).not.toContain('min-w-')
+  })
+})
+
+describe('AnomaliesPage — row actions (MO-4, JR-6)', () => {
+  it('offers Open detail and View alerts from the row menu', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scope_type: 'event_type', scope_ref: 'et-1', scope_name: 'Signup' }),
+    ])
+
+    renderAnomalies()
+
+    const row = (await screen.findByText(rowLabel('Spike on Event type · Signup'))).closest(
+      '[role="row"]',
+    ) as HTMLElement
+    fireEvent.keyDown(within(row).getByRole('button', { name: 'Signal actions' }), { key: 'Enter' })
+
+    expect(await screen.findByRole('menuitem', { name: 'Open detail' })).toHaveAttribute(
+      'href',
+      '/p/demo/monitoring/event-type/et-1',
+    )
+    expect(screen.getByRole('menuitem', { name: 'View alerts' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting',
+    )
+  })
+
+  it('links a routed signal to its incident, naming the status', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({
+        scope_type: 'event_type',
+        scope_ref: 'et-1',
+        scope_name: 'Signup',
+        incident_id: 'inc-1',
+        incident_status: 'acknowledged',
+      }),
+    ])
+
+    renderAnomalies()
+
+    expect(await screen.findByRole('link', { name: 'Incident · acknowledged' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting?incident=inc-1',
+    )
   })
 })
 
@@ -282,7 +406,7 @@ describe('AnomaliesPage — counts (tripl-nj4n)', () => {
 
     renderAnomalies()
 
-    const row = (await screen.findByText('Spike on Metric · Checkout conversion')).closest(
+    const row = (await screen.findByText(rowLabel('Spike on Metric · Checkout conversion'))).closest(
       '[role="row"]',
     ) as HTMLElement
     expect(row).toHaveTextContent('1.2 vs 0.4')
@@ -313,14 +437,14 @@ describe('AnomaliesPage — magnitude filter', () => {
     renderAnomalies()
 
     // Default "Significant" keeps the big one and drops the tiny one.
-    expect(await screen.findByText('Spike on Event type · Big move')).toBeInTheDocument()
-    expect(screen.queryByText('Spike on Event type · Tiny wiggle')).not.toBeInTheDocument()
+    expect(await screen.findByText(rowLabel('Spike on Event type · Big move'))).toBeInTheDocument()
+    expect(screen.queryByText(rowLabel('Spike on Event type · Tiny wiggle'))).not.toBeInTheDocument()
 
     // Switch the magnitude filter to "All" — the small one now appears.
     await chooseFilter(MAGNITUDE, 'All')
-    expect(await screen.findByText('Spike on Event type · Tiny wiggle')).toBeInTheDocument()
+    expect(await screen.findByText(rowLabel('Spike on Event type · Tiny wiggle'))).toBeInTheDocument()
     // The big one is still there.
-    expect(screen.getByText('Spike on Event type · Big move')).toBeInTheDocument()
+    expect(screen.getByText(rowLabel('Spike on Event type · Big move'))).toBeInTheDocument()
   })
 
   it('keeps the magnitude control reachable by its accessible name', async () => {
@@ -330,9 +454,20 @@ describe('AnomaliesPage — magnitude filter', () => {
 
     renderAnomalies()
 
-    await screen.findByText(/Spike on Metric/)
+    await screen.findByText(rowLabel(/Spike on Metric/))
     expect(filterChip(MAGNITUDE)).toBeVisible()
-    expect(filterChip(MAGNITUDE)).toHaveTextContent('Magnitude:Significant')
+    expect(filterChip(MAGNITUDE)).toHaveTextContent('Magnitude:Significant (≥50%)')
+  })
+
+  it('names each level’s threshold in the % the rows show (MO-3)', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
+      makeSignal({ scope_name: 'Checkout conversion' }),
+    ])
+
+    renderAnomalies()
+
+    await screen.findByText(rowLabel(/Spike on Metric/))
+    expect(await filterOptions(MAGNITUDE)).toEqual(['All', 'Significant (≥50%)', 'Major (≥100%)'])
   })
 
   it('shows a lower-the-filter hint (not the empty state) when the level hides everything', async () => {
@@ -356,7 +491,7 @@ describe('AnomaliesPage — magnitude filter', () => {
 
     // The hint's "Show all" action drops the filter and reveals the row.
     fireEvent.click(screen.getByRole('button', { name: /Show all/ }))
-    expect(await screen.findByText(/Spike on Event type/)).toBeInTheDocument()
+    expect(await screen.findByText(rowLabel(/Spike on Event type/))).toBeInTheDocument()
   })
 })
 
@@ -382,7 +517,7 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
     renderAnomalies('/p/demo/anomalies?level=all')
 
     // Landed already widened: no click, and the sub-threshold row is on screen.
-    expect(await screen.findByText('Spike on Event type · Tiny wiggle')).toBeInTheDocument()
+    expect(await screen.findByText(rowLabel('Spike on Event type · Tiny wiggle'))).toBeInTheDocument()
     expect(filterChip(MAGNITUDE)).toHaveTextContent('Magnitude:All')
   })
 
@@ -396,7 +531,7 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
       .toBeInTheDocument()
 
     // Back to the default writes no parameter rather than `level=significant`.
-    await chooseFilter(MAGNITUDE, 'Significant')
+    await chooseFilter(MAGNITUDE, /^Significant/)
     expect(await screen.findByText('anomalies-location:/p/demo/anomalies')).toBeInTheDocument()
   })
 
@@ -408,9 +543,9 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
 
     renderAnomalies('/p/demo/anomalies?level=enormous')
 
-    expect(await screen.findByText('Spike on Event type · Signup')).toBeInTheDocument()
-    expect(screen.queryByText('Spike on Event type · Tiny wiggle')).not.toBeInTheDocument()
-    expect(filterChip(MAGNITUDE)).toHaveTextContent('Magnitude:Significant')
+    expect(await screen.findByText(rowLabel('Spike on Event type · Signup'))).toBeInTheDocument()
+    expect(screen.queryByText(rowLabel('Spike on Event type · Tiny wiggle'))).not.toBeInTheDocument()
+    expect(filterChip(MAGNITUDE)).toHaveTextContent('Magnitude:Significant (≥50%)')
   })
 
   it('keeps ?scan= and ?level= independent of each other', async () => {
@@ -419,9 +554,9 @@ describe('AnomaliesPage — ?level= facet (tripl-ahg5)', () => {
 
     renderAnomalies('/p/demo/anomalies?scan=scan-1&level=all')
 
-    expect(await screen.findByText('Spike on Event type · Tiny wiggle')).toBeInTheDocument()
+    expect(await screen.findByText(rowLabel('Spike on Event type · Tiny wiggle'))).toBeInTheDocument()
     // Flipping the level leaves the scan selection in the URL untouched.
-    await chooseFilter(MAGNITUDE, 'Significant')
+    await chooseFilter(MAGNITUDE, /^Significant/)
     expect(await screen.findByText('anomalies-location:/p/demo/anomalies?scan=scan-1'))
       .toBeInTheDocument()
   })
@@ -462,8 +597,8 @@ describe('AnomaliesPage — scan facet', () => {
     renderAnomalies()
 
     // Both streams are visible before the facet is touched.
-    expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
-    expect(screen.getAllByText('Spike on Event · Legacy tap')).toHaveLength(6)
+    expect(await screen.findByText(rowLabel('Spike on Event · Live tap'))).toBeInTheDocument()
+    expect(screen.getAllByText(rowLabel('Spike on Event · Legacy tap'))).toHaveLength(6)
 
     // The option label carries the count, so the size difference is legible
     // before clicking: 6 legacy against 1 live.
@@ -476,8 +611,8 @@ describe('AnomaliesPage — scan facet', () => {
 
     await chooseFilter(SCAN, 'Snowplow Events (iOS) 1')
 
-    expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
-    expect(screen.queryByText('Spike on Event · Legacy tap')).not.toBeInTheDocument()
+    expect(await screen.findByText(rowLabel('Spike on Event · Live tap'))).toBeInTheDocument()
+    expect(screen.queryByText(rowLabel('Spike on Event · Legacy tap'))).not.toBeInTheDocument()
     // The subtitle attributes the omission to the scan filter, not the level.
     expect(screen.getByText(/1 of 7 open · 6 in other scans/)).toBeInTheDocument()
   })
@@ -495,7 +630,7 @@ describe('AnomaliesPage — scan facet', () => {
 
     renderAnomalies()
 
-    await screen.findByText(/Spike on Event/)
+    await screen.findByText(rowLabel(/Spike on Event/))
     expect(screen.queryByRole('combobox', { name: SCAN })).not.toBeInTheDocument()
     // The magnitude control is untouched by the facet's absence.
     expect(filterChip(MAGNITUDE)).toBeVisible()
@@ -526,7 +661,7 @@ describe('AnomaliesPage — scan facet', () => {
     // And the option is reachable: selecting it keeps the metric row and drops
     // every scan-bound one, so the signal is not merely un-crashing but findable.
     await chooseFilter(SCAN, 'Catalog metrics 1')
-    expect(await screen.findByText(/Spike on Metric/)).toBeInTheDocument()
+    expect(await screen.findByText(rowLabel(/Spike on Metric/))).toBeInTheDocument()
     expect(screen.queryByText(/Legacy tap/)).not.toBeInTheDocument()
   })
 
@@ -574,14 +709,14 @@ describe('AnomaliesPage — scan facet', () => {
     // The option survives the level change (its count drops to 0), which is the
     // point: it must not evaporate and silently reset the page to "all scans".
     await chooseFilter(SCAN, 'Snowplow Events (iOS) 2')
-    await chooseFilter(MAGNITUDE, 'Major')
+    await chooseFilter(MAGNITUDE, /^Major/)
     expect(filterChip(SCAN)).toHaveTextContent('Scan:Snowplow Events (iOS) 0')
     expect(
       await screen.findByText('Nothing in Snowplow Events (iOS) at this level'),
     ).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /Show all scans/ }))
-    expect(await screen.findByText(/Spike on Event/)).toBeInTheDocument()
+    expect(await screen.findByText(rowLabel(/Spike on Event/))).toBeInTheDocument()
   })
 
   // `?scan=` is what makes a scan's "Signals added" counter reach the anomalies
@@ -595,8 +730,8 @@ describe('AnomaliesPage — scan facet', () => {
 
     // Landed already narrowed: no click, and the legacy stream that drowns this
     // one out by size is gone.
-    expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
-    expect(screen.queryByText('Spike on Event · Legacy tap')).not.toBeInTheDocument()
+    expect(await screen.findByText(rowLabel('Spike on Event · Live tap'))).toBeInTheDocument()
+    expect(screen.queryByText(rowLabel('Spike on Event · Legacy tap'))).not.toBeInTheDocument()
     expect(filterChip(SCAN)).toHaveTextContent('Scan:Snowplow Events (iOS) 1')
   })
 
@@ -610,8 +745,8 @@ describe('AnomaliesPage — scan facet', () => {
     renderAnomalies('/p/demo/anomalies?scan=does-not-exist')
 
     // The FULL list, both scans — not an empty state, not one scan.
-    expect(await screen.findByText('Spike on Event · Live tap')).toBeInTheDocument()
-    expect(screen.getAllByText('Spike on Event · Legacy tap')).toHaveLength(6)
+    expect(await screen.findByText(rowLabel('Spike on Event · Live tap'))).toBeInTheDocument()
+    expect(screen.getAllByText(rowLabel('Spike on Event · Legacy tap'))).toHaveLength(6)
     expect(filterChip(SCAN)).toHaveTextContent('Scan:All scans 7')
     // No phantom option is manufactured for the id that does not exist.
     expect((await filterOptions(SCAN)).some((option) => option.includes('does-not-exist'))).toBe(false)
@@ -644,11 +779,11 @@ describe('AnomaliesPage — scan facet', () => {
     expect(
       screen.getByText('No open anomalies from Snowplow Events (iOS)'),
     ).toBeInTheDocument()
-    expect(screen.queryByText('Spike on Event · Legacy tap')).not.toBeInTheDocument()
+    expect(screen.queryByText(rowLabel('Spike on Event · Legacy tap'))).not.toBeInTheDocument()
 
     // The way out is one click, and it is labelled with what it will show.
     fireEvent.click(screen.getByRole('button', { name: 'Show all scans (1)' }))
-    expect(await screen.findByText('Spike on Event · Legacy tap')).toBeInTheDocument()
+    expect(await screen.findByText(rowLabel('Spike on Event · Legacy tap'))).toBeInTheDocument()
   })
 
   it('writes the facet selection back to ?scan= so the narrowed view is linkable', async () => {
@@ -694,15 +829,15 @@ describe('AnomaliesPage — ranking and keys (MON-14, MON-16)', () => {
 
     renderAnomalies()
 
-    await screen.findAllByText('Spike on Event · Login')
+    await screen.findAllByText(rowLabel('Spike on Event · Login'))
     // Both rows render; React's duplicate-key warning is a console.error, which
     // the test setup turns into a failure.
-    expect(screen.getAllByText('Spike on Event · Login')).toHaveLength(2)
+    expect(screen.getAllByText(rowLabel('Spike on Event · Login'))).toHaveLength(2)
   })
 })
 
-describe('AnomaliesPage — bucket column (MON-40)', () => {
-  it('labels the column as the bucket and gives each row its absolute start time', async () => {
+describe('AnomaliesPage — when column (MON-40, MO-21)', () => {
+  it('shows the bucket start as an absolute time, and says it is the bucket start', async () => {
     vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({ scope_name: 'Checkout conversion', bucket: '2026-07-01T00:00:00Z' }),
     ])
@@ -710,16 +845,20 @@ describe('AnomaliesPage — bucket column (MON-40)', () => {
     renderAnomalies()
 
     await screen.findByRole('link', { name: 'Spike on Metric · Checkout conversion' })
-    expect(screen.getByRole('columnheader', { name: 'Bucket' })).toBeInTheDocument()
-    expect(screen.queryByRole('columnheader', { name: 'When' })).not.toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'When' })).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Bucket' })).not.toBeInTheDocument()
     const time = document.querySelector('time[datetime="2026-07-01T00:00:00Z"]')
     expect(time).not.toBeNull()
+    // Absolute ("Jul 1, 02:00" in the viewer's zone), never "3mo ago" beside a
+    // second relative time it seems to contradict.
+    expect(time?.textContent).toMatch(/\d{2}:\d{2}$/)
+    expect(time?.textContent).not.toMatch(/ago/)
     expect(time?.getAttribute('title')).toMatch(/^Bucket starting .+\(.+\)$/)
     // No detection time on the payload, so nothing claims one.
-    expect(screen.queryByText(/^detected /)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^found /)).not.toBeInTheDocument()
   })
 
-  it('says when the detector caught it, beside when the bucket began', async () => {
+  it('says when the detector found it, under when the bucket began', async () => {
     vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([
       makeSignal({
         scope_name: 'Checkout conversion',
@@ -732,7 +871,7 @@ describe('AnomaliesPage — bucket column (MON-40)', () => {
 
     await screen.findByRole('link', { name: 'Spike on Metric · Checkout conversion' })
     const detected = document.querySelector('time[datetime="2026-07-01T01:05:00Z"]')
-    expect(detected).toHaveTextContent(/^detected /)
+    expect(detected).toHaveTextContent(/^found /)
     expect(detected?.getAttribute('title')).toMatch(/^Detected .+\(.+\)$/)
   })
 })
@@ -761,14 +900,14 @@ describe('AnomaliesPage — filter chips (DS-15)', () => {
     renderAnomalies()
 
     const chip = await screen.findByRole('combobox', { name: MAGNITUDE })
-    expect(chip).toHaveTextContent('Magnitude:Significant')
-    expect(chip).toHaveAccessibleName('Magnitude filter: Significant')
+    expect(chip).toHaveTextContent('Magnitude:Significant (≥50%)')
+    expect(chip).toHaveAccessibleName('Magnitude filter: Significant (≥50%)')
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
 
-    await chooseFilter(MAGNITUDE, 'Major')
+    await chooseFilter(MAGNITUDE, /^Major/)
     expect(await screen.findByText(/anomalies-location:.*level=major/)).toBeInTheDocument()
-    expect(filterChip(MAGNITUDE)).toHaveTextContent('Magnitude:Major')
-    expect(filterChip(MAGNITUDE)).toHaveAccessibleName('Magnitude filter: Major')
+    expect(filterChip(MAGNITUDE)).toHaveTextContent('Magnitude:Major (≥100%)')
+    expect(filterChip(MAGNITUDE)).toHaveAccessibleName('Magnitude filter: Major (≥100%)')
   })
 })
 
@@ -784,5 +923,62 @@ describe('AnomaliesPage — the shared page header (LIVE-11)', () => {
     const reference = container.querySelector('h1')
     expect(reference).not.toBeNull()
     expect(heading.className).toBe(reference?.className)
+  })
+})
+
+describe('AnomaliesPage — page states (MO-17, MO-23, JR-6, DS-25)', () => {
+  it('holds a skeleton, not zeros, until the signals arrive', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockReturnValue(new Promise<MonitoringSignal[]>(() => {}))
+
+    renderAnomalies()
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Loading anomalies…')
+    expect(screen.queryByText('Open signals')).not.toBeInTheDocument()
+    expect(screen.queryByText('No anomalies right now')).not.toBeInTheDocument()
+  })
+
+  it('says monitoring is not running when no scan collects volume', async () => {
+    // A project with no scan (or only Catalog only scans) got the same
+    // reassuring "No anomalies right now" as a healthy one.
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([])
+    vi.mocked(scansApi.list).mockResolvedValue(makeScans([]))
+
+    renderAnomalies()
+
+    expect(await screen.findByRole('heading', { name: 'Monitoring isn’t running yet' }))
+      .toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Run a scan' })).toHaveAttribute('href', '/p/demo/scans')
+    expect(screen.getAllByRole('link', { name: /Detection settings/ }).length).toBeGreaterThan(0)
+    expect(screen.queryByText('No anomalies right now')).not.toBeInTheDocument()
+    // Three zeros say nothing about a project that is not monitored.
+    expect(screen.queryByText('Open signals')).not.toBeInTheDocument()
+  })
+
+  it('keeps the all-clear, in neutral, for a project whose scans do collect volume', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([])
+    vi.mocked(scansApi.list).mockResolvedValue(
+      [{ id: 'scan-1', name: 'Live', interval: '1h' }] as unknown as ScanConfig[],
+    )
+
+    renderAnomalies()
+
+    expect(await screen.findByText('No anomalies right now')).toBeInTheDocument()
+    expect(screen.queryByText('Monitoring isn’t running yet')).not.toBeInTheDocument()
+    // A green 0 read as praise (MO-17): zero is neutral.
+    const open = screen.getByText('Open signals').closest('dl') as HTMLElement
+    expect(within(open).getByText('0')).not.toHaveAttribute('data-tone')
+  })
+
+  it('points at Alerting as the place where triage happens (JR-6)', async () => {
+    vi.mocked(eventMetricsApi.getActiveSignals).mockResolvedValue([makeSignal({ scope_name: 'A' })])
+
+    renderAnomalies()
+
+    await screen.findByRole('link', { name: 'Spike on Metric · A' })
+    expect(screen.getByText(/Signals are what detection found/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Alerting' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/alerting',
+    )
   })
 })

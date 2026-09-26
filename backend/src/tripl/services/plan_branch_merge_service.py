@@ -30,7 +30,7 @@ from tripl.models.meta_field_definition import MetaFieldDefinition
 from tripl.models.plan_branch import BranchStatus, PlanBranch
 from tripl.models.plan_branch_approval import PlanBranchApproval
 from tripl.models.plan_branch_reviewer import PlanBranchReviewer
-from tripl.models.plan_revision import PlanRevision
+from tripl.models.plan_revision import PlanRevision, PlanRevisionKind
 from tripl.models.project_tracker_config import ProjectTrackerConfig
 from tripl.models.variable import Variable
 from tripl.models.variable_event_value_override import VariableEventValueOverride
@@ -2105,6 +2105,8 @@ async def _commit_merged_plan(
                 project_id=project_id,
                 created_by=user_id,
                 summary=f"Merged branch '{branch_name}'",
+                kind=PlanRevisionKind.merge.value,
+                branch_id=branch_id,
                 payload=post_payload,
             )
         )

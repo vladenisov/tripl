@@ -21,6 +21,12 @@ vi.mock('@/components/auth-context', () => ({
 }))
 
 describe('Account · Profile', () => {
+  it('says once that nothing here is editable (#237 ST-17)', () => {
+    render(<ProfileSection />)
+
+    expect(screen.getByRole('note')).toHaveTextContent(/can't be changed here yet/)
+  })
+
   it('shows the account’s real details', () => {
     render(<ProfileSection />)
 

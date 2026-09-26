@@ -17,6 +17,7 @@ import type {
   PlanDiffKind,
   PlanDiffRename,
 } from '@/types'
+import { stateKeyLabel } from './branchMeta'
 
 /**
  * The two diff entries the merge will treat as one renamed row, as the backend
@@ -347,17 +348,33 @@ export function diffView(diff: PlanBranchDiffSummary | undefined): DiffView {
  * and the UI cannot undo it, so it is never one click — and the question names
  * what is about to land, in the same paired counts the strip shows. The
  * variable-deletion warning and the behind-main note ride in the same dialog
- * rather than as a second one.
+ * rather than as a second one. The behind-main note only appears when main's
+ * newer changes overlap this branch's: a main that merely moved on does not
+ * stop the merge, and warning about it on every branch was noise (PL-8).
  */
 export function mergePrompt(
   counts: PairedDiffCounts,
   removedVariables: string[],
   behindBase: boolean,
+  /** What lands, by name; the first five are listed (PL-29). */
+  names: readonly string[] = [],
+  /** Fields changed both here and on main since the branch opened (PL-8). */
+  unresolvedConflicts = 0,
 ): ConfirmPrompt {
-  const tally = `+${counts.added} ~${counts.changed} −${counts.removed}${
-    counts.renamed > 0 ? `, renamed ${counts.renamed}` : ''
-  }`
-  const lines = [`Merge ${countOf(counts.total, 'change', 'changes')} (${tally}) into main?`]
+  // Words, not git's "+0 ~1 −0" tally, which needed decoding (PL-29).
+  const kinds = [
+    counts.changed > 0 ? `${counts.changed} modified` : null,
+    counts.added > 0 ? `${counts.added} added` : null,
+    counts.removed > 0 ? `${counts.removed} removed` : null,
+    counts.renamed > 0 ? `${counts.renamed} renamed` : null,
+  ].filter((part): part is string => part !== null)
+  const lines = [
+    `Merge ${countOf(counts.total, 'change', 'changes')} into main${kinds.length > 0 ? ` (${kinds.join(', ')})` : ''}?`,
+  ]
+  if (names.length > 0) {
+    const more = names.length > 5 ? ` and ${names.length - 5} more` : ''
+    lines.push(`Lands: ${names.slice(0, 5).join(', ')}${more}.`)
+  }
   if (removedVariables.length > 0) {
     const shown = removedVariables.slice(0, 8).join(', ')
     const more = removedVariables.length > 8 ? ` and ${removedVariables.length - 8} more` : ''
@@ -365,12 +382,14 @@ export function mergePrompt(
       `Merging removes ${countOf(removedVariables.length, 'variable', 'variables')} from main: ${shown}${more}. Their documented values, per-event overrides and drift history are deleted with them.`,
     )
   }
-  if (behindBase) {
+  if (behindBase && unresolvedConflicts > 0) {
     lines.push(
-      'Main has moved on since this branch was created; the merge may be refused if it touches the same entities.',
+      `Main has moved on since this branch was created, and ${countOf(unresolvedConflicts, 'field you changed was', 'fields you changed were')} also changed there; the merge may be refused until you pick the values to keep.`,
     )
   }
-  lines.push('This rewrites the production plan and cannot be undone here.')
+  lines.push(
+    'The changes become part of the live tracking plan for everyone. To undo them later, open a new branch that reverts them.',
+  )
   const deletes = removedVariables.length > 0
   return {
     title: deletes ? 'Merge deletes variables from main' : 'Merge to main',
@@ -476,4 +495,37 @@ export function parseMinApprovals(raw: string): number | null {
   if (!/^\d+$/.test(trimmed)) return null
   const value = Number(trimmed)
   return value >= 0 && value <= 100 ? value : null
+}
+
+/** A value short enough to print inline in a collapsed row: a scalar of at
+ * most 16 characters without spaces ("live", "enum", 3). */
+function shortScalar(value: unknown): string | null {
+  if (value === null || value === undefined) return '∅'
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (typeof value === 'string' && value.length <= 16 && !/\s/.test(value)) return value || '∅'
+  return null
+}
+
+/**
+ * The collapsed change row's one-line summary, built from the field names
+ * rather than the backend's quoted before/after strings: two long quotes with
+ * a shared prefix truncated before the actual difference (PL-9). Short scalars
+ * read "Status live → deprecated", everything else "Description edited", at
+ * most three fields plus "+N more". Falls back to the backend's own text when
+ * the entry has no field changes (a new event, a removal).
+ */
+export function changeSummary(entry: PlanDiffEntry): string {
+  const changes = entry.field_changes ?? []
+  if (changes.length === 0) return diffEntryDetail(entry)
+  const shown = changes.slice(0, 3).map((change) => {
+    const before = shortScalar(change.before)
+    const after = shortScalar(change.after)
+    // "Metric breakdowns edited", not "metric_breakdown_columns edited" (PL-12).
+    const label = stateKeyLabel(change.field)
+    return before !== null && after !== null
+      ? `${label} ${before} → ${after}`
+      : `${label} edited`
+  })
+  const more = changes.length > 3 ? ` +${changes.length - 3} more` : ''
+  return `${shown.join(', ')}${more}`
 }

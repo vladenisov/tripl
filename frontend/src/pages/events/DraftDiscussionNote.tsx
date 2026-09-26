@@ -1,5 +1,5 @@
-import { MessageCircle } from 'lucide-react'
 import { useId } from 'react'
+import { EvTextarea, SurfCard } from './eventFormLayout'
 
 export interface DraftDiscussionNoteProps {
   value: string
@@ -17,26 +17,34 @@ export interface DraftDiscussionNoteProps {
  * It is not Description and not Title, and the copy says so: everything else on
  * this page travels with the event into the spec the implementer reads, while
  * this is the one box that does not.
+ *
+ * The form's own card and textarea (AU-8): it used to be a `rounded-md p-3`
+ * box with a bigger textarea and no header rule, which read as a widget pasted
+ * below the form rather than one more section of it.
  */
 export function DraftDiscussionNote({ value, onChange }: DraftDiscussionNoteProps) {
   const id = useId()
   return (
-    <div className="flex flex-col gap-2 rounded-md border bg-card p-3">
-      <div className="flex items-center gap-2 text-body font-semibold">
-        <MessageCircle className="h-4 w-4 text-muted-foreground" />
-        Discussion
+    <SurfCard
+      title="Discussion"
+      subtitle="Kept out of the spec: nothing here travels with the event to whoever implements it."
+    >
+      <div className="px-4 py-3">
+        <label htmlFor={id} className="sr-only">
+          A question or note about this event, posted as the first comment the moment the event is
+          created
+        </label>
+        <EvTextarea
+          id={id}
+          rows={2}
+          value={value}
+          onChange={event => onChange(event.target.value)}
+          placeholder="Should this fire on cancel too?"
+        />
+        <p className="mt-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
+          Posted as the first comment the moment the event is created.
+        </p>
       </div>
-      <label htmlFor={id} className="text-body-sm text-muted-foreground">
-        A question or note about this event, kept out of the spec. It is posted as the first comment
-        the moment the event is created.
-      </label>
-      <textarea
-        id={id}
-        value={value}
-        onChange={event => onChange(event.target.value)}
-        placeholder="Should this fire on cancel too?"
-        className="min-h-[60px] w-full rounded-md border bg-background px-2 py-1 text-body"
-      />
-    </div>
+    </SurfCard>
   )
 }

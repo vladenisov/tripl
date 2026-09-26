@@ -50,8 +50,8 @@ export const NOT_FOUND_TITLE_LABEL = 'Page not found'
 // absent from this map has no route and is titled as not-found.
 const PROJECT_SURFACE_LABELS: Record<string, string> = {
   events: 'Events',
-  overview: 'Live activity',
-  monitors: 'Monitors',
+  overview: 'Overview',
+  monitors: 'Alert rules',
   monitoring: 'Monitoring',
   anomalies: 'Anomalies',
   alerting: 'Alerting',
@@ -91,7 +91,7 @@ const PROJECT_SUBSURFACE_LABELS: Record<string, Record<string, string>> = {
   metrics: { 'fact-tables': 'Fact tables' },
   settings: {
     'event-types': 'Event types',
-    'meta-fields': 'Schema & fields',
+    'meta-fields': 'Meta fields',
     variables: 'Variables',
     relations: 'Relations',
     branches: 'Plan branches',

@@ -240,13 +240,12 @@ describe('EventForm event-type field', () => {
 })
 
 describe('EventForm name field', () => {
-  it('uses a colon-delimited example for the Name placeholder', () => {
+  it('does not suggest a naming convention in the Name placeholder (AU-41)', () => {
     renderForm(null)
 
-    const nameInput = screen.getByPlaceholderText(/checkout:completed/)
-    expect(nameInput).toBeInTheDocument()
-    // Colon-delimited convention, not snake_case (see ReconciliationPage naming).
-    expect(nameInput.getAttribute('placeholder')).not.toMatch(/_/)
+    // "e.g. checkout:completed" sat next to catalogs named another way; the one
+    // rule that holds in every project is that it must match what is sent.
+    expect(screen.getByLabelText(/Name/)).toHaveAttribute('placeholder', 'The exact name the app sends')
   })
 })
 
@@ -782,6 +781,16 @@ describe('EventForm meta field link template (tripl-kjhi.5)', () => {
     )
   })
 
+  it('says nothing about a template with no ${value} to fill (AU-9)', () => {
+    // No `$`, so no link ever resolves; "Uses link template with ${value}."
+    // named a mechanism that was not even working.
+    renderForm(null, { metaFields: [{ ...JIRA_FIELD, link_template: 'https://jira.example/{value}' }] })
+
+    expect(screen.getByLabelText('Jira')).toBeInTheDocument()
+    expect(screen.queryByText(/link template/i)).toBeNull()
+    expect(screen.queryByText(/Enter the key/)).toBeNull()
+  })
+
   it('keeps only the key when the whole address is pasted', async () => {
     vi.mocked(eventsApi.create).mockResolvedValue({} as never)
     renderForm(null, { metaFields: [JIRA_FIELD] })
@@ -1086,10 +1095,16 @@ describe('EventForm scan maintenance notice', () => {
 
   it('says nothing about a scan-maintained value until the reader changes it', () => {
     renderForm(scanned('prod_monthly'), { eventTypes: [EDIT_EVENT_TYPE] })
-    expect(screen.queryByText(/scans/i)).not.toBeInTheDocument()
+    // Scoped to the field's own notices (tied to it by aria-describedby): the
+    // card subtitle now says, of every field, that "scans match the event on
+    // these" (AU-22), which is not a notice about this value.
+    const input = screen.getByLabelText(/Product ID/)
+    expect(input).not.toHaveAccessibleDescription(/scan/i)
+    expect(screen.queryByText(/stops scans|scans leave it alone|next scan fills/i)).not.toBeInTheDocument()
 
-    fireEvent.change(screen.getByLabelText(/Product ID/), { target: { value: 'prod_annual' } })
+    fireEvent.change(input, { target: { value: 'prod_annual' } })
     expect(screen.getByText('Saving this stops scans from updating the field.')).toBeInTheDocument()
+    expect(input).toHaveAccessibleDescription(/Saving this stops scans from updating the field\./)
   })
 
   it('marks a hand-edited value as frozen and hands it back on request', () => {
@@ -1935,5 +1950,91 @@ describe('EventForm hint wiring (EVT-48)', () => {
     expect(star).toHaveTextContent('*')
     expect(star).toHaveAttribute('aria-hidden', 'true')
     expect(screen.getByLabelText(/^Name/)).toBeRequired()
+  })
+})
+
+describe('EventForm duplicate names without a scan rule (AU-2)', () => {
+  it('holds Create after "Save and add another" until the name changes', async () => {
+    vi.mocked(eventsApi.create).mockResolvedValue(
+      { id: 'ev-new', name: 'checkout:started', event_type_id: 'et-1' } as never,
+    )
+    renderForm(null)
+
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:started' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save and add another/i }))
+    await waitFor(() => expect(eventsApi.create).toHaveBeenCalledTimes(1))
+
+    // An unchanged second press made a byte-identical second event.
+    expect(await screen.findByText(/has just created “checkout:started”/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Create event/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Save and add another/i })).toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:completed' } })
+    expect(screen.queryByText(/has just created/)).toBeNull()
+    expect(screen.getByRole('button', { name: /Create event/i })).not.toBeDisabled()
+  })
+
+  it('warns about a namesake of this type, and still lets the author create it', async () => {
+    vi.mocked(eventsApi.byNames).mockResolvedValue({
+      items: [{ identity: 'checkout:started', event_id: 'ev-9', name: 'checkout:started', source_name: null }],
+    } as never)
+    renderForm(null)
+
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'checkout:started' } })
+
+    // The backend allows namesakes on a type no scan rule governs, so this is
+    // advice, not a refusal.
+    expect(
+      await screen.findByText(/already named “checkout:started”/, undefined, { timeout: 3000 }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'open it' })).toHaveAttribute(
+      'href',
+      '/p/demo/monitoring/event/ev-9',
+    )
+    expect(screen.getByRole('button', { name: /Create event/i })).not.toBeDisabled()
+  })
+})
+
+describe('EventForm card subtitles (AU-22)', () => {
+  const OWNER_TEAM: MetaFieldDefinition = {
+    id: 'mf-team',
+    project_id: 'project-1',
+    name: 'team',
+    display_name: 'Owner team',
+    field_type: 'string',
+    is_required: false,
+    enum_options: null,
+    default_value: null,
+    link_template: null,
+    order: 0,
+    sensitivity: 'none',
+  }
+
+  it('says what each card holds and links to where it is defined', () => {
+    renderForm(null, { eventTypes: [TEMPLATE_EVENT_TYPE], metaFields: [OWNER_TEAM] })
+
+    expect(screen.getByText(/Tags are labels for finding events/)).toBeInTheDocument()
+    expect(screen.getByText(/scans match the event on these/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Checkout' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/event-types/et-1',
+    )
+    expect(screen.getByText(/Project-wide attributes for people, not scans/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Manage meta fields' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/meta-fields',
+    )
+  })
+})
+
+describe('EventForm successor options (AU-24)', () => {
+  it("names each replacement's type, so namesakes can be told apart", async () => {
+    vi.mocked(eventsApi.list).mockResolvedValue({
+      items: [{ id: 'ev-2', name: 'checkout:done', event_type_id: 'et-1' }],
+      total: 1,
+    } as never)
+    renderForm({ ...EXISTING_EVENT, status: 'deprecated' } as unknown as TEvent)
+
+    expect(await screen.findByRole('option', { name: 'checkout:done · Checkout' })).toBeInTheDocument()
   })
 })

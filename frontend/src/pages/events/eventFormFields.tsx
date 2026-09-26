@@ -11,7 +11,6 @@ import { ChipListInput } from '@/components/chip-list-input'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import {
   META_FIELD_LINK_EXAMPLE_KEY,
-  META_FIELD_LINK_PLACEHOLDER,
   metaFieldLinkExample,
   stripLinkTemplate,
 } from '@/lib/metaFields'
@@ -352,7 +351,7 @@ export function MetaFieldControl({
           placeholder={metaFieldLinkExample(template) ? 'Type a key + Enter' : 'Type a value + Enter'}
           ariaLabel={`Add ${metaField.display_name}`}
         />
-        {template && (
+        {metaFieldLinkExample(template) && (
           <p className="mt-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
             Enter the key, e.g. <span className="mono">{META_FIELD_LINK_EXAMPLE_KEY}</span> — each
             one opens on its own.
@@ -400,20 +399,17 @@ export function MetaFieldControl({
         ariaRequired={ariaRequired}
         type={metaField.field_type === 'url' ? 'url' : metaField.field_type === 'date' ? 'date' : 'text'}
       />
-      {template && (
+      {/* Said with the reader's own template: "uses link template with
+          ${value}" named a mechanism and left the reader to work out that the
+          box wants the key, not the link (tripl-kjhi.5). A template with no
+          ${value} in it resolves no link at all, so there is nothing true to
+          say about it here; the meta-field settings are where it gets fixed
+          (AU-9). */}
+      {example && (
         <p className="mt-1 text-caption" style={{ color: 'var(--fg-subtle)' }}>
-          {example ? (
-            // Said with the reader's own template: "uses link template with
-            // ${value}" named a mechanism and left the reader to work out that
-            // the box wants the key, not the link (tripl-kjhi.5).
-            <>
-              Enter the key, e.g. <span className="mono">{META_FIELD_LINK_EXAMPLE_KEY}</span>
-              {' — opens '}
-              <span className="mono break-all">{example}</span>
-            </>
-          ) : (
-            <>Uses link template with <span className="mono">{META_FIELD_LINK_PLACEHOLDER}</span>.</>
-          )}
+          Enter the key, e.g. <span className="mono">{META_FIELD_LINK_EXAMPLE_KEY}</span>
+          {' — opens '}
+          <span className="mono break-all">{example}</span>
         </p>
       )}
     </div>

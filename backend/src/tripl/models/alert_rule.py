@@ -19,19 +19,19 @@ if TYPE_CHECKING:
 # worth a message. Drift and release-regression scopes return before the numeric
 # thresholds in ``alerting_matching.rule_matches_anomaly`` and are unaffected.
 #
-# 100 means "at least double, or at most half" — measured, not picked for the
-# round number. Replaying 24 hours of live iOS collections through the repaired
-# signal gate produced 436 items in 54 deliveries at 0 (a message every ~25
-# minutes), 267/32 at 50, and 37/7 at 100 — the last on a par with the 16 items
-# in 11 deliveries the instance actually sends today. What that volume is made
-# of argues the same way: 435 of the 436 were single-bucket seasonal deviations
-# rather than sustained level shifts, and 106 of 223 scopes fired in BOTH
-# directions inside the same day.
+# The gate is |actual - expected| / expected * 100, and it is asymmetric: a
+# SPIKE reaches 100 at double the expectation, but a DROP reaches 100 only when
+# volume falls to zero. The earlier default of 100 was measured on volume
+# (replaying 24 hours of live iOS collections gave 436 items in 54 deliveries at
+# 0, 267/32 at 50 and 37/7 at 100), but it also meant the obvious "tell me when
+# X drops" rule ignored a 50 % or a 90 % fall (AL-2). 30 is a move worth hearing
+# about in either direction, and the rule editor starts new rules there too
+# (``DEFAULT_RULE_MIN_PERCENT_DELTA`` in the frontend). Migration a4c8e2f61b93
+# moved the server default; stored rows keep the value they were saved with.
 #
 # A scope going dark still passes: actual 0 against any positive expectation is
-# exactly 100%, and the comparison is strict. That is the one class of volume
-# alert that reaches anyone today.
-DEFAULT_MIN_PERCENT_DELTA = 100.0
+# exactly 100%, and the comparison is strict.
+DEFAULT_MIN_PERCENT_DELTA = 30.0
 
 
 class AlertRule(UUIDMixin, TimestampMixin, Base):

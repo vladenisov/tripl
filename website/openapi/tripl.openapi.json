@@ -1109,6 +1109,24 @@
               "type": "string",
               "title": "Slug"
             }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Plan branch id (UUID) to read and write instead of the main branch.",
+              "title": "Branch"
+            },
+            "description": "Plan branch id (UUID) to read and write instead of the main branch."
           }
         ],
         "responses": {
@@ -17039,7 +17057,7 @@
             "type": "number",
             "minimum": 0.0,
             "title": "Min Percent Delta",
-            "default": 100.0
+            "default": 30.0
           },
           "min_absolute_delta": {
             "type": "number",
@@ -17104,7 +17122,8 @@
         "enum": [
           "event_type",
           "event",
-          "direction"
+          "direction",
+          "metric"
         ],
         "title": "AlertRuleFilterField"
       },
@@ -27396,6 +27415,28 @@
               }
             ],
             "title": "Detected At"
+          },
+          "incident_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Incident Id"
+          },
+          "incident_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlertInboxStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -27731,6 +27772,13 @@
               }
             ]
           },
+          "firing_scopes": {
+            "items": {
+              "$ref": "#/components/schemas/MonitorFiringScope"
+            },
+            "type": "array",
+            "title": "Firing Scopes"
+          },
           "scope_readiness": {
             "$ref": "#/components/schemas/AlertScopeReadiness"
           }
@@ -27770,10 +27818,97 @@
           "total_deliveries",
           "last_delivery_at",
           "last_delivery_status",
+          "firing_scopes",
           "scope_readiness"
         ],
         "title": "MonitorDetailResponse",
         "description": "A single monitor with the extra context a drill-in detail view needs."
+      },
+      "MonitorFiringScope": {
+        "properties": {
+          "scan_config_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Config Id"
+          },
+          "scope_type": {
+            "$ref": "#/components/schemas/MetricScopeType"
+          },
+          "scope_ref": {
+            "type": "string",
+            "title": "Scope Ref"
+          },
+          "scope_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Name"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnomalyDirection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_anomaly_bucket": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Anomaly Bucket"
+          },
+          "last_notified_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Notified At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scan_config_id",
+          "scope_type",
+          "scope_ref",
+          "scope_name",
+          "event_id",
+          "direction",
+          "last_anomaly_bucket",
+          "last_notified_at"
+        ],
+        "title": "MonitorFiringScope",
+        "description": "One scope of a monitor that is firing now (MO-36).\n\nChosen by the same horizon test as ``firing_scope_count``, so the list and\nthe count cannot disagree. ``scope_name``, ``event_id`` and ``direction``\ncome from the item of the delivery that last notified this scope; all three\nare null for a scope the rule has not notified (a cooldown or a mute can\nhold the first message back while the state is already open)."
       },
       "MonitorMuteRequest": {
         "properties": {
@@ -28787,6 +28922,22 @@
             ],
             "title": "Created By"
           },
+          "kind": {
+            "$ref": "#/components/schemas/PlanRevisionKind",
+            "default": "snapshot"
+          },
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
+          },
           "entity_counts": {
             "additionalProperties": {
               "type": "integer"
@@ -28811,6 +28962,16 @@
           "payload"
         ],
         "title": "PlanRevisionDetail"
+      },
+      "PlanRevisionKind": {
+        "type": "string",
+        "enum": [
+          "snapshot",
+          "branch_base",
+          "merge"
+        ],
+        "title": "PlanRevisionKind",
+        "description": "What produced a revision (PL-21).\n\n``snapshot`` is a user-taken one (``POST /plan-revisions``); ``branch_base``\nis the merge base captured when a branch opens; ``merge`` is the live plan\nright after a branch merged into it. Stored rather than parsed back out of\n``summary``, which is free text a user can also write."
       },
       "PlanRevisionList": {
         "properties": {
@@ -28865,6 +29026,22 @@
               }
             ],
             "title": "Created By"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PlanRevisionKind",
+            "default": "snapshot"
+          },
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch Id"
           },
           "entity_counts": {
             "additionalProperties": {
@@ -29824,6 +30001,11 @@
           "failing_scan_config_count": {
             "type": "integer",
             "title": "Failing Scan Config Count",
+            "default": 0
+          },
+          "failing_alert_destination_count": {
+            "type": "integer",
+            "title": "Failing Alert Destination Count",
             "default": 0
           },
           "latest_scan_job": {
@@ -31185,6 +31367,12 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "monitoring_enabled": {
+            "type": "boolean",
+            "title": "Monitoring Enabled",
+            "description": "Whether the scheduler collects metrics for this scan (MO-23).\n\nDerived, never stored: the beat schedule and every monitoring read path\nselect on ``interval IS NOT NULL``, so this is that test said out loud\nrather than a second switch that could disagree with it.",
+            "readOnly": true
           }
         },
         "type": "object",
@@ -31215,7 +31403,8 @@
           "app_version_active_share_min",
           "platform_column",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "monitoring_enabled"
         ],
         "title": "ScanConfigResponse"
       },
@@ -34141,6 +34330,11 @@
           "total_count": {
             "type": "integer",
             "title": "Total Count"
+          },
+          "window_total_count": {
+            "type": "integer",
+            "title": "Window Total Count",
+            "default": 0
           }
         },
         "type": "object",

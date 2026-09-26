@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { DiffValue, RecordTable } from './DiffValue'
+import { DiffPair, DiffValue, RecordTable } from './DiffValue'
 
 describe('DiffValue', () => {
   it('marks every shape of empty with the same symbol', () => {
@@ -93,5 +93,35 @@ describe('RecordTable', () => {
     expect(screen.queryByText(/"mode": "dark"/)).toBeNull()
     fireEvent.click(toggle)
     expect(screen.getByText(/"mode": "dark"/)).toBeInTheDocument()
+  })
+})
+
+describe('DiffPair (PL-10)', () => {
+  const BEFORE = 'Fired when the user completes a purchase on the web checkout'
+  const AFTER = 'Fired when the user completes a purchase on the mobile checkout'
+
+  it('reads prose as one marked paragraph, and the two sides on request', () => {
+    const { container } = render(<DiffPair before={BEFORE} after={AFTER} />)
+
+    // One paragraph: the shared words once, the change marked in place.
+    expect(container.querySelectorAll('del')).toHaveLength(1)
+    expect(container.querySelectorAll('ins')).toHaveLength(1)
+    expect(screen.getByText('web').closest('del')).not.toBeNull()
+    expect(screen.getByText('mobile').closest('ins')).not.toBeNull()
+    // A screen reader hears both whole values.
+    expect(screen.getByText('before:')).toBeInTheDocument()
+    expect(screen.getByText(BEFORE)).toHaveClass('sr-only')
+    expect(screen.getByText(AFTER)).toHaveClass('sr-only')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show before / after' }))
+    expect(screen.queryByRole('button', { name: 'Show before / after' })).toBeNull()
+    expect(screen.getByText('web').closest('del')).not.toBeNull()
+    expect(screen.getByText('mobile').closest('ins')).not.toBeNull()
+  })
+
+  it('keeps the mono a → b for short values', () => {
+    render(<DiffPair before="live" after="deprecated" />)
+    expect(screen.getByText('live')).toHaveClass('mono')
+    expect(screen.queryByRole('button', { name: 'Show before / after' })).toBeNull()
   })
 })

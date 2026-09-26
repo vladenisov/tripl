@@ -14,6 +14,7 @@ from tripl.core.analyzers.anomaly_detector import (
     SCOPE_EVENT_TYPE,
     SCOPE_PROJECT_TOTAL,
 )
+from tripl.models.alert_delivery import AlertDelivery, AlertDeliveryStatus
 from tripl.models.alert_destination import AlertDestination
 from tripl.models.alert_rule import AlertRule
 from tripl.models.alert_rule_state import AlertRuleState
@@ -63,8 +64,19 @@ from tripl.services.project_lookup import (
 
 
 async def _get_project_summaries(
-    session: AsyncSession, project_ids: list[uuid.UUID]
+    session: AsyncSession,
+    project_ids: list[uuid.UUID],
+    *,
+    branch_id: uuid.UUID | None = None,
 ) -> dict[uuid.UUID, ProjectSummary]:
+    """Per-project counters for the sidebar badges and the Overview.
+
+    ``branch_id`` scopes the PLAN counters (event types, events, variables) to
+    one working branch instead of main, so a sidebar badge read while a branch
+    is open agrees with the list on the page beside it (SH-11). It is only ever
+    passed for a single project whose ownership the ``?branch=`` dependency
+    already checked; every non-plan counter ignores it.
+    """
     summaries = {project_id: ProjectSummary() for project_id in project_ids}
     if not project_ids:
         return summaries
@@ -78,16 +90,23 @@ async def _get_project_summaries(
     # (ScanConfig, ScanJob, AlertDestination, AlertRule, MetricAnomaly,
     # EventMetric) carry no ``branch_id`` and stay unfiltered. Batched: one
     # IN-subquery over all projects' main branches, no per-project fan-out.
-    main_branch_ids = select(PlanBranch.id).where(
-        PlanBranch.project_id.in_(project_ids),
-        PlanBranch.kind == BranchKind.main.value,
+    plan_branch_ids = (
+        select(PlanBranch.id).where(
+            PlanBranch.project_id.in_(project_ids),
+            PlanBranch.kind == BranchKind.main.value,
+        )
+        if branch_id is None
+        else select(PlanBranch.id).where(
+            PlanBranch.project_id.in_(project_ids),
+            PlanBranch.id == branch_id,
+        )
     )
 
     event_type_rows = await session.execute(
         select(EventType.project_id, func.count(EventType.id))
         .where(
             EventType.project_id.in_(project_ids),
-            EventType.branch_id.in_(main_branch_ids),
+            EventType.branch_id.in_(plan_branch_ids),
         )
         .group_by(EventType.project_id)
     )
@@ -110,7 +129,7 @@ async def _get_project_summaries(
         )
         .where(
             Event.project_id.in_(project_ids),
-            Event.branch_id.in_(main_branch_ids),
+            Event.branch_id.in_(plan_branch_ids),
         )
         .group_by(Event.project_id)
     )
@@ -133,7 +152,7 @@ async def _get_project_summaries(
         select(Variable.project_id, func.count(Variable.id))
         .where(
             Variable.project_id.in_(project_ids),
-            Variable.branch_id.in_(main_branch_ids),
+            Variable.branch_id.in_(plan_branch_ids),
         )
         .group_by(Variable.project_id)
     )
@@ -175,8 +194,49 @@ async def _get_project_summaries(
     await _populate_monitoring_signals(session, summaries)
     await _populate_firing_monitor_counts(session, summaries)
     await _populate_open_incident_counts(session, summaries)
+    await _populate_failing_alert_destinations(session, summaries)
 
     return summaries
+
+
+async def _populate_failing_alert_destinations(
+    session: AsyncSession,
+    summaries: dict[uuid.UUID, ProjectSummary],
+) -> None:
+    """Count, per project, the ENABLED destinations whose latest delivery failed.
+
+    The per-destination twin of ``_populate_failing_scan_configs`` (MO-15): a
+    channel that fails every send stays counted even when another destination
+    delivered more recently, and one whose newest delivery went through (a
+    retry included — it updates the same row) drops out. Disabled destinations
+    send nothing, so their history is not a live failure.
+    """
+    if not summaries:
+        return
+
+    # One correlated LIMIT-1 lookup per enabled destination, which walks
+    # ``ix_alert_delivery_destination_created`` backwards and stops at the first
+    # row. Ranking every delivery with ``row_number()`` instead read the table's
+    # whole unbounded history on every summary read.
+    latest_status = (
+        select(AlertDelivery.status)
+        .where(AlertDelivery.destination_id == AlertDestination.id)
+        .order_by(AlertDelivery.created_at.desc(), AlertDelivery.id.desc())
+        .limit(1)
+        .correlate(AlertDestination)
+        .scalar_subquery()
+    )
+    rows = await session.execute(
+        select(AlertDestination.project_id, func.count())
+        .where(
+            AlertDestination.project_id.in_(list(summaries)),
+            AlertDestination.enabled.is_(True),
+            latest_status == AlertDeliveryStatus.failed.value,
+        )
+        .group_by(AlertDestination.project_id)
+    )
+    for project_id, failing_count in rows.all():
+        summaries[project_id].failing_alert_destination_count = int(failing_count or 0)
 
 
 async def _populate_open_incident_counts(
@@ -621,8 +681,10 @@ async def _populate_monitoring_signals(
             summary.latest_signal = signal
 
 
-async def _serialize_project(session: AsyncSession, project: Project) -> ProjectResponse:
-    summary = (await _get_project_summaries(session, [project.id]))[project.id]
+async def _serialize_project(
+    session: AsyncSession, project: Project, *, branch_id: uuid.UUID | None = None
+) -> ProjectResponse:
+    summary = (await _get_project_summaries(session, [project.id], branch_id=branch_id))[project.id]
     response = ProjectResponse.model_validate(project)
     response.summary = summary
     return response
@@ -780,13 +842,16 @@ async def with_can_mutate(
 _DEMO_ACCESS_TOUCH_SECONDS = 60
 
 
-async def get_project(session: AsyncSession, slug: str) -> ProjectResponse:
+async def get_project(
+    session: AsyncSession, slug: str, *, branch_id: uuid.UUID | None = None
+) -> ProjectResponse:
+    """The project with its summary; ``branch_id`` scopes the plan counters (SH-11)."""
     project = await get_project_by_slug(session, slug)
     # Decide WHILE attributes are fresh, serialize, then commit the touch last: the
     # commit expires the ORM object, but the response is already a detached model,
     # so serialization never lazy-loads on the async session (MissingGreenlet).
     should_touch = _should_touch_demo_access(project)
-    response = await _serialize_project(session, project)
+    response = await _serialize_project(session, project, branch_id=branch_id)
     if should_touch:
         project.demo_last_accessed_at = datetime.now(UTC)
         await session.commit()

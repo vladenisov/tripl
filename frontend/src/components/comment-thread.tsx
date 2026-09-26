@@ -11,6 +11,7 @@ import { eventsRootKey } from '@/lib/queryKeys'
 import { useConfirm } from '@/hooks/useConfirm'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { AuthContext } from '@/components/auth-context'
+import { ReadOnlyNotice } from '@/components/states/read-only-notice'
 
 /**
  * The shape the thread renders. Both anchors — a photo and an event — keep
@@ -238,9 +239,7 @@ export function CommentThread({
         </p>
       )}
       {!canWrite ? (
-        <p className="mt-3 border-t pt-3 text-body-sm text-muted-foreground">
-          Read-only: commenting is done by an editor or owner.
-        </p>
+        <ReadOnlyNotice className="mt-3">Only editors and owners can comment.</ReadOnlyNotice>
       ) : (
         <div className="mt-3 flex flex-col gap-2 border-t pt-3">
           {replyTo && (

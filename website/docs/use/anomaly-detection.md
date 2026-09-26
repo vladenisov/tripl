@@ -145,6 +145,16 @@ With the default `sigma_threshold = 4.0`, `|4.8| ≥ 4.0` passes, and `expected 
 
 These live in the project's **Detection settings** (route `/p/<slug>/settings/monitoring`) and apply to every scan in the project. (The two most impactful values, `sigma_threshold` and `min_expected_count`, can also be raised automatically for a **single scope** — see [False positives](#false-positives-self-tune-the-thresholds) below.)
 
+On the page the dials are grouped into **Sensitivity** (`sigma_threshold`,
+`min_expected_count` and the fallback baseline's window and history) and
+**Timing** (`recent_signal_window_hours`, `anomaly_ingestion_settling_minutes`),
+each group with a **Learn more** link to this page. A value outside its allowed
+range stays in the box, marked **Not saved**, until it is corrected; nothing
+out of range is written. Turning `anomaly_detection_enabled` off asks for
+confirmation first, and while detection is off a banner says so on Detection
+settings and on **Alerting › Rules**, so alert rules that can no longer fire do
+not look healthy.
+
 | Setting | Default | What it does |
 |---|---|---|
 | `anomaly_detection_enabled` | `false` | Master switch. Nothing is detected until this is on. |
@@ -394,8 +404,18 @@ count was itself zero gets no such exemption — nothing was lost, so it ages ou
 on wall-clock time like every other signal. When the same scan/bucket/direction fires at project,
 event-type, and event scopes, that is one **incident**. The **Anomalies page**
 uses the *expanded* active-signals view: it lists every co-firing scope — project
-total, each event type, and each event — and tags the child rows `part of total`
-so you can see the full breakdown of a spike or drop. The *collapsed* view behind
+total, each event type, and each event — and tags the child rows `within total
+spike` or `within total drop`, matching the parent's direction, so you can see the
+full breakdown of a spike or drop. Each row states its
+size as a **% change** from the expected count (with Minor / Significant / Major
+beside it); the z-score is on hover. On a phone the row drops the **Spike on** /
+**Drop on** prefix (and the `within total` tag) to leave the scope name room; the
+arrow beside it carries the direction. A signal an alert rule routed into an
+incident shows an **Incident · *status*** link to that incident's card on the
+Alerting page. Each row ends in a **⋯** menu (**Signal actions**): **Open
+detail**, **View alerts** (the Alerting page, on the signal's incident when it
+has one) and, for editors, **Annotate**, which opens the detail page's Volume tab
+with the annotation form prefilled on the signal's bucket. The *collapsed* view behind
 the sidebar and top-bar badge instead keeps the single project-total row and
 counts the incident once. Either way the underlying per-scope rows stay in the
 store for drilldown.
@@ -404,6 +424,24 @@ The expanded view is requested with `expanded=true` on
 `GET /projects/{slug}/anomalies/signals`; each returned signal carries an
 `incident_child` flag that is `true` for the child scopes folded under a
 project-total incident (always `false` in the collapsed view, which omits them).
+Expanded signals also carry **`incident_id`** and **`incident_status`**: the
+Alerting Inbox incident an alert rule routed the signal into, and its status there
+(`open`, `acknowledged`, `resolved`, `muted` or `false_positive`; a mute that has
+lapsed reads `open`). Both are `null` when no rule delivered the signal, and
+always `null` in the collapsed view. The Anomalies page uses them for each row's
+**Incident** link.
+
+Opening a row lands on the scope's **detail page**, where the flagged bucket is
+summed up in one sentence rather than a grid of raw figures: *"Sep 25, 6:00 PM:
+5,767 events, 82% above the expected 3,174 (16.0σ)."*, followed by a **Why
+flagged:** line (how far from the expected value it was, against the scope's
+threshold when the page knows it; a drop to zero or a bucket with no baseline
+says so instead of quoting a σ). The signal banner offers **Annotate** (the
+Volume tab, with the annotation form prefilled on the flagged bucket),
+**Discuss** (the event's discussion thread) and **View alerts**, and the page
+header carries a **View alerts** link to the Alerting page too. An annotation
+placed after the newest collected bucket is drawn on that newest bucket until
+the next collection catches up; the toast confirming the annotation says so.
 
 Every signal from that endpoint — and from the `POST
 /projects/{slug}/anomalies/signals/query` variant — also carries **`scope_name`**:

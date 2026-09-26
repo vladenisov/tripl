@@ -4,6 +4,7 @@ import { createElement, type ReactNode } from 'react'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { AuthContext } from '@/components/auth-context'
 import { authAs } from '@/test/auth'
+import { ApiError } from '@/api/client'
 import { expectNoAxeViolations } from '@/test/axe'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DataSource, EventListItem, MetricDefinitionDetailResponse } from '@/types'
@@ -1730,25 +1731,59 @@ describe('MetricEditPage (MET-28, MET-29)', () => {
     return createElement('button', { type: 'button', onClick: () => navigate(-1) }, 'Go back')
   }
 
-  function renderPage(path: string, history: string[] = []) {
+  function renderPage(path: string, history: string[] = [], auth = authAs('editor')) {
     render(
       createElement(
-        MemoryRouter,
-        { initialEntries: [...history, path], initialIndex: history.length },
+        AuthContext.Provider,
+        { value: auth },
         createElement(
-          Routes,
-          null,
-          createElement(Route, { path: '/p/:slug/metrics', element: createElement('p', null, 'catalog') }),
-          createElement(Route, { path: '/p/:slug/metrics/new', element: createElement(MetricEditPage) }),
-          createElement(Route, {
-            path: '/p/:slug/monitoring/metric/:id',
-            element: createElement('div', null, createElement('p', null, 'drilldown'), createElement(BackButton)),
-          }),
+          MemoryRouter,
+          { initialEntries: [...history, path], initialIndex: history.length },
+          createElement(
+            Routes,
+            null,
+            createElement(Route, { path: '/p/:slug/metrics', element: createElement('p', null, 'catalog') }),
+            createElement(Route, { path: '/p/:slug/metrics/new', element: createElement(MetricEditPage) }),
+            createElement(Route, {
+              path: '/p/:slug/metrics/:metricId/edit',
+              element: createElement(MetricEditPage),
+            }),
+            createElement(Route, {
+              path: '/p/:slug/monitoring/metric/:id',
+              element: createElement('div', null, createElement('p', null, 'drilldown'), createElement(BackButton)),
+            }),
+          ),
         ),
       ),
       { wrapper },
     )
   }
+
+  it('sends a viewer to the metric’s read view instead of a disabled form (#237 MT-28)', async () => {
+    vi.mocked(dataSourcesApi.list).mockResolvedValue(DATA_SOURCES)
+    vi.mocked(metricsCatalogApi.get).mockResolvedValue(EDIT_METRIC)
+    renderPage('/p/demo/metrics/metric-1/edit', [], authAs('viewer'))
+
+    expect(await screen.findByText('drilldown')).toBeInTheDocument()
+    expect(screen.queryByRole('group')).toBeNull()
+  })
+
+  it('sends a viewer away from "New metric" to the catalog', async () => {
+    renderPage('/p/demo/metrics/new', [], authAs('viewer'))
+
+    expect(await screen.findByText('catalog')).toBeInTheDocument()
+  })
+
+  it('says a missing metric is not found, with the way back and no retry (#237 SH-33)', async () => {
+    vi.mocked(dataSourcesApi.list).mockResolvedValue(DATA_SOURCES)
+    vi.mocked(metricsCatalogApi.get).mockRejectedValue(new ApiError('Not found', 404))
+    renderPage('/p/demo/metrics/gone/edit')
+
+    expect(await screen.findByRole('heading', { name: 'Metric not found' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to metrics' })).toHaveAttribute('href', '/p/demo/metrics')
+    expect(screen.queryByRole('button', { name: /try again|retry/i })).toBeNull()
+    vi.mocked(metricsCatalogApi.get).mockReset()
+  })
 
   it('opens the editor when data sources fail, and shows the failure in the SQL card', async () => {
     vi.mocked(dataSourcesApi.list).mockRejectedValue(new Error('warehouse list down'))

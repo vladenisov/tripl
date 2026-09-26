@@ -62,6 +62,15 @@ describe('shared query keys (tripl-jfm3.115, tripl-jfm3.116)', () => {
     expect(versions).toEqual(['appVersionSeries', 'demo', 'metric', 'm-1'])
   })
 
+  it('keys the single-project query by branch, nested under the bare project key (SH-11)', () => {
+    // Main keeps the shared key the other project readers use; a branch's
+    // summary counts its own plan, so it gets its own cache, still under the
+    // `projectKey(slug)` prefix every invalidation of the project reaches.
+    expect(keys.projectQueryOptions('demo').queryKey).toEqual(['project', 'demo'])
+    expect(keys.projectQueryOptions('demo', null).queryKey).toEqual(['project', 'demo'])
+    expect(keys.projectQueryOptions('demo', 'branch-1').queryKey).toEqual(['project', 'demo', 'branch-1'])
+  })
+
   it('is the only place these keys are written', () => {
     // Two spellings of one cache is invisible at runtime — the reader and the
     // writer just stop seeing each other and the screen goes quietly stale. It

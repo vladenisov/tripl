@@ -25,7 +25,7 @@ import {
   uniformRecords,
   type RecordRows,
 } from './diffValueFormat'
-import { wordDiff, type WordSegment } from './branches/wordDiff'
+import { wordDiff, type InlineSegment, type WordSegment } from './branches/wordDiff'
 
 /**
  * A table cell whose value may itself be a JSON payload.
@@ -253,17 +253,72 @@ function WordDiffText({ segments, side }: { segments: WordSegment[]; side: 'befo
   )
 }
 
+/** The merged paragraph: shared text once, removed words struck through in
+ * the danger tint, added words in the success tint (PL-10). Sans, because it
+ * is prose; the marks are real <del>/<ins>. */
+function InlineWordDiff({ segments }: { segments: InlineSegment[] }) {
+  return (
+    <span className="whitespace-pre-wrap break-words text-body-sm" style={{ color: 'var(--fg)' }}>
+      {segments.map((segment, index) => {
+        if (segment.kind === 'same') return <span key={index}>{segment.text}</span>
+        const tone = segment.kind === 'removed' ? 'danger' : 'success'
+        const Mark = segment.kind === 'removed' ? 'del' : 'ins'
+        return (
+          <Mark
+            key={index}
+            className="rounded-sm px-0.5"
+            style={{
+              color: `var(--${tone})`,
+              background: `color-mix(in oklab, var(--${tone}) 14%, transparent)`,
+              textDecoration: segment.kind === 'removed' ? 'line-through' : 'none',
+            }}
+          >
+            {segment.text}
+          </Mark>
+        )
+      })}
+    </span>
+  )
+}
+
 /**
  * A before → after pair, as a reviewer reads it (PLAN-19).
  *
  * The two sides used to differ only in colour, so each now carries a visually
- * hidden "before:" / "after:" for a screen reader. And two long strings — a
- * rewritten description — are word-diffed, with the words that changed marked
- * on each side, instead of left to be compared by eye.
+ * hidden "before:" / "after:" for a screen reader. Two long strings — a
+ * rewritten description — are word-diffed. Prose reads as ONE paragraph in the
+ * body font with the removed and added words marked in place, instead of the
+ * whole sentence twice in monospace with an arrow dangling between them
+ * (PL-10); "Show before / after" brings the two-sided view back. Short
+ * identifiers and enum values keep the mono `a → b`.
  */
 export function DiffPair({ before, after }: { before: unknown; after: unknown }) {
+  const [sideBySide, setSideBySide] = useState(false)
   const words =
     typeof before === 'string' && typeof after === 'string' ? wordDiff(before, after) : null
+  if (words && !sideBySide) {
+    return (
+      <span className="flex w-full min-w-0 flex-col items-start gap-1">
+        {/* A screen reader hears the two whole values; the marked paragraph is
+            for the eye. */}
+        <span className="sr-only">before:</span>
+        <span className="sr-only">{String(before)}</span>
+        <span className="sr-only">after:</span>
+        <span className="sr-only">{String(after)}</span>
+        <span aria-hidden="true">
+          <InlineWordDiff segments={words.inline} />
+        </span>
+        <button
+          type="button"
+          onClick={() => setSideBySide(true)}
+          className="text-caption hover:underline"
+          style={{ color: 'var(--fg-subtle)' }}
+        >
+          Show before / after
+        </button>
+      </span>
+    )
+  }
   return (
     <>
       <span className="sr-only">before:</span>

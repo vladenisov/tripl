@@ -1,23 +1,28 @@
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import {
-  ArrowDown, ArrowUp, Code, Eye, MoreHorizontal, Pencil, TrendingUp,
+  ArrowDown, ArrowUp, BellRing, CalendarPlus, CheckCheck, Copy, Link2, MessageSquare, MoreHorizontal,
+  Pencil, TrendingUp,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Chip } from '@/components/primitives/chip'
+import { CountBadge } from '@/components/primitives/count-badge'
 import { Dot } from '@/components/primitives/dot'
 import { MiniStat, MiniStatStrip, type MiniStatTone } from '@/components/primitives/mini-stat'
 import { PageHeader } from '@/components/primitives/page-header'
+import { StatValueSkeleton } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { MetricsChart } from '@/components/ui/chart-lazy'
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { formatIncidentCount } from '@/lib/alertStatus'
 import { formatRelativeTime, formatTimestamp } from '@/lib/datetime'
 import { eventNameLabel } from '@/lib/eventName'
 import { EVENT_STATUS_LABELS, EVENT_STATUS_TONE, type EventStatus } from '@/lib/eventStatus'
 import { granularityForInterval } from '@/lib/metricAdapters'
-import { formatSignalSeverity } from '@/lib/monitoring'
+import { formatSignalEffectDetail } from '@/lib/monitoring'
 import { NO_BASELINE_LABEL, formatRatioDelta, ratioDelta } from '@/lib/percentDelta'
 import { signalDirectionTone, type SignalDirectionTone } from '@/lib/statusLexicon'
 import type { Event as TEvent, EventMetricPoint, EventMetricsResponse, EventType, MonitoringSignal } from '@/types'
@@ -34,13 +39,29 @@ export function EventDetailHero({
   metrics,
   onEdit,
   onMetrics,
+  onAnnotate,
+  discussionCount,
+  onDiscuss,
+  onMarkVerified,
+  alertsPath,
 }: {
   event: TEvent
   eventType: EventType | undefined
+  /** Undefined while the series loads: the KPI strip then waits, not "—". */
   metrics: EventMetricsResponse | undefined
   /** Omitted for a viewer, who gets no Edit action. */
   onEdit?: () => void
   onMetrics: () => void
+  /** Opens the annotation form at a bucket; omitted for a viewer (JR-5). */
+  onAnnotate?: (bucket: string) => void
+  /** Comments on the event's discussion; undefined while they load (JR-7). */
+  discussionCount?: number
+  /** Scrolls to the discussion below the tabs (JR-7 / JR-5). */
+  onDiscuss?: () => void
+  /** Sets the verified flag on this one event; editors only, and only while unset (JR-8). */
+  onMarkVerified?: () => void
+  /** The alert inbox, where the signal's incident carries its triage actions (JR-5). */
+  alertsPath?: string
 }) {
   const stats = computeEventStats(metrics?.data)
   const signal = metrics?.latest_signal ?? null
@@ -53,15 +74,28 @@ export function EventDetailHero({
         signal={signal}
         onEdit={onEdit}
         onMetrics={onMetrics}
-        stats={<EventStatStrip event={event} stats={stats} />}
+        discussionCount={discussionCount}
+        onDiscuss={onDiscuss}
+        onMarkVerified={onMarkVerified}
+        stats={<EventStatStrip event={event} stats={stats} pending={metrics === undefined} />}
       />
-      {signal && <EventSignalBanner signal={signal} tone={signalTone} />}
+      {signal && (
+        <EventSignalBanner
+          signal={signal}
+          tone={signalTone}
+          onAnnotate={onAnnotate ? () => onAnnotate(signal.bucket) : undefined}
+          onDiscuss={onDiscuss}
+          alertsPath={alertsPath}
+        />
+      )}
       {signal && (
         <EventSignalMiniChart
           data={metrics?.data ?? []}
           interval={metrics?.interval ?? null}
           sigmaThreshold={metrics?.sigma_threshold}
           signal={signal}
+          color={eventType?.color || undefined}
+          onOpenFullChart={onMetrics}
         />
       )}
     </div>
@@ -81,6 +115,9 @@ function EventDetailHeader({
   signal,
   onEdit,
   onMetrics,
+  discussionCount,
+  onDiscuss,
+  onMarkVerified,
   stats,
 }: {
   event: TEvent
@@ -88,6 +125,9 @@ function EventDetailHeader({
   signal: MonitoringSignal | null
   onEdit?: () => void
   onMetrics: () => void
+  discussionCount?: number
+  onDiscuss?: () => void
+  onMarkVerified?: () => void
   stats: ReactNode
 }) {
   const status = event.status as EventStatus
@@ -114,6 +154,21 @@ function EventDetailHeader({
           <Chip tone={statusTone} size="sm">{EVENT_STATUS_LABELS[status] ?? event.status}</Chip>
           {/* Tags are kind tags: outline, not a status fill (DS-6). */}
           {event.tags.map(tag => <Chip key={tag.id} variant="outline" size="xs">{tag.name}</Chip>)}
+          {/* The thread sits below the tabs, past the fold: the count says
+              there is one and the chip jumps to it (JR-7). */}
+          {onDiscuss && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 gap-1.5 px-2 text-caption text-fg-muted"
+              onClick={onDiscuss}
+              aria-label={discussionCount === undefined ? 'Discussion' : `Discussion (${discussionCount})`}
+            >
+              <MessageSquare aria-hidden="true" />
+              Discussion
+              {discussionCount !== undefined && <CountBadge count={discussionCount} max={99} />}
+            </Button>
+          )}
         </>
       }
       description={
@@ -147,7 +202,7 @@ function EventDetailHeader({
               Edit
             </Button>
           )}
-          <EventActionOverflow />
+          <EventActionOverflow eventName={event.name} onMarkVerified={onMarkVerified} />
         </>
       }
       stats={stats}
@@ -155,12 +210,27 @@ function EventDetailHeader({
   )
 }
 
+async function copyToClipboard(text: string, success: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    toast.success(success)
+  } catch {
+    toast.error('Could not copy to the clipboard')
+  }
+}
+
 /**
- * Overflow ("…") menu for not-yet-shipped actions. Keeping Watch / Implementation
- * out of the primary row — rather than as inert disabled buttons beside the live
- * ones — stops the dead CTAs from undercutting confidence in the working actions.
+ * Overflow ("…") menu with actions that work. It used to hold only disabled
+ * "Coming soon" items, the first place a reader looked for more and found
+ * nothing (JR-8).
  */
-function EventActionOverflow() {
+function EventActionOverflow({
+  eventName,
+  onMarkVerified,
+}: {
+  eventName: string
+  onMarkVerified?: () => void
+}) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -169,21 +239,45 @@ function EventActionOverflow() {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={6} className="w-[180px]">
-        <DropdownMenuLabel className="micro-label text-fg-tertiary">
-          Coming soon
-        </DropdownMenuLabel>
-        <DropdownMenuItem disabled className="text-body-sm">
-          <Eye className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Watch
+        <DropdownMenuItem
+          className="text-body-sm"
+          onSelect={() => void copyToClipboard(window.location.href, 'Link copied')}
+        >
+          <Link2 className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Copy link
         </DropdownMenuItem>
-        <DropdownMenuItem disabled className="text-body-sm">
-          <Code className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Implementation
+        <DropdownMenuItem
+          className="text-body-sm"
+          onSelect={() => void copyToClipboard(eventName, 'Event name copied')}
+        >
+          <Copy className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Copy event name
         </DropdownMenuItem>
+        {/* The Events list's bulk "Mark as verified", for this one event. */}
+        {onMarkVerified && (
+          <DropdownMenuItem className="text-body-sm" onSelect={onMarkVerified}>
+            <CheckCheck className="h-3.5 w-3.5 shrink-0" style={{ color: 'var(--fg-subtle)' }} /> Mark as verified
+          </DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )
 }
 
-function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: SignalDirectionTone }) {
+function EventSignalBanner({
+  signal,
+  tone,
+  onAnnotate,
+  onDiscuss,
+  alertsPath,
+}: {
+  signal: MonitoringSignal
+  tone: SignalDirectionTone
+  /** "Annotate" records the verdict on the flagged bucket (JR-5); editors only. */
+  onAnnotate?: () => void
+  /** "Discuss" jumps to the event's thread, to ask whoever owns it (JR-5). */
+  onDiscuss?: () => void
+  /** The alert inbox, where the incident's Ack / Mute live (JR-5 / MO-4). */
+  alertsPath?: string
+}) {
   // No baseline is a fact about the signal, not a missing value: dropping the
   // clause left the banner silently shorter on exactly the anomalies that moved
   // the most — an event firing where nothing was expected, a scope resuming
@@ -192,24 +286,54 @@ function EventSignalBanner({ signal, tone }: { signal: MonitoringSignal; tone: S
   const Arrow = signal.direction === 'drop' ? ArrowDown : ArrowUp
   return (
     <div
-      className="flex items-center gap-[10px] rounded-card px-[14px] py-[10px]"
+      className="flex flex-wrap items-center gap-[10px] rounded-card px-[14px] py-[10px]"
       style={{
         background: `var(--${tone}-soft)`,
         border: `1px solid color-mix(in oklab, var(--${tone}) 35%, var(--border))`,
       }}
     >
       <Arrow size={16} style={{ color: `var(--${tone})` }} />
-      <span className="text-body-sm" style={{ color: 'var(--fg-muted)' }}>
+      {/* The % change is the sentence; the z-score moved to the tooltip, where
+          it no longer asks a PM to read statistics (MO-2 / JR-31). A drop that
+          bottomed out says so: "−100%" is right but reads as a rounding. */}
+      <span
+        className="text-body-sm"
+        style={{ color: 'var(--fg-muted)' }}
+        title={formatSignalEffectDetail(signal)}
+      >
         {signal.direction === 'drop' ? 'Volume drop' : 'Volume spike'} detected
-        {delta === null
-          ? ` — ${NO_BASELINE_LABEL} to compare against`
-          : ` — ${formatRatioDelta(delta)} vs. baseline`}
-        {` (${formatSignalSeverity(signal)}).`}
+        {signal.direction === 'drop' && signal.actual_count === 0
+          ? ' — dropped to zero.'
+          : delta === null
+            ? ` — ${NO_BASELINE_LABEL} to compare against.`
+            : ` — ${formatRatioDelta(delta)} vs. baseline.`}
       </span>
       <div className="flex-1" />
       <span className="text-caption" style={{ color: 'var(--fg-subtle)' }}>
         {formatTimestamp(signal.bucket)}
       </span>
+      {/* A signal is not a dead end (MO-4 / JR-5): record a verdict on the
+          bucket, ask about it, or go to the incident's triage actions. */}
+      {onAnnotate && (
+        <Button variant="outline" size="sm" onClick={onAnnotate}>
+          <CalendarPlus aria-hidden="true" />
+          Annotate
+        </Button>
+      )}
+      {onDiscuss && (
+        <Button variant="outline" size="sm" onClick={onDiscuss}>
+          <MessageSquare aria-hidden="true" />
+          Discuss
+        </Button>
+      )}
+      {alertsPath && (
+        <Button variant="outline" size="sm" asChild>
+          <Link to={alertsPath}>
+            <BellRing aria-hidden="true" />
+            View alerts
+          </Link>
+        </Button>
+      )}
     </div>
   )
 }
@@ -237,12 +361,18 @@ function EventSignalMiniChart({
   interval,
   sigmaThreshold,
   signal,
+  color,
+  onOpenFullChart,
 }: {
   data: EventMetricPoint[]
   interval: string | null
   /** `EventMetricsResponse.sigma_threshold`, threaded from the hero's already-fetched series. */
   sigmaThreshold: number | undefined
   signal: MonitoringSignal
+  /** The event type's colour, the same one the Volume tab draws (MO-14). */
+  color: string | undefined
+  /** The Volume tab's full chart, with its range controls (MO-14). */
+  onOpenFullChart: () => void
 }) {
   if (data.length === 0) return null
   const granularity = granularityForInterval(interval) ?? 'hour'
@@ -252,7 +382,7 @@ function EventSignalMiniChart({
       className="rounded-card border px-[14px] pb-[6px] pt-[10px]"
       style={SURFACE_STYLE}
     >
-      <div className="mb-[6px] flex items-baseline justify-between gap-3 text-caption">
+      <div className="mb-[6px] flex flex-wrap items-baseline gap-x-3 gap-y-1 text-caption">
         <span className="font-medium" style={{ color: 'var(--fg-subtle)' }}>Volume</span>
         {/* Same `expected > 0` gate the banner uses, so the two cannot disagree
             about whether this signal had a baseline at all — and the SAME
@@ -261,18 +391,24 @@ function EventSignalMiniChart({
             prior buckets, so a rare event's baseline is legitimately sub-unit
             (0.4/hour); `Math.round` wrote that as "baseline 0", contradicting
             the gate that had just decided a baseline existed. */}
-        <span style={{ color: 'var(--fg-faint)' }}>
+        <span className="ml-auto" style={{ color: 'var(--fg-faint)' }}>
           {signal.expected_count > 0
             ? `baseline ${formatIncidentCount(signal.expected_count)} at the flagged bucket`
             : `${NO_BASELINE_LABEL} at the flagged bucket`}
         </span>
+        {/* The same series as the Volume tab: say so and link to it, so the
+            two do not read as different data (MO-14). */}
+        <Button variant="link" size="sm" className="h-auto p-0 text-caption" onClick={onOpenFullChart}>
+          Open full chart
+        </Button>
       </div>
       <MetricsChart
         data={data}
         height={104}
-        // No `color`: the chart's single-series default, the same colour as
-        // the Volume tab below. The anomaly is marked by its danger dot and
-        // band, not by painting the whole line red (DS-27).
+        // The event type's colour, as on the Volume tab below, so the two
+        // read as one series. The anomaly is marked by its danger mark, not by
+        // painting the whole line red (DS-27 / MO-14).
+        color={color}
         granularity={granularity}
         seriesLabel="events"
         sigmaThreshold={sigmaThreshold}
@@ -293,7 +429,7 @@ function EventStat({
   empty,
 }: {
   label: string
-  value: string
+  value: ReactNode
   tone?: MiniStatTone
   /** Hover/long-press explanation, e.g. for an empty "—" value. */
   hint?: string
@@ -316,28 +452,52 @@ function EventStat({
  * with 19px mono figures: sans tabular figures (DS-17), so "2h ago" no longer
  * reads as code.
  */
-function EventStatStrip({ event, stats }: { event: TEvent; stats: EventDetailStats }) {
+function EventStatStrip({
+  event,
+  stats,
+  pending,
+}: {
+  event: TEvent
+  stats: EventDetailStats
+  /** The series has not arrived: no "—" / "No events" claim yet (DS-25). */
+  pending: boolean
+}) {
   const deltaTone: MiniStatTone | undefined = stats.delta24h == null
     ? undefined
     : stats.delta24h > 20 ? 'danger' : stats.delta24h < -20 ? 'warning' : undefined
+  const deltaText = stats.delta24h == null
+    ? '—'
+    : `${stats.delta24h > 0 ? '+' : ''}${stats.delta24h.toFixed(0)}%`
   return (
     <MiniStatStrip boxed>
       <EventStat
         label="Volume · 24h"
-        value={stats.volume24h == null ? '—' : formatNum(stats.volume24h)}
-        empty={stats.volume24h == null}
-        hint={stats.volume24h == null ? 'No events in the last 24h' : undefined}
+        value={pending
+          ? <StatValueSkeleton />
+          : stats.volume24h == null ? '—' : formatNum(stats.volume24h)}
+        empty={!pending && stats.volume24h == null}
+        hint={!pending && stats.volume24h == null ? 'No events in the last 24h' : undefined}
       />
       <EventStat
-        label="Δ · 24h"
-        // The Events list's figure and its "*" for a window short of 24h, so
-        // the two surfaces cannot disagree about the same event (MON-28).
-        value={stats.delta24h == null
-          ? '—'
-          : `${stats.delta24h > 0 ? '+' : ''}${stats.delta24h.toFixed(0)}%${stats.partial ? '*' : ''}`}
-        tone={deltaTone}
-        empty={stats.delta24h == null}
-        hint={stats.deltaHint}
+        label="Change vs prior 24h"
+        // The Events list's figure, so the two surfaces cannot disagree about
+        // the same event (MON-28). A window short of 24h says so in words
+        // under the figure, not with a "*" explained only on hover (MO-41).
+        value={pending
+          ? <StatValueSkeleton />
+          : stats.partial && stats.delta24h != null
+            ? (
+              <span className="inline-flex flex-col">
+                <span>{deltaText}</span>
+                <span className="text-caption font-normal" style={{ color: 'var(--fg-faint)' }}>
+                  partial window
+                </span>
+              </span>
+            )
+            : deltaText}
+        tone={pending ? undefined : deltaTone}
+        empty={!pending && stats.delta24h == null}
+        hint={pending ? undefined : stats.deltaHint}
       />
       <EventStat
         label="Schema drifts"

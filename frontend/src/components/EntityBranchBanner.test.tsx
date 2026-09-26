@@ -43,7 +43,9 @@ describe('EntityBranchBanner (tripl-kjhi.7)', () => {
     const { setBranchId } = renderBanner('wnd-4770', 'wnd-4770', '/p/demo/events')
     const banner = await screen.findByTestId('entity-branch-banner')
     expect(banner.textContent).toContain('WND-4770')
-    expect(banner.textContent).toContain('ready for review')
+    // The status in the words every branch surface uses, not the raw enum (PL-3).
+    expect(banner.textContent).toContain('Ready for review')
+    expect(screen.queryByRole('alert')).toBeNull()
     const link = screen.getByRole('link', { name: 'View main plan' })
     expect(link).toHaveAttribute('href', '/p/demo/events')
     fireEvent.click(link)
@@ -68,6 +70,8 @@ describe('EntityBranchBanner (tripl-kjhi.7)', () => {
     // The link carries the branch; the entry being left keeps its own address.
     expect(setBranchId).toHaveBeenCalledWith('wnd-4770', { updateUrl: false })
     expect(screen.getByTestId('entity-branch-banner').textContent).toContain('you are viewing main')
+    // A mismatch is announced: the page below it cannot save there (PL-2).
+    expect(screen.getByRole('alert')).toBe(screen.getByTestId('entity-branch-banner'))
   })
 
   it('says nothing for a main row read with main active', async () => {

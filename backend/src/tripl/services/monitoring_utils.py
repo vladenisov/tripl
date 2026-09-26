@@ -313,6 +313,34 @@ class MonitorRollup:
     last_notified_at: datetime | None
 
 
+def firing_monitor_states[StateT: _MonitorState](
+    states: Sequence[StateT],
+    *,
+    now: datetime,
+    interval_of: MonitorStateInterval | None = None,
+) -> list[StateT]:
+    """The states ``summarize_monitor_states`` counts as firing, themselves.
+
+    Split out so the monitor detail can LIST the scopes firing now (MO-36) by
+    the very rule that produced its ``firing_scope_count`` — a second copy of
+    the horizon test is how the count and the list would come to disagree.
+    """
+    return [
+        state
+        for state in states
+        if state.is_active
+        and state.last_anomaly_bucket is not None
+        and _bucket_is_recent(
+            state.last_anomaly_bucket,
+            now
+            - _freshness_horizon(
+                interval_of(state) if interval_of is not None else None,
+                RECENT_SIGNAL_WINDOW,
+            ),
+        )
+    ]
+
+
 def summarize_monitor_states(
     states: Sequence[_MonitorState],
     *,
@@ -348,19 +376,7 @@ def summarize_monitor_states(
     scan's latest bucket, which ``AlertRuleState`` does not carry.
     """
     active = [state for state in states if state.is_active]
-    firing = [
-        state
-        for state in active
-        if state.last_anomaly_bucket is not None
-        and _bucket_is_recent(
-            state.last_anomaly_bucket,
-            now
-            - _freshness_horizon(
-                interval_of(state) if interval_of is not None else None,
-                RECENT_SIGNAL_WINDOW,
-            ),
-        )
-    ]
+    firing = firing_monitor_states(states, now=now, interval_of=interval_of)
     if firing:
         status = "firing"
     elif active:

@@ -21,7 +21,7 @@ from tripl.core.intervals import get_interval
 from tripl.metric_grid import metric_grid_stmt, metric_grids
 from tripl.metric_monitoring import monitored_metric_criteria
 from tripl.models.distribution_drift import DistributionDrift
-from tripl.models.domain_enums import MetricBreakdownAnomalyKind
+from tripl.models.domain_enums import AlertInboxStatus, MetricBreakdownAnomalyKind
 from tripl.models.event import Event
 from tripl.models.event_metric import EventMetric
 from tripl.models.event_metric_breakdown import EventMetricBreakdown
@@ -42,6 +42,7 @@ from tripl.schemas.event_metric import (
     SeasonalityHeatmapResponse,
     TopMoverItem,
 )
+from tripl.services import alerting_service
 from tripl.services.metrics_service import (
     _get_anomaly_rows,
     _get_metric_rows,
@@ -665,7 +666,11 @@ async def get_active_signals(
     if cacheable:
         cached = await cache.get_json(cache_key)
         if cached is not None:
-            return [MetricSignalResponse.model_validate(item) for item in cached]
+            cached_signals = [MetricSignalResponse.model_validate(item) for item in cached]
+            if not expanded:
+                return cached_signals
+            project = await _resolve_project(session, slug)
+            return await _with_incident_refs(session, project.id, cached_signals)
 
     project = await _resolve_project(session, slug)
     scope_types = [SCOPE_PROJECT_TOTAL, SCOPE_EVENT_TYPE]
@@ -770,7 +775,57 @@ async def get_active_signals(
             [signal.model_dump(mode="json") for signal in signals],
             ttl_seconds=30,
         )
+    if expanded:
+        return await _with_incident_refs(session, project.id, signals)
     return signals
+
+
+async def _with_incident_refs(
+    session: AsyncSession,
+    project_id: uuid.UUID,
+    signals: list[MetricSignalResponse],
+) -> list[MetricSignalResponse]:
+    """Copies of ``signals`` naming the inbox incident each was routed into (JR-6).
+
+    Applied after the cache read and after the cache write, never before: an
+    incident's status moves with triage, which invalidates nothing here, so a
+    cached status would lag the inbox for the cache's lifetime.
+    """
+    refs = await alerting_service.incident_refs_for_signals(
+        session,
+        project_id,
+        (
+            (signal.scan_config_id, signal.scope_type, signal.scope_ref, signal.bucket)
+            for signal in signals
+        ),
+    )
+    if not refs:
+        return signals
+    out: list[MetricSignalResponse] = []
+    for signal in signals:
+        ref = refs.get(
+            (
+                signal.scan_config_id,
+                str(signal.scope_type),
+                signal.scope_ref,
+                _as_utc(signal.bucket),
+            )
+        )
+        out.append(
+            signal
+            if ref is None
+            else signal.model_copy(
+                update={
+                    "incident_id": ref.correlation_group_id,
+                    "incident_status": AlertInboxStatus(ref.status),
+                }
+            )
+        )
+    return out
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 async def get_top_movers(

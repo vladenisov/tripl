@@ -30,7 +30,9 @@ Inside a project, the left sidebar groups your work into three areas — **Plan*
 warehouse is done once in workspace settings rather than per project, so it
 isn't a sidebar group. You will usually set things up in the order **Connect →
 Plan → Observe → Govern**, but explore them in any order. Press `⌘K` (or
-`Ctrl-K`) anywhere to search or jump.
+`Ctrl-K`) anywhere to search or jump. The palette's **Actions** group also
+starts common tasks: New event, New metric, New branch, switching branch,
+Invite member (owners) and the theme toggle.
 
 ---
 
@@ -104,8 +106,8 @@ Then a good order to look around:
 
 - **Plan → Events** — browse the catalog. Open an event to see its fields,
   values, tags, status, and recent change history.
-- **Observe → Live activity** — the health of the whole project at a glance.
-- **Observe → Alerting → Monitors** — see which alert rules are firing and
+- **Observe → Overview** — the health of the whole project at a glance.
+- **Observe → Alerting → Rules** — see which alert rules are firing and
   where they route. Then open an event that is showing a signal and study its
   monitoring detail: the volume chart, the forecast, the heatmap, and the
   breakdown of what moved.
@@ -236,7 +238,7 @@ it is what populates monitoring later.
    human-readable label in **Title** instead (`Order paid`, `Video started`).
    The title shows beside the name in lists, the diff and the event page, is
    searchable, and can be changed at any time without touching the identity.
-3. **Schema & fields** — define **meta fields** that ride along with every event
+3. **Meta fields** — define **meta fields** that ride along with every event
    (app version, platform, country), reusable **variables** for templates you
    use in more than one place, and **relations** that record how one event is
    expected to follow another.
@@ -273,16 +275,16 @@ As events get built and verified, move them through their statuses — **Draft**
 or **Archive** the ones you retire. The last step happens on its own: the
 first data collection sees for an event in **Ready for Dev** or **Implemented**
 moves it to **Live**. **Draft** and **In Review** events stay put, so stray
-traffic never promotes an event nobody has signed off on. Reviewing is tracked separately: mark an
-event **reviewed** once you've checked it, independent of its status. The two
-axes really are independent — an event can be marked reviewed and still sit in
+traffic never promotes an event nobody has signed off on. Verification is tracked separately: mark an
+event **verified** once you've checked it, independent of its status. The two
+axes really are independent — an event can be verified and still sit in
 **In Review** — which is why the header's **In review** stat counts events whose
 *status* is `in_review`, and not the events nobody has reviewed yet. On the
 Events page you can select several rows at once and use the bulk action bar to
-**set status**, **mark reviewed**, **assign an owner** (or **Unassign**, the
+**set status**, **mark as verified**, **assign an owner** (or **Unassign**, the
 same picker's first entry, which clears the owner across the selection), or
 **delete** in one go.
-Saved views, column toggles, and filters (by status, tag, silent days, reviewed
+Saved views, column toggles, and filters (by status, tag, silent days, verified
 state, or field value) help you work through a large catalog.
 
 The **Status** filter takes several statuses at once — tick **Draft** and
@@ -292,13 +294,37 @@ ticked (**Any status**) the list shows every status except **Archived** — or,
 on the review and archived tabs, the status that tab is for; tick **Archived**
 to see archived events alongside the rest.
 
-The toolbar's **Reviewed** filter takes **Any**, **Reviewed** or **Not
-reviewed** and lives in the page URL — `?reviewed=true` or `?reviewed=false`,
-with **Any** writing no parameter — so "what still needs checking" can be
-bookmarked or sent to a colleague. The **Reviewed** column is off by default in
-the column picker, but it is forced visible on the **Review** tab
-(`/events/review`), where the flag is the point of the screen and a bulk **mark
-reviewed** would otherwise change nothing you could see.
+The toolbar's **Verified** filter takes **Any**, **Yes** or **No** and lives
+in the page URL — `?reviewed=true` or `?reviewed=false`, with **Any** writing no
+parameter — so "what still needs checking" can be bookmarked or sent to a
+colleague. **Verified** is a flag of its own, separate from the **In review**
+status: **Mark as verified** does not take an event out of the review queue.
+The **Verified** column is off by default in the column picker, but it is forced
+visible on the **Review queue** tab (`/events/review`), where the flag is the
+point of the screen and a bulk **Mark as verified** would otherwise change
+nothing you could see.
+
+A few more things about the Events page:
+
+- A row under the title switches between **All**, **Review queue (n)** and
+  **Archived**; on the last two the page is titled **Review queue** and
+  **Archived events**. The **In review** stat in the header links to the queue.
+- The **Event volume** chart starts collapsed. Ranges longer than 7 days group
+  by day, and an open signal is marked on the chart.
+- Clicking the **48h** column header toggles **Busiest first**.
+- **Clear filters** clears the search box too.
+- On a phone the filters fold behind a **Filters (n)** button.
+- On the **All** tab, type-specific field columns start hidden; turn them on in
+  **Columns**.
+- Clicking a row opens the event's page. Its header's **Discussion (n)** chip
+  jumps to the event's comment thread, and while the event is unverified the
+  **⋯** menu offers editors **Mark as verified**, the list's bulk action for
+  this one event.
+- **Saved views** are kept in your browser and hold the search, filters and
+  sort.
+- A viewer who follows a link to an event lands on its monitoring detail page.
+- A new project shows a first-run state offering **New event**, **Import from
+  a scan** and **Add many events**.
 
 ---
 
@@ -307,11 +333,14 @@ reviewed** would otherwise change nothing you could see.
 Once a plan is live and people trust it, stop editing it directly. Change it on a
 branch instead — the same idea as a pull request for code.
 
-1. Open **Plan branches** and create a new branch. You get a private copy of the
-   whole plan.
+1. Open **Plan branches** and create a new branch (or pick **New branch from
+   main** in the branch switcher). You get a private copy of the whole plan,
+   and by default you are switched onto it as soon as it is created.
 2. Make your changes on the branch. A branch switcher keeps every plan page in
    that branch's context, so the live (main) plan is untouched while you work.
-3. Set the branch to **Ready for review** and assign a reviewer.
+3. Set the branch to **Ready for review** and assign a reviewer. tripl does not
+   notify a reviewer when they are assigned — no email and no in-app message —
+   so send them the branch link yourself.
 4. The reviewer reads the **diff** — exactly what changed on the branch since it
    was created. Changes that landed only on main appear as the branch being
    behind, not as branch changes. Each row expands to the field-level detail:
@@ -472,8 +501,8 @@ learns the normal rhythm of every event — including time-of-day and weekday
 patterns — and raises a **signal** on an unexpected spike, drop, or change of
 shape. That detection is automatic and needs no setup.
 
-- **Live activity** — start here for the state of the whole project.
-- **Monitors** — the list of your alert rules, each attached to a scope, with
+- **Overview** — start here for the state of the whole project.
+- **Alert rules** (Alerting › Rules) — the list of your alert rules, each attached to a scope, with
   the condition it watches for, where it routes, and its live state.
 - **Metrics** — define project-wide SQL metrics, event compositions, or fact
   metrics. Fact tables keep a reusable read-only query, introspected columns,
@@ -508,10 +537,15 @@ see, across tabs:
   stays on its own scale. The range, granularity, tab and filters are kept in
   the page address, so a link or a refresh reopens the same view. The chart
   includes a short **forecast** of where
-  the next native-interval point should land only when the selected granularity
-  matches that collection interval, plus a panel summarising the latest signal
-  (its bucket, actual vs expected count, and z-score) and **top movers** showing
-  which slice of the data moved. Other rollups omit the forecast because one
+  the next native-interval point should land — a hollow point with a whisker for
+  its likely range — only when the selected granularity matches that collection
+  interval, plus a strip summarising the latest signal (**Flagged bucket**,
+  **Change**, **Actual**, **Expected**, **Deviation**) and **top movers** showing
+  which slice of the data moved. The chart has a legend, a partial first or last
+  bucket of a rolled-up range is drawn dashed, and the caption under it says
+  what one point is. The signal banner offers **Annotate** to mark the flagged
+  bucket. A metric's **Delete** is in the page's **…** menu, and the project
+  total's page is titled **Total volume**. Other rollups omit the forecast because one
   native bucket is not a forecast for the whole aggregate bucket. You can also
   add **annotations** to mark deploys, releases, or incidents directly on the
   chart. Pick the day from the calendar (arrow keys move by day and week, Page
@@ -519,13 +553,15 @@ see, across tabs:
   starts at now. Annotations draw in a neutral
   colour so they cannot be mistaken for anomalies, and deleting one asks first
   (a project-wide annotation is removed from every chart in the project).
-- **Heatmap** — activity by hour of day and day of week. It needs a scan that collects hourly or finer; on a 6-hour, daily or weekly scan the tab explains that there is no hour-of-day detail instead of drawing a mostly empty grid.
+- **Heatmap** — activity by hour of day and day of week; a cell's detail appears
+  on hover or tap. It needs a scan that collects hourly or finer; on a 6-hour, daily or weekly scan the tab explains that there is no hour-of-day detail instead of drawing a mostly empty grid.
 - **Distribution** — whether a field's mix of values is drifting (reported as a
   PSI score and a band of *normal / minor / significant*).
 - **Breakdowns** *(event-level)* — splits an event's volume into one series per
   value of a chosen column. For the scan's designated platform column, share
   anomalies are called out separately when one platform's ratio changes even
-  though total volume remains stable. The chart draws up to eight values at
+  though total volume remains stable. The tab has its own range and
+  granularity controls. The chart draws up to eight values at
   once and says how many it left out; pick values below it to compare others.
 - **By version** — appears only when the event's scan names an app-version
   column. It splits volume across recent releases, tracks adoption, and lists
@@ -565,11 +601,11 @@ counts as "abnormal" in the project's **Detection settings**.
 
 A signal only helps if someone hears about it. Open **Observe → Alerting**. It is
 split into four tabs: **Inbox** (incidents to triage, and where an alert link
-lands you), **Monitors** (every rule with its live firing state — mute, replay,
-edit and delete live here), **Destinations** (the channels rules route to), and
+lands you), **Rules** (every alert rule with its live firing state — replay,
+mute, edit and delete sit behind each row's **…** menu), **Destinations** (the channels rules route to), and
 **Delivery log** (every delivery, for checking whether a message physically went
-out). A project with nothing configured yet skips the tabs and shows a setup
-checklist instead.
+out). A project with nothing configured yet skips the tabs and shows a guided setup
+instead, which also asks which scan the first rule should watch.
 
 ### 1. Add a destination
 
@@ -596,15 +632,18 @@ locally. See [The demo workspace](./demo-workspace.md).
 ### 2. Create a rule
 
 A rule decides *which* signals are worth interrupting someone for and routes them
-to a destination. Set its scope, the direction (spikes, drops, or both), how big
-a change has to be, and a **cooldown** so the same problem doesn't notify you
-repeatedly. Write the message template. Schema drift, distribution drift,
+to a destination. The editor walks four steps: **What to watch** (the scopes),
+**When** (spikes, drops or both, how big a change has to be — a new rule starts
+at 30% — and a **cooldown**, entered as an amount and a unit, so the same
+problem doesn't notify you repeatedly), **Where** (the destination), and
+**Customize message**, collapsed until you want to change the template. Less
+common settings are under **Advanced**. Saving confirms with a toast. Schema drift, distribution drift,
 variable value drift, and release regressions are separate opt-in toggles; they
 stay off until the rule explicitly subscribes to them.
 
 :::tip Simulate before you switch it on
-Use the rule's **Replay** to run recent days of real data against it and see
-exactly what it *would* have sent — you can even override the cooldown to compare.
+Use the rule's **Replay** (in its **…** menu; it runs as soon as it opens) to run
+recent days of real data against it and see exactly what it *would* have sent — you can even override the cooldown to compare.
 Tune it until it's signal rather than noise before turning it on.
 :::
 

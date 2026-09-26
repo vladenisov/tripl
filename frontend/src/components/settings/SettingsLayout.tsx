@@ -8,10 +8,11 @@ import {
   type ReactNode,
 } from 'react'
 import { Link, useBlocker, useNavigate, type Location } from 'react-router-dom'
-import { ChevronLeft, LogOut, Menu } from 'lucide-react'
+import { ArrowUpRight, ChevronLeft, LogOut, Menu } from 'lucide-react'
 import { useAuth } from '@/components/auth-context'
 import { useConfirm } from '@/hooks/useConfirm'
 import { UserAvatar } from '@/components/ui/user-avatar'
+import { Chip } from '@/components/primitives/chip'
 import { SETTINGS_CONTENT_ID } from './landmarks'
 import { sectionPathForUrl, visibleGroupsAll } from './nav'
 import { SettingsCommandPalette } from './settings-palette'
@@ -429,6 +430,11 @@ export function SettingsLayout({
                         style={{ color: active ? 'var(--accent)' : 'var(--fg-subtle)' }}
                       />
                       <span className="flex-1">{item.label}</span>
+                      {item.tag && (
+                        <Chip size="xs" variant="outline" aria-hidden="true">
+                          {item.tag}
+                        </Chip>
+                      )}
                       {dirty && (
                         // Named through the link's aria-label; the dot is the
                         // sighted half of the same signal.
@@ -442,6 +448,20 @@ export function SettingsLayout({
                     </Link>
                   )
                 })}
+                {group.label === 'Project' && projectSlug && (
+                  // The project's tracking plan and alerting live in the app,
+                  // not in this rail; say so here instead of leaving a
+                  // "Project operations" button on General as the only way
+                  // there (#238 ST-5). The arrow marks it as leaving the area.
+                  <Link
+                    to={`/p/${encodeURIComponent(projectSlug)}/settings/event-types`}
+                    onClick={guardLeave}
+                    className="flex items-center gap-2 rounded-md px-[9px] py-2.5 md:py-[7px] text-left text-body-sm font-medium text-fg-muted no-underline transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover"
+                  >
+                    <ArrowUpRight className="size-4 shrink-0" style={{ color: 'var(--fg-subtle)' }} aria-hidden="true" />
+                    <span className="flex-1">Tracking plan &amp; alerting</span>
+                  </Link>
+                )}
               </div>
             </div>
           ))}

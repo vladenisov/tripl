@@ -4,6 +4,7 @@ import { Field, SCard, SHeader } from '@/components/settings/kit'
 import { UserAvatar } from '@/components/ui/user-avatar'
 import { ROLE_OPTIONS } from '@/types'
 import { ComingLaterCard } from './ComingLaterCard'
+import { ReadOnlyNotice } from '@/components/states'
 
 /**
  * Timestamps render in *your browser's* timezone, so that is what this page
@@ -46,6 +47,12 @@ export default function ProfileSection() {
   return (
     <div>
       <SHeader title="Profile" description="Your personal details across every project you belong to." />
+      {/* Nothing on this page is editable; say so once, the way every other
+          read-only section does, rather than leave a page of values that look
+          like they should be (#237 ST-17). */}
+      <ReadOnlyNotice className="mb-5">
+        These details can't be changed here yet. A workspace owner sets your role.
+      </ReadOnlyNotice>
 
       <SCard title="Your details">
         <Field label="Name" hint="Set when the account was created." htmlFor={false}>

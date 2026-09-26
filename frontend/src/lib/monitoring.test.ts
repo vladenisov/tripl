@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  formatSignalEffect,
+  formatSignalEffectDetail,
   formatSignalSeverity,
   getMetricMonitoringPath,
   getMonitoringPath,
@@ -247,6 +249,87 @@ describe('formatSignalSeverity', () => {
         direction: 'spike',
       }),
     ).toBe('z=4.3')
+  })
+})
+
+describe('formatSignalEffect (MO-2)', () => {
+  it('reads a spike as a signed whole-percent change from expected', () => {
+    // 3,846 vs 1,268 is +203%: the reader no longer does the arithmetic.
+    expect(
+      formatSignalEffect({ actual_count: 3846, expected_count: 1268, z_score: 40.7, direction: 'spike' }),
+    ).toBe('+203%')
+  })
+
+  it('uses a real minus sign for a drop', () => {
+    expect(
+      formatSignalEffect({ actual_count: 36, expected_count: 100, z_score: -6, direction: 'drop' }),
+    ).toBe('\u221264%')
+  })
+
+  it('keeps one decimal under 10%, where rounding would move the figure', () => {
+    expect(
+      formatSignalEffect({ actual_count: 1046, expected_count: 1000, z_score: 3, direction: 'spike' }),
+    ).toBe('+4.6%')
+  })
+
+  it('prefers the server relative effect, so the figure matches the filter gate', () => {
+    // A fractional metric: the count-shaped fallback would floor the
+    // denominator at 1 and print +8% for a move the server scores at 67%.
+    expect(
+      formatSignalEffect({
+        actual_count: 0.2,
+        expected_count: 0.12,
+        z_score: 5,
+        direction: 'spike',
+        relative_effect: 0.667,
+      }),
+    ).toBe('+67%')
+  })
+
+  it('does not floor a sub-unit baseline, so the row agrees with the event hero', () => {
+    // Expected 0.4, actual 5: the hero's ratioDelta says +1150%. The gate's
+    // count-shaped relative effect (floored at 1) is 4.6, and the row used to
+    // print that as +460%.
+    expect(
+      formatSignalEffect({
+        actual_count: 5,
+        expected_count: 0.4,
+        z_score: 8,
+        direction: 'spike',
+        relative_effect: 4.6,
+      }),
+    ).toBe('+1,150%')
+  })
+
+  it('says "dropped to zero" and "up from zero" where a percentage says nothing', () => {
+    expect(
+      formatSignalEffect({ actual_count: 0, expected_count: 80, z_score: -20, direction: 'drop' }),
+    ).toBe('dropped to zero')
+    // A zero baseline arrives with a capped relative effect (1e6); printing it
+    // as "+100,000,000%" would be noise.
+    expect(
+      formatSignalEffect({
+        actual_count: 12,
+        expected_count: 0,
+        z_score: 9,
+        direction: 'spike',
+        relative_effect: 1e6,
+      }),
+    ).toBe('up from zero')
+  })
+})
+
+describe('formatSignalEffectDetail (JR-31)', () => {
+  it('names the magnitude bucket in words, with the z-score beside it', () => {
+    expect(
+      formatSignalEffectDetail({ actual_count: 300, expected_count: 100, z_score: 40.72, direction: 'spike' }),
+    ).toBe('Major · z=40.7')
+    expect(
+      formatSignalEffectDetail({ actual_count: 150, expected_count: 100, z_score: 4, direction: 'spike' }),
+    ).toBe('Significant · z=4.0')
+    expect(
+      formatSignalEffectDetail({ actual_count: 110, expected_count: 100, z_score: 3.1, direction: 'spike' }),
+    ).toBe('Minor · z=3.1')
   })
 })
 

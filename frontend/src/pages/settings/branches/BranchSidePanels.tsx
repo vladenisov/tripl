@@ -106,10 +106,6 @@ export function CommentsPanel({
   usersById: Map<string, string>
 }) {
   const { notifyStepCompleted } = useDemoScenarioActions()
-  const { data: comments } = useQuery({
-    queryKey: planBranchCommentsKey(slug, branchId),
-    queryFn: () => planBranchesApi.listComments(slug, branchId),
-  })
 
   // The panel used to render a flat list off a single-line <Input>, while
   // PlanBranchComment has carried `parent_id` and the service has validated it
@@ -117,8 +113,12 @@ export function CommentsPanel({
   // shared thread already does the threading; what it did NOT have was the
   // author, which this panel always showed, so that moved into the component
   // for both callers rather than being lost here (tripl-h2sx.27).
+  //
+  // A plain card, as on the event page's Discussion, not a Panel: the Panel's
+  // "Comments / 1" header sat right above the thread's own "Comments (1)"
+  // heading, two titles with the inner one larger (PL-18).
   return (
-    <Panel title="Comments" subtitle={`${comments?.length ?? 0}`}>
+    <section aria-label="Comments" className="rounded-card border border-border bg-surface">
       <ScenarioCoachMark step="branches/comment">
         <CommentThread
           queryKey={planBranchCommentsKey(slug, branchId)}
@@ -136,6 +136,6 @@ export function CommentsPanel({
           className="flex flex-col gap-2 p-4"
         />
       </ScenarioCoachMark>
-    </Panel>
+    </section>
   )
 }

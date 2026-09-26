@@ -103,7 +103,7 @@ export function useEventRowMetrics({
   // `combine` runs on every render and isn't memoized by React Query, so it only
   // flattens (structural sharing keeps the array stable when data is unchanged);
   // the id→metric Map is built in a downstream useMemo keyed on that array.
-  const eventWindowMetrics = useQueries({
+  const eventWindowQueries = useQueries({
     queries: visibleBuckets.map(bucketIds => ({
       queryKey: eventWindowMetricsKey(slug, bucketIds),
       queryFn: () => eventMetricsApi.getEventsWindowMetrics(slug!, {
@@ -113,8 +113,14 @@ export function useEventRowMetrics({
       enabled: !!slug && bucketIds.length > 0,
       refetchInterval,
     })),
-    combine: results => results.flatMap(result => result.data ?? EMPTY_EVENT_WINDOW_METRICS),
+    combine: results => ({
+      metrics: results.flatMap(result => result.data ?? EMPTY_EVENT_WINDOW_METRICS),
+      // Per bucket, whether its request has answered (either way). A row in an
+      // unanswered bucket is loading, not empty (EV-20).
+      settled: results.map(result => !result.isPending),
+    }),
   })
+  const { metrics: eventWindowMetrics, settled: bucketSettled } = eventWindowQueries
 
   // Declared AFTER `useQueries` on purpose: effects run in order, and
   // `useQueries` hands its observers the new query function (the one closing
@@ -154,8 +160,21 @@ export function useEventRowMetrics({
     return entries
   }, [eventSignals, eventWindowMetricsByEvent, events])
 
+  // Ids whose 48h metrics have answered: the cells of every other row show a
+  // placeholder, not the "—" that means "no data" (EV-20). Keyed on the
+  // settled flags' content, so a refetch does not mint a new set.
+  const settledKey = bucketSettled.map(settled => (settled ? '1' : '0')).join('')
+  const rowMetricsSettled = useMemo(() => {
+    const ids = new Set<string>()
+    visibleBuckets.forEach((bucketIds, index) => {
+      if (settledKey[index] === '1') for (const id of bucketIds) ids.add(id)
+    })
+    return ids
+  }, [visibleBuckets, settledKey])
+
   return {
     eventWindowMetricsByEvent,
     eventRowSignals,
+    rowMetricsSettled,
   }
 }

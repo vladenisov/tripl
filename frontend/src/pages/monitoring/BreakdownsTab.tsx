@@ -6,7 +6,7 @@ import { eventMetricsApi } from '@/api/eventMetrics'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { ErrorState } from '@/components/error-state'
 import { Chip } from '@/components/primitives/chip'
-import { LoadingState } from '@/components/primitives/loading-state'
+import { ChartSkeleton } from '@/components/states'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardTitle } from '@/components/ui/card'
 import { MetricsMultiSeriesChart } from '@/components/ui/chart-lazy'
@@ -28,7 +28,7 @@ import {
   type BreakdownSeriesEntry,
   type LegendValueKind,
 } from './chartSeries'
-import { ChartCardHeader } from './MetricsRangeControls'
+import { ChartCardHeader, MetricsRangeControls } from './MetricsRangeControls'
 import { SeriesSwatch } from './SeriesSwatch'
 
 export interface BreakdownsTabProps {
@@ -47,6 +47,10 @@ export interface BreakdownsTabProps {
   /** The chart tooltip and legend spelling; see MetricsChartProps.tooltipFormatter. */
   tooltipFormatter?: (value: number) => string
   metricEditPath: string
+  /** The series' collection granularity; see MetricsRangeControls. */
+  nativeGranularity: MetricsGranularity | null
+  onRangeDaysChange: (days: number) => void
+  onGranularityChange: (granularity: MetricsGranularity) => void
   onColumnChange: (column: string) => void
   onSelectedValuesChange: (values: string[]) => void
 }
@@ -71,6 +75,9 @@ export function BreakdownsTab({
   valueFormatter,
   tooltipFormatter,
   metricEditPath,
+  nativeGranularity,
+  onRangeDaysChange,
+  onGranularityChange,
   onColumnChange,
   onSelectedValuesChange,
 }: BreakdownsTabProps) {
@@ -155,6 +162,15 @@ export function BreakdownsTab({
             ))}
           </SelectContent>
         </Select>
+        {/* The window this chart covers, set here too: it used to follow the
+            Volume tab's controls without saying so (MO-29). */}
+        <MetricsRangeControls
+          rangeDays={rangeDays}
+          granularity={granularity}
+          nativeGranularity={nativeGranularity}
+          onRangeDaysChange={onRangeDaysChange}
+          onGranularityChange={onGranularityChange}
+        />
       </ChartCardHeader>
       <CardContent>
         {query.isError ? (
@@ -167,10 +183,7 @@ export function BreakdownsTab({
             onRetry={() => void query.refetch()}
           />
         ) : query.isLoading ? (
-          <LoadingState
-            label="Loading breakdowns…"
-            className="flex h-[280px] items-center justify-center text-body-sm"
-          />
+          <ChartSkeleton height={280} label="Loading breakdowns…" />
         ) : !breakdowns?.columns.length ? (
           <div className="flex h-[280px] flex-col items-center justify-center gap-1 text-center text-body text-muted-foreground">
             <p>No breakdown groups yet.</p>
@@ -245,11 +258,6 @@ export function BreakdownsTab({
                   ))}
                 </div>
               </div>
-            )}
-            {breakdowns?.interval && (
-              <p className="mt-2 text-body-sm text-muted-foreground">
-                Collection interval: {breakdowns.interval}
-              </p>
             )}
           </>
         )}

@@ -18,6 +18,7 @@ import { RunStatusPill, ScanListRow } from "./scans/ScanConfigRow"
 import { runPillStatus } from "./scans/scanRunStatus"
 import { scanModeOf } from "./scans/scanMode"
 import { PageHeader } from '@/components/primitives/page-header'
+import { TermHint, TERM_HINTS } from '@/components/term-hint'
 import { PageContainer } from '@/components/primitives/page-container'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { INTERVAL_LABEL, formatCount } from "./scans/scanLayoutConstants"
@@ -31,7 +32,7 @@ import { projectEventTypesKey, scanActivityKey, scanJobsKey, scanJobsLimitedKey,
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { useProjectDataSources } from '@/hooks/useProjectDataSources'
 import { useCanWriteProject, useIsOwner } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { DisabledReason, ReadOnlyNotice, StatValueSkeleton, disabledReasonAria } from '@/components/states'
 
 /**
  * Jobs per scan the list asks for. It shows the head of each history (the last
@@ -62,6 +63,9 @@ interface RecentRun {
   // What the completed job actually changed (+N events / metrics / signals …).
   changes: ScanChange[]
 }
+
+/** Why New scan is off: a scan reads from a data source. */
+const NEW_SCAN_BLOCKER = 'Add a data source first.'
 
 export function ScansTab({ slug }: { slug: string }) {
   const navigate = useNavigate()
@@ -267,25 +271,35 @@ export function ScansTab({ slug }: { slug: string }) {
       <PageHeader
         eyebrow="Govern"
         title="Scans"
+        titleAddon={<TermHint slug={slug} {...TERM_HINTS.scans} />}
         description="Scans read your warehouse into your tracking plan; monitoring scans also record the metric points that anomalies and alerts are built on."
         actions={
           isOwner && (
-            <Button
-              size="sm"
-              disabled={noDataSources}
-              title={noDataSources ? 'Add a data source first' : ''}
-              onClick={() => navigate(`/p/${slug}/scans/new`)}
-            >
-              <Plus className="size-3.5" />
-              New scan
-            </Button>
+            // The reason New scan is off is a caption under it, not a `title`
+            // a disabled button never shows (#237 DA-9).
+            <div className="flex flex-col items-end gap-1">
+              <Button
+                size="sm"
+                disabled={noDataSources}
+                {...disabledReasonAria('new-scan', noDataSources ? NEW_SCAN_BLOCKER : null)}
+                onClick={() => navigate(`/p/${slug}/scans/new`)}
+              >
+                <Plus className="size-3.5" />
+                New scan
+              </Button>
+              <DisabledReason id="new-scan" reason={noDataSources ? NEW_SCAN_BLOCKER : null} />
+            </div>
           )
         }
         // The one page-KPI strip (DS-5), in place of three bordered tiles.
         stats={
           <MiniStatStrip boxed>
-            <MiniStat label="Scans" value={scanConfigs.length} />
-            <MiniStat label="Monitoring" value={monitoringCount} />
+            {/* Not "0" before the list answers (#237 DS-25). */}
+            <MiniStat label="Scans" value={scanConfigsLoading ? <StatValueSkeleton /> : scanConfigs.length} />
+            <MiniStat
+              label="Monitoring"
+              value={scanConfigsLoading ? <StatValueSkeleton /> : monitoringCount}
+            />
             <div title="Rows read across every catalog and metrics run in the last 24 hours.">
               <MiniStat label="Warehouse rows read · 24h" value={formatCount(rowsScanned24h)} />
             </div>

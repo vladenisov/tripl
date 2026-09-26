@@ -293,6 +293,15 @@ All four are the values `GET /monitors/{rule_id}` already reports for the same
 rule, under the same names — a monitor is an alert rule seen from the other side,
 and one object may not carry two shapes.
 
+The monitor detail page also says **which** scopes are firing, not only how
+many. Under the stat strip a **Firing now** panel lists each firing scope: its
+direction (spike or drop arrow), its kind and name, and when its last anomalous
+bucket started, with the row linking to that scope's monitoring drilldown. A
+scope the rule has not notified about yet (a cooldown or a mute held the first
+message back) has no delivery to take a name from, so it reads **not notified
+yet**. The panel is absent while nothing fires. The API carries the same list as
+`firing_scopes` on `GET /monitors/{rule_id}`.
+
 :::note `muted_until` is not the question to ask
 Read **`muted`**. `muted_until` on a rule is the stored timestamp and keeps being
 sent after it lapses, so "muted until \<a past date\>" is a normal thing to see on
@@ -485,8 +494,11 @@ needs *notify on spike* enabled.
 
 - `min expected count` — ignore low-traffic buckets,
 - `min absolute delta` — require at least N events of change,
-- `min percent delta` — require at least N % of change. **Defaults to `100`** —
-  at least double, or at most half, the expectation. A scope going dark is
+- `min percent delta` — require at least N % of change. A new rule starts at
+  **`30`**, in the rule editor and through the API alike; rules saved before
+  that keep the value they were saved with. The percentage is measured against
+  the expectation, so it is not symmetric: a spike reaches 100 % at double the
+  expectation, a drop only at zero. A scope going dark is
   exactly 100 % and still alerts, and so does one that starts firing where
   nothing was expected: a percentage has nothing to divide by at a zero
   baseline, so the percent gate steps aside there and `min absolute delta`
@@ -500,12 +512,19 @@ needs *notify on spike* enabled.
   than the words; see
   [What a Webhook destination POSTs](#what-a-webhook-destination-posts).
 
-:::tip Why the percent default is not zero
-Most volume anomalies are single-bucket seasonal deviations rather than
-sustained shifts, and a busy catalog oscillates in both directions within the
-same day. On a real 2,500-event iOS catalog, replaying 24 hours of collections
-produced 436 matches at `0`, 267 at `50`, and 37 at `100` — start at the default
-and lower it once you know which scopes you want to hear about.
+:::tip Why the percent default is 30, not 0 or 100
+The percent gate is asymmetric: a spike reaches `100` at double the expected
+volume, but a drop reaches `100` only when volume falls to zero. A rule at
+`100` therefore hears about a scope going dark and ignores a 50 % or 90 % fall,
+which is why new rules start at `30` and the rule editor warns when drops are
+on at `100` or more.
+
+Lower is not free. Most volume anomalies are single-bucket seasonal deviations
+rather than sustained shifts, and a busy catalog oscillates in both directions
+within the same day. On a real 2,500-event iOS catalog, replaying 24 hours of
+collections produced 436 matches at `0`, 267 at `50`, and 37 at `100`. If `30`
+is too loud for a noisy catalog, raise it, keep drops on, and use the
+simulator to see what the new value would have sent.
 :::
 
 :::warning
@@ -609,7 +628,7 @@ can tell a narrowed rule from a project-wide one without opening the editor.
 Use it when one scan is materially noisier or less valuable than the rest — a
 legacy or archived-data scan, for example — and you want it out of a channel
 without weakening the thresholds that the other scans depend on. Filters cannot
-do this: they only understand `event_type`, `event`, and `direction`, so there is
+do this: they only understand `event_type`, `event`, `metric` and `direction`, so there is
 no filter expression that names a scan.
 
 A common shape is two rules on the same destination: one bound to the important
@@ -631,9 +650,12 @@ name, thresholds, templates and filters and is visible, switched off, on the
 Alerting tab until you re-aim and re-enable it.
 :::
 
-**Filters** narrow further by `event_type`, `event`, or `direction`, with
-operators `eq` / `ne` / `in` / `not_in`. Multiple filters are ANDed; a signal
-that doesn't carry the filtered field passes through.
+**Filters** narrow further by `event_type`, `event`, `metric`, or `direction`,
+with operators `eq` / `ne` / `in` / `not_in`. Multiple filters are ANDed; a
+signal that doesn't carry the filtered field passes through. A `metric` filter
+names catalog metrics by id and narrows only **catalog metric anomalies** — every
+volume and drift signal passes it through — so a rule meant for one metric
+alone should also switch the other scopes off.
 A filter row with no value picked is refused when you save the rule. Pick at
 least one value or remove the row. An empty row is never dropped quietly,
 because the rule would then save broader than the form showed.
@@ -646,18 +668,18 @@ type of their own. An `event` filter is narrower still: it reaches only the
 signals that name one event. **Passes through** below means the filter has
 nothing to say about that signal, so the signal is still delivered.
 
-| Signal | `event_type` filter | `event` filter |
-| --- | --- | --- |
-| Event-scope anomaly | Narrows, by the event's type | Narrows |
-| Variable-value drift | Narrows, by the event's type | Narrows |
-| Release regression found on an **event** | Narrows, by the event's type | Narrows |
-| Event-type rollup | Narrows | Passes through |
-| Schema drift | Narrows | Passes through |
-| Distribution drift on one event type | Narrows | Passes through |
-| Release regression found on an **event type** | Narrows | Passes through |
-| Distribution drift across the whole scan | Passes through | Passes through |
-| Project-total rollup | Passes through | Passes through |
-| Catalog metric anomaly | Passes through | Passes through |
+| Signal | `event_type` filter | `event` filter | `metric` filter |
+| --- | --- | --- | --- |
+| Event-scope anomaly | Narrows, by the event's type | Narrows | Passes through |
+| Variable-value drift | Narrows, by the event's type | Narrows | Passes through |
+| Release regression found on an **event** | Narrows, by the event's type | Narrows | Passes through |
+| Event-type rollup | Narrows | Passes through | Passes through |
+| Schema drift | Narrows | Passes through | Passes through |
+| Distribution drift on one event type | Narrows | Passes through | Passes through |
+| Release regression found on an **event type** | Narrows | Passes through | Passes through |
+| Distribution drift across the whole scan | Passes through | Passes through | Passes through |
+| Project-total rollup | Passes through | Passes through | Passes through |
+| Catalog metric anomaly | Passes through | Passes through | Narrows |
 
 The scan-wide distribution drift row is the one that catches people out. A scan
 watching a column for distribution drift always produces a row for that column
@@ -680,7 +702,8 @@ event's monitoring page carries the **Value drift** panel, which lists the full
 set of observed values the message could only sample, and lets you accept,
 snooze or dismiss the drift from there.
 
-**Cooldown** suppresses repeats. Default **1440 minutes (24h)**, tracked
+**Cooldown** suppresses repeats. The editor takes it as an amount and a unit
+(minutes, hours or days) and stores minutes. Default **1440 minutes (24h)**, tracked
 separately per *(rule, scan, scope)* and measured from the last message that was
 actually delivered. A **catalog metric** is the exception, because it is not a
 scan's series in the first place: it is measured once for the whole project, so
@@ -703,6 +726,9 @@ to inspect all columns without losing the rest of the dialog.
 :::
 
 ### Replaying a what-if without saving it
+
+Opening **Replay** from a rule's **…** menu runs it straight away over the
+default window; change the window or an override and run it again.
 
 Replay answers "how noisy is this rule", and it also answers "how noisy would a
 *different* rule be" — without editing a rule that is live-routing to a real
@@ -838,11 +864,13 @@ and does nothing unless an AI provider is configured — see
 | Tab | For |
 |---|---|
 | **Inbox** | Triage: incidents, their actions, and what was sent for each. The default, and where an alert link lands. |
-| **Monitors** | Every rule in the project with its live firing state, plus mute, replay, edit and delete. |
+| **Rules** | Every alert rule in the project with its live firing state; replay, mute, edit and delete sit behind each row's **…** menu. |
 | **Destinations** | The channels rules route to: configuration, a test send, and how much traffic each has carried. |
 | **Delivery log** | Every delivery in the project, filterable, for "did the message actually go out". |
 
-**Monitors** was a separate nav item until it was merged in. It listed the same
+The **Rules** tab was called *Monitors* until the product settled on one name,
+**alert rule**, for this object (its `?section=` key is still `monitors`). It was
+also a separate nav item until it was merged in. It listed the same
 `AlertRule` rows this page already owned — a rule was read there and edited here
 — so the two surfaces drifted about mute state. `/p/<slug>/monitors` now
 redirects to `?section=monitors`; `/p/<slug>/monitors/<rule_id>` still opens that
@@ -867,14 +895,14 @@ path segment already carries the delivery id an alert link points at — links
 already sent keep working, and one carrying `?incident=` opens the Inbox with
 that incident expanded.
 
-**Monitors are these same rules.** A monitor is not a separate object — it is an
-alert rule plus its live firing state. For a while the two had separate homes:
+**"Monitor" was another name for these same rules.** It is not a separate
+object — it is an alert rule plus its live firing state. For a while the two had separate homes:
 rules were listed and edited on the destination cards, while their state lived
 on a **Monitors** page under its own nav item. The result was one object with two
 names on two screens, and they drifted — a rule could read "muted" on one and
 fully live on the other.
 
-They are now one tab. The **Monitors** tab carries the rule, its state, and every
+They are now one tab. The **Rules** tab carries the rule, its state, and every
 control that acts on it; **Destinations** carries only the channels, plus a rule
 count so "wired up and nothing routes here" is still visible.
 
@@ -1092,7 +1120,7 @@ comment-thread actions: it is accepted only with **snooze**.
 **A rule has 1h / 24h / 7d and no indefinite option**, on purpose. Muting a rule
 silences every scope it watches, not one, and a rule you never want to hear from
 again is not a muted rule — it is a disabled one. The **enable** switch on the
-Monitors tab is that lever, and it is the honest one: a permanently muted rule
+Rules tab is that lever, and it is the honest one: a permanently muted rule
 would sit in the list reading *healthy, just quiet*.
 
 Which lever fits which intent:

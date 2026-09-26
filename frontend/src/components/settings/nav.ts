@@ -33,6 +33,18 @@ export type SettingsNavItem = {
   path: string
   /** Owner-only sections are hidden for non-owners. */
   ownerOnly?: boolean
+  /**
+   * What people type when they look for this section but do not know its name
+   * ("timezone" finds General). Palettes match on these as well as the label
+   * (#238 JR-19).
+   */
+  keywords?: readonly string[]
+  /**
+   * A short tag after the label for a section that is not built yet ("Soon").
+   * Rail only; the section keeps its plain label everywhere else (#238 ST-5,
+   * #243 PL-26).
+   */
+  tag?: string
 }
 
 export type SettingsNavGroup = {
@@ -49,8 +61,23 @@ export const PROJECT_GROUPS: SettingsNavGroup[] = [
     sub: 'Project',
     desc: "Configuration for this project's tracking plan",
     items: [
-      { id: 'general', label: 'General', icon: SlidersHorizontal, path: 'project/general' },
-      { id: 'plan-rules', label: 'Plan rules', icon: Shield, path: 'project/plan-rules' },
+      {
+        id: 'general',
+        label: 'General',
+        icon: SlidersHorizontal,
+        path: 'project/general',
+        keywords: ['project name', 'timezone', 'slug', 'rename', 'description', 'app version', 'delete project'],
+      },
+      {
+        id: 'plan-rules',
+        label: 'Plan rules',
+        icon: Shield,
+        path: 'project/plan-rules',
+        // Last in the group, tagged: the page only says what is coming and
+        // where approvals live today (ST-5 / PL-26).
+        tag: 'Soon',
+        keywords: ['naming rules', 'conventions', 'policy'],
+      },
     ],
   },
 ]
@@ -61,9 +88,27 @@ export const WORKSPACE_GROUPS: SettingsNavGroup[] = [
     sub: 'Workspace',
     desc: 'Shared across everyone in the workspace',
     items: [
-      { id: 'members', label: 'Members', icon: Users, path: 'members' },
-      { id: 'sources', label: 'Data sources', icon: Database, path: 'data-sources' },
-      { id: 'apikeys', label: 'API keys', icon: Key, path: 'api-keys' },
+      {
+        id: 'members',
+        label: 'Members',
+        icon: Users,
+        path: 'members',
+        keywords: ['users', 'people', 'roles', 'invite', 'team'],
+      },
+      {
+        id: 'sources',
+        label: 'Data sources',
+        icon: Database,
+        path: 'data-sources',
+        keywords: ['warehouse', 'connection', 'clickhouse', 'postgres', 'bigquery', 'credentials'],
+      },
+      {
+        id: 'apikeys',
+        label: 'API keys',
+        icon: Key,
+        path: 'api-keys',
+        keywords: ['token', 'api key', 'integration'],
+      },
     ],
   },
   {
@@ -71,8 +116,23 @@ export const WORKSPACE_GROUPS: SettingsNavGroup[] = [
     sub: 'You',
     desc: 'Settings just for you',
     items: [
-      { id: 'profile', label: 'Profile', icon: User, path: 'profile' },
-      { id: 'security', label: 'Security', icon: Lock, path: 'security' },
+      {
+        id: 'profile',
+        label: 'Profile',
+        icon: User,
+        path: 'profile',
+        keywords: ['name', 'email', 'account', 'appearance', 'theme', 'dark mode'],
+      },
+      // "Password & sessions", not "Security": the Instance group has its own
+      // "Security & access", and two items called Security one group apart
+      // read as the same page (#238 JR-26).
+      {
+        id: 'security',
+        label: 'Password & sessions',
+        icon: Lock,
+        path: 'security',
+        keywords: ['security', 'password', 'sign out', 'sessions'],
+      },
     ],
   },
   {
@@ -80,15 +140,37 @@ export const WORKSPACE_GROUPS: SettingsNavGroup[] = [
     sub: 'Owner only',
     desc: 'Server-wide settings (owner only)',
     items: [
-      { id: 'runtime', label: 'Runtime', icon: Cpu, path: 'instance/runtime', ownerOnly: true },
-      { id: 'email', label: 'Email', icon: Mail, path: 'instance/email', ownerOnly: true },
-      { id: 'ai', label: 'AI', icon: Sparkles, path: 'instance/ai', ownerOnly: true },
+      {
+        id: 'runtime',
+        label: 'Runtime',
+        icon: Cpu,
+        path: 'instance/runtime',
+        ownerOnly: true,
+        keywords: ['workers', 'scheduler', 'retention'],
+      },
+      {
+        id: 'email',
+        label: 'Email',
+        icon: Mail,
+        path: 'instance/email',
+        ownerOnly: true,
+        keywords: ['smtp', 'mail'],
+      },
+      {
+        id: 'ai',
+        label: 'AI',
+        icon: Sparkles,
+        path: 'instance/ai',
+        ownerOnly: true,
+        keywords: ['llm', 'model', 'explanations'],
+      },
       {
         id: 'inst-security',
         label: 'Security & access',
         icon: Shield,
         path: 'instance/security',
         ownerOnly: true,
+        keywords: ['registration', 'sign up', 'sso', 'access'],
       },
       { id: 'storage', label: 'Storage', icon: Archive, path: 'instance/storage', ownerOnly: true },
       {
@@ -111,6 +193,7 @@ export const WORKSPACE_GROUPS: SettingsNavGroup[] = [
         icon: ScrollText,
         path: 'instance/audit',
         ownerOnly: true,
+        keywords: ['activity', 'who changed', 'log'],
       },
     ],
   },
@@ -144,6 +227,22 @@ export function sectionPathForUrl(pathname: string): string | null {
   const prefix = '/settings/'
   if (!pathname.startsWith(prefix)) return null
   return pathname.slice(prefix.length).replace(/\/+$/, '') || null
+}
+
+/**
+ * The rail label of a section path ('project/general' -> 'General'), or
+ * `undefined` for a path the rail does not list. Lets the area name the page
+ * before its lazy chunk arrives (#237 ST-35) and above the owner-only and
+ * pick-a-project states (ST-36).
+ */
+export function sectionLabel(path: string): string | undefined {
+  for (const groups of Object.values(SETTINGS_NAV)) {
+    for (const group of groups) {
+      const item = group.items.find((candidate) => candidate.path === path)
+      if (item) return item.label
+    }
+  }
+  return undefined
 }
 
 /** Resolve which context owns a given section path. Defaults to 'workspace'. */

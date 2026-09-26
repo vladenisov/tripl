@@ -9,7 +9,8 @@ import { ErrorState } from '@/components/error-state'
 import { Panel } from '@/components/settings/kit'
 import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
-import { LoadingState } from '@/components/primitives/loading-state'
+import { TermHint, TERM_HINTS } from '@/components/term-hint'
+import { SectionSkeleton, StatValueSkeleton } from '@/components/states'
 import { Chip } from '@/components/primitives/chip'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { DEAD_EVENT_DAYS, formatPlanCoverage, planCoverageRatio } from '@/lib/coverage'
@@ -82,6 +83,7 @@ export default function CoveragePage() {
       <PageHeader
         eyebrow="Govern"
         title="Coverage"
+        titleAddon={slug && <TermHint slug={slug} {...TERM_HINTS.coverage} />}
         description="How much of your active plan is implemented, and which implemented events have gone quiet."
         actions={
           slug ? (
@@ -112,7 +114,7 @@ export default function CoveragePage() {
             <div title={PLAN_COVERAGE_HELP}>
               <MiniStat
                 label="Plan coverage"
-                value={summary ? formatPlanCoverage(implemented, active) : '—'}
+                value={summary ? formatPlanCoverage(implemented, active) : <StatValueSkeleton />}
                 // The shared thresholds (they take a percent), so this tile and
                 // Reconciliation cannot drift apart (DATA-45).
                 tone={summary && active > 0 ? coverageTone(coverageRatio * 100) : 'neutral'}
@@ -121,20 +123,22 @@ export default function CoveragePage() {
             </div>
             <MiniStat
               label="Active events"
-              value={summary ? formatNumber(active) : '—'}
+              value={summary ? formatNumber(active) : <StatValueSkeleton />}
             />
             <MiniStat
               label="Implemented"
-              value={summary ? formatNumber(implemented) : '—'}
+              value={summary ? formatNumber(implemented) : <StatValueSkeleton />}
             />
+            {/* "In review", the one name for the status count everywhere
+                (#238 JR-27); it was "Awaiting review" here only. */}
             <MiniStat
-              label="Awaiting review"
-              value={summary ? formatNumber(summary.review_pending_event_count) : '—'}
+              label="In review"
+              value={summary ? formatNumber(summary.review_pending_event_count) : <StatValueSkeleton />}
               tone={summary && summary.review_pending_event_count > 0 ? 'warning' : 'neutral'}
             />
             <MiniStat
               label="Archived"
-              value={summary ? formatNumber(summary.archived_event_count) : '—'}
+              value={summary ? formatNumber(summary.archived_event_count) : <StatValueSkeleton />}
             />
           </MiniStatStrip>
 
@@ -203,7 +207,7 @@ export default function CoveragePage() {
               />
             </div>
           ) : deadQuery.isLoading ? (
-            <LoadingState className="px-4 py-6 text-body-sm" />
+            <SectionSkeleton variant="rows" rows={3} label="Loading coverage gaps…" />
           ) : noGaps ? (
             <div
               className="flex items-center gap-2 px-4 py-6 text-body-sm"

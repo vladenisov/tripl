@@ -25,8 +25,11 @@ import {
 import { scanFormBlocker, useScanForm, type ScanFormPayload } from './useScanForm'
 import { eventTypesKey, platformPresenceKey, scanJobsKey, scansKey } from '@/lib/queryKeys'
 import { ownerOnlyReason, useIsOwner } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { DisabledReason, ReadOnlyNotice, disabledReasonAria } from '@/components/states'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
+
+/** Why Replay is off: it replays metrics, which need both to be set. */
+const REPLAY_BLOCKER = 'Replay needs a time column and an interval on this scan.'
 
 // ─── Configuration tab (page-style edit, one Save for the whole form) ───
 export function ScanConfigurationTab({
@@ -164,13 +167,25 @@ export function ScanConfigurationTab({
           Save under Limits also committed a half-edited query two cards up
           (DATA-14). Sticky, so it is in reach from whichever card was edited. */}
       {canEdit && (
-        <SaveBar className="mb-5" status={saveStatus}>
+        // The blocker is visible text beside Save: a `title` on a disabled
+        // button never shows (pointer-events: none) and keyboard and touch
+        // users could not reach it at all (#237 DA-9).
+        <SaveBar
+          className="mb-5"
+          status={
+            dirty && saveBlocker ? (
+              <DisabledReason id="save-scan" reason={saveBlocker} />
+            ) : (
+              saveStatus
+            )
+          }
+        >
           <Button
             type="button"
             size="sm"
             onClick={() => updateMut.mutate(form.toBackendPayload())}
             disabled={updateMut.isPending || !dirty || saveBlocker !== null}
-            title={saveBlocker ?? undefined}
+            {...(dirty ? disabledReasonAria('save-scan', saveBlocker) : {})}
           >
             {updateMut.isPending ? 'Saving…' : 'Save'}
           </Button>
@@ -191,17 +206,20 @@ export function ScanConfigurationTab({
                 Re-scan a historical time range into events and metrics.
               </div>
             </div>
-            <Button
-              type="button"
-              variant={replayOpen ? 'default' : 'outline'}
-              size="sm"
-              disabled={!canReplay}
-              title={canReplay ? 'Replay metrics for a past period' : 'Requires time column and interval'}
-              onClick={() => setReplayOpen((o) => !o)}
-            >
-              <RotateCcw className="size-3" />
-              Replay…
-            </Button>
+            <div className="flex shrink-0 flex-col items-end gap-1">
+              <Button
+                type="button"
+                variant={replayOpen ? 'default' : 'outline'}
+                size="sm"
+                disabled={!canReplay}
+                {...disabledReasonAria('replay-scan', canReplay ? null : REPLAY_BLOCKER)}
+                onClick={() => setReplayOpen((o) => !o)}
+              >
+                <RotateCcw className="size-3" />
+                Replay…
+              </Button>
+              <DisabledReason id="replay-scan" tone="muted" reason={canReplay ? null : REPLAY_BLOCKER} />
+            </div>
           </div>
           {replayOpen && (
             <div className="border-b px-4 py-3.5" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -337,11 +355,20 @@ export function ScanCreatePage({
           // is chosen from the columns it returns. In Catalog only it is not
           // "optional" either any more — it is how you find out what this scan
           // would put in your plan before you create it (tripl-3y7z.6).
-          loaded
-            ? 'Creates the scan. Run it from its page when you are ready.'
-            : form.state.mode === 'monitoring'
-              ? 'Load a preview to choose a time column and see what this scan would create.'
-              : 'Load a preview to see what this scan would create.'
+          // A blocker leads, as visible text, since a disabled button's
+          // `title` never shows (#237 DA-9); the next step stays under it.
+          // Muted, not warning: on a form nobody has typed into yet it is the
+          // next step, not a fault.
+          <>
+            <DisabledReason id="create-scan" tone="muted" reason={createBlocker} />
+            <span className="block">
+              {loaded
+                ? 'Creates the scan. Run it from its page when you are ready.'
+                : form.state.mode === 'monitoring'
+                  ? 'Load a preview to choose a time column and see what this scan would create.'
+                  : 'Load a preview to see what this scan would create.'}
+            </span>
+          </>
         }
       >
         <Button type="button" variant="outline" size="sm" onClick={onBack}>
@@ -351,7 +378,7 @@ export function ScanCreatePage({
           type="button"
           size="sm"
           disabled={createBlocker !== null || createMut.isPending}
-          title={createBlocker ?? undefined}
+          {...disabledReasonAria('create-scan', createBlocker)}
           onClick={() => createMut.mutate()}
         >
           <Plus className="size-3.5" />

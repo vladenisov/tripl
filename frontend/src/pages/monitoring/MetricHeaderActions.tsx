@@ -1,9 +1,12 @@
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react'
+import { Loader2, MoreHorizontal, Pencil, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { metricsCatalogApi } from '@/api/metricsCatalog'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { useScenarioArtifacts } from '@/demo/demoScenarioContext'
 import { useConfirm } from '@/hooks/useConfirm'
@@ -12,10 +15,11 @@ import type { MetricDefinitionDetailResponse } from '@/types'
 import type { MetricCollect } from './useMetricCollect'
 
 /**
- * Edit / Collect now / Delete for a catalog metric's drilldown header. The row
- * wraps: at 375px the four buttons are wider than the column, and without a
- * wrap Delete was pushed off-screen and the whole page panned sideways
- * (MON-10 / LIVE-2).
+ * Collect now / Edit / "…" for a catalog metric's drilldown header, the event
+ * hero's pattern: Delete lives in the overflow menu instead of sitting red
+ * beside the everyday actions (MO-34). The row wraps: at 375px the buttons are
+ * wider than the column, and without a wrap the last one was pushed off-screen
+ * and the whole page panned sideways (MON-10 / LIVE-2).
  */
 export function MetricHeaderActions({
   slug,
@@ -58,17 +62,12 @@ export function MetricHeaderActions({
   const isFact = metricDefinition?.kind === 'fact'
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Button variant="outline" size="sm" onClick={() => navigate(editPath)}>
-        <Pencil className="mr-2 h-4 w-4" />
-        Edit
-      </Button>
       {/* No see-chart mark on this page: the scenario completes that step
           on arrival here, so a mark would never be read. Collect-metric
           only coaches until the user's own collect is in flight — after
           that, every metric detail page would otherwise shout. */}
       <ScenarioCoachMark step="live-loop/collect-metric" when={scenarioMetricId === null}>
         <Button
-          variant="outline"
           size="sm"
           onClick={() =>
             collect.start({
@@ -100,11 +99,23 @@ export function MetricHeaderActions({
               : 'Collect now'}
         </Button>
       </ScenarioCoachMark>
-      {/* The destructive-in-a-row variant (DS-20), not a ghost repainted red. */}
-      <Button variant="danger" size="sm" onClick={deleteMetric}>
-        <Trash2 className="mr-2 h-4 w-4" />
-        Delete
+      <Button variant="outline" size="sm" onClick={() => navigate(editPath)}>
+        <Pencil className="mr-2 h-4 w-4" />
+        Edit
       </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="icon-sm" aria-label="More metric actions" className="text-fg-muted">
+            <MoreHorizontal aria-hidden="true" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" sideOffset={6} className="w-[180px]">
+          <DropdownMenuItem variant="destructive" onSelect={() => void deleteMetric()}>
+            <Trash2 aria-hidden="true" />
+            Delete metric…
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       {deleteDialog}
     </div>
   )

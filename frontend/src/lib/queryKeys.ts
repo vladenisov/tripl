@@ -265,11 +265,16 @@ export const projectRootKey = () => ['project'] as const
 /** One project — `GET /projects/{slug}`. */
 export const projectKey = (slug: string | undefined) => [...projectRootKey(), slug] as const
 
-/** The one definition of the single-project query; spread it to add `enabled`. */
-export const projectQueryOptions = (slug: string | undefined) =>
+/**
+ * The one definition of the single-project query; spread it to add `enabled`.
+ * With a working branch the summary's plan counters are that branch's (SH-11),
+ * so the branch joins the key; main keeps the bare `projectKey`, which every
+ * `projectKey(slug)` invalidation still reaches as a prefix.
+ */
+export const projectQueryOptions = (slug: string | undefined, branchId?: string | null) =>
   queryOptions({
-    queryKey: projectKey(slug),
-    queryFn: ({ signal }) => projectsApi.get(slug as string, signal),
+    queryKey: branchId ? [...projectKey(slug), branchId] : projectKey(slug),
+    queryFn: ({ signal }) => projectsApi.get(slug as string, signal, branchId),
   })
 
 // ---------------------------------------------------------------------------

@@ -114,11 +114,14 @@ export function rowSignalLevel(state: string): (typeof SIGNAL_LEVEL)['firing' | 
 }
 
 // ---------------------------------------------------------------------------
-// Review status — has a human verified this event yet?
+// Review status — has a human verified this event yet? Shown as "Verified",
+// not "Reviewed": the In review STATUS and this flag are independent, and
+// "Mark reviewed" read as emptying the review queue, which it never did
+// (#238 JR-27). The field stays `reviewed` on the wire.
 // ---------------------------------------------------------------------------
 export const REVIEW_STATUS = {
-  reviewed: { label: 'Reviewed', tone: 'success' },
-  needs_review: { label: 'Not reviewed', tone: 'neutral' },
+  reviewed: { label: 'Verified', tone: 'success' },
+  needs_review: { label: 'Not verified', tone: 'neutral' },
 } as const satisfies Record<'reviewed' | 'needs_review', StatusLexeme>
 
 // ---------------------------------------------------------------------------

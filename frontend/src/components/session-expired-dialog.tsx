@@ -69,7 +69,20 @@ export function SessionExpiredDialog({
           }}
         >
           <div className="space-y-1.5">
-            <Label htmlFor="session-expired-password">Password</Label>
+            <div className="flex items-baseline justify-between gap-2">
+              <Label htmlFor="session-expired-password">Password</Label>
+              {/* A new tab, so the draft this dialog protects stays on this
+                  page while the reset mail goes out (#237 SH-35). Signing out
+                  was the only other way past a forgotten password. */}
+              <a
+                href="/auth?mode=forgot"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-caption font-medium text-fg-secondary underline-offset-2 hover:underline"
+              >
+                Forgot password?
+              </a>
+            </div>
             <Input
               id="session-expired-password"
               type="password"
@@ -90,7 +103,14 @@ export function SessionExpiredDialog({
             <Button type="button" variant="ghost" onClick={onSignOut}>
               Sign out
             </Button>
-            <Button type="submit" disabled={loginMutation.isPending || !password}>
+            {/* Stays visibly the primary action while it waits for a password:
+                the default disabled look is the pale ghost that read as "no
+                action here" (SH-35). */}
+            <Button
+              type="submit"
+              disabled={loginMutation.isPending || !password}
+              className="disabled:border-transparent disabled:bg-accent-solid disabled:text-accent-solid-fg disabled:opacity-60"
+            >
               {loginMutation.isPending ? 'Signing in…' : 'Sign in'}
             </Button>
           </DialogFooter>

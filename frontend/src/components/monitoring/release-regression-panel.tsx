@@ -7,7 +7,7 @@ import { eventMetricsApi } from '@/api/eventMetrics'
 import { Chip } from '@/components/primitives/chip'
 import { CodeToken } from '@/components/primitives/code-token'
 import { CountBadge } from '@/components/primitives/count-badge'
-import { LoadingState } from '@/components/primitives/loading-state'
+import { SectionSkeleton } from '@/components/states'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ErrorState } from '@/components/error-state'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
@@ -170,10 +170,7 @@ export function ReleaseRegressionPanel({
       </CardHeader>
       <CardContent>
         {query.isLoading ? (
-          <LoadingState
-            label="Loading regressions…"
-            className="flex h-24 items-center justify-center text-body-sm"
-          />
+          <SectionSkeleton variant="list" rows={2} label="Loading regressions…" />
         ) : query.isError ? (
           // A failed request used to fall through to "No release comparison has
           // run for this scan yet" — an outage reading as a quiet release, the

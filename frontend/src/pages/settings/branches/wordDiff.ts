@@ -13,6 +13,13 @@ export interface WordSegment {
   changed: boolean
 }
 
+/** One run of the merged, single-paragraph form of the same diff (PL-10):
+ * shared text once, removed and added words in reading order. */
+export interface InlineSegment {
+  text: string
+  kind: 'same' | 'removed' | 'added'
+}
+
 /** Below this, the two values are short enough to compare at a glance. */
 export const WORD_DIFF_MIN_LENGTH = 40
 
@@ -40,7 +47,7 @@ function pushSegment(segments: WordSegment[], text: string, changed: boolean) {
 export function wordDiff(
   before: string,
   after: string,
-): { before: WordSegment[]; after: WordSegment[] } | null {
+): { before: WordSegment[]; after: WordSegment[]; inline: InlineSegment[] } | null {
   if (Math.max(before.length, after.length) < WORD_DIFF_MIN_LENGTH) return null
   const a = tokenize(before)
   const b = tokenize(after)
@@ -81,8 +88,12 @@ export function wordDiff(
   })()
   if (sharedWords === 0) return null
 
-  const beforeSegments: WordSegment[] = []
-  const afterSegments: WordSegment[] = []
+  const ops: InlineSegment[] = []
+  const pushOp = (text: string, kind: InlineSegment['kind']) => {
+    const last = ops[ops.length - 1]
+    if (last && last.kind === kind) ops[ops.length - 1] = { text: last.text + text, kind }
+    else ops.push({ text, kind })
+  }
   let i = 0
   let j = 0
   while (i < a.length && j < b.length) {
@@ -90,19 +101,25 @@ export function wordDiff(
     const bj = b[j]
     if (ai === undefined || bj === undefined) break
     if (ai === bj) {
-      pushSegment(beforeSegments, ai, false)
-      pushSegment(afterSegments, bj, false)
+      pushOp(ai, 'same')
       i += 1
       j += 1
     } else if (lcs(i + 1, j) >= lcs(i, j + 1)) {
-      pushSegment(beforeSegments, ai, true)
+      pushOp(ai, 'removed')
       i += 1
     } else {
-      pushSegment(afterSegments, bj, true)
+      pushOp(bj, 'added')
       j += 1
     }
   }
-  for (const token of a.slice(i)) pushSegment(beforeSegments, token, true)
-  for (const token of b.slice(j)) pushSegment(afterSegments, token, true)
-  return { before: beforeSegments, after: afterSegments }
+  for (const token of a.slice(i)) pushOp(token, 'removed')
+  for (const token of b.slice(j)) pushOp(token, 'added')
+
+  const beforeSegments: WordSegment[] = []
+  const afterSegments: WordSegment[] = []
+  for (const op of ops) {
+    if (op.kind !== 'added') pushSegment(beforeSegments, op.text, op.kind === 'removed')
+    if (op.kind !== 'removed') pushSegment(afterSegments, op.text, op.kind === 'added')
+  }
+  return { before: beforeSegments, after: afterSegments, inline: ops }
 }

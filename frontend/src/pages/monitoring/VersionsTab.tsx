@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { AlertTriangle, GitBranch } from 'lucide-react'
 import { eventMetricsApi } from '@/api/eventMetrics'
@@ -7,7 +8,9 @@ import { ErrorState } from '@/components/error-state'
 import { ReleaseRegressionPanel } from '@/components/monitoring/release-regression-panel'
 import { Chip } from '@/components/primitives/chip'
 import { CodeToken } from '@/components/primitives/code-token'
-import { LoadingState } from '@/components/primitives/loading-state'
+import { EmptyState } from '@/components/empty-state'
+import { ChartSkeleton } from '@/components/states'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardTitle } from '@/components/ui/card'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { MetricsMultiSeriesChart } from '@/components/ui/chart-lazy'
@@ -164,6 +167,41 @@ export function VersionsTab({
   // app_version_active_share_min, so this is the authoritative signal.
   const latestIsPreRelease = latestVersion !== null && !latestVersionIsActive
 
+  // The tab is offered because the scan names a version column, but that
+  // column can still be empty. Two chart cards with controls around one grey
+  // line each said nothing about why (MO-28): one empty state says it once.
+  const seriesSettled = !seriesQuery.isLoading && !seriesQuery.isError
+  const adoptionSettled = scope === 'metric' || (!adoptionQuery.isLoading && !adoptionQuery.isError)
+  const noVersionData = seriesSettled && adoptionSettled
+    && (seriesQuery.data?.series.length ?? 0) === 0
+    && (adoptionQuery.data?.series.length ?? 0) === 0
+  if (noVersionData) {
+    const column = adoptionQuery.data?.app_version_column
+    return (
+      <Card>
+        <CardContent>
+          <EmptyState
+            icon={GitBranch}
+            title="No app versions collected yet"
+            description={
+              <>
+                {column
+                  ? <>The scan reads <CodeToken>{column}</CodeToken> but found no values</>
+                  : 'No app version values were found'}
+                {` in the last ${rangeDays} days. Check that your SDK sends the app version with each event.`}
+              </>
+            }
+            action={scope !== 'metric' && scanConfigId ? (
+              <Button asChild variant="outline" size="sm">
+                <Link to={`/p/${slug}/scans/${scanConfigId}`}>Open scan settings</Link>
+              </Button>
+            ) : undefined}
+          />
+        </CardContent>
+      </Card>
+    )
+  }
+
   return (
     <>
       {/* The shared section-card geometry (DS-4 / MO-10): a header bar with a
@@ -241,10 +279,7 @@ export function VersionsTab({
               onRetry={() => void seriesQuery.refetch()}
             />
           ) : seriesQuery.isLoading ? (
-            <LoadingState
-              label="Loading version metrics…"
-              className="flex h-[280px] items-center justify-center text-body-sm"
-            />
+            <ChartSkeleton height={280} label="Loading version metrics…" />
           ) : (
             <>
               <MetricsMultiSeriesChart
@@ -264,11 +299,6 @@ export function VersionsTab({
                 valueFormatter={tooltipFormatter ?? valueFormatter}
                 valueKind={legendKind}
               />
-              {seriesQuery.data?.interval && (
-                <p className="mt-2 text-body-sm text-muted-foreground">
-                  Collection interval: {seriesQuery.data.interval}
-                </p>
-              )}
             </>
           )}
         </CardContent>
@@ -307,10 +337,7 @@ export function VersionsTab({
               onRetry={() => void adoptionQuery.refetch()}
             />
           ) : adoptionQuery.isLoading ? (
-            <LoadingState
-              label="Loading adoption…"
-              className="flex h-[240px] items-center justify-center text-body-sm"
-            />
+            <ChartSkeleton height={240} label="Loading adoption…" />
           ) : (
             <>
               <MetricsMultiSeriesChart

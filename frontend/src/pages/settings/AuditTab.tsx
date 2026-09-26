@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, FolderOpen, GitBranch, Lock } from 'lucide-react'
+import { ArrowUpRight, ChevronDown, ChevronRight, FolderOpen, GitBranch, Lock } from 'lucide-react'
 
 import { auditApi } from '@/api/audit'
 import { ApiError } from '@/api/client'
@@ -16,12 +17,16 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { displayUser, useUsersById } from '@/hooks/useUsersById'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
-import { formatTimestamp } from '@/lib/datetime'
+import { formatDate, formatTimestamp } from '@/lib/datetime'
+import { APP_LOCALE } from '@/lib/format'
 import { useIsOwner } from '@/lib/permissions'
 import { countOf } from '@/lib/plural'
 import { getErrorMessage } from '@/lib/utils'
 import { auditActionsKey, auditEntryKey, auditKey } from '@/lib/queryKeys'
+import type { AuditEntry } from '@/types'
+import { stateKeyLabel } from './branches/branchMeta'
 
 // How long the email box waits after the last keystroke before it filters.
 const EMAIL_DEBOUNCE_MS = 400
@@ -75,6 +80,119 @@ function displayTarget(entry: { target_name?: string | null; target_type: string
   return UUID_RE.test(name) ? name.slice(0, 8) : name
 }
 
+/** Past-tense verbs for the action codes, so a row reads as a sentence
+ * ("Approved branch") instead of a server log line (`plan_branch.approve`,
+ * PL-23). An unknown verb is humanised; the raw code stays in the chip's
+ * title. */
+const VERB_PAST: Record<string, string> = {
+  create: 'Created',
+  update: 'Updated',
+  delete: 'Deleted',
+  bulk_delete: 'Deleted',
+  bulk_update: 'Updated',
+  merge: 'Merged',
+  approve: 'Approved',
+  submit: 'Submitted for review',
+  request_changes: 'Requested changes on',
+  reopen: 'Reopened',
+  close: 'Closed',
+  revert: 'Reverted a change on',
+  dismiss: 'Dismissed',
+  accept: 'Accepted',
+  invite: 'Invited',
+  revoke: 'Revoked',
+  cancel: 'Cancelled',
+  mute: 'Muted',
+  unmute: 'Unmuted',
+  snooze: 'Snoozed',
+  acknowledge: 'Acknowledged',
+  resolve: 'Resolved',
+  apply: 'Applied',
+  add_reviewer: 'Added a reviewer to',
+  remove_reviewer: 'Removed a reviewer from',
+  add_owner: 'Added an owner to',
+  remove_owner: 'Removed an owner from',
+  role_update: 'Changed the role of',
+}
+
+const TARGET_NOUN: Record<string, string> = {
+  plan_branch: 'branch',
+  event_type: 'event type',
+  field_definition: 'field',
+  meta_field: 'meta field',
+  metric_definition: 'metric',
+  shadow_event: 'shadow event',
+  alert_rule: 'alert rule',
+  alert_destination: 'alert destination',
+  scan_config: 'scan',
+  scan_job: 'scan run',
+  data_source: 'data source',
+  api_key: 'API key',
+}
+
+function humanize(code: string): string {
+  return code.replace(/_/g, ' ')
+}
+
+/** "Updated event", "Approved branch" — the verb and the kind of thing. */
+function actionSentence(action: string): string {
+  const dot = action.lastIndexOf('.')
+  const type = dot >= 0 ? action.slice(0, dot) : action
+  const verb = dot >= 0 ? action.slice(dot + 1) : ''
+  const past = VERB_PAST[verb] ?? (verb ? humanize(verb).replace(/^./, (c) => c.toUpperCase()) : '')
+  const noun = TARGET_NOUN[type] ?? humanize(type)
+  return past ? `${past} ${noun}` : noun
+}
+
+/** Where a row's target lives, for the targets that have a page. None for a
+ * deletion: the thing is gone. */
+function targetPath(entry: AuditEntry): string | null {
+  if (!entry.project_slug || !entry.target_id || entry.action.endsWith('delete')) return null
+  const base = `/p/${entry.project_slug}`
+  switch (entry.target_type) {
+    case 'event':
+      return `${base}/events/all/${entry.target_id}`
+    case 'event_type':
+      return `${base}/settings/event-types/${entry.target_id}`
+    case 'variable':
+      return `${base}/settings/variables/${entry.target_id}`
+    case 'plan_branch':
+      return `${base}/settings/branches/${entry.target_id}`
+    default:
+      return null
+  }
+}
+
+/** "Today", "Yesterday" or the date, for the day headers (PL-24). */
+function dayLabel(iso: string, now = new Date()): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  const key = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (key(date) === key(now)) return 'Today'
+  if (key(date) === key(yesterday)) return 'Yesterday'
+  return formatDate(iso)
+}
+
+function timeOfDay(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleTimeString(APP_LOCALE, { hour: 'numeric', minute: '2-digit' })
+}
+
+/** Consecutive entries of one local day, in list order. */
+function groupByDay(entries: AuditEntry[]): { label: string; entries: AuditEntry[] }[] {
+  const groups: { label: string; entries: AuditEntry[] }[] = []
+  for (const entry of entries) {
+    const label = dayLabel(entry.created_at)
+    const last = groups[groups.length - 1]
+    if (last && last.label === label) last.entries.push(entry)
+    else groups.push({ label, entries: [entry] })
+  }
+  return groups
+}
+
 function toIsoOrUndef(localDateTime: string, endOfDay = false): string | undefined {
   if (!localDateTime) return undefined
   // <input type="date"> gives YYYY-MM-DD without time; pin to start/end of day.
@@ -124,11 +242,38 @@ function AuditPayload({ entryId }: { entryId: string }) {
   }
 
   const { payload } = detailQuery.data
-  if (Object.keys(payload).length === 0) return null
+  const keys = Object.keys(payload)
+  if (keys.length === 0) return null
+  // The known keys as a labelled list; the JSON the backend stored stays one
+  // click away for whoever needs the exact record (PL-23).
   return (
-    <pre className="mt-2 ml-5 overflow-auto rounded-md border bg-muted/30 px-2 py-1.5 font-mono text-micro">
+    <div className="mt-2 ml-5 space-y-1.5">
+      <dl className="grid grid-cols-1 gap-x-3 gap-y-1 text-caption sm:grid-cols-[minmax(0,160px)_1fr]">
+        {keys.map((key) => {
+          const value = payload[key]
+          return (
+            <Fragment key={key}>
+              <dt className="truncate text-fg-tertiary" title={key}>
+                {stateKeyLabel(key)}
+              </dt>
+              <dd className="min-w-0 break-words text-fg">
+                {value === null || value === undefined || value === ''
+                  ? '—'
+                  : typeof value === 'object'
+                    ? <span className="mono">{JSON.stringify(value)}</span>
+                    : String(value)}
+              </dd>
+            </Fragment>
+          )
+        })}
+      </dl>
+      <details className="text-caption">
+        <summary className="cursor-pointer text-fg-tertiary">Raw JSON</summary>
+        <pre className="mt-1 overflow-auto rounded-sm border bg-muted/30 px-2 py-1.5 font-mono text-micro">
 {JSON.stringify(payload, null, 2)}
-    </pre>
+        </pre>
+      </details>
+    </div>
   )
 }
 
@@ -182,6 +327,7 @@ function AuditLog({ slug }: { slug?: string }) {
   // can match; `workspace` the ones recorded with none. Until it answers the
   // select offers "All actions" alone.
   const isOwner = useIsOwner()
+  const usersById = useUsersById()
   const actionsQuery = useQuery({
     queryKey: auditActionsKey(),
     queryFn: auditApi.actions,
@@ -314,6 +460,11 @@ function AuditLog({ slug }: { slug?: string }) {
     setOffset(0)
   }
 
+  // One line in the header; the rest of what a compliance reader needs to know
+  // folds under "About this log" (PL-24).
+  const summaryLine = workspace
+    ? 'Every change across the instance, including the actions that belong to no project.'
+    : "Every change to this project's plan, scans, metrics and alerting."
   const description = workspace ? (
     <>
       Compliance trail for the whole instance: every project's plan
@@ -347,10 +498,16 @@ function AuditLog({ slug }: { slug?: string }) {
           cannot. The project scope gets the shared page header (DS-1 / PL-25):
           a real h1, no inline icon. */}
       {workspace ? (
-        <p className="text-body-sm text-muted-foreground">{description}</p>
+        <p className="text-body-sm text-muted-foreground">{summaryLine}</p>
       ) : (
-        <PageHeader eyebrow="Govern" title="Audit log" description={description} />
+        <PageHeader eyebrow="Govern" title="Audit log" description={summaryLine} />
       )}
+      <details className="text-body-sm">
+        <summary className="w-fit cursor-pointer text-caption font-medium text-fg-secondary">
+          About this log
+        </summary>
+        <p className="mt-1.5 max-w-[640px] text-body-sm text-muted-foreground">{description}</p>
+      </details>
 
       {/* The shared filter bar (DS-15): every filter applies as it changes —
           no Apply step (Enter in the email box still applies at once) — with
@@ -489,10 +646,20 @@ function AuditLog({ slug }: { slug?: string }) {
                   : 'No audit entries yet. Future changes to this project — events, schema, scans, alerting — will show up here.'}
             </div>
           ) : (
-            <ul className="divide-y" aria-busy={isPaging}>
-              {items.map((entry) => {
+            <div aria-busy={isPaging}>
+              {/* Rows under day headers, newest first, with the time of day on
+                  the row and the full second in its title (PL-24). */}
+              {groupByDay(items).map((group) => (
+              <section key={group.label} aria-label={group.label}>
+              <h2 className="sticky top-0 z-10 border-b bg-surface px-3 py-1.5 micro-label text-fg-tertiary">
+                {group.label}
+              </h2>
+              <ul className="divide-y">
+              {group.entries.map((entry) => {
                 const isOpen = expanded.has(entry.id)
                 const payloadId = `audit-payload-${entry.id}`
+                const actor = entry.user_id ? displayUser(usersById, entry.user_id) : entry.user_email
+                const path = targetPath(entry)
                 return (
                   <li key={entry.id} className="min-h-(--row-h) px-3 py-2 text-body-sm">
                     {/* Two lines below `sm`: when and who first, then what. As
@@ -512,15 +679,29 @@ function AuditLog({ slug }: { slug?: string }) {
                       ) : (
                         <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                       )}
-                      <span className="tnum text-micro text-muted-foreground shrink-0 sm:w-36">
-                        {formatTimestamp(entry.created_at, { seconds: true })}
+                      <span
+                        className="tnum text-micro text-muted-foreground shrink-0 sm:w-16"
+                        title={formatTimestamp(entry.created_at, { seconds: true })}
+                      >
+                        {timeOfDay(entry.created_at)}
                       </span>
-                      <span className="order-1 ml-auto min-w-0 truncate text-muted-foreground text-caption sm:order-last">
-                        {entry.user_email}
+                      {/* The person, with the address in the title (PL-23). */}
+                      <span
+                        className="order-1 ml-auto min-w-0 truncate text-muted-foreground text-caption sm:order-last"
+                        title={entry.user_email}
+                      >
+                        {actor}
                       </span>
                       <span aria-hidden="true" className="order-2 h-0 basis-full sm:hidden" />
-                      <Chip tone={actionTone(entry.action)} size="xs" className="order-3 sm:order-none">
-                        {entry.action}
+                      {/* A sentence, not the action code: "Updated event", with
+                          the code kept in the title for whoever filters by it. */}
+                      <Chip
+                        tone={actionTone(entry.action)}
+                        size="xs"
+                        className="order-3 sm:order-none"
+                        title={entry.action}
+                      >
+                        {actionSentence(entry.action)}
                       </Chip>
                       {/* The chip means "this was NOT written on main". An empty
                           branch_name covers both a write to main and an action
@@ -568,13 +749,40 @@ function AuditLog({ slug }: { slug?: string }) {
                     </button>
                     {isOpen && (
                       <div id={payloadId}>
+                        {path || (entry.branch_id && entry.project_slug) ? (
+                          <div className="mt-2 ml-5 flex flex-wrap gap-3 text-caption">
+                            {path ? (
+                              <Link
+                                to={path}
+                                className="inline-flex items-center gap-0.5 font-medium hover:underline"
+                                style={{ color: 'var(--accent)' }}
+                              >
+                                Open {TARGET_NOUN[entry.target_type] ?? humanize(entry.target_type)}
+                                <ArrowUpRight className="size-3" aria-hidden="true" />
+                              </Link>
+                            ) : null}
+                            {entry.branch_id && entry.project_slug ? (
+                              <Link
+                                to={`/p/${entry.project_slug}/settings/branches/${entry.branch_id}`}
+                                className="inline-flex items-center gap-0.5 font-medium hover:underline"
+                                style={{ color: 'var(--accent)' }}
+                              >
+                                Open branch {entry.branch_name}
+                                <ArrowUpRight className="size-3" aria-hidden="true" />
+                              </Link>
+                            ) : null}
+                          </div>
+                        ) : null}
                         <AuditPayload entryId={entry.id} />
                       </div>
                     )}
                   </li>
                 )
               })}
-            </ul>
+              </ul>
+              </section>
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>

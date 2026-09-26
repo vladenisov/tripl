@@ -102,8 +102,8 @@ Then look around in roughly this order:
 
 - **Plan → Events** — the catalog. Open an event to see its fields, values,
   tags, status, and change history.
-- **Observe → Live activity** — the health of the whole project at a glance.
-- **Observe → Alerting → Monitors** — the demo's alert rules, each with its
+- **Observe → Overview** — the health of the whole project at a glance.
+- **Observe → Alerting → Rules** — the demo's alert rules, each with its
   current state and the condition it watches for. To study a signal's volume
   chart, forecast, heatmap, and the breakdown of what moved, open the event (or
   click its signal) — that opens the monitoring detail.
@@ -277,9 +277,9 @@ learns every event's normal rhythm (including time-of-day and day-of-week
 patterns) and raises a **signal** on an unexpected spike, drop, or change of
 shape. There is nothing to set up.
 
-- **Observe → Live activity** — the whole project at a glance.
-- **Observe → Alerting → Monitors** — each **monitor** here is an alert rule
-  attached to a scope, listed with the condition it watches for, where it
+- **Observe → Overview** — the whole project at a glance.
+- **Observe → Alerting → Rules** — each **alert rule** here is attached to a
+  scope, listed with the condition it watches for, where it
   routes, and its current state. Open an event (or one of its signals) for the
   full drilldown — the **monitoring detail**: volume chart with a short
   forecast, heatmap by hour and weekday, value-distribution drift, and

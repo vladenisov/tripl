@@ -1,18 +1,25 @@
-import { useEffect, useId, useRef, useState, type ChangeEvent } from "react"
+import { useEffect, useId, useRef, useState, type ChangeEvent, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { TriangleAlert } from "lucide-react"
 import { anomalySettingsApi } from "@/api/anomalySettings"
 import type { ProjectAnomalySettings } from "@/types"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
 import { ErrorState } from "@/components/error-state"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { ReadOnlyNotice } from "@/components/read-only-notice"
+import { Panel } from "@/components/settings/kit"
+import {
+  PageSkeleton,
+  ReadOnlyDefinition,
+  ReadOnlyNotice,
+  SectionSkeleton,
+} from "@/components/states"
 import { PageContainer } from "@/components/primitives/page-container"
 import { PageHeader } from "@/components/primitives/page-header"
 import { useConfirm } from "@/hooks/useConfirm"
+import { DETECTION_OFF_MESSAGE } from "@/pages/alerting/constants"
 import { SILENT_ERROR_META } from "@/lib/errorFeedback"
 import { useCanWriteProject } from "@/lib/permissions"
 import { getErrorMessage } from '@/lib/utils'
@@ -52,6 +59,7 @@ function NumberSetting({
   max,
   step,
   onCommit,
+  describedBy,
 }: {
   id: string
   value: number
@@ -59,6 +67,8 @@ function NumberSetting({
   max?: number
   step?: string
   onCommit: (value: number) => Promise<unknown>
+  /** The field's one-line hint, so a screen reader hears it with the input. */
+  describedBy?: string
 }) {
   // Re-seed from the server value when it changes, without an effect: this is
   // React's documented "adjust state while rendering" pattern, and it lands the
@@ -84,14 +94,18 @@ function NumberSetting({
       return
     }
     if ((min !== undefined && parsed < min) || (max !== undefined && parsed > max)) {
+      // The refused number STAYS in the box beside the message (AL-44). It used
+      // to snap back to the saved value while the red border and "Must be at
+      // least 0.1." stayed up under it: the reader could not see what had been
+      // rejected, and the error sat under a valid number until they typed again.
+      // Nothing is committed; typing clears the error.
       setRangeError(
         min !== undefined && max !== undefined
-          ? `Must be between ${min} and ${max}.`
+          ? `${raw} is out of range: use ${min} to ${max}. Not saved.`
           : min !== undefined
-            ? `Must be at least ${min}.`
-            : `Must be at most ${max}.`,
+            ? `${raw} is below the minimum (${min}). Not saved.`
+            : `${raw} is above the maximum (${max}). Not saved.`,
       )
-      setDraft(String(value))
       return
     }
     setRangeError(null)
@@ -121,7 +135,7 @@ function NumberSetting({
         step={step}
         value={draft}
         aria-invalid={rangeError ? true : undefined}
-        aria-describedby={rangeError ? hintId : undefined}
+        aria-describedby={[rangeError ? hintId : null, describedBy].filter(Boolean).join(' ') || undefined}
         onChange={(e: ChangeEvent<HTMLInputElement>) => {
           setDraft(e.target.value)
           setRangeError(null)
@@ -192,18 +206,20 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
   }
 
   return (
-    <Card>
+    // A titled section (AL-43), not a <Label> posing as a heading: the field
+    // labels were larger than it, so the hierarchy read upside down.
+    <Panel
+      title="Scope overrides"
+      subtitle="Scopes a false-positive mark made stricter, permanently"
+    >
       {dialog}
-      <CardContent className="space-y-4">
-        <div>
-          <Label className="text-body font-medium">Scope overrides</Label>
-          <p className="text-body-sm text-muted-foreground mt-1">
-            Marking an alert a <strong>false positive</strong> makes the detector stricter on that
-            scope alone — permanently. These overrides replace the sigma threshold and min expected
-            count above for the scopes listed. Removing one puts that scope back on the project
-            settings.
-          </p>
-        </div>
+      <div className="space-y-4 p-4">
+        <p className="m-0 text-body-sm text-muted-foreground">
+          Marking an alert a <strong>false positive</strong> makes the detector stricter on that
+          scope alone — permanently. These overrides replace the sigma threshold and min expected
+          count above for the scopes listed. Removing one puts that scope back on the project
+          settings.
+        </p>
 
         {/* A failed load is NOT an empty list. `data` is undefined either way, so
             reading the length alone told an operator "no scope has been
@@ -212,7 +228,7 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
             load that failed, and it carries the retry this card needs: it is the
             only undo the permanent ratchet has. */}
         {isPending ? (
-          <p className="text-body text-muted-foreground">Loading scope overrides…</p>
+          <SectionSkeleton variant="list" rows={2} label="Loading scope overrides…" />
         ) : isError && data === undefined ? (
           <ErrorState
             compact
@@ -263,14 +279,72 @@ function ScopeOverridesCard({ slug, canWrite }: { slug: string; canWrite: boolea
         {removeMut.isError && (
           <p className="text-body text-destructive">{getErrorMessage(removeMut.error)}</p>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </Panel>
   )
 }
+
+/**
+ * One setting: its label, the input, ONE line of help, and the full
+ * explanation behind "Learn more" (AL-43). Each field used to carry three to
+ * five lines of 12px text, so the page read as a wall of grey and paired
+ * fields' help blocks misaligned their rows.
+ */
+function SettingField({
+  id,
+  label,
+  hint,
+  more,
+  children,
+}: {
+  id: string
+  label: string
+  hint: ReactNode
+  more?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <div className="grid content-start gap-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      {children}
+      <p id={`${id}-hint`} className="m-0 text-caption text-muted-foreground">{hint}</p>
+      {more && (
+        <details className="text-caption text-muted-foreground">
+          <summary className="w-fit cursor-pointer select-none underline-offset-2 hover:underline">
+            Learn more
+          </summary>
+          <p className="mt-1 mb-0">{more}</p>
+        </details>
+      )}
+    </div>
+  )
+}
+
+/** A titled group of fields inside the Detection section. */
+function SettingGroup({ title, lead, children }: { title: string; lead: string; children: ReactNode }) {
+  const headingId = useId()
+  return (
+    <section aria-labelledby={headingId} className="grid gap-3">
+      <div>
+        <h3 id={headingId} className="m-0 text-body-sm font-semibold">{title}</h3>
+        <p className="m-0 text-caption text-muted-foreground">{lead}</p>
+      </div>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">{children}</div>
+    </section>
+  )
+}
+
+const SCOPE_CHECKBOXES = [
+  { key: 'detect_project_total', label: 'Project total' },
+  { key: 'detect_event_types', label: 'Event types' },
+  { key: 'detect_events', label: 'Events' },
+  { key: 'detect_metrics', label: 'Metrics' },
+] as const satisfies readonly { key: keyof ProjectAnomalySettings; label: string }[]
 
 export function MonitoringTab({ slug }: { slug: string }) {
   const qc = useQueryClient()
   const canWrite = useCanWriteProject()
+  const { confirm, dialog } = useConfirm()
   const settingsQuery = useQuery({
     queryKey: projectAnomalySettingsKey(slug),
     queryFn: () => anomalySettingsApi.get(slug),
@@ -300,6 +374,22 @@ export function MonitoringTab({ slug }: { slug: string }) {
   // the rejection is handled there rather than left unhandled here.
   const commit = (data: Partial<ProjectAnomalySettings>) => updateMut.mutateAsync(data)
 
+  // Turning detection off stops every new signal and every alert in the
+  // project the moment the switch moves (autosave) — further-reaching than a
+  // rule delete, which is confirmed. Switching it back on needs no warning.
+  const setDetectionEnabled = async (enabled: boolean) => {
+    if (!enabled) {
+      const ok = await confirm({
+        title: 'Stop detecting anomalies in this project?',
+        message: 'No new signals or alerts will be raised until detection is turned back on. Signals already raised stay on the Anomalies page.',
+        confirmLabel: 'Turn off detection',
+        variant: 'danger',
+      })
+      if (!ok) return
+    }
+    updateMut.mutate({ anomaly_detection_enabled: enabled })
+  }
+
   if (settingsQuery.isError && !settings) {
     // A failed load used to read "Loading detection settings…" forever (PLAN-41).
     return (
@@ -313,7 +403,8 @@ export function MonitoringTab({ slug }: { slug: string }) {
   }
 
   if (!settings) {
-    return <div role="status" className="text-body text-muted-foreground">Loading detection settings…</div>
+    // The page's shape, not a sentence (#237).
+    return <PageSkeleton variant="settings" label="Loading detection settings…" />
   }
 
   // The settling allowance and the open signal window constrain each other: a
@@ -331,21 +422,47 @@ export function MonitoringTab({ slug }: { slug: string }) {
     Math.floor(settings.anomaly_ingestion_settling_minutes / 60) + 1,
   )
 
+  // One line for the bucket pair. Deliberately says "the series being scored"
+  // and not "the scan": these settings also govern catalog metrics, and a
+  // MetricDefinition carries its own interval independent of any scan config —
+  // so a daily metric under an hourly scan makes 14 buckets fourteen DAYS.
+  const bucketNote = (
+    <>
+      A bucket is one collection interval of the series being scored. On an hourly
+      scan, {settings.baseline_window_buckets} buckets of baseline is{' '}
+      {settings.baseline_window_buckets} hours; on a daily catalog metric it is{' '}
+      {settings.baseline_window_buckets} days.
+    </>
+  )
+
   return (
     <PageContainer className="space-y-4">
+      {dialog}
       {/* "Detection settings" — the same words as the buttons on the Anomalies
-          and Monitors pages that lead here. The surface used to call itself
+          and Alerting pages that lead here. The surface used to call itself
           "Monitoring" while its only card called itself "Anomaly Detection",
           giving one thing three names (tripl-jfm3.39). Detection raises
-          SIGNALS; monitors are the alert rules layered on top. The shared
-          page header gives it a real h1 (DS-1). */}
+          SIGNALS; alert rules are layered on top. The shared page header gives
+          it a real h1 (DS-1). */}
       <PageHeader
         eyebrow="Observe"
         title="Detection settings"
-        description="How tripl detects signals — spikes and drops in volume — across every scan in this project. Scans use these settings automatically when they have both a time column and a collection interval."
+        description="How tripl detects signals — spikes and drops in volume — across every scan in this project."
       />
 
       {!canWrite && <ReadOnlyNotice />}
+      {/* Persistent while it is off, not only at the moment of the switch
+          (AL-45): the page otherwise looks configured and working. */}
+      {!settings.anomaly_detection_enabled && (
+        <p
+          role="status"
+          className="m-0 flex items-start gap-2 rounded-card border px-3 py-2.5 text-body-sm"
+          style={{ borderColor: 'var(--warning)', background: 'var(--warning-soft)' }}
+        >
+          <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" style={{ color: 'var(--warning)' }} />
+          {DETECTION_OFF_MESSAGE}
+        </p>
+      )}
       {settingsQuery.isError && (
         // A failed refresh after an autosave keeps the settings on screen
         // rather than replacing the whole tab (review 204).
@@ -354,219 +471,220 @@ export function MonitoringTab({ slug }: { slug: string }) {
         </p>
       )}
 
-      {/* `disabled` on a fieldset reaches every control inside it, the Switch
-          and Checkbox buttons included; `contents` keeps it out of the layout. */}
-      <fieldset disabled={!canWrite} className="contents">
-        <Card>
-          <CardContent className="space-y-5">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <Label className="text-body font-medium">Detection</Label>
-                <p className="text-body-sm text-muted-foreground mt-1">
-                  Scans inherit these settings. Turning detection off stops new signals being
-                  raised; monitors and alert routing are configured under Alerting.
-                </p>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="text-body-sm font-medium text-muted-foreground min-w-16 text-right">
-                  {settings.anomaly_detection_enabled ? 'Enabled' : 'Disabled'}
-                </span>
-                <Switch
-                  checked={settings.anomaly_detection_enabled}
-                  onCheckedChange={checked => updateMut.mutate({ anomaly_detection_enabled: checked })}
-                  aria-label="Toggle signal detection"
-                />
-              </div>
+      {canWrite ? (
+        <Panel
+          title="Detection"
+          subtitle="Scans with a time column and a collection interval inherit these settings."
+          right={
+            <div className="flex items-center gap-3">
+              <span className="min-w-16 text-right text-body-sm font-medium text-muted-foreground">
+                {settings.anomaly_detection_enabled ? 'Enabled' : 'Disabled'}
+              </span>
+              <Switch
+                checked={settings.anomaly_detection_enabled}
+                onCheckedChange={checked => { void setDetectionEnabled(checked) }}
+                aria-label="Toggle signal detection"
+              />
             </div>
-
+          }
+        >
+          <div className="space-y-6 p-4">
             {/* Four scopes, not three: catalog metrics have always been detected
                 (detect_metrics defaults to on) but had no control here, so the
                 only way to stop scoring them was to disable detection entirely
                 (tripl-jfm3.108).
 
-                The heading and the sentence under it are the whole reason this is
-                a fieldset: four bare checked boxes in a row decide WHAT GETS
-                SCORED AT ALL — the most consequential control on the page — and
-                nothing on screen said so. The rationale existed only in this
-                comment, which no operator reads. `min-w-0` undoes the UA default
-                `min-inline-size: min-content` on fieldset, which Tailwind's
-                preflight does not reset and which would stop the four-column grid
-                inside from ever shrinking. */}
+                The legend and the sentence under it are the whole reason this is
+                a fieldset: four checked boxes decide WHAT GETS SCORED AT ALL.
+                `min-w-0` undoes the UA default `min-inline-size: min-content` on
+                fieldset, which would stop the grid inside from ever shrinking. */}
             <fieldset className="min-w-0">
-              <legend className="text-body font-medium">Score these scopes</legend>
-              <p className="text-body-sm text-muted-foreground mt-1 mb-3">
+              <legend className="text-body-sm font-semibold">Score these scopes</legend>
+              <p className="mt-0.5 mb-3 text-caption text-muted-foreground">
                 Detection scores only the scopes checked here. Unchecking one stops new signals
                 being raised for it; signals already raised stay on the Anomalies page.
               </p>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                <label className="flex items-center gap-2 text-body">
-                  <Checkbox
-                    checked={settings.detect_project_total}
-                    onCheckedChange={checked => updateMut.mutate({ detect_project_total: !!checked })}
-                  />
-                  Project total
-                </label>
-                <label className="flex items-center gap-2 text-body">
-                  <Checkbox
-                    checked={settings.detect_event_types}
-                    onCheckedChange={checked => updateMut.mutate({ detect_event_types: !!checked })}
-                  />
-                  Event types
-                </label>
-                <label className="flex items-center gap-2 text-body">
-                  <Checkbox
-                    checked={settings.detect_events}
-                    onCheckedChange={checked => updateMut.mutate({ detect_events: !!checked })}
-                  />
-                  Events
-                </label>
-                <label className="flex items-center gap-2 text-body">
-                  <Checkbox
-                    checked={settings.detect_metrics}
-                    onCheckedChange={checked => updateMut.mutate({ detect_metrics: !!checked })}
-                  />
-                  Metrics
-                </label>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                {SCOPE_CHECKBOXES.map(scope => (
+                  <label key={scope.key} className="flex items-center gap-2 text-body">
+                    <Checkbox
+                      checked={settings[scope.key]}
+                      onCheckedChange={checked => {
+                        const patch: Partial<ProjectAnomalySettings> = {}
+                        patch[scope.key] = !!checked
+                        updateMut.mutate(patch)
+                      }}
+                    />
+                    {scope.label}
+                  </label>
+                ))}
               </div>
             </fieldset>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Two rules hold for all six fields below.
-                  (1) Sentence case, like every other label in this app: four of
-                      the six were Title Case and two were not, which made one card
-                      read as two forms glued together (tripl-jj0h).
-                  (2) `content-start` on every cell. Without it a cell inherits the
-                      grid default (align-content: stretch), is stretched to its
-                      taller sibling, and pads the gaps between its own label,
-                      input and help text — which put two side-by-side inputs in
-                      the bottom row 11px out of line (labels 5px) purely because
-                      one help paragraph ran longer than the other.
-
-                  Both fields in this first row are counted in BUCKETS, and said so
-                  nowhere: bare "14" and "7" sat directly above two fields that name
-                  their unit and carry a paragraph each, so the page's own pattern
-                  pushed the reader toward days. On an hourly scan that reads 14 as
-                  fourteen days when it means fourteen hours — an order of
-                  magnitude, set by someone trying to quieten a noisy detector
-                  (tripl-wb58). */}
-              <div className="grid content-start gap-2">
-                <Label htmlFor={baselineWindowId}>Baseline window (buckets)</Label>
-                <NumberSetting
-                  id={baselineWindowId}
-                  min={1}
-                  value={settings.baseline_window_buckets}
-                  onCommit={v => commit({ baseline_window_buckets: v })}
-                />
-              </div>
-              <div className="grid content-start gap-2">
-                <Label htmlFor={minHistoryId}>Min history (buckets)</Label>
-                <NumberSetting
-                  id={minHistoryId}
-                  min={1}
-                  value={settings.min_history_buckets}
-                  onCommit={v => commit({ min_history_buckets: v })}
-                />
-              </div>
-              {/* One line for the pair. Deliberately says "the series being
-                  scored" and not "the scan": these settings also govern catalog
-                  metrics, and a MetricDefinition carries its own interval
-                  independent of any scan config — so a daily metric under an
-                  hourly scan makes 14 buckets fourteen DAYS. */}
-              <p className="text-body-sm text-muted-foreground md:col-span-2">
-                A bucket is one collection interval of the series being scored. On an hourly
-                scan, {settings.baseline_window_buckets} buckets of baseline is{' '}
-                {settings.baseline_window_buckets} hours; on a daily catalog metric it is{' '}
-                {settings.baseline_window_buckets} days.
-              </p>
-              {/* These two were the only fields on the page with no explanation at
-                  all, and they are the two that decide whether anything is flagged
-                  — the sigma threshold is both the most consequential and the most
-                  opaque control here (tripl-pdyc). Both describe what the detector
-                  actually does: `_rolling_anomaly_at` skips a bucket whose baseline
-                  expects fewer than min_expected_count, then flags it only when
-                  |z| reaches the sigma threshold. */}
-              <div className="grid content-start gap-2">
-                <Label htmlFor={sigmaThresholdId}>Sigma threshold</Label>
+            {/* Two groups (AL-43): what counts as unusual, and when a bucket is
+                judged. Sentence-case labels and `content-start` cells hold for
+                every field (tripl-jj0h). */}
+            <SettingGroup
+              title="Sensitivity"
+              lead="What counts as unusual enough to raise a signal."
+            >
+              {/* The two settings that decide whether anything is flagged at all
+                  (tripl-pdyc): `_rolling_anomaly_at` skips a bucket whose
+                  baseline expects fewer than min_expected_count, then flags it
+                  only when |z| reaches the sigma threshold. */}
+              <SettingField
+                id={sigmaThresholdId}
+                label="Sigma threshold"
+                hint="Higher is quieter; lower catches smaller moves."
+                more="How far a bucket has to sit from its baseline before it is flagged, counted in standard deviations of that baseline. Raise it for a quieter detector; lower it to catch smaller moves, at the cost of more signals."
+              >
                 <NumberSetting
                   id={sigmaThresholdId}
                   min={0.1}
                   step="0.1"
                   value={settings.sigma_threshold}
                   onCommit={v => commit({ sigma_threshold: v })}
+                  describedBy={`${sigmaThresholdId}-hint`}
                 />
-                <p className="text-body-sm text-muted-foreground">
-                  How far a bucket has to sit from its baseline before it is flagged, counted in
-                  standard deviations of that baseline. Raise it for a quieter detector; lower it
-                  to catch smaller moves, at the cost of more signals.
-                </p>
-              </div>
-              <div className="grid content-start gap-2">
-                <Label htmlFor={minExpectedCountId}>Min expected count</Label>
+              </SettingField>
+              <SettingField
+                id={minExpectedCountId}
+                label="Min expected count"
+                hint="Skip scopes too quiet to judge. 0 scores every bucket."
+                more={
+                  <>
+                    A floor on the baseline, not on the bucket: any bucket whose baseline expects
+                    fewer than {settings.min_expected_count} is skipped, so a quiet series cannot
+                    raise a spike off a handful of events. 0 scores every bucket.
+                  </>
+                }
+              >
                 <NumberSetting
                   id={minExpectedCountId}
                   min={0}
                   value={settings.min_expected_count}
                   onCommit={v => commit({ min_expected_count: v })}
+                  describedBy={`${minExpectedCountId}-hint`}
                 />
-                <p className="text-body-sm text-muted-foreground">
-                  A floor on the baseline, not on the bucket: any bucket whose baseline expects
-                  fewer than {settings.min_expected_count} is skipped, so a quiet series cannot
-                  raise a spike off a handful of events. 0 scores every bucket.
-                </p>
-              </div>
-              <div className="grid content-start gap-2">
-                <Label htmlFor={recentSignalWindowId}>Open signal window (hours)</Label>
+              </SettingField>
+            </SettingGroup>
+
+            <SettingGroup
+              title="Timing"
+              lead="How much history a bucket is judged against, and when."
+            >
+              {/* Both counted in BUCKETS, and the labels say so: a bare "14" on
+                  an hourly scan reads as fourteen days when it means fourteen
+                  hours (tripl-wb58). */}
+              <SettingField
+                id={baselineWindowId}
+                label="Baseline window (buckets)"
+                hint="How many past buckets make the baseline."
+                more={bucketNote}
+              >
+                <NumberSetting
+                  id={baselineWindowId}
+                  min={1}
+                  value={settings.baseline_window_buckets}
+                  onCommit={v => commit({ baseline_window_buckets: v })}
+                  describedBy={`${baselineWindowId}-hint`}
+                />
+              </SettingField>
+              <SettingField
+                id={minHistoryId}
+                label="Min history (buckets)"
+                hint="Buckets a series needs before it is scored."
+              >
+                <NumberSetting
+                  id={minHistoryId}
+                  min={1}
+                  value={settings.min_history_buckets}
+                  onCommit={v => commit({ min_history_buckets: v })}
+                  describedBy={`${minHistoryId}-hint`}
+                />
+              </SettingField>
+              <SettingField
+                id={recentSignalWindowId}
+                label="Open signal window (hours)"
+                hint={`How long a signal stays open. ${windowFloorHours}–720 hours.`}
+                more={
+                  <>
+                    How long an anomaly keeps counting as an open signal on the Anomalies page
+                    and in the sidebar badge. Alert delivery is unaffected. The floor is the
+                    settling allowance beside it ({settings.anomaly_ingestion_settling_minutes} min):
+                    a window that does not outlast the allowance would close every signal before
+                    it could be scored.
+                  </>
+                }
+              >
                 <NumberSetting
                   id={recentSignalWindowId}
                   min={windowFloorHours}
                   max={720}
                   value={settings.recent_signal_window_hours}
                   onCommit={v => commit({ recent_signal_window_hours: v })}
+                  describedBy={`${recentSignalWindowId}-hint`}
                 />
-                <p className="text-body-sm text-muted-foreground">
-                  How long an anomaly keeps counting as an open signal on the Anomalies page
-                  and in the sidebar badge. Between {windowFloorHours} and 720 hours (30 days).
-                  Alert delivery is unaffected. The floor is the settling allowance beside it
-                  ({settings.anomaly_ingestion_settling_minutes} min): a window that does not
-                  outlast the allowance would close every signal before it could be scored.
-                </p>
-              </div>
-              <div className="grid content-start gap-2">
-                <Label htmlFor={settlingMinutesId}>Ingestion settling (minutes)</Label>
+              </SettingField>
+              <SettingField
+                id={settlingMinutesId}
+                label="Ingestion settling (minutes)"
+                hint={`Wait for late rows before scoring. 0–${settlingCeilingMinutes} minutes.`}
+                more={
+                  <>
+                    How long a warehouse keeps delivering rows for a bucket after that bucket
+                    closes. Those buckets are still collected and charted but raise no signal
+                    until the allowance passes, so a half-delivered bucket is not read as a
+                    drop — and the allowance is the detection latency you pay for that. The
+                    ceiling is one minute under the open signal window beside it{' '}
+                    ({settings.recent_signal_window_hours}h), and never above 1440 (24 hours).
+                  </>
+                }
+              >
                 <NumberSetting
                   id={settlingMinutesId}
                   min={0}
                   max={settlingCeilingMinutes}
                   value={settings.anomaly_ingestion_settling_minutes}
                   onCommit={v => commit({ anomaly_ingestion_settling_minutes: v })}
+                  describedBy={`${settlingMinutesId}-hint`}
                 />
-                {/* Tightened from seven rendered lines. Every fact the operator
-                    needs to set the number is kept — both bounds and why they
-                    exist — because these are what stand between them and the
-                    backend's 422; what went is the second telling of it. */}
-                <p className="text-body-sm text-muted-foreground">
-                  How long a warehouse keeps delivering rows for a bucket after that bucket
-                  closes. Those buckets are still collected and charted but raise no signal
-                  until the allowance passes, so a half-delivered bucket is not read as a
-                  drop — and the allowance is the detection latency you pay for that. Between
-                  0 (score immediately) and {settlingCeilingMinutes} minutes: the ceiling is
-                  one minute under the open signal window beside it{' '}
-                  ({settings.recent_signal_window_hours}h), and never above 1440 (24 hours).
-                </p>
-              </div>
-            </div>
+              </SettingField>
+            </SettingGroup>
 
-            <div className="rounded-lg border bg-muted/30 p-4 text-body-sm text-muted-foreground">
-              Markers appear only when the latest bucket for a scope is anomalous.
-              After changing these settings, run the next metrics collection to recalculate signals.
-            </div>
+            <p className="m-0 text-caption text-muted-foreground">
+              Changes apply from the next metrics collection. Chart markers appear only when a
+              scope&apos;s latest bucket is anomalous.
+            </p>
 
             {updateMut.isError && (
               <p className="text-body text-destructive">{getErrorMessage(updateMut.error)}</p>
             )}
-          </CardContent>
-        </Card>
-      </fieldset>
+          </div>
+        </Panel>
+      ) : (
+        // A viewer reads the settings; a disabled form kept live borders and
+        // editing hints on controls that did nothing (#237 rule 4).
+        <Panel title="Detection" subtitle="Scans with a time column and a collection interval inherit these settings.">
+          <div className="p-4">
+            <ReadOnlyDefinition
+              items={[
+                { label: 'Detection', value: settings.anomaly_detection_enabled ? 'Enabled' : 'Disabled' },
+                {
+                  label: 'Scored scopes',
+                  value: SCOPE_CHECKBOXES.filter(scope => settings[scope.key]).map(scope => scope.label).join(', ') || 'None',
+                },
+                { label: 'Sigma threshold', value: String(settings.sigma_threshold) },
+                { label: 'Min expected count', value: String(settings.min_expected_count) },
+                { label: 'Baseline window', value: `${settings.baseline_window_buckets} buckets` },
+                { label: 'Min history', value: `${settings.min_history_buckets} buckets` },
+                { label: 'Open signal window', value: `${settings.recent_signal_window_hours} hours` },
+                { label: 'Ingestion settling', value: `${settings.anomaly_ingestion_settling_minutes} minutes` },
+              ]}
+            />
+          </div>
+        </Panel>
+      )}
 
       <ScopeOverridesCard slug={slug} canWrite={canWrite} />
     </PageContainer>

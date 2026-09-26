@@ -881,5 +881,15 @@ describe('MetricsPage', () => {
       const links = await screen.findAllByRole('link', { name: /New fact table/ })
       expect(links[0]).toHaveAttribute('href', '/p/demo/metrics/fact-tables/new')
     })
+
+    it('hints what a fact table is beside the header only on the Fact tables tab (JR-31)', async () => {
+      mockFactTables({ items: [], total: 0 })
+
+      renderMetrics('fact-tables')
+
+      expect(
+        await screen.findByRole('link', { name: 'What is Fact tables? Open in Concepts' }),
+      ).toHaveAttribute('href', '/p/demo/concepts#term-fact-tables')
+    })
   })
 })

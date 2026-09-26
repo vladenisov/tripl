@@ -226,8 +226,8 @@ describe('ScanFormSections — where event names come from', () => {
 
     const create = screen.getByRole('button', { name: /Create scan/ })
     expect(create).toBeDisabled()
-    expect(create).toHaveAttribute(
-      'title',
+    // The reason is visible text the button points at (#237 DA-9).
+    expect(create).toHaveAccessibleDescription(
       'Pick an Event type, or the Event type column your event names are in.',
     )
     expect(document.body.textContent).not.toMatch(/event_type_id|event_type_column/)
@@ -389,8 +389,8 @@ describe('ScanFormSections — the mode choice', () => {
 
     const create = screen.getByRole('button', { name: /Create scan/ })
     expect(create).toBeDisabled()
-    expect(create).toHaveAttribute(
-      'title',
+    // The reason is visible text the button points at (#237 DA-9).
+    expect(create).toHaveAccessibleDescription(
       'Catalog + monitoring needs a time column and a schedule.',
     )
   })
@@ -415,10 +415,12 @@ describe('ScanFormSections — the mode choice', () => {
     expect(
       screen.queryByText('Pick a schedule — monitoring needs one to record metric points.'),
     ).toBeNull()
-    // Nothing is lost: the gate is still on, and the button still says why.
+    // Nothing is lost: the gate is still on, and the reason is visible text
+    // next to the button, not a `title` a disabled button never shows (#237 DA-9).
     const create = screen.getByRole('button', { name: /Create scan/ })
     expect(create).toBeDisabled()
-    expect(create).toHaveAttribute('title', 'A scan needs a name, a data source and a base query.')
+    expect(create).toHaveAccessibleDescription('A scan needs a name, a data source and a base query.')
+    expect(screen.getByText('A scan needs a name, a data source and a base query.')).toBeVisible()
   })
 
   // The other half of the same gate: suppressing the alerts must not silence the
@@ -655,6 +657,8 @@ describe('ScanFormSections — batch 4', () => {
     expect(rowCap).toHaveAccessibleDescription(/whole number of 1 or more/)
     const save = screen.getByRole('button', { name: 'Save' })
     expect(save).toBeDisabled()
-    expect(save).toHaveAttribute('title', 'Fix Row cap per run.')
+    // Visible beside Save, not in a `title` a disabled button never shows (#237 DA-9).
+    expect(save).toHaveAccessibleDescription('Fix Row cap per run.')
+    expect(screen.getByText('Fix Row cap per run.')).toBeVisible()
   })
 })

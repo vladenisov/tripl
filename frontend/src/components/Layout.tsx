@@ -12,7 +12,6 @@ import {
 import { Outlet, useLocation, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError } from '@/api/client'
-import { ActivityPanel } from '@/components/activity-panel'
 import { AppSidebar } from '@/components/app-sidebar'
 import { BranchProvider } from '@/components/branch-context'
 import { CommandPaletteProvider } from '@/components/command-palette'
@@ -20,10 +19,11 @@ import { ActiveProjectContext } from '@/components/active-project-context'
 import { ErrorBoundary, RouteErrorBoundary } from '@/components/error-boundary'
 import { ErrorState } from '@/components/error-state'
 import { MAIN_CONTENT_ID } from '@/components/landmarks'
-import { TopBar } from '@/components/top-bar'
+import { BranchStrip, TopBar } from '@/components/top-bar'
 import { TweaksPanelProvider } from '@/components/tweaks-panel'
 import { LazyDemoScenarioProvider } from '@/demo/LazyDemoScenarioProvider'
-import { NotFoundState } from '@/components/not-found-state'
+import { ShellSkeleton } from '@/components/states/skeletons'
+import { ProjectNotFound } from '@/components/states/project-not-found'
 import { DocumentEntityTitleContext, ShellChromeContext } from '@/components/shell-chrome-context'
 import { ProjectEventStreamProvider } from '@/realtime/ProjectEventStreamProvider'
 import { resolveNavLocation } from '@/lib/navigation'
@@ -39,6 +39,12 @@ const DemoBanner = lazyWithReload(() =>
 )
 const DemoScenarioStrip = lazyWithReload(() =>
   import('@/demo/DemoScenarioStrip').then((m) => ({ default: m.DemoScenarioStrip })),
+)
+// The activity feed is a side rail, not the page: loading it after the shell
+// keeps its feed rendering out of the entry chunk. Nothing renders while it
+// loads, the same as a closed rail.
+const ActivityPanel = lazyWithReload(() =>
+  import('@/components/activity-panel').then((m) => ({ default: m.ActivityPanel })),
 )
 
 const ACTIVITY_STORAGE_KEY = 'tripl-activity-open'
@@ -167,13 +173,27 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
   if (pathname.includes('/monitoring/metric/')) {
     return { crumbs: withProject('Observe', 'Metrics'), title: DETAIL_PENDING_TITLE }
   }
-  // What is left — event-type and project-total volume drilldowns — is reached
-  // from a signal, so it reads "Observe › Anomalies". It used to say "Monitors",
-  // which named a list of alert RULES: a different object entirely, and one
-  // these charts have nothing to do with. That nav item is gone (tripl-89ps)
-  // and the drilldowns follow the surface they are opened from.
+  // What is left — event-type and project-total volume drilldowns — is named
+  // from the entity, not from the route the reader happened to arrive by: the
+  // trail said "Observe › Anomalies" even when the page was opened from the
+  // sidebar or an event type (#241 MO-13). An event type's volume sits under
+  // "Plan › Event types", where the nav files Event types; the project total
+  // is its own page ("Total volume").
+  if (pathname.includes('/monitoring/event-type/')) {
+    return { crumbs: withProject('Plan', 'Event types'), title: DETAIL_PENDING_TITLE }
+  }
   if (pathname.includes('/monitoring/')) {
-    return { crumbs: withProject('Observe', 'Anomalies'), title: DETAIL_PENDING_TITLE }
+    return { crumbs: withProject('Observe'), title: DETAIL_PENDING_TITLE }
+  }
+  // One branch: "Plan › Plan branches › <name>", the page naming the branch
+  // once it has loaded (#243 PL-17). The bare list keeps its nav crumb.
+  if (/^\/p\/[^/]+\/settings\/branches\/[^/]+/.test(pathname)) {
+    return { crumbs: withProject('Plan', 'Plan branches'), title: DETAIL_PENDING_TITLE }
+  }
+  // An alert rule's history: "Observe › Alerting › Rules › <rule>", the tab
+  // the rule lives on, instead of "Observe › <rule>" (#241 MO-13, #238 JR-28).
+  if (/^\/p\/[^/]+\/monitors\/[^/]+/.test(pathname)) {
+    return { crumbs: withProject('Observe', 'Alerting', 'Rules'), title: DETAIL_PENDING_TITLE }
   }
 
   // Map the route to its grouped-nav area (Plan / Observe / Govern / Connect)
@@ -201,14 +221,15 @@ function resolveCrumbs(pathname: string, slug?: string, projectName?: string): C
 }
 
 /**
- * Full-viewport stand-in for the app shell, used while the project list is in
- * flight and for the project-not-found state. Keeps the app background/colour
- * so neither reads as a broken page.
+ * Full-viewport stand-in for the app shell, used for the project lookup error
+ * and the project-not-found state. Keeps the app background/colour so neither
+ * reads as a broken page. `justify-center-safe`: the not-found state lists
+ * projects and can outgrow a phone screen, and plain centring clipped its top.
  */
 function ShellFallback({ children }: { children: ReactNode }) {
   return (
     <div
-      className="flex h-screen flex-col items-center justify-center overflow-y-auto px-6 text-body supports-[height:100dvh]:h-dvh"
+      className="flex h-screen flex-col items-center justify-center-safe overflow-y-auto px-6 py-8 text-body supports-[height:100dvh]:h-dvh"
       style={{ background: 'var(--bg)', color: 'var(--fg-muted)' }}
     >
       {children}
@@ -407,11 +428,8 @@ export default function Layout() {
   // project-scoped requests the moment it mounts, so rendering optimistically is
   // what produced the doomed fan-out in the first place.
   if (projectResolving) {
-    return (
-      <ShellFallback>
-        <span role="status" aria-live="polite">Loading project…</span>
-      </ShellFallback>
-    )
+    // The shell's shape, not one grey sentence on a blank screen (#237 SH-23).
+    return <ShellSkeleton label="Loading project…" />
   }
   if (projectLookupFailed) {
     return (
@@ -433,10 +451,7 @@ export default function Layout() {
   if (projectMissing) {
     return (
       <ShellFallback>
-        <NotFoundState
-          title="Project not found"
-          description={`No project with the address “${slug}” exists, or you do not have access to it.`}
-        />
+        <ProjectNotFound slug={slug ?? ''} projects={projects} />
       </ShellFallback>
     )
   }
@@ -476,7 +491,9 @@ export default function Layout() {
               (mobileNavOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0')
             }
           >
-            <AppSidebar />
+            {/* As a drawer it closes rather than collapsing into a 52px rail
+                over a blurred page (#238 SH-13). */}
+            <AppSidebar drawer={!isWideNav} onCloseDrawer={closeDrawers} />
           </div>
 
           {/* Backdrop for the mobile drawer. */}
@@ -495,12 +512,14 @@ export default function Layout() {
               title={headerTitle}
               crumbs={headerCrumbs}
               projectSlug={slug}
+              projectName={project?.name}
               activityOpen={activityVisible}
               onToggleActivity={railSuppressed ? undefined : toggleActivity}
               mobileNavOpen={mobileNavOpen}
               mobileNavId={SIDEBAR_ID}
               onOpenMobileNav={openMobileNav}
             />
+            <BranchStrip slug={slug} />
 
             <div className="flex flex-1 overflow-hidden">
               <div className="relative min-w-0 flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]">
@@ -580,7 +599,9 @@ export default function Layout() {
 
               {/* Activity rail, inline from ACTIVITY_INLINE_MIN_WIDTH up. */}
               {isWideActivity && (
-                <ActivityPanel open={activityOpen && !railSuppressed} slug={slug} inline />
+                <Suspense fallback={null}>
+                  <ActivityPanel open={activityOpen && !railSuppressed} slug={slug} inline />
+                </Suspense>
               )}
             </div>
           </div>
@@ -601,7 +622,9 @@ export default function Layout() {
                 className="fixed inset-y-0 right-0 z-(--z-drawer) pb-[env(safe-area-inset-bottom)] shadow-xl"
                 style={{ background: 'var(--bg-sunken)' }}
               >
-                <ActivityPanel open slug={slug} />
+                <Suspense fallback={null}>
+                  <ActivityPanel open slug={slug} onClose={closeDrawers} />
+                </Suspense>
               </div>
             </>
           )}

@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
-import { Link, Navigate, useParams, useSearchParams } from 'react-router-dom'
-import { ArrowUpRight } from 'lucide-react'
+import { Navigate, useParams, useSearchParams } from 'react-router-dom'
+import { PageSkeleton, type PageSkeletonVariant } from '@/components/states'
 import { lazyWithReload } from '@/lib/lazyWithReload'
 
 // Each surface is its own chunk. They are separate sidebar destinations and
@@ -36,16 +36,29 @@ const MonitoringTab = lazyWithReload(() =>
 )
 const ProjectAlertingTab = lazyWithReload(() => import('@/pages/ProjectAlertingTab'))
 
-function TabFallback() {
-  return (
-    <p role="status" aria-live="polite" className="text-body text-muted-foreground">
-      Loading…
-    </p>
-  )
+/**
+ * A surface's chunk loading: the shape of the page it is about to become, not
+ * a "Loading…" line in an empty column (#237 SH-23 / ST-35). Each surface
+ * renders its own header, so the skeleton draws one too.
+ */
+const TAB_SKELETON: Record<FunctionalTab, PageSkeletonVariant> = {
+  'event-types': 'list',
+  'meta-fields': 'list',
+  relations: 'list',
+  variables: 'list',
+  monitoring: 'settings',
+  alerting: 'list',
+  branches: 'detail',
+  history: 'list',
+  audit: 'list',
+}
+
+function TabFallback({ tab, detail }: { tab: FunctionalTab; detail: boolean }) {
+  return <PageSkeleton variant={detail ? 'detail' : TAB_SKELETON[tab]} />
 }
 
 /**
- * Functional project surfaces (event types, schema & fields, monitoring,
+ * Functional project surfaces (event types, meta fields, monitoring,
  * alerting, branches, audit, history). The redesign collapsed the old
  * 11-tab settings strip: these surfaces are now first-class sidebar pages, so
  * this page renders the requested one full-width at its existing route with no
@@ -115,11 +128,13 @@ export default function ProjectSettingsPage() {
   const tab = urlTab as FunctionalTab
 
   return (
+    // No "Project operations" signpost above the header any more (#238 JR-25 /
+    // AL-42): these are Plan, Observe and Govern pages in the sidebar, and a
+    // strip framing them as "settings" was the first thing above "Alerting".
     <div className="min-w-0">
-      <SettingsSignpost />
       {/* Keyed by tab so moving between surfaces shows the fallback at once
           instead of leaving the previous surface up while the next loads. */}
-      <Suspense key={tab} fallback={<TabFallback />}>
+      <Suspense key={tab} fallback={<TabFallback tab={tab} detail={!!itemId} />}>
         {tab === 'event-types' && itemId && <EventTypeDetail slug={slug} eventTypeId={itemId} />}
         {tab === 'event-types' && !itemId && <EventTypesTab slug={slug} />}
         {tab === 'meta-fields' && <MetaFieldsTab slug={slug} />}
@@ -152,33 +167,6 @@ export default function ProjectSettingsPage() {
         {tab === 'history' && <HistoryTab slug={slug} />}
         {tab === 'audit' && <AuditTab slug={slug} />}
       </Suspense>
-    </div>
-  )
-}
-
-/**
- * One-line signpost framing this surface against the full-takeover Settings area,
- * with a cross-link to it. In-app project settings = day-to-day tracking-plan
- * operations; the takeover shell = workspace & account configuration. Keeping the
- * two framed as deliberate halves makes "where does this setting live" predictable.
- */
-function SettingsSignpost() {
-  return (
-    <div
-      className="mb-5 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-b pb-3"
-      style={{ borderColor: 'var(--border)' }}
-    >
-      <p className="text-body-sm" style={{ color: 'var(--fg-subtle)' }}>
-        Project operations — the day-to-day tracking-plan surfaces.
-      </p>
-      <Link
-        to="/settings"
-        className="inline-flex items-center gap-1 text-body-sm font-medium no-underline transition-colors"
-        style={{ color: 'var(--accent)' }}
-      >
-        Workspace settings
-        <ArrowUpRight className="h-3.5 w-3.5" />
-      </Link>
     </div>
   )
 }

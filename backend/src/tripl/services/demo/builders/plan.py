@@ -55,7 +55,7 @@ _FIELD_SPECS: tuple[tuple[str, str, str, str, bool, list[str] | None, int], ...]
 
 # (name, display_name, field_type, link_template, order)
 _META_FIELD_SPECS: tuple[tuple[str, str, str, str | None, int], ...] = (
-    ("jira", "Jira ticket", "url", "https://jira.example.com/{value}", 0),
+    ("jira", "Jira ticket", "url", "https://jira.example.com/${value}", 0),
     ("owner_team", "Owner team", "string", None, 1),
 )
 

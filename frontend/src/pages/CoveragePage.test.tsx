@@ -116,7 +116,7 @@ describe('CoveragePage', () => {
 
     // The 568 tile is explicitly about the review queue, not the remainder.
     expect(screen.getByText('568')).toBeInTheDocument()
-    expect(screen.getByText('Awaiting review')).toBeInTheDocument()
+    expect(screen.getByText('In review')).toBeInTheDocument()
   })
 
   // The "Triage in Reconciliation" link hands off to Reconciliation's Dead

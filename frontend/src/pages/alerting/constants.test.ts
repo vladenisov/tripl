@@ -3,9 +3,15 @@ import { describe, expect, it } from 'vitest'
 import type { AlertRule } from '@/types'
 
 import {
+  FILTER_OPERATOR_OPTIONS,
   ITEM_TEMPLATE_VARIABLE_OPTIONS,
   TEMPLATE_VARIABLE_OPTIONS,
   defaultRuleForm,
+  formatCooldownLong,
+  joinCooldown,
+  ruleConditionSummary,
+  ruleDraftSummary,
+  splitCooldown,
   findTemplateVariableToken,
   getDefaultItemsTemplate,
   getDefaultMessageTemplate,
@@ -213,5 +219,81 @@ describe('findTemplateVariableToken', () => {
   it('ignores a closed variable and plain text', () => {
     expect(findTemplateVariableToken('${rule_name} x', 14)).toBeNull()
     expect(findTemplateVariableToken('no token', 8)).toBeNull()
+  })
+})
+
+describe('defaultRuleForm — a drop rule that can fire before zero (AL-2)', () => {
+  it('starts at 30%, not the 100% a drop can only reach at zero volume', () => {
+    expect(defaultRuleForm().min_percent_delta).toBe('30')
+  })
+})
+
+describe('cooldown units (AL-6)', () => {
+  it.each([
+    ['1440', { amount: '1', unit: 'days' }],
+    ['360', { amount: '6', unit: 'hours' }],
+    ['45', { amount: '45', unit: 'minutes' }],
+  ] as const)('shows %s minutes in the largest whole unit', (minutes, expected) => {
+    expect(splitCooldown(minutes)).toEqual(expected)
+  })
+
+  it.each(['', '0', ' 45 ', '1.5', 'abc', '007'])('round-trips %j untouched', (text) => {
+    const { amount, unit } = splitCooldown(text)
+    expect(joinCooldown(amount, unit)).toBe(text)
+  })
+
+  it('converts an amount in hours or days back to minutes', () => {
+    expect(joinCooldown('2', 'days')).toBe('2880')
+    expect(joinCooldown('1.5', 'hours')).toBe('90')
+    expect(joinCooldown('', 'hours')).toBe('')
+  })
+
+  it('says the cooldown in words for a sentence', () => {
+    expect(formatCooldownLong(1440)).toBe('1 day')
+    expect(formatCooldownLong(360)).toBe('6 hours')
+    expect(formatCooldownLong(45)).toBe('45 minutes')
+  })
+})
+
+describe('filter operators read as words (AL-39)', () => {
+  it('has no SQL-speak', () => {
+    expect(FILTER_OPERATOR_OPTIONS.map(option => option.label))
+      .toEqual(['is', 'is not', 'is one of', 'is not one of'])
+  })
+})
+
+describe('ruleConditionSummary (AL-11, JR-15)', () => {
+  it('writes the condition as a sentence and lists what the rule watches', () => {
+    const summary = ruleConditionSummary(makeRule({
+      notify_on_spike: true,
+      notify_on_drop: true,
+      min_percent_delta: 100,
+      cooldown_minutes: 1440,
+    }))
+    expect(summary.condition).toBe('Spikes & drops ≥ 100% · 1d cooldown')
+  })
+
+  it('tells a metrics-only rule apart from the others', () => {
+    const summary = ruleConditionSummary(makeRule({
+      include_project_total: false,
+      include_event_types: false,
+      include_events: false,
+      include_metrics: true,
+      filters: [],
+    }))
+    expect(summary.watches).toBe('Metrics')
+  })
+})
+
+describe('ruleDraftSummary (AL-1)', () => {
+  it('says what Create will set up', () => {
+    const form: RuleFormState = { ...defaultRuleForm(), name: 'x' }
+    expect(ruleDraftSummary(form, '#alerts')).toBe(
+      'Sends to #alerts when any of project total, event types, events spikes or drops by at least 30%, then waits 1 day before alerting on the same scope again.',
+    )
+  })
+
+  it('says nothing before a destination is picked', () => {
+    expect(ruleDraftSummary(defaultRuleForm(), null)).toBeNull()
   })
 })

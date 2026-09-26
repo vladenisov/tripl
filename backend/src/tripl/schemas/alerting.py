@@ -1659,6 +1659,26 @@ class MonitorsSummaryResponse(BaseModel):
     scope_readiness: AlertScopeReadiness
 
 
+class MonitorFiringScope(BaseModel):
+    """One scope of a monitor that is firing now (MO-36).
+
+    Chosen by the same horizon test as ``firing_scope_count``, so the list and
+    the count cannot disagree. ``scope_name``, ``event_id`` and ``direction``
+    come from the item of the delivery that last notified this scope; all three
+    are null for a scope the rule has not notified (a cooldown or a mute can
+    hold the first message back while the state is already open).
+    """
+
+    scan_config_id: uuid.UUID | None
+    scope_type: MetricScopeType
+    scope_ref: str
+    scope_name: str | None
+    event_id: uuid.UUID | None
+    direction: AnomalyDirection | None
+    last_anomaly_bucket: datetime
+    last_notified_at: datetime | None
+
+
 class MonitorDetailResponse(MonitorSummaryItem):
     """A single monitor with the extra context a drill-in detail view needs."""
 
@@ -1704,6 +1724,8 @@ class MonitorDetailResponse(MonitorSummaryItem):
     total_deliveries: int
     last_delivery_at: datetime | None
     last_delivery_status: AlertDeliveryStatus | None
+    # The scopes behind ``firing_scope_count``, newest anomaly first.
+    firing_scopes: list[MonitorFiringScope]
     # The SAME block, under the same name and with the same meaning, as the one
     # on ``MonitorsSummaryResponse``. The monitors list and the monitor detail
     # describe one project, and a field name that meant two things on two

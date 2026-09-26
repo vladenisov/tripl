@@ -36,15 +36,15 @@ const INVITATION = {
   is_expired: false,
 }
 
-function renderUsersPage() {
+function renderUsersPage(auth: AuthContextValue = OWNER, entry = '/settings/members') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <AuthContext.Provider value={OWNER}>
-        <MemoryRouter>
+      <AuthContext.Provider value={auth}>
+        <MemoryRouter initialEntries={[entry]}>
           <UsersPage />
         </MemoryRouter>
       </AuthContext.Provider>
@@ -61,6 +61,24 @@ afterEach(() => {
 })
 
 describe('UsersPage', () => {
+  it('tells a non-owner once, in the shared read-only notice, why roles are locked (#237 ST-17)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(jsonResponse([])))
+
+    renderUsersPage({ ...OWNER, user: OWNER.user && { ...OWNER.user, role: 'editor' } })
+
+    expect(await screen.findByRole('note')).toHaveTextContent(
+      'Only owners can change roles or invite people.',
+    )
+  })
+
+  it("focuses the invite email field when the palette's Invite member lands on ?invite=1", async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(jsonResponse([])))
+
+    renderUsersPage(OWNER, '/settings/members?invite=1')
+
+    await waitFor(() => expect(screen.getByLabelText('Email')).toHaveFocus())
+  })
+
   it('surfaces a failed users fetch instead of claiming the instance is empty', async () => {
     // A page that by definition contains at least its reader used to answer a
     // failed fetch with "No users yet." — no error, no retry, nowhere to go.

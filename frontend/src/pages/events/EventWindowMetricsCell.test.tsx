@@ -45,4 +45,10 @@ describe('EventWindowMetricsCell (DS-27)', () => {
       color: 'var(--danger)',
     })
   })
+
+  it('shows a loading placeholder, not the no-data dash, while pending (EV-20)', () => {
+    const { container } = renderCell({ pending: true, totalCount: undefined, data: [] as never })
+    expect(screen.getByRole('img', { name: 'spot:open metrics: loading' })).toBeInTheDocument()
+    expect(container).not.toHaveTextContent('—')
+  })
 })

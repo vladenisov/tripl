@@ -48,12 +48,12 @@ export function WorkspaceWelcome({
           <div className="flex flex-col gap-1.5 sm:items-center sm:text-center">
             {/* Empty-state CTAs take the large control size (DS-14). */}
             <Button size="lg" onClick={onGenerateDemo} disabled={isProvisioningDemo}>
-              <Sparkles className="h-3.5 w-3.5" />
+              <Sparkles className="size-3.5" aria-hidden="true" />
               {isProvisioningDemo ? 'Generating…' : 'Generate demo project'}
             </Button>
             <p className="m-0 max-w-[280px] text-caption" style={{ color: 'var(--fg-subtle)' }}>
               Builds a complete example in {DEMO_PROVISION_ESTIMATE} — local synthetic data, real
-              scans and monitors. Reset or delete it any time.
+              scans and alert rules. Reset or delete it any time.
             </p>
           </div>
           <div className="flex flex-col gap-1.5 sm:items-center sm:text-center">

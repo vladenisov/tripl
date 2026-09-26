@@ -4,7 +4,9 @@
  * with the form — a save reads all of it — and each card renders one part.
  */
 import type { Event as TEvent, FieldDefinition, MetaFieldDefinition, Variable } from '@/types'
-import { X } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
+import { Check, Plus, X } from 'lucide-react'
 import { ScenarioCoachMark } from '@/demo/ScenarioCoachMark'
 import { SCENARIO_SEEDED } from '@/demo/scenarioModel'
 import type { ScenarioStepId } from '@/demo/scenarioModel'
@@ -47,7 +49,11 @@ export function TagsBreakdownsCard({
   onCommitBreakdown: () => void
 }) {
   return (
-    <SurfCard title="Tags & breakdowns">
+    <SurfCard
+      title="Tags & breakdowns"
+      // What each half is for, which the form never said (AU-22).
+      subtitle="Tags are labels for finding events in the list; breakdowns decide which columns metrics are split by."
+    >
       <EvField label="Tags" htmlFor="form-tags" hint="Press Enter or comma to add. Anything left typed is added on save.">
         {tags.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-[6px]">
@@ -92,25 +98,30 @@ export function TagsBreakdownsCard({
       <EvField
         label="Metric breakdowns"
         htmlFor="form-breakdown-column"
-        hint="Warehouse columns to roll metrics up by."
+        hint="Warehouse columns to roll metrics up by. Click a column to toggle it; type any other below."
         last
       >
-        <div className="flex flex-wrap gap-[6px]">
+        {/* Toggles, and drawn as toggles (AU-23): outlined grey pills with
+            nothing on them read as read-only tags or examples until one turned
+            teal. A leading check when on and a plus when off say "click me". */}
+        <div className="flex flex-wrap gap-[6px]" role="group" aria-label="Suggested breakdown columns">
           {breakdownOptions.map(c => {
             const on = breakdownColumns.includes(c)
+            const Icon = on ? Check : Plus
             return (
               <button
                 key={c}
                 type="button"
                 aria-pressed={on}
                 onClick={() => onToggleBreakdown(c)}
-                className="mono rounded-full px-[9px] py-1 text-caption"
+                className="mono inline-flex items-center gap-1 rounded-full py-1 pl-[7px] pr-[9px] text-caption transition-colors hover:border-[var(--accent)]"
                 style={{
                   border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
                   background: on ? 'var(--accent-soft)' : 'var(--bg)',
                   color: on ? 'var(--accent)' : 'var(--fg-muted)',
                 }}
               >
+                <Icon className="size-3" aria-hidden="true" />
                 {c}
               </button>
             )
@@ -145,6 +156,7 @@ export function FieldValuesCard({
   event,
   fields,
   typeLabel,
+  eventTypeId,
   nameFormat,
   namingColumns,
   fieldValues,
@@ -162,6 +174,8 @@ export function FieldValuesCard({
   event: TEvent | null
   fields: FieldDefinition[]
   typeLabel: string
+  /** The selected type, for the subtitle's link to its fields. */
+  eventTypeId?: string
   nameFormat: string | null
   namingColumns: ReadonlySet<string>
   fieldValues: Record<string, string>
@@ -184,9 +198,20 @@ export function FieldValuesCard({
     <SurfCard
       title="Field values"
       subtitle={
-        nameFormat
-          ? `From the ${typeLabel} schema. The event name is built from ${[...namingColumns].join(', ')}.`
-          : `From the ${typeLabel} schema`
+        // What these are and where they come from (AU-22): the columns a scan
+        // matches the event on, defined by the type, and that `${` opens the
+        // variable list — which was only discoverable by typing it.
+        <>
+          Columns defined by the{' '}
+          {eventTypeId ? (
+            <SubtitleLink to={`/p/${slug}/settings/event-types/${eventTypeId}`}>{typeLabel}</SubtitleLink>
+          ) : (
+            typeLabel
+          )}{' '}
+          type; scans match the event on these.
+          {nameFormat ? ` The event name is built from ${[...namingColumns].join(', ')}.` : ''}{' '}
+          Type <span className="mono">{'${'}</span> to insert a variable.
+        </>
       }
     >
       {fields.map((f, i) => {
@@ -280,11 +305,14 @@ export function FieldValuesCard({
 }
 
 export function MetaFieldsCard({
+  slug,
   metaFields,
   metaValues,
   onMetaValuesChange,
   variables,
 }: {
+  /** For the subtitle's link to where meta fields are defined. */
+  slug?: string
   metaFields: MetaFieldDefinition[]
   metaValues: Record<string, string[]>
   onMetaValuesChange: (metaFieldId: string, values: string[]) => void
@@ -292,7 +320,22 @@ export function MetaFieldsCard({
 }) {
   if (metaFields.length === 0) return null
   return (
-    <SurfCard title="Meta fields">
+    <SurfCard
+      title="Meta fields"
+      // How these differ from the type's field values (AU-22, JR-30): the
+      // same project-wide set on every event, for people rather than scans.
+      subtitle={
+        <>
+          Project-wide attributes for people, not scans — owner team, ticket links.
+          {slug && (
+            <>
+              {' '}
+              <SubtitleLink to={`/p/${slug}/settings/meta-fields`}>Manage meta fields</SubtitleLink>
+            </>
+          )}
+        </>
+      }
+    >
       {metaFields.map((mf, i) => (
         <EvField
           key={mf.id}
@@ -311,5 +354,14 @@ export function MetaFieldsCard({
         </EvField>
       ))}
     </SurfCard>
+  )
+}
+
+/** A link inside a card subtitle: the subtitle's own size, underlined. */
+function SubtitleLink({ to, children }: { to: string; children: ReactNode }) {
+  return (
+    <Link to={to} className="underline underline-offset-2 hover:text-[var(--fg)]">
+      {children}
+    </Link>
   )
 }

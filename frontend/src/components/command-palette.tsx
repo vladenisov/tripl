@@ -83,15 +83,18 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     const candidates = [
       ...(navigated ? [main] : []),
       openerRef.current,
-      document.querySelector<HTMLElement>(`[${COMMAND_PALETTE_TRIGGER_ATTR}]`),
+      // Several triggers exist (top bar below lg, sidebar at lg+); the ones a
+      // breakpoint hides are still connected, so try each in turn.
+      ...document.querySelectorAll<HTMLElement>(`[${COMMAND_PALETTE_TRIGGER_ATTR}]`),
       main,
     ]
     for (const candidate of candidates) {
-      if (candidate?.isConnected) {
-        // The content region is tall; landing on it must not scroll the page.
-        candidate.focus(candidate === main ? { preventScroll: true } : undefined)
-        return
-      }
+      if (!candidate?.isConnected) continue
+      // The content region is tall; landing on it must not scroll the page.
+      candidate.focus(candidate === main ? { preventScroll: true } : undefined)
+      // focus() on a display:none element is a silent no-op; move on when
+      // the candidate did not actually take focus.
+      if (document.activeElement === candidate) return
     }
   }, [])
 

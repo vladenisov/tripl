@@ -1,6 +1,6 @@
 import { PageContainer } from '@/components/primitives/page-container'
 import { PageHeader } from '@/components/primitives/page-header'
-import { LoadingState } from '@/components/primitives/loading-state'
+import { TermHint, TERM_HINTS } from '@/components/term-hint'
 import { useState } from 'react'
 import { Panel } from '@/components/settings/kit'
 import { Link, useParams } from 'react-router-dom'
@@ -47,7 +47,7 @@ import {
   shadowEventsPagesKey,
 } from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { ReadOnlyNotice, SectionSkeleton } from '@/components/states'
 
 const COVERAGE_DAYS = 14 as const
 // Deliberately NOT COVERAGE_DAYS. Dead events answer a different question than
@@ -455,6 +455,7 @@ export default function ReconciliationPage() {
       <PageHeader
         eyebrow="Govern"
         title="Reconciliation"
+        titleAddon={slug && <TermHint slug={slug} {...TERM_HINTS.reconciliation} />}
         description="Compare what your plan defines against what your data sources actually send."
       />
 
@@ -488,7 +489,7 @@ export default function ReconciliationPage() {
           </div>
         )}
         {coverageQuery.isLoading && (
-          <LoadingState className="p-4 text-body-sm" />
+          <SectionSkeleton variant="rows" rows={2} label="Loading data match…" />
         )}
         {coverage && (
           <div className="flex items-center gap-6 p-4">
@@ -575,7 +576,7 @@ export default function ReconciliationPage() {
             </div>
           )}
           {shadowQuery.isLoading && (
-            <LoadingState className="px-4 py-7 text-center text-body-sm" />
+            <SectionSkeleton variant="rows" rows={3} label="Loading unplanned events…" />
           )}
           {shadowIsEmpty &&
             (shadowStatus === 'new' ? (
@@ -803,7 +804,7 @@ export default function ReconciliationPage() {
             </div>
           )}
           {deadQuery.isLoading && (
-            <LoadingState className="px-4 py-7 text-center text-body-sm" />
+            <SectionSkeleton variant="rows" rows={3} label="Loading dead events…" />
           )}
           {dead && dead.items.length === 0 && !deadQuery.isError && (
             <div className="flex min-h-[240px] flex-col items-center justify-center px-4 py-7 text-center text-body-sm" style={{ color: 'var(--fg-subtle)' }}>

@@ -6,8 +6,9 @@
  * makes it recoverable and the separator-joined metadata are.
  */
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { PlanDiff, PlanRevisionSummary } from '@/types'
@@ -17,6 +18,15 @@ vi.mock('@/api/planRevisions', () => ({
   planRevisionsApi: { list: vi.fn(), create: vi.fn(), get: vi.fn(), diff: vi.fn() },
 }))
 
+// The page names revision authors and links branch revisions to their review.
+vi.mock('@/api/planBranches', () => ({
+  planBranchesApi: { list: vi.fn(async () => ({ items: [], total: 0 })) },
+}))
+vi.mock('@/api/users', () => ({
+  usersApi: { list: vi.fn(async () => []) },
+}))
+
+import { planBranchesApi } from '@/api/planBranches'
 import { planRevisionsApi } from '@/api/planRevisions'
 
 const SLUG = 'demo'
@@ -32,6 +42,8 @@ function makeRevision(overrides: Partial<PlanRevisionSummary> = {}): PlanRevisio
     summary: BRANCH_SUMMARY,
     created_at: '2026-08-19T10:27:00Z',
     created_by: null,
+    kind: 'branch_base',
+    branch_id: 'b-7',
     entity_counts: {
       event_types: 3,
       fields: 10,
@@ -48,7 +60,9 @@ function renderHistory() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <HistoryTab slug={SLUG} />
+      <MemoryRouter>
+        <HistoryTab slug={SLUG} />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -82,6 +96,188 @@ describe('HistoryTab — a revision row keeps its identity readable (tripl-lzge)
     // wrap could leave one dangling as the last glyph of a line. One string
     // with the separators inside it can only ever be truncated with an ellipsis.
     expect(meta).toHaveAttribute('title', meta.textContent)
+  })
+})
+
+describe('HistoryTab — what wrote each revision (PL-21)', () => {
+  it('folds branch openings away when the page has merges or snapshots, and shows them on request', async () => {
+    vi.mocked(planRevisionsApi.list).mockResolvedValue({
+      items: [
+        makeRevision({
+          id: 'rev-3',
+          summary: "Merged branch 'feature/checkout-funnel'",
+          kind: 'merge',
+        }),
+        makeRevision({ id: 'rev-2', summary: BRANCH_SUMMARY }),
+        makeRevision({
+          id: 'rev-1',
+          summary: 'Before the v2 launch',
+          kind: 'snapshot',
+          branch_id: null,
+        }),
+      ],
+      total: 3,
+    })
+    vi.mocked(planBranchesApi.list).mockResolvedValue({
+      items: [
+        {
+          id: 'b-7',
+          project_id: 'p-1',
+          name: 'feature/checkout-funnel',
+          kind: 'working',
+          status: 'merged',
+          description: '',
+          base_revision_id: null,
+          created_by: null,
+          merged_at: null,
+          merged_by: null,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+      total: 1,
+    })
+    vi.mocked(planRevisionsApi.diff).mockResolvedValue({
+      revision_id: 'rev-3',
+      compare_to: 'rev-2',
+      entries: [],
+      summary: { added: 0, removed: 0, changed: 0 },
+    })
+    renderHistory()
+
+    expect(await screen.findByText("Merged branch 'feature/checkout-funnel'")).toBeInTheDocument()
+    expect(screen.getByText('Before the v2 launch')).toBeInTheDocument()
+    expect(screen.queryByText(BRANCH_SUMMARY)).not.toBeInTheDocument()
+
+    // The selected merge links to the branch it came from.
+    expect(await screen.findByRole('link', { name: 'feature/checkout-funnel' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/branches/b-7',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show branch openings' }))
+    expect(screen.getByText(BRANCH_SUMMARY)).toBeInTheDocument()
+  })
+
+  it('reads the kind from the revision, not from a summary that only looks like a merge', async () => {
+    vi.mocked(planRevisionsApi.list).mockResolvedValue({
+      items: [
+        makeRevision({
+          id: 'rev-1',
+          summary: "Merged branch 'feature/checkout-funnel'",
+          kind: 'snapshot',
+          branch_id: null,
+        }),
+      ],
+      total: 1,
+    })
+    renderHistory()
+
+    // A user's snapshot titled like a merge stays a snapshot, with no branch link.
+    expect(await screen.findAllByRole('img', { name: 'Snapshot' })).not.toHaveLength(0)
+    expect(screen.queryByRole('img', { name: 'Merge' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('links a merge by its branch_id and labels it with the branch\'s current name', async () => {
+    vi.mocked(planRevisionsApi.list).mockResolvedValue({
+      items: [
+        makeRevision({ id: 'rev-2', summary: "Merged branch 'old-name'", kind: 'merge' }),
+      ],
+      total: 1,
+    })
+    vi.mocked(planBranchesApi.list).mockResolvedValue({
+      items: [
+        {
+          id: 'b-7',
+          project_id: 'p-1',
+          name: 'renamed/branch',
+          kind: 'working',
+          status: 'merged',
+          description: '',
+          base_revision_id: null,
+          created_by: null,
+          merged_at: null,
+          merged_by: null,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+      total: 1,
+    })
+    renderHistory()
+
+    expect(await screen.findByRole('link', { name: 'renamed/branch' })).toHaveAttribute(
+      'href',
+      '/p/demo/settings/branches/b-7',
+    )
+  })
+
+  it('offers "Snapshot now" as a secondary action that says what a snapshot is for', async () => {
+    renderHistory()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Snapshot now' }))
+    expect(await screen.findByText(/named checkpoint of the plan/)).toBeInTheDocument()
+  })
+})
+
+describe('HistoryTab — a large diff stays readable (PL-22)', () => {
+  it('groups entries by type, starts them closed, and filters by kind', async () => {
+    vi.mocked(planRevisionsApi.list).mockResolvedValue({
+      items: [makeRevision({ id: 'rev-2' }), makeRevision({ id: 'rev-1' })],
+      total: 2,
+    })
+    const added = (name: string) => ({
+      entity_type: 'field_definition' as const,
+      kind: 'added' as const,
+      name,
+      parent: 'checkout',
+      changes: [`Added field ${name}`],
+    })
+    vi.mocked(planRevisionsApi.diff).mockResolvedValue({
+      revision_id: 'rev-2',
+      compare_to: 'rev-1',
+      summary: { added: 6, removed: 0, changed: 1 },
+      entries: [
+        {
+          entity_type: 'event',
+          kind: 'changed',
+          name: 'purchase',
+          parent: null,
+          changes: ['status'],
+          field_changes: [{ field: 'status', before: 'draft', after: 'live' }],
+        },
+        ...['a', 'b', 'c', 'd', 'e', 'f'].map(added),
+      ],
+    })
+    renderHistory()
+
+    const fields = await screen.findByRole('region', { name: 'Fields' })
+    expect(within(fields).getByRole('heading', { name: 'Fields · 6' })).toBeInTheDocument()
+    // Seven entries: collapsed until opened.
+    const purchase = screen.getByRole('button', { name: /purchase/ })
+    expect(purchase).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(purchase)
+    expect(screen.getByText('live')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '+6 added' }))
+    expect(screen.queryByRole('region', { name: 'Fields' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Events' })).toBeInTheDocument()
+  })
+})
+
+describe('HistoryTab — diff failure (SH-35)', () => {
+  it('reports a failed diff through the shared error card', async () => {
+    vi.mocked(planRevisionsApi.list).mockResolvedValue({
+      items: [makeRevision({ id: 'rev-2' }), makeRevision({ id: 'rev-1' })],
+      total: 2,
+    })
+    vi.mocked(planRevisionsApi.diff).mockRejectedValue(new Error('boom'))
+    renderHistory()
+
+    const alert = await screen.findByRole('alert')
+    expect(within(alert).getByRole('heading', { level: 3, name: 'Failed to load diff' })).toBeInTheDocument()
+    expect(alert).toHaveTextContent('boom')
   })
 })
 

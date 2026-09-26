@@ -22,7 +22,7 @@ import { getErrorMessage } from '@/lib/utils'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import { eventTypesKey, relationsKey } from '@/lib/queryKeys'
 import { useCanWriteProject } from '@/lib/permissions'
-import { ReadOnlyNotice } from '@/components/read-only-notice'
+import { ReadOnlyNotice } from '@/components/states'
 
 export function RelationsTab({ slug }: { slug: string }) {
   const qc = useQueryClient()

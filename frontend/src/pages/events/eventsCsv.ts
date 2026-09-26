@@ -84,7 +84,7 @@ export function buildEventsCsvColumns(options: EventsCsvColumnOptions): EventsCs
     })
   }
   if (!options.hideReviewed) {
-    columns.push({ header: 'Reviewed', value: ev => (ev.reviewed ? 'yes' : 'no') })
+    columns.push({ header: 'Verified', value: ev => (ev.reviewed ? 'yes' : 'no') })
   }
   if (!options.hideTags) {
     columns.push({ header: 'Tags', value: ev => ev.tags.map(tag => tag.name).join(' ') })

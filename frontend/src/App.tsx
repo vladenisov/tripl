@@ -10,6 +10,7 @@ import Layout from './components/Layout'
 import { ThemeProvider } from './components/theme-provider'
 import { Button } from './components/ui/button'
 import { Toaster } from './components/ui/sonner'
+import { PageSkeleton, ShellSkeleton, type PageSkeletonVariant } from './components/states/skeletons'
 import {
   NOT_FOUND_TITLE_LABEL,
   entityTitleLabel,
@@ -46,20 +47,16 @@ const CoveragePage = lazyWithReload(() => import('./pages/CoveragePage'))
 const ConceptsPage = lazyWithReload(() => import('./pages/ConceptsPage'))
 const SettingsArea = lazyWithReload(() => import('./pages/settings-area/SettingsArea'))
 
-function PageFallback({ label }: { label: string }) {
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="flex min-h-[240px] items-center justify-center text-body text-muted-foreground"
-    >
-      {label}
-    </div>
-  )
-}
-
-function RouteFallback() {
-  return <PageFallback label="Loading page…" />
+/**
+ * Route-level loading: a page-shaped skeleton rather than "Loading page…" in
+ * an empty column (#237 SH-23 group). The variant follows the page's shape,
+ * so the header, stat strip and first card are where the page will draw them.
+ */
+function RouteFallback({ variant = 'list', label = 'Loading page…' }: {
+  variant?: PageSkeletonVariant
+  label?: string
+}) {
+  return <PageSkeleton variant={variant} label={label} />
 }
 
 /**
@@ -77,18 +74,28 @@ function RouteFallback() {
  * would remount it (losing filters and scroll) on every row click. Metric
  * routes keep one key per form or tab, as before.
  */
-function withSuspense(pageKey: string, element: ReactNode, label = 'Loading page…') {
+function withSuspense(
+  pageKey: string,
+  element: ReactNode,
+  variant: PageSkeletonVariant = 'list',
+  label = 'Loading page…',
+) {
   return (
-    <Suspense key={pageKey} fallback={<PageFallback label={label} />}>
+    <Suspense key={pageKey} fallback={<RouteFallback variant={variant} label={label} />}>
       {element}
     </Suspense>
   )
 }
 
-function withMetricSuspense(routeKey: string, element: ReactNode) {
-  return withSuspense(routeKey, element, 'Loading metrics…')
+function withMetricSuspense(routeKey: string, element: ReactNode, variant: PageSkeletonVariant = 'list') {
+  return withSuspense(routeKey, element, variant, 'Loading metrics…')
 }
 
+/**
+ * The session check. Kept as a quiet centred line rather than a shell
+ * skeleton: it resolves to either the app or the sign-in card, and a skeleton
+ * of the app would flash under /auth.
+ */
 function FullScreenFallback({ label }: { label: string }) {
   return (
     <div
@@ -213,7 +220,7 @@ function AuthRoute() {
   const resetting = searchParams.has('reset_token')
   return (
     <AnonymousOnly signedInPurpose={resetting ? 'reset the password' : undefined}>
-      {withSuspense('auth', <AuthPage />)}
+      {withSuspense('auth', <AuthPage />, 'form')}
     </AnonymousOnly>
   )
 }
@@ -317,7 +324,8 @@ function Takeover({ section }: { section: string }) {
       {/* Its own boundary: a section that throws keeps the takeover (and a way
           out of it) instead of blanking the whole app. Reset on navigation. */}
       <RouteErrorBoundary>
-        <Suspense fallback={<FullScreenFallback label="Loading settings…" />}>
+        {/* A rail and section skeleton, not a word on a blank screen (ST-35). */}
+        <Suspense fallback={<ShellSkeleton label="Loading settings…" />}>
           <SettingsArea section={section} />
         </Suspense>
       </RouteErrorBoundary>
@@ -423,7 +431,7 @@ export default function App() {
               path="/invite/:token"
               element={
                 <AnonymousOnly signedInPurpose="accept this invitation">
-                  {withSuspense('invite', <InvitePage />)}
+                  {withSuspense('invite', <InvitePage />, 'form')}
                 </AnonymousOnly>
               }
             />
@@ -472,26 +480,27 @@ export default function App() {
                 element={withSuspense(
                   'monitoring-detail',
                   <KeyedRoute params={['slug', 'scope', 'id']}><MonitoringDetailPage /></KeyedRoute>,
+                  'detail',
                 )}
               />
-              <Route path="/p/:slug/events/:tab/new" element={withSuspense('event-edit', <EventEditPage />)} />
+              <Route path="/p/:slug/events/:tab/new" element={withSuspense('event-edit', <EventEditPage />, 'form')} />
               {/* Before /events/:tab/:eventId, or "bulk" resolves as an event id. */}
-              <Route path="/p/:slug/events/:tab/bulk" element={withSuspense('event-bulk', <EventBulkPage />)} />
-              <Route path="/p/:slug/events/:tab/:eventId/edit" element={withSuspense('event-edit', <EventEditPage />)} />
+              <Route path="/p/:slug/events/:tab/bulk" element={withSuspense('event-bulk', <EventBulkPage />, 'form')} />
+              <Route path="/p/:slug/events/:tab/:eventId/edit" element={withSuspense('event-edit', <EventEditPage />, 'form')} />
               <Route path="/p/:slug/events/:tab/:eventId" element={withSuspense('events', <EventsPage />)} />
               <Route path="/p/:slug/events/:tab" element={withSuspense('events', <EventsPage />)} />
               <Route path="/p/:slug/events" element={withSuspense('events', <EventsPage />)} />
-              <Route path="/p/:slug/overview" element={withSuspense('overview', <OverviewPage />)} />
+              <Route path="/p/:slug/overview" element={withSuspense('overview', <OverviewPage />, 'dashboard')} />
               <Route path="/p/:slug/monitors" element={<MonitorsRedirect />} />
-              <Route path="/p/:slug/monitors/:monitorId" element={withSuspense('monitor-detail', <MonitorDetailPage />)} />
+              <Route path="/p/:slug/monitors/:monitorId" element={withSuspense('monitor-detail', <MonitorDetailPage />, 'detail')} />
               <Route path="/p/:slug/reconciliation" element={withSuspense('reconciliation', <ReconciliationPage />)} />
               <Route path="/p/:slug/anomalies" element={withSuspense('anomalies', <AnomaliesPage />)} />
-              <Route path="/p/:slug/metrics/new" element={withMetricSuspense('metrics-new', <MetricEditPage />)} />
-              <Route path="/p/:slug/metrics/:metricId/edit" element={withMetricSuspense('metrics-edit', <MetricEditPage />)} />
+              <Route path="/p/:slug/metrics/new" element={withMetricSuspense('metrics-new', <MetricEditPage />, 'form')} />
+              <Route path="/p/:slug/metrics/:metricId/edit" element={withMetricSuspense('metrics-edit', <MetricEditPage />, 'form')} />
               {/* Fact tables live as a tab inside Metrics — create/edit forms first,
                   then the two tab list routes. */}
-              <Route path="/p/:slug/metrics/fact-tables/new" element={withMetricSuspense('fact-tables-new', <FactTableEditPage />)} />
-              <Route path="/p/:slug/metrics/fact-tables/:factTableId/edit" element={withMetricSuspense('fact-tables-edit', <FactTableEditPage />)} />
+              <Route path="/p/:slug/metrics/fact-tables/new" element={withMetricSuspense('fact-tables-new', <FactTableEditPage />, 'form')} />
+              <Route path="/p/:slug/metrics/fact-tables/:factTableId/edit" element={withMetricSuspense('fact-tables-edit', <FactTableEditPage />, 'form')} />
               <Route path="/p/:slug/metrics/fact-tables" element={withMetricSuspense('metrics-fact-tables', <MetricsPage tab="fact-tables" />)} />
               <Route path="/p/:slug/metrics" element={withMetricSuspense('metrics-list', <MetricsPage tab="catalog" />)} />
               {/* Legacy fact-tables routes → Metrics › Fact tables tab. */}
@@ -499,9 +508,9 @@ export default function App() {
               <Route path="/p/:slug/fact-tables/:factTableId/edit" element={<FactTableEditRedirect />} />
               <Route path="/p/:slug/fact-tables" element={<FactTablesRedirect />} />
               <Route path="/p/:slug/coverage" element={withSuspense('coverage', <CoveragePage />)} />
-              <Route path="/p/:slug/concepts" element={withSuspense('concepts', <ConceptsPage />)} />
+              <Route path="/p/:slug/concepts" element={withSuspense('concepts', <ConceptsPage />, 'settings')} />
               {/* Govern › Scans — a top-level operational surface, not a settings tab. */}
-              <Route path="/p/:slug/scans/:scanId" element={withSuspense('scans', <ProjectScansPage />)} />
+              <Route path="/p/:slug/scans/:scanId" element={withSuspense('scans', <ProjectScansPage />, 'detail')} />
               <Route path="/p/:slug/scans" element={withSuspense('scans', <ProjectScansPage />)} />
               {/* Legacy Govern › Scans paths. Declared before /p/:slug/settings/:tab
                   so the pair reads in precedence order; the router ranks the static
@@ -511,9 +520,9 @@ export default function App() {
                   /p/:slug/events (App.test.tsx pins this). */}
               <Route path="/p/:slug/settings/scans/:itemId" element={<ScansRedirect />} />
               <Route path="/p/:slug/settings/scans" element={<ScansRedirect />} />
-              <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
-              <Route path="/p/:slug/settings/:tab" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
-              <Route path="/p/:slug/settings" element={withSuspense('project-settings', <ProjectSettingsPage />)} />
+              <Route path="/p/:slug/settings/:tab/:itemId" element={withSuspense('project-settings', <ProjectSettingsPage />, 'settings')} />
+              <Route path="/p/:slug/settings/:tab" element={withSuspense('project-settings', <ProjectSettingsPage />, 'settings')} />
+              <Route path="/p/:slug/settings" element={withSuspense('project-settings', <ProjectSettingsPage />, 'settings')} />
               <Route path="/p/:slug" element={withSuspense('events', <EventsPage />)} />
               {/* Project-scoped catch-all. It has to exist separately from the
                   global one below: only a route that declares `:slug` puts the

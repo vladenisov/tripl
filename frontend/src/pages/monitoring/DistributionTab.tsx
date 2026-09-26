@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { eventMetricsApi } from '@/api/eventMetrics'
 import { ErrorState } from '@/components/error-state'
 import { Chip, type ChipTone } from '@/components/primitives/chip'
-import { LoadingState } from '@/components/primitives/loading-state'
+import { SectionSkeleton } from '@/components/states'
 import { MiniStat, MiniStatStrip } from '@/components/primitives/mini-stat'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -10,6 +10,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { formatTimestamp } from '@/lib/datetime'
+import { APP_LOCALE } from '@/lib/format'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { DistributionDriftBand, DistributionDriftPoint } from '@/types'
 import { formatPercent } from './chartSeries'
@@ -77,6 +78,39 @@ function driftBandTone(band: DistributionDriftBand): ChipTone {
   return 'success'
 }
 
+/**
+ * A drift bucket's label. Daily buckets start at UTC midnight and were printed
+ * with a meaningless "12:00 AM"; they print the date alone (MO-27).
+ */
+function formatDriftBucket(bucket: string, daily: boolean): string {
+  if (!daily) return formatTimestamp(bucket)
+  const date = new Date(bucket)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleDateString(APP_LOCALE, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+}
+
+function isUtcMidnight(bucket: string): boolean {
+  const date = new Date(bucket)
+  return !Number.isNaN(date.getTime())
+    && date.getUTCHours() === 0 && date.getUTCMinutes() === 0 && date.getUTCSeconds() === 0
+}
+
+/** Which bar is which: nothing said the grey one was the baseline (MO-27). */
+function ShareBarLegend() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted-foreground" data-testid="distribution-legend">
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden="true" className="h-2 w-4 rounded-full bg-muted-foreground" />
+        Baseline (earlier window)
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden="true" className="h-2 w-4 rounded-full bg-primary" />
+        Latest bucket
+      </span>
+    </div>
+  )
+}
+
 function DistributionShareBar({
   label,
   baselineShare,
@@ -91,17 +125,17 @@ function DistributionShareBar({
       <div className="flex items-center justify-between gap-3 text-body-sm">
         <span className="min-w-0 truncate font-mono">{label}</span>
         <span className="shrink-0 text-muted-foreground">
-          {formatPercent(baselineShare)} {'->'} {formatPercent(currentShare)}
+          {formatPercent(baselineShare)} → {formatPercent(currentShare)}
         </span>
       </div>
       <div className="grid gap-1.5">
-        <div className="h-2 rounded-full bg-muted">
+        <div className="h-2 rounded-full bg-muted" title="Baseline">
           <div
             className="h-2 rounded-full bg-muted-foreground"
             style={{ width: `${Math.max(2, baselineShare * 100)}%` }}
           />
         </div>
-        <div className="h-2 rounded-full bg-muted">
+        <div className="h-2 rounded-full bg-muted" title="Latest bucket">
           <div
             className="h-2 rounded-full bg-primary"
             style={{ width: `${Math.max(2, currentShare * 100)}%` }}
@@ -136,6 +170,12 @@ function DistributionDriftPanel({
     .sort((left, right) => left.bucket.localeCompare(right.bucket))
   const latest = rows.at(-1)
   const tableRows = [...rows].reverse().slice(0, 12)
+  const daily = rows.length > 0 && rows.every(row => isUtcMidnight(row.bucket))
+  // The biggest movers first, whichever way they moved (MO-27).
+  const movers = [...(latest?.top_movers ?? [])]
+    .sort((left, right) =>
+      Math.abs(right.current_share - right.baseline_share) - Math.abs(left.current_share - left.baseline_share))
+    .slice(0, 6)
 
   if (error) {
     return (
@@ -149,16 +189,7 @@ function DistributionDriftPanel({
   }
 
   if (isLoading) {
-    return (
-      <Card>
-        <CardContent>
-          <LoadingState
-            label="Loading distribution data…"
-            className="flex h-48 items-center justify-center text-body-sm"
-          />
-        </CardContent>
-      </Card>
-    )
+    return <SectionSkeleton variant="chart" label="Loading distribution data…" />
   }
 
   if (!data.length || !fields.length) {
@@ -202,22 +233,31 @@ function DistributionDriftPanel({
           {/* The one KPI idiom (DS-5); unboxed, as it already sits in a card. */}
           {latest && (
             <MiniStatStrip>
-              <MiniStat label="Bucket" value={formatTimestamp(latest.bucket)} />
-              <MiniStat label="PSI" value={latest.psi.toFixed(3)} />
+              <MiniStat label="Bucket" value={formatDriftBucket(latest.bucket, daily)} />
+              <MiniStat label="Drift (PSI)" value={latest.psi.toFixed(3)} />
               <MiniStat
                 label="Band"
                 value={<Chip tone={driftBandTone(latest.band)}>{latest.band}</Chip>}
               />
               <MiniStat
                 label="Rows"
-                value={`${latest.baseline_total.toLocaleString()} -> ${latest.current_total.toLocaleString()}`}
+                value={`${latest.baseline_total.toLocaleString()} → ${latest.current_total.toLocaleString()}`}
               />
             </MiniStatStrip>
           )}
+          {/* What PSI and the band mean, in the same thresholds the detector
+              uses (docs: use/anomaly-detection). Visible, not a hover title,
+              so it reaches touch readers too (MO-27). */}
+          <p className="text-caption text-muted-foreground" data-testid="psi-explainer">
+            Drift (PSI, Population Stability Index) compares this field's mix
+            of values with the earlier window: below 0.10 is stable, 0.10–0.25
+            minor, 0.25 and above significant.
+          </p>
 
-          {latest && latest.top_movers.length > 0 && (
+          {movers.length > 0 && <ShareBarLegend />}
+          {movers.length > 0 && (
             <div className="grid gap-3 md:grid-cols-2">
-              {latest.top_movers.slice(0, 6).map(mover => (
+              {movers.map(mover => (
                 <DistributionShareBar
                   key={mover.value}
                   label={mover.value}
@@ -245,7 +285,7 @@ function DistributionDriftPanel({
             <TableHeader className="bg-muted/40">
               <TableRow className="hover:bg-transparent">
                 <TableHead scope="col" className="px-4">Bucket</TableHead>
-                <TableHead scope="col" className="px-4">PSI</TableHead>
+                <TableHead scope="col" className="px-4">Drift (PSI)</TableHead>
                 <TableHead scope="col" className="hidden px-4 md:table-cell">Band</TableHead>
                 <TableHead scope="col" className="px-4">Top contribution</TableHead>
               </TableRow>
@@ -256,7 +296,7 @@ function DistributionDriftPanel({
                 return (
                   <TableRow key={row.id}>
                     <TableCell className="px-4 py-3 text-muted-foreground">
-                      {formatTimestamp(row.bucket)}
+                      {formatDriftBucket(row.bucket, daily)}
                     </TableCell>
                     <TableCell className="px-4 py-3 font-medium">{row.psi.toFixed(3)}</TableCell>
                     <TableCell className="hidden px-4 py-3 md:table-cell">
@@ -265,7 +305,7 @@ function DistributionDriftPanel({
                     <TableCell className="px-4 py-3">
                       {topMover ? (
                         <span className="font-mono text-body-sm">
-                          {topMover.value}: {formatPercent(topMover.baseline_share)} {'->'} {formatPercent(topMover.current_share)}
+                          {topMover.value}: {formatPercent(topMover.baseline_share)} → {formatPercent(topMover.current_share)}
                         </span>
                       ) : (
                         <span className="text-muted-foreground">—</span>

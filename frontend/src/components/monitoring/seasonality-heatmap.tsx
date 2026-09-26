@@ -1,9 +1,9 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
 import { eventMetricsApi } from '@/api/eventMetrics'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { LoadingState } from '@/components/primitives/loading-state'
+import { SectionSkeleton } from '@/components/states'
 import { ErrorState } from '@/components/error-state'
 import { SILENT_ERROR_META } from '@/lib/errorFeedback'
 import type { SeasonalityCell } from '@/types/metrics'
@@ -136,15 +136,13 @@ export function SeasonalityHeatmap({
   }, [data?.cells])
 
   const scale = useMemo(() => buildScale(data?.cells ?? []), [data?.cells])
+  // The slot under the pointer or last tapped, spelled out under the grid: a
+  // native `title` was the only way to read a cell, invisible on touch and
+  // unstyled in dark mode (MO-30).
+  const [activeSlot, setActiveSlot] = useState<string | null>(null)
 
   if (isLoading) {
-    return (
-      <Card>
-        <CardContent>
-          <LoadingState label="Loading heatmap…" className="text-body-sm" />
-        </CardContent>
-      </Card>
-    )
+    return <SectionSkeleton variant="chart" label="Loading heatmap…" />
   }
 
   // Only when there is nothing on screen: a failed refetch behind a grid that
@@ -221,7 +219,7 @@ export function SeasonalityHeatmap({
             min and max while implying a linear count in between made a mid-tone
             unreadable — it means "middle of the pack", not the midpoint of these
             two numbers (tripl-jfm3.127). */}
-        <div className="flex items-center gap-2 text-micro text-muted-foreground">
+        <div className="flex items-center gap-2 text-caption text-muted-foreground">
           <span className="tabular-nums">{formatCount(scale.minCount)}</span>
           <div
             className="flex h-2 w-24 overflow-hidden rounded-sm ring-1 ring-border/60"
@@ -238,13 +236,16 @@ export function SeasonalityHeatmap({
           <span className="tabular-nums">{formatCount(scale.maxCount)}</span>
           <span
             className="ml-0.5"
-            title="Slots are shaded by rank among the active slots, not linearly by count, so a skewed distribution still spreads across the ramp. Hover a cell for its exact count."
+            title="Slots are shaded by rank among the active slots, not linearly by count, so a skewed distribution still spreads across the ramp. Hover or tap a cell for its exact count."
           >
             events / slot, shaded by rank
           </span>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full table-fixed text-micro">
+          <table
+            className="w-full table-fixed text-caption"
+            onMouseLeave={() => setActiveSlot(null)}
+          >
             <caption className="sr-only">{gridSummary}</caption>
             <thead>
               <tr>
@@ -281,7 +282,9 @@ export function SeasonalityHeatmap({
                       <td
                         key={hour}
                         className="p-[1px]"
-                        title={tooltipText}
+                        data-active={activeSlot === tooltipText ? 'true' : undefined}
+                        onMouseEnter={() => setActiveSlot(tooltipText)}
+                        onClick={() => setActiveSlot(tooltipText)}
                       >
                         <span className="sr-only">{tooltipText}</span>
                         {/* The fill is faded on its own layer. `opacity` on the
@@ -295,7 +298,13 @@ export function SeasonalityHeatmap({
                             (up to 96 % opaque on the busiest slot) covered it. */}
                         <div
                           data-anomaly={hasAnomaly ? 'true' : undefined}
-                          className="relative h-6 w-full rounded-sm"
+                          className={
+                            // An empty slot gets an outline, not the lightest
+                            // ramp colour: "no traffic yet" and "a little
+                            // traffic" looked the same (MO-30).
+                            `relative h-6 w-full rounded-sm${count === 0 ? ' border border-dashed border-border' : ''}${
+                              activeSlot === tooltipText ? ' ring-2 ring-ring' : ''}`
+                          }
                         >
                           <div
                             aria-hidden="true"
@@ -329,6 +338,15 @@ export function SeasonalityHeatmap({
             </tbody>
           </table>
         </div>
+        {/* aria-hidden: each cell already carries its sentence for screen
+            readers; this line is for sighted pointer and touch users. */}
+        <p
+          aria-hidden="true"
+          data-testid="heatmap-slot-detail"
+          className="min-h-4 text-caption text-muted-foreground tabular-nums"
+        >
+          {activeSlot ?? 'Hover or tap a cell for its count.'}
+        </p>
       </CardContent>
     </Card>
   )

@@ -23,7 +23,9 @@ import type { MonitoringSignal } from '@/types'
  * low-volume series, letting a tiny absolute change on a quiet scope outrank a
  * large one on a busy scope.
  */
-export function relativeEffect(signal: MonitoringSignal): number {
+export function relativeEffect(
+  signal: Pick<MonitoringSignal, 'actual_count' | 'expected_count' | 'relative_effect'>,
+): number {
   // The server computes this now and ships it on the signal. It is the only
   // side that knows whether a catalog metric's series is count-shaped, and a
   // fractional one must NOT have its denominator floored at 1 — a ratio
@@ -43,13 +45,47 @@ export function relativeEffect(signal: MonitoringSignal): number {
 /** The "Significant" bar (±50%): the AnomaliesPage default and the badge gate. */
 export const SIGNIFICANT_MIN_REL_EFFECT = 0.5
 
+/** The "Major" bar (±100%): the top magnitude filter level. */
+export const MAJOR_MIN_REL_EFFECT = 1
+
+/**
+ * The magnitude filter levels. `threshold` is the bar in the words the rows
+ * use (% change from expected), so the filter explains itself instead of
+ * leaving "why is this row not Major?" to the reader (MO-3).
+ */
 export const MAGNITUDE_PRESETS = [
-  { id: 'all', label: 'All', minRelEffect: 0 },
-  { id: 'significant', label: 'Significant', minRelEffect: SIGNIFICANT_MIN_REL_EFFECT },
-  { id: 'major', label: 'Major', minRelEffect: 1 },
+  { id: 'all', label: 'All', minRelEffect: 0, threshold: null },
+  {
+    id: 'significant',
+    label: 'Significant',
+    minRelEffect: SIGNIFICANT_MIN_REL_EFFECT,
+    threshold: '≥50%',
+  },
+  { id: 'major', label: 'Major', minRelEffect: MAJOR_MIN_REL_EFFECT, threshold: '≥100%' },
 ] as const
 
 export type MagnitudeLevel = (typeof MAGNITUDE_PRESETS)[number]['id']
+
+/** "Significant (≥50%)": a preset's option label, threshold included (MO-3). */
+export function magnitudePresetLabel(preset: (typeof MAGNITUDE_PRESETS)[number]): string {
+  return preset.threshold ? `${preset.label} (${preset.threshold})` : preset.label
+}
+
+export type MagnitudeWord = 'Minor' | 'Significant' | 'Major'
+
+/**
+ * How unusual a signal is, in words, on the same bars as the filter: a PM
+ * reads "Major" where a z-score means nothing to them (JR-31). "Minor" is
+ * everything under the Significant bar, i.e. what only "All" shows.
+ */
+export function signalMagnitudeWord(
+  signal: Pick<MonitoringSignal, 'actual_count' | 'expected_count' | 'relative_effect'>,
+): MagnitudeWord {
+  const effect = relativeEffect(signal)
+  if (effect >= MAJOR_MIN_REL_EFFECT) return 'Major'
+  if (effect >= SIGNIFICANT_MIN_REL_EFFECT) return 'Significant'
+  return 'Minor'
+}
 
 /** Default to "Significant" so a flooded list is usable without touching the filter. */
 export const DEFAULT_MAGNITUDE_LEVEL: MagnitudeLevel = 'significant'
