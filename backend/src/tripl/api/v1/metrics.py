@@ -264,7 +264,9 @@ async def query_signal_series(
 # Undo and is idempotent. Scope query parameters mirror ``SignalTriageScope``.
 
 ScanConfigParam = Annotated[uuid.UUID | None, Query()]
-ScopeRefParam = Annotated[str, Query(min_length=1, max_length=64)]
+# FreeTextFilter strips a NUL before the length check: the value is bound into
+# an equality, and a NUL aborts inside asyncpg before SQL runs (tripl-8wez).
+ScopeRefParam = Annotated[FreeTextFilter, Query(min_length=1, max_length=64)]
 
 
 def _signal_audit_name(scope_type: MetricScopeType | str, scope_ref: str) -> str:

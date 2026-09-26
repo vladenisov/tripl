@@ -98,6 +98,8 @@ READ_LIKE_MUTATING_PATHS = {
     "/api/v1/auth/invitations/{token}/accept",
     "/api/v1/projects/{slug}/events/window-metrics",
     "/api/v1/projects/{slug}/anomalies/signals/query",
+    # Read-like: row sparklines for a batch of signals; POST only to carry it.
+    "/api/v1/projects/{slug}/anomalies/signals/series",
     "/api/v1/projects/{slug}/alert-destinations/{destination_id}/rules/{rule_id}/simulate",
     # Read-like: NL question over the plan; POST only to carry the body.
     "/api/v1/projects/{slug}/ai/ask",
