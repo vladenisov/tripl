@@ -182,6 +182,8 @@ describe('MetaFieldsTab — load and delete states (PLAN-41 / PLAN-54)', () => {
 
   it('says a failed delete failed', async () => {
     vi.mocked(metaFieldsApi.del).mockRejectedValue(new Error('Field is referenced'))
+    // No usage count: the confirm falls back to naming the loss in words.
+    vi.mocked(metaFieldsApi.usage).mockRejectedValue(new Error('usage unavailable'))
     renderTab([FIELD], { auth: authAs('editor') })
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Jira link' }))
