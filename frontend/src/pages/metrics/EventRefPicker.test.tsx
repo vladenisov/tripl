@@ -86,7 +86,8 @@ describe('EventRefPicker combobox (MT-10)', () => {
     act(() => input.focus())
 
     const listbox = await screen.findByRole('listbox', { name: 'Events' })
-    const eventsGroup = within(listbox).getByRole('group', { name: 'Events' })
+    // The groups render once the roster has loaded.
+    const eventsGroup = await within(listbox).findByRole('group', { name: 'Events' })
     const typesGroup = within(listbox).getByRole('group', { name: 'All events of a type' })
 
     const first = await within(eventsGroup).findByRole('option', { name: /event_000/ })

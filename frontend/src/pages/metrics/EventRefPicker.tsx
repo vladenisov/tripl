@@ -295,16 +295,16 @@ export function EventRefPicker({
         className="max-h-[280px] rounded-control bg-surface border-border"
       >
         {eventRows.length > 0 && (
-          <div role="group" aria-labelledby={`${listboxId}-events`}>
-            <div id={`${listboxId}-events`} role="presentation" className={groupHead}>
+          <div role="group" aria-label="Events">
+            <div aria-hidden="true" className={groupHead}>
               Events
             </div>
             {eventRows.map((option, i) => renderRow(option, i))}
           </div>
         )}
         {typeRows.length > 0 && (
-          <div role="group" aria-labelledby={`${listboxId}-types`}>
-            <div id={`${listboxId}-types`} role="presentation" className={groupHead}>
+          <div role="group" aria-label="All events of a type">
+            <div aria-hidden="true" className={groupHead}>
               All events of a type
             </div>
             {typeRows.map((option, i) => renderRow(option, eventRows.length + i))}

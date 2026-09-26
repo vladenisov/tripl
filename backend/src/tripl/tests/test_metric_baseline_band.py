@@ -524,7 +524,9 @@ async def _seed_route_scope(client: AsyncClient, prefix: str) -> dict[str, objec
                     id=uuid.uuid4(),
                     scan_config_id=config.id,
                     event_id=row_event_id,
-                    event_type_id=event_type_id,
+                    # An event row carries no type id: the type row owns the
+                    # (config, type, bucket) key.
+                    event_type_id=None if row_event_id else event_type_id,
                     bucket=bucket,
                     count=100,
                 )

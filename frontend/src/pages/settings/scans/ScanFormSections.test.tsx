@@ -607,10 +607,11 @@ describe('ScanFormSections — field labelling', () => {
   // their captions are the rows' — naming each checkbox list as a group — and
   // the value limit is a row of its own (#247 DA-12).
   it('lays the breakdown and drift pickers out as Field rows in the shared label column', async () => {
-    setupFetch()
+    setupFetch([eventType])
     const { container } = renderCreatePage()
 
     await screen.findByText('New scan')
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Main scan' } })
     fireEvent.change(screen.getByLabelText('Data source'), { target: { value: 'ds-1' } })
     fireEvent.change(screen.getByPlaceholderText(/SELECT \* FROM analytics\.events/), {
       target: { value: 'SELECT * FROM analytics.events' },
